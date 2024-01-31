@@ -1,5 +1,5 @@
 [package]
-name = "awr_html_parser"
+name = "jas-min"
 version = "0.1.0"
 edition = "2021"
 authors = ["Kamil Stawiarski <kamil@ora-600.pl>"]
