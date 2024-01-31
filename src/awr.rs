@@ -142,8 +142,17 @@ fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: 
 	let mut awr_iter: std::vec::IntoIter<&str> = awr_doc.into_iter();
 	let section_start2 = &section_start[1..section_start.len()-1];
 	let section_end2: &str = &section_end[1..section_end.len()-1];
-	let section_start: usize = awr_iter.position(|x| x.starts_with(section_start) || x.starts_with(section_start2)).unwrap();
-	let section_end = awr_iter.position(|x: &str| x.starts_with(section_end) || x.starts_with(section_end2)).unwrap();
+	let section_start = awr_iter.position(|x| x.starts_with(section_start) || x.starts_with(section_start2));
+	let section_end = awr_iter.position(|x: &str| x.starts_with(section_end) || x.starts_with(section_end2));
+	let section_start = match(section_start) {
+		Some(x) => x,
+		None => 0
+	};
+
+	let section_end = match(section_end) {
+		Some(x) => x,
+		None=> 0
+	}; 
 	let si = SectionIdx{begin: section_start, end: section_start+section_end}; 
 	si
 }
@@ -332,7 +341,7 @@ fn sql_io_time(table: ElementRef) -> Vec<SQLIOTime> {
 fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<ForegrooundWaitEvents> {
 	let mut fg: Vec<ForegrooundWaitEvents> = Vec::new();
 	for line in foreground_events_section {
-		println!("{}", line);
+		//println!("{}", line);
 		if line.len() >= 73 {
 			let statname = line[0..28].to_string().trim().to_string();
 			let waits = u64::from_str(&line[29..41].trim().replace(",",""));
@@ -344,7 +353,11 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foregrooun
 				let avg_wait = f64::from_str(&line[57..64].trim().replace(",","")).unwrap_or(0.0);
 				let mut pct_dbtime = 0.0;
 				if line.len() > 73 {
-					pct_dbtime = f64::from_str(&line[73..80].trim().replace(",","")).unwrap();
+					let mut pct_dbtime_end: usize = 80;
+					if line.len() < pct_dbtime_end {
+						pct_dbtime_end = line.len();
+					}
+					pct_dbtime = f64::from_str(&line[73..pct_dbtime_end].trim().replace(",","")).unwrap();
 				}
 				fg.push(ForegrooundWaitEvents{event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime});
 			
@@ -388,10 +401,15 @@ fn foreground_wait_events(table: ElementRef) -> Vec<ForegrooundWaitEvents> {
 fn time_model_stats_txt(time_model_section: Vec<&str>) -> Vec<TimeModelStats> {
 	let mut time_model_stats: Vec<TimeModelStats> = Vec::new();
 	for line in time_model_section {
-		let statname = line[0..35].to_string().trim().to_string();
-		let time_s = f64::from_str(&line[35..56].trim().replace(",","")).unwrap();
-		let pct_dbtime = f64::from_str(&line[56..66].trim().replace(",","")).unwrap();
-		time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s, pct_dbtime: pct_dbtime});
+		if line.len() >= 66 {
+			let statname = line[0..35].to_string().trim().to_string();
+			let time_s = f64::from_str(&line[35..56].trim().replace(",",""));
+			let pct_dbtime = f64::from_str(&line[56..66].trim().replace(",",""));
+			if time_s.is_ok() && pct_dbtime.is_ok() {
+				time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s.unwrap(), pct_dbtime: pct_dbtime.unwrap()});
+			}
+		}
+		
 	} 
 	time_model_stats
 }
@@ -419,6 +437,7 @@ fn time_model_stats(table: ElementRef) -> Vec<TimeModelStats> {
 
 	time_model_stats
 }
+
 
 fn host_cpu(table: ElementRef) -> HostCPU {
 	let mut host_cpu: HostCPU = HostCPU::default();
@@ -629,13 +648,26 @@ fn instance_info(table: ElementRef) -> DBInstance {
 fn load_profile_txt(load_section: Vec<&str>) -> Vec<LoadProfile> {
 	let mut lp: Vec<LoadProfile> = Vec::new();
 	for line in load_section {
-		let statname = line[0..17].to_string().trim().to_string();
-		let per_second = f64::from_str(&line[17..36].trim().replace(",","")).unwrap();
-		let mut per_transaction = 0.0;
-		if !line.contains("Transactions") {
-			per_transaction = f64::from_str(&line[36..55].trim().replace(",","")).unwrap();
-		} 
-		lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction, begin_snap_time: "".to_string()});
+		let statname_end = line.to_string().find(":");
+		if statname_end.is_some() {
+			let statname_end = statname_end.unwrap() + 1;
+			let statname = line[0..statname_end].to_string().trim().to_string();
+			let mut per_second_end = statname_end + 19;
+			if per_second_end > line.len() {
+				per_second_end = line.len();
+			}
+			let per_second = f64::from_str(&line[statname_end..per_second_end].trim().replace(",","")).unwrap();
+			let mut per_transaction = 0.0;
+			if !line.contains("Transactions") { 
+				let mut transaction_end = statname_end + 20 + 18;
+				if transaction_end > line.len() {
+					transaction_end = line.len();
+				}
+				per_transaction = f64::from_str(&line[statname_end+19..transaction_end].trim().replace(",","")).unwrap();
+			} 
+			lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction, begin_snap_time: "".to_string()});
+		}
+		
 	}
 	lp
 }
@@ -704,7 +736,10 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname));
     	let awr_lines = awr_rep.split("\n").collect::<Vec<&str>>();
  
-		let snapshot_index = find_section_boundries(awr_lines.clone(), "Snapshot       Snap Id", "Cache Sizes");
+		let mut snapshot_index = find_section_boundries(awr_lines.clone(), "Snapshot       Snap Id", "Cache Sizes");
+		if snapshot_index.begin == 0 && snapshot_index.end == 0 {
+			snapshot_index = find_section_boundries(awr_lines.clone(), "              Snap Id", "Top ADDM Findings");
+		}
 		let mut snap_info_lines: Vec<&str> = Vec::new();
 		snap_info_lines.extend_from_slice(&awr_lines[snapshot_index.begin..snapshot_index.end]);
 		awr.snap_info = snap_info_txt(snap_info_lines); 
@@ -739,7 +774,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		sql_ela.extend_from_slice(&awr_lines[sql_ela_index.begin..sql_ela_index.end]);
 		awr.sql_elapsed_time = sql_ela_time_txt(sql_ela);
 
-		println!("{}", serde_json::to_string_pretty(&awr).unwrap());
+		//println!("{}", serde_json::to_string_pretty(&awr).unwrap());
 
 	}
 	for lpi in 0..awr.load_profile.len() {
@@ -760,7 +795,7 @@ pub fn parse_awr_dir(dirname: &str) -> Result<String, std::io::Error> {
 	for file in fs::read_dir(dirname).unwrap() {
 		let fname = &file.unwrap().path().display().to_string();
 		if (fname.contains("awr") || fname.contains("sp_")) {
-			println!("{}", fname);
+			//println!("{}", fname);
 			awrs.push(AWRS{file_name: fname.clone(), awr_doc: parse_awr_report_internal(fname.to_string())});
 		}
     }
