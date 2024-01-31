@@ -56,15 +56,17 @@ struct TimeModelStats {
 	stat_name: String,
 	time_s: f64,
 	pct_dbtime: f64,
+	begin_snap_time: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug)]
-struct ForegrooundWaitEvents {
+struct ForegroundWaitEvents {
 	event: String,
 	waits: u64,
 	total_wait_time_s: u64,
 	avg_wait: f64,
 	pct_dbtime: f64,
+	begin_snap_time: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug)]
@@ -125,7 +127,7 @@ struct AWR {
 	wait_classes: Vec<WaitClasses>,
 	host_cpu: HostCPU,
 	time_model_stats: Vec<TimeModelStats>,
-	foreground_wait_events: Vec<ForegrooundWaitEvents>,
+	foreground_wait_events: Vec<ForegroundWaitEvents>,
 	sql_elapsed_time: Vec<SQLElapsedTime>,
 	sql_cpu_time: Vec<SQLCPUTime>,
 	sql_io_time: Vec<SQLIOTime>,
@@ -338,8 +340,8 @@ fn sql_io_time(table: ElementRef) -> Vec<SQLIOTime> {
 	sql_io_time
 }
 
-fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<ForegrooundWaitEvents> {
-	let mut fg: Vec<ForegrooundWaitEvents> = Vec::new();
+fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<ForegroundWaitEvents> {
+	let mut fg: Vec<ForegroundWaitEvents> = Vec::new();
 	for line in foreground_events_section {
 		//println!("{}", line);
 		if line.len() >= 73 {
@@ -348,8 +350,11 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foregrooun
 
 			if waits.is_ok() {
 
-				let waits = waits.unwrap_or(0);
-				let total_wait_time = u64::from_str(&line[46..57].trim().replace(",","")).unwrap_or(0);
+				let waits: u64 = waits.unwrap_or(0);
+				let mut total_wait_time = u64::from_str(&line[46..57].trim().replace(",","")).unwrap_or(0);
+				if total_wait_time == 0 {
+					total_wait_time = u64::from_str(&line[38..54].trim().replace(",","")).unwrap_or(0);
+				}
 				let avg_wait = f64::from_str(&line[57..64].trim().replace(",","")).unwrap_or(0.0);
 				let mut pct_dbtime = 0.0;
 				if line.len() > 73 {
@@ -359,7 +364,7 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foregrooun
 					}
 					pct_dbtime = f64::from_str(&line[73..pct_dbtime_end].trim().replace(",","")).unwrap();
 				}
-				fg.push(ForegrooundWaitEvents{event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime});
+				fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
 			
 			}
 		}
@@ -367,8 +372,8 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foregrooun
 	fg
 }
 
-fn foreground_wait_events(table: ElementRef) -> Vec<ForegrooundWaitEvents> {
-	let mut foreground_wait_events: Vec<ForegrooundWaitEvents> = Vec::new();
+fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
+	let mut foreground_wait_events: Vec<ForegroundWaitEvents> = Vec::new();
 	let row_selector = Selector::parse("tr").unwrap();
     let column_selector = Selector::parse("td").unwrap();
 
@@ -390,7 +395,7 @@ fn foreground_wait_events(table: ElementRef) -> Vec<ForegrooundWaitEvents> {
 			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
 
-			foreground_wait_events.push(ForegrooundWaitEvents { event: event.to_string(), waits, total_wait_time_s, avg_wait, pct_dbtime })
+			foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
 			
 		}
 	}
@@ -406,7 +411,7 @@ fn time_model_stats_txt(time_model_section: Vec<&str>) -> Vec<TimeModelStats> {
 			let time_s = f64::from_str(&line[35..56].trim().replace(",",""));
 			let pct_dbtime = f64::from_str(&line[56..66].trim().replace(",",""));
 			if time_s.is_ok() && pct_dbtime.is_ok() {
-				time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s.unwrap(), pct_dbtime: pct_dbtime.unwrap()});
+				time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s.unwrap(), pct_dbtime: pct_dbtime.unwrap(), begin_snap_time: "".to_string()});
 			}
 		}
 		
@@ -431,7 +436,7 @@ fn time_model_stats(table: ElementRef) -> Vec<TimeModelStats> {
 			let pct_dbtime = columns[2].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
 
-			time_model_stats.push(TimeModelStats {stat_name: stat_name.to_string(), time_s, pct_dbtime })
+			time_model_stats.push(TimeModelStats {stat_name: stat_name.to_string(), time_s: time_s, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string()});
 		}
 	}
 
@@ -774,11 +779,15 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		sql_ela.extend_from_slice(&awr_lines[sql_ela_index.begin..sql_ela_index.end]);
 		awr.sql_elapsed_time = sql_ela_time_txt(sql_ela);
 
-		//println!("{}", serde_json::to_string_pretty(&awr).unwrap());
-
 	}
 	for lpi in 0..awr.load_profile.len() {
 		awr.load_profile[lpi].begin_snap_time = awr.snap_info.begin_snap_time.clone();
+	}
+	for tmi in 0..awr.time_model_stats.len() {
+		awr.time_model_stats[tmi].begin_snap_time = awr.snap_info.begin_snap_time.clone();
+	}
+	for fwi in 0..awr.foreground_wait_events.len() {
+		awr.foreground_wait_events[fwi].begin_snap_time = awr.snap_info.begin_snap_time.clone();
 	}
 	awr.status = "OK".to_string();
 	awr
