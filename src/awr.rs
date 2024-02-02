@@ -144,17 +144,9 @@ fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: 
 	let mut awr_iter: std::vec::IntoIter<&str> = awr_doc.into_iter();
 	let section_start2 = &section_start[1..section_start.len()-1];
 	let section_end2: &str = &section_end[1..section_end.len()-1];
-	let section_start = awr_iter.position(|x| x.starts_with(section_start) || x.starts_with(section_start2));
-	let section_end = awr_iter.position(|x: &str| x.starts_with(section_end) || x.starts_with(section_end2));
-	let section_start = match(section_start) {
-		Some(x) => x,
-		None => 0
-	};
-
-	let section_end = match(section_end) {
-		Some(x) => x,
-		None=> 0
-	}; 
+	let section_start = awr_iter.position(|x| x.starts_with(section_start) || x.starts_with(section_start2)).unwrap_or(0);
+	let section_end = awr_iter.position(|x: &str| x.starts_with(section_end) || x.starts_with(section_end2)).unwrap_or(0);
+	
 	let si = SectionIdx{begin: section_start, end: section_start+section_end}; 
 	si
 }
@@ -506,6 +498,20 @@ fn host_cpu(table: ElementRef) -> HostCPU {
 	host_cpu
 }
 
+fn instance_activity_stats_txt(inst_stats_section: Vec<&str>) -> Vec<KeyInstanceStats> {
+	let mut ias: Vec<KeyInstanceStats> = Vec::new();
+	for line in inst_stats_section {
+		if line.len() >= 52 {
+			let statname = line[0..35].to_string().trim().to_string();
+			let total = i64::from_str(&line[35..52].trim().replace(",","")).unwrap_or(-1);
+			if total >= 0 {
+				ias.push(KeyInstanceStats{statname: statname.clone(), total: total as u64});
+			}
+		}
+	}
+	ias
+}
+
 fn instance_activity_stats(table: ElementRef) -> Vec<KeyInstanceStats> {
 	let mut ias: Vec<KeyInstanceStats> = Vec::new();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -778,6 +784,14 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		let mut sql_ela: Vec<&str> = Vec::new();
 		sql_ela.extend_from_slice(&awr_lines[sql_ela_index.begin..sql_ela_index.end]);
 		awr.sql_elapsed_time = sql_ela_time_txt(sql_ela);
+
+		let instance_activity_start = format!("{}{}", 12u8 as char, "Instance Activity Stats");
+		let instance_activity_end = format!("{}{}", 12u8 as char, "workarea executions - optimal");
+		let instance_act_index = find_section_boundries(awr_lines.clone(), &instance_activity_start, &instance_activity_end);
+		let mut inst_stats: Vec<&str> = Vec::new();
+		inst_stats.extend_from_slice(&awr_lines[instance_act_index.begin..instance_act_index.end+2]);
+		awr.key_instance_stats = instance_activity_stats_txt(inst_stats);
+
 
 	}
 	for lpi in 0..awr.load_profile.len() {
