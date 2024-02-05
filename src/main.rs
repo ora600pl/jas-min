@@ -11,7 +11,8 @@ mod awr;
 mod ostask;
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
-///The assumption is that text file is a STATSPACK report and HTML is AWR. 
+///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
+/// It was tested only against 19c reports
 /// The tool is under development and it has a lot of bugs, so please test it and don't hasitate to suggest some code changes :)
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
