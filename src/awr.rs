@@ -822,6 +822,7 @@ pub fn parse_awr_dir(dirname: &str) -> Result<String, std::io::Error> {
 			awrs.push(AWRS{file_name: fname.clone(), awr_doc: parse_awr_report_internal(fname.to_string())});
 		}
     }
+	awrs.sort_by_key(|a| a.awr_doc.snap_info.begin_snap_id);
 	let awr_doc: String = serde_json::to_string_pretty(&awrs).unwrap();
 	Ok(awr_doc)
 }
