@@ -10,6 +10,8 @@ tool is under development and it has a lot of bugs, so please test it and don't 
 
 some code changes :)
 
+JAS-MIN has also possibility of drawing basic plots using plotly library. 
+
 
 USAGE:
 
@@ -23,6 +25,8 @@ OPTIONS:
     -f, --file <FILE>              Parse a single text or html file [default: NO]
 
     -h, --help                     Print help information
+
+    -p, --plot <plot>              Draw a plot? [default: false]
 
     -s, --server <SERVER>          Run in server mode - you can parse files via GET/POST methods.
 

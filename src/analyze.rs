@@ -10,12 +10,16 @@ struct TopStats {
     sqls:   HashMap<String, u8>,
 }
 
+//We don't want to plot everything, because it would cause to much trouble 
+//we need to find only essential wait events and SQLIDs 
 fn find_top_stats(awrs: Vec<AWRS>) -> TopStats {
     let mut event_names: HashMap<String, u8> = HashMap::new();
     let mut sql_ids: HashMap<String, u8> = HashMap::new();
+    //so we scan the AWR data
     for awr in awrs {
         let mut dbtime: f64 = 0.0;
         let mut cputime: f64 = 0.0;
+        //We want to find dbtime and cputime because based on their delta we will base our decisions 
         for lp in awr.awr_doc.load_profile {
             if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
                 dbtime = lp.per_second;
@@ -24,14 +28,18 @@ fn find_top_stats(awrs: Vec<AWRS>) -> TopStats {
                 cputime = lp.per_second;
             }
         }
+        //If proportion of cputime and dbtime is less then 0.666 than we want to find out what might be the problem 
+        //because it means that Oracle spent some time waiting on wait events and not working on CPU
         if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < 0.666 {
             let mut events = awr.awr_doc.foreground_wait_events;
+            //I'm sorting events by total wait time, to get the longest waits at the end
             events.sort_by_key(|e| e.total_wait_time_s);
             let l = events.len();
+            //We are registering only TOP5 from each snap
             for i in 1..5 {
                 event_names.entry(events[l-i].event.clone()).or_insert(1);
             }
-
+            //And the same with SQLs
             let mut sqls = awr.awr_doc.sql_elapsed_time;
             sqls.sort_by_key(|s| s.elapsed_time_s as i64);
             let l = sqls.len(); 
@@ -60,37 +68,41 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
         let xval = format!("{} ({})", awr.awr_doc.snap_info.begin_snap_time, awr.awr_doc.snap_info.begin_snap_id);
         x_vals.push(xval.clone());
 
+        //We have fill the whole data traces for wait events and SQLs with 0 to be sure that chart won't be moved to one side
         for (sql, _) in &top_sqls {
             y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
             let mut v = y_vals_sqls.get_mut(sql).unwrap();
             v.push(0.0);
         } 
+        for (event, _) in &top_events {
+            y_vals_events.entry(event.to_string()).or_insert(Vec::new());
+            let mut v = y_vals_events.get_mut(event).unwrap();
+            v.push(0);
+        }
 
-       for lp in awr.awr_doc.load_profile {
-            if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
-                y_vals_dbtime.push(lp.per_second);
-                
-                
-            } else if lp.stat_name.starts_with("DB CPU") {
-                y_vals_dbcpu.push(lp.per_second);
-            }
-       }
-
+        //Than we can set the current value of the vector to the desired one, if the event is in TOP section in that snap id
        for event in awr.awr_doc.foreground_wait_events { 
             if top_events.contains_key(&event.event) {
-                y_vals_events.entry(event.event.clone()).or_insert(Vec::new());
                 let mut v = y_vals_events.get_mut(&event.event).unwrap();
-                v.push(event.total_wait_time_s);
+                v[x_vals.len()-1] = event.total_wait_time_s;
             }
        }
-
+       //Same with SQLs
        for sqls in awr.awr_doc.sql_elapsed_time {
-
             if top_sqls.contains_key(&sqls.sql_id) {
                 let mut v = y_vals_sqls.get_mut(&sqls.sql_id).unwrap();
                 v[x_vals.len()-1] = sqls.elapsed_time_s;
             }
        }
+
+       //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
+       for lp in awr.awr_doc.load_profile {
+        if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
+            y_vals_dbtime.push(lp.per_second);
+        } else if lp.stat_name.starts_with("DB CPU") {
+            y_vals_dbcpu.push(lp.per_second);
+        }
+   }
         
     }
 
