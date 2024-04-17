@@ -1,20 +1,20 @@
 use crate::awr::{AWRS, AWR, LoadProfile};
 use plotly::Scatter;
-use plotly::common::Mode;
+use plotly::common::{Mode, Visible};
 use plotly::Plot;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 struct TopStats {
-    events: HashMap<String, u8>,
-    sqls:   HashMap<String, u8>,
+    events: BTreeMap<String, u8>,
+    sqls:   BTreeMap<String, u8>,
 }
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
 fn find_top_stats(awrs: Vec<AWRS>) -> TopStats {
-    let mut event_names: HashMap<String, u8> = HashMap::new();
-    let mut sql_ids: HashMap<String, u8> = HashMap::new();
+    let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
+    let mut sql_ids: BTreeMap<String, u8> = BTreeMap::new();
     //so we scan the AWR data
     for awr in awrs {
         let mut dbtime: f64 = 0.0;
@@ -55,8 +55,8 @@ fn find_top_stats(awrs: Vec<AWRS>) -> TopStats {
 pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
-    let mut y_vals_events: HashMap<String, Vec<u64>> = HashMap::new();
-    let mut y_vals_sqls: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut y_vals_events: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
 
     let mut x_vals: Vec<String> = Vec::new();
 
@@ -97,12 +97,12 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
 
        //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
        for lp in awr.awr_doc.load_profile {
-        if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
-            y_vals_dbtime.push(lp.per_second);
-        } else if lp.stat_name.starts_with("DB CPU") {
-            y_vals_dbcpu.push(lp.per_second);
-        }
-   }
+            if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
+                y_vals_dbtime.push(lp.per_second);
+            } else if lp.stat_name.starts_with("DB CPU") {
+                y_vals_dbcpu.push(lp.per_second);
+            }
+       }
         
     }
 
@@ -129,12 +129,23 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
         plot.add_trace(event_trace);
     }
 
-    for (en,yv) in y_vals_sqls {
+    //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
+    let mut y_vals_sqls_sorted = BTreeMap::new(); 
+    for (sqlid, yv) in y_vals_sqls {
+        let mut occuriance = 0;
+        for v in &yv {
+            if *v > 0.0 {
+                occuriance -= 1;
+            }
+        }
+        y_vals_sqls_sorted.insert((occuriance, sqlid.clone()), yv.clone());
+    }
+    for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv)
                                                         .mode(Mode::LinesMarkers)
-                                                        .name(en.clone())
+                                                        .name(key.1.clone())
                                                         .x_axis("x1")
-                                                        .y_axis("y3");
+                                                        .y_axis("y3").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
     }
 
