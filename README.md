@@ -34,3 +34,5 @@ OPTIONS:
 
     -V, --version                  Print version information
     
+
+If you choose to plot a chart, you will see a basic distribution of DB Time vs DB CPU, distribution TOP 5 wait events from the times, when DB CPU was less then 66.6% of DB Time plus some TOP SQLs by Elapsed Time, sorted by amount of occuriance.  
