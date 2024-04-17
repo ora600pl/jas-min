@@ -9,6 +9,7 @@ use clap::Parser;
 
 mod awr;
 mod ostask;
+mod analyze;
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
@@ -28,6 +29,10 @@ struct Args {
     ///Parse whole directory of files
 	#[clap(short, long, default_value="NO")]
     directory: String,
+
+	///Draw a plot? 
+	#[clap(short, long, default_value_t=false)]
+    plot: bool,
 }
 
 
@@ -55,7 +60,7 @@ fn main() {
 					rouille::Response::text(awr_doc)
 				},
 				(GET) (/parsedir/{fname: String}) => {
-					let awr_doc = match awr::parse_awr_dir(&fname) {
+					let awr_doc = match awr::parse_awr_dir(&fname, false) {
 						Ok(awr) => awr,
 						Err(e) => format!("{{\"status\": \"ERROR\", \"msg\": \"Problem with a file {} - error: {}\"}}", &fname, e),
 					};
@@ -99,7 +104,7 @@ fn main() {
 		let awr_doc = awr::parse_awr_report(&args.file, false).unwrap();
 		println!("{}", awr_doc);
 	} else if args.directory != "NO" {
-		let awr_doc = awr::parse_awr_dir(&args.directory).unwrap();
+		let awr_doc = awr::parse_awr_dir(&args.directory, args.plot).unwrap();
 		println!("{}", awr_doc);
 	}
 }

@@ -8,18 +8,18 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::collections::HashMap;
 use std::char;
+use crate::analyze::plot_to_file;
 
-
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct LoadProfile {
-	stat_name: String,
-	per_second: f64,
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct LoadProfile {
+	pub stat_name: String,
+	pub per_second: f64,
 	per_transaction: f64,
-	begin_snap_time: String,
+	pub begin_snap_time: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct DBInstance {
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct DBInstance {
 	db_name: String,
 	db_id: u64,
 	instance_name: String, 
@@ -29,8 +29,8 @@ struct DBInstance {
 	rac: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct WaitClasses {
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct WaitClasses {
 	wait_class: String,
 	waits: u64,
 	total_wait_time_s: u64,
@@ -38,8 +38,8 @@ struct WaitClasses {
 	db_time_pct: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct HostCPU {
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct HostCPU {
 	cpus: u32,
 	cores: u32,
 	sockets: u8,
@@ -51,28 +51,28 @@ struct HostCPU {
 	pct_idle: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct TimeModelStats {
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct TimeModelStats {
 	stat_name: String,
 	time_s: f64,
 	pct_dbtime: f64,
 	begin_snap_time: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct ForegroundWaitEvents {
-	event: String,
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct ForegroundWaitEvents {
+	pub event: String,
 	waits: u64,
-	total_wait_time_s: u64,
+	pub total_wait_time_s: u64,
 	avg_wait: f64,
 	pct_dbtime: f64,
 	begin_snap_time: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct SQLElapsedTime {
-	sql_id: String,
-	elapsed_time_s: f64,
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct SQLElapsedTime {
+	pub sql_id: String,
+	pub elapsed_time_s: f64,
 	executions: u64,
 	elpased_time_exec_s: f64,
 	pct_total: f64,
@@ -81,8 +81,8 @@ struct SQLElapsedTime {
 	sql_module: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct SQLCPUTime {
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct SQLCPUTime {
 	sql_id: String,
 	cpu_time_s: f64,
 	executions: u64,
@@ -93,8 +93,8 @@ struct SQLCPUTime {
 	sql_module: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct SQLIOTime {
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct SQLIOTime {
 	sql_id: String,
 	io_time_s: f64,
 	executions: u64,
@@ -105,35 +105,42 @@ struct SQLIOTime {
 	sql_module: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct SnapInfo {
-	begin_snap_id: u32,
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct SnapInfo {
+	pub begin_snap_id: u32,
 	end_snap_id: u32,
-	begin_snap_time: String,
+	pub begin_snap_time: String,
 	end_snap_time: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct KeyInstanceStats {
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct KeyInstanceStats {
 	statname: String,
 	total: u64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
-struct AWR {
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct AWR {
 	status: String,
-	load_profile: Vec<LoadProfile>,
+	pub load_profile: Vec<LoadProfile>,
 	db_instance_information: DBInstance,
 	wait_classes: Vec<WaitClasses>,
 	host_cpu: HostCPU,
 	time_model_stats: Vec<TimeModelStats>,
-	foreground_wait_events: Vec<ForegroundWaitEvents>,
-	sql_elapsed_time: Vec<SQLElapsedTime>,
+	pub foreground_wait_events: Vec<ForegroundWaitEvents>,
+	pub sql_elapsed_time: Vec<SQLElapsedTime>,
 	sql_cpu_time: Vec<SQLCPUTime>,
 	sql_io_time: Vec<SQLIOTime>,
 	key_instance_stats: Vec<KeyInstanceStats>,
-	snap_info: SnapInfo,
-}
+	pub snap_info: SnapInfo,
+} 
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct AWRS {
+	pub file_name: String,
+	pub awr_doc: AWR,
+} 
+
 #[derive(Debug)]
 struct SectionIdx {
 	begin: usize,
@@ -356,8 +363,9 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foreground
 					}
 					pct_dbtime = f64::from_str(&line[73..pct_dbtime_end].trim().replace(",","")).unwrap();
 				}
-				fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
-			
+				if statname != "SQL*Net message from client" && statname != "watchdog main loop" && !statname.starts_with("PX Deq") {
+					fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
+				}
 			}
 		}
 	}
@@ -386,9 +394,9 @@ fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
 
 			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
-
-			foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
-			
+			if event != "SQL*Net message from client" && event != "watchdog main loop" && !event.starts_with("PX Deq") {
+				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
+			}
 		}
 	}
 
@@ -709,6 +717,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 	let mut awr: AWR = AWR::default();
 	if fname.ends_with("html") {
 
+		//println!("Parsing file {}", &fname);
 		let html_file = fs::read_to_string(&fname);
 		let html = html_file.unwrap();
 
@@ -808,22 +817,24 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 }
 
 
-pub fn parse_awr_dir(dirname: &str) -> Result<String, std::io::Error> {
-	#[derive(Default,Serialize, Deserialize, Debug)]
-	struct AWRS {
-		file_name: String,
-		awr_doc: AWR,
-	}
+pub fn parse_awr_dir(dirname: &str, plot: bool) -> Result<String, std::io::Error> {
+	
 	let mut awrs: Vec<AWRS> = Vec::new();
 	for file in fs::read_dir(dirname).unwrap() {
 		let fname = &file.unwrap().path().display().to_string();
 		if (fname.contains("awr") || fname.contains("sp_")) {
-			//println!("{}", fname);
-			awrs.push(AWRS{file_name: fname.clone(), awr_doc: parse_awr_report_internal(fname.to_string())});
+			let file_name = fname.split("/").collect::<Vec<&str>>();
+			let file_name = file_name.last().unwrap().to_string();
+			awrs.push(AWRS{file_name: file_name.clone(), awr_doc: parse_awr_report_internal(fname.to_string())});
 		}
     }
-	awrs.sort_by_key(|a| a.awr_doc.snap_info.begin_snap_id);
+	
 	let awr_doc: String = serde_json::to_string_pretty(&awrs).unwrap();
+	awrs.sort_by_key(|a| a.awr_doc.snap_info.begin_snap_id);
+	if plot {
+		let html_fname = format!("{}.html", dirname);
+		plot_to_file(awrs, html_fname);
+	}
 	Ok(awr_doc)
 }
 

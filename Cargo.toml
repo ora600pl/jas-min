@@ -1,6 +1,6 @@
 [package]
 name = "jas-min"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Kamil Stawiarski <kamil@ora-600.pl>"]
 
@@ -16,3 +16,4 @@ execute = "0.2.11"
 linked-hash-map = { version = "0.5.6", features = ["serde_impl"] }
 base64 = "0.21.0"
 clap = { version = "3.0", features = ["derive"] }
+plotly = "0.8.4"
