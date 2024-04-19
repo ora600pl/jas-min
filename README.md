@@ -26,6 +26,8 @@ OPTIONS:
 
     -h, --help                     Print help information
 
+    -o, --outfile <OUTFILE>        Write output to nondefault file? Default is directory_name.json
+
     -p, --plot <plot>              Draw a plot? [default: false]
 
     -s, --server <SERVER>          Run in server mode - you can parse files via GET/POST methods.
