@@ -10,6 +10,7 @@ struct TopStats {
     sqls:   BTreeMap<String, u8>,
 }
 
+
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
 fn find_top_stats(awrs: Vec<AWRS>) -> TopStats {
@@ -57,6 +58,9 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut y_vals_logons: Vec<f64> = Vec::new();
+    let mut y_vals_calls: Vec<f64> = Vec::new();
+    let mut y_vals_execs: Vec<f64> = Vec::new();
 
     let mut x_vals: Vec<String> = Vec::new();
 
@@ -101,31 +105,57 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
                 y_vals_dbtime.push(lp.per_second);
             } else if lp.stat_name.starts_with("DB CPU") {
                 y_vals_dbcpu.push(lp.per_second);
+            } else if lp.stat_name.starts_with("User calls") {
+                y_vals_calls.push(lp.per_second);
+            } else if lp.stat_name.starts_with("Logons") {
+                y_vals_logons.push(lp.per_second*60.0*60.0);
+            } else if lp.stat_name.starts_with("Executes") {
+                y_vals_execs.push(lp.per_second);
             }
        }
         
     }
 
     let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime)
-                                                    .mode(Mode::LinesMarkers)
+                                                    .mode(Mode::LinesMarkersText)
                                                     .name("DB Time (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
     let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu)
-                                                    .mode(Mode::LinesMarkers)
+                                                    .mode(Mode::LinesMarkersText)
                                                     .name("DB CPU (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
+
+    let calls_trace = Scatter::new(x_vals.clone(), y_vals_calls)
+                                                    .mode(Mode::LinesMarkersText)
+                                                    .name("User Calls")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let logons_trace = Scatter::new(x_vals.clone(), y_vals_logons)
+                                                    .mode(Mode::LinesMarkersText)
+                                                    .name("Logons")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs)
+                                                    .mode(Mode::LinesMarkersText)
+                                                    .name("Executes")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+
     let mut plot = Plot::new();
     plot.add_trace(dbtime_trace);
     plot.add_trace(dbcpu_trace);
+    plot.add_trace(calls_trace);
+    plot.add_trace(logons_trace);
+    plot.add_trace(exec_trace);
 
     for (en,yv) in y_vals_events {
         let event_trace = Scatter::new(x_vals.clone(), yv)
                                                         .mode(Mode::LinesMarkers)
                                                         .name(en.clone())
                                                         .x_axis("x1")
-                                                        .y_axis("y2");
+                                                        .y_axis("y3");
         plot.add_trace(event_trace);
     }
 
@@ -145,15 +175,16 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
                                                         .mode(Mode::LinesMarkers)
                                                         .name(key.1.clone())
                                                         .x_axis("x1")
-                                                        .y_axis("y3").visible(Visible::LegendOnly);
+                                                        .y_axis("y4").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
     }
 
     let layout = Layout::new()
         .height(1000)
-        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.33]))
-        .y_axis2(Axis::new().anchor("x1").domain(&[0.33, 0.66]))
-        .y_axis3(Axis::new().anchor("x1").domain(&[0.66, 1.]))
+        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.25]))
+        .y_axis2(Axis::new().anchor("x1").domain(&[0.25, 0.5]))
+        .y_axis3(Axis::new().anchor("x1").domain(&[0.5, 0.75]))
+        .y_axis4(Axis::new().anchor("x1").domain(&[0.75, 1.]))
         ;
 
     plot.set_layout(layout);

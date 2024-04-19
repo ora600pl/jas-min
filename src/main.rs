@@ -2,6 +2,7 @@
 #[macro_use]
 use rouille::*;
 use std::io::Read;
+use std::io::Write;
 use std::str;
 use std::fs;
 use clap::Parser;
@@ -33,6 +34,11 @@ struct Args {
 	///Draw a plot? 
 	#[clap(short, long, default_value_t=false)]
     plot: bool,
+
+	 ///Write output to nondefault file? Default is directory_name.json
+	 #[clap(short, long, default_value="NO")]
+	 outfile: String,
+
 }
 
 
@@ -105,6 +111,12 @@ fn main() {
 		println!("{}", awr_doc);
 	} else if args.directory != "NO" {
 		let awr_doc = awr::parse_awr_dir(&args.directory, args.plot).unwrap();
-		println!("{}", awr_doc);
+		let mut fname = format!("{}.json", &args.directory);
+		if args.outfile != "NO" {
+			fname = args.outfile;
+		}
+		let mut f = fs::File::create(fname).unwrap();
+		f.write_all(awr_doc.as_bytes()).unwrap();
+		
 	}
 }
