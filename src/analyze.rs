@@ -44,9 +44,12 @@ fn find_top_stats(awrs: Vec<AWRS>) -> TopStats {
             let mut sqls = awr.awr_doc.sql_elapsed_time;
             sqls.sort_by_key(|s| s.elapsed_time_s as i64);
             let l = sqls.len(); 
-            for i in 1..5 {
-                sql_ids.entry(sqls[l-i].sql_id.clone()).or_insert(1);
+            if l > 0 {
+                for i in 1..5 {
+                    sql_ids.entry(sqls[l-i].sql_id.clone()).or_insert(1);
+                }
             }
+            
         }
     }
     let top = TopStats {events: event_names, sqls: sql_ids,};
