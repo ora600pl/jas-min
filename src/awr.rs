@@ -789,7 +789,14 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 
 		let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed time");
 		let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
-		let sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end);
+		let mut sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end);
+
+		if sql_ela_index.begin == 0 || sql_ela_index.end == 0 {
+			let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed Time");
+			let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by CPU Time");
+			sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end);
+		}
+
 		let mut sql_ela: Vec<&str> = Vec::new();
 		sql_ela.extend_from_slice(&awr_lines[sql_ela_index.begin..sql_ela_index.end]);
 		awr.sql_elapsed_time = sql_ela_time_txt(sql_ela);
