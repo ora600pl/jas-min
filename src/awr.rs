@@ -363,7 +363,7 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foreground
 					}
 					pct_dbtime = f64::from_str(&line[73..pct_dbtime_end].trim().replace(",","")).unwrap();
 				}
-				if statname != "SQL*Net message from client" && statname != "watchdog main loop" && !statname.starts_with("PX Deq") {
+				if statname != "SQL*Net message from client" && statname != "watchdog main loop" && !statname.starts_with("PX Deq") && !statname.starts_with("jobq slave"){
 					fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
 				}
 			}
@@ -394,7 +394,7 @@ fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
 
 			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
-			if event != "SQL*Net message from client" && event != "watchdog main loop" && !event.starts_with("PX Deq") {
+			if event != "SQL*Net message from client" && event != "watchdog main loop" && !event.starts_with("PX Deq") && !event.starts_with("jobq slave") {
 				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
 			}
 		}
@@ -824,7 +824,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 }
 
 
-pub fn parse_awr_dir(dirname: &str, plot: bool) -> Result<String, std::io::Error> {
+pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64) -> Result<String, std::io::Error> {
 	
 	let mut awrs: Vec<AWRS> = Vec::new();
 	for file in fs::read_dir(dirname).unwrap() {
@@ -838,9 +838,9 @@ pub fn parse_awr_dir(dirname: &str, plot: bool) -> Result<String, std::io::Error
 	
 	let awr_doc: String = serde_json::to_string_pretty(&awrs).unwrap();
 	awrs.sort_by_key(|a| a.awr_doc.snap_info.begin_snap_id);
-	if plot {
+	if plot > 0 {
 		let html_fname = format!("{}.html", dirname);
-		plot_to_file(awrs, html_fname);
+		plot_to_file(awrs, html_fname, db_time_cpu_ratio);
 	}
 	Ok(awr_doc)
 }

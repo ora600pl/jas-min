@@ -32,12 +32,16 @@ struct Args {
     directory: String,
 
 	///Draw a plot? 
-	#[clap(short, long, default_value_t=false)]
-    plot: bool,
+	#[clap(short, long, default_value_t=1)]
+    plot: u8,
 
 	 ///Write output to nondefault file? Default is directory_name.json
 	 #[clap(short, long, default_value="NO")]
 	 outfile: String,
+
+	 ///Ratio of DB CPU / DB TIME
+	 #[clap(short, long, default_value_t=0.666)]
+	 time_cpu_ratio: f64,
 
 }
 
@@ -66,7 +70,7 @@ fn main() {
 					rouille::Response::text(awr_doc)
 				},
 				(GET) (/parsedir/{fname: String}) => {
-					let awr_doc = match awr::parse_awr_dir(&fname, false) {
+					let awr_doc = match awr::parse_awr_dir(&fname, 0, args.time_cpu_ratio) {
 						Ok(awr) => awr,
 						Err(e) => format!("{{\"status\": \"ERROR\", \"msg\": \"Problem with a file {} - error: {}\"}}", &fname, e),
 					};
@@ -110,7 +114,7 @@ fn main() {
 		let awr_doc = awr::parse_awr_report(&args.file, false).unwrap();
 		println!("{}", awr_doc);
 	} else if args.directory != "NO" {
-		let awr_doc = awr::parse_awr_dir(&args.directory, args.plot).unwrap();
+		let awr_doc = awr::parse_awr_dir(&args.directory, args.plot, args.time_cpu_ratio).unwrap();
 		let mut fname = format!("{}.json", &args.directory);
 		if args.outfile != "NO" {
 			fname = args.outfile;

@@ -1,8 +1,9 @@
 use crate::awr::{AWRS, AWR, LoadProfile};
+use plotly::color::NamedColor;
 use plotly::Scatter;
-use plotly::common::{Mode, Visible};
+use plotly::common::{ColorBar, Mode, Visible};
 use plotly::Plot;
-use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder};
+use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar};
 use std::collections::BTreeMap;
 
 struct TopStats {
@@ -13,7 +14,7 @@ struct TopStats {
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: Vec<AWRS>) -> TopStats {
+fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, u8> = BTreeMap::new();
     //so we scan the AWR data
@@ -29,9 +30,9 @@ fn find_top_stats(awrs: Vec<AWRS>) -> TopStats {
                 cputime = lp.per_second;
             }
         }
-        //If proportion of cputime and dbtime is less then 0.666 than we want to find out what might be the problem 
+        //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
         //because it means that Oracle spent some time waiting on wait events and not working on CPU
-        if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < 0.666 {
+        if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio {
             let mut events = awr.awr_doc.foreground_wait_events;
             //I'm sorting events by total wait time, to get the longest waits at the end
             events.sort_by_key(|e| e.total_wait_time_s);
@@ -56,7 +57,7 @@ fn find_top_stats(awrs: Vec<AWRS>) -> TopStats {
     top
 }
 
-pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
+pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<u64>> = BTreeMap::new();
@@ -67,7 +68,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
 
     let mut x_vals: Vec<String> = Vec::new();
 
-    let top_stats = find_top_stats(awrs.clone());
+    let top_stats = find_top_stats(awrs.clone(), db_time_cpu_ratio);
     let top_events = top_stats.events;
     let top_sqls = top_stats.sqls;
 
@@ -188,9 +189,10 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String) {
         .y_axis2(Axis::new().anchor("x1").domain(&[0.25, 0.5]))
         .y_axis3(Axis::new().anchor("x1").domain(&[0.5, 0.75]))
         .y_axis4(Axis::new().anchor("x1").domain(&[0.75, 1.]))
-        ;
+        .hover_mode(plotly::layout::HoverMode::XUnified);
 
     plot.set_layout(layout);
+    
 
     plot.use_local_plotly();
     plot.write_html(fname);
