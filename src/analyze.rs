@@ -3,7 +3,7 @@ use plotly::color::NamedColor;
 use plotly::Scatter;
 use plotly::common::{ColorBar, Mode, Visible};
 use plotly::Plot;
-use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar};
+use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::BTreeMap;
 
 struct TopStats {
@@ -76,7 +76,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
         let xval = format!("{} ({})", awr.awr_doc.snap_info.begin_snap_time, awr.awr_doc.snap_info.begin_snap_id);
         x_vals.push(xval.clone());
 
-        //We have fill the whole data traces for wait events and SQLs with 0 to be sure that chart won't be moved to one side
+        //We have to fill the whole data traces for wait events and SQLs with 0 to be sure that chart won't be moved to one side
         for (sql, _) in &top_sqls {
             y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
             let mut v = y_vals_sqls.get_mut(sql).unwrap();
@@ -102,16 +102,19 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
                 v[x_vals.len()-1] = sqls.elapsed_time_s;
             }
        }
-
+       let mut is_statspack: bool = false;
        //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
        for lp in awr.awr_doc.load_profile {
             if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
                 y_vals_dbtime.push(lp.per_second);
+                if lp.stat_name.starts_with("DB time") {
+                    is_statspack = true;
+                }
             } else if lp.stat_name.starts_with("DB CPU") {
                 y_vals_dbcpu.push(lp.per_second);
             } else if lp.stat_name.starts_with("User calls") {
                 y_vals_calls.push(lp.per_second);
-            } else if lp.stat_name.starts_with("Logons") {
+            } else if lp.stat_name.starts_with("User logons") || (is_statspack && lp.stat_name.starts_with("Logons")) {
                 y_vals_logons.push(lp.per_second*60.0*60.0);
             } else if lp.stat_name.starts_with("Executes") {
                 y_vals_execs.push(lp.per_second);
@@ -189,7 +192,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
         .y_axis2(Axis::new().anchor("x1").domain(&[0.25, 0.5]))
         .y_axis3(Axis::new().anchor("x1").domain(&[0.5, 0.75]))
         .y_axis4(Axis::new().anchor("x1").domain(&[0.75, 1.]))
-        .hover_mode(plotly::layout::HoverMode::XUnified);
+        .hover_mode(HoverMode::XUnified);
 
     plot.set_layout(layout);
     
