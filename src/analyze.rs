@@ -1,4 +1,4 @@
-use crate::awr::{AWRS, AWR, LoadProfile};
+use crate::awr::{AWRS, AWR, LoadProfile, HostCPU};
 use plotly::color::NamedColor;
 use plotly::Scatter;
 use plotly::common::{ColorBar, Mode, Visible};
@@ -65,6 +65,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
     let mut y_vals_logons: Vec<f64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
+    let mut y_vals_cpu: Vec<f64> = Vec::new();
 
     let mut x_vals: Vec<String> = Vec::new();
 
@@ -120,6 +121,13 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
                 y_vals_execs.push(lp.per_second);
             }
        }
+
+       if awr.awr_doc.host_cpu.pct_user < 0.0 {
+            y_vals_cpu.push(0.0);
+       } else {
+            y_vals_cpu.push(awr.awr_doc.host_cpu.pct_user);
+       }
+       
         
     }
 
@@ -128,6 +136,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
                                                     .name("DB Time (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
+
     let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu)
                                                     .mode(Mode::LinesMarkersText)
                                                     .name("DB CPU (s/s)")
@@ -139,16 +148,24 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
                                                     .name("User Calls")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
+
     let logons_trace = Scatter::new(x_vals.clone(), y_vals_logons)
                                                     .mode(Mode::LinesMarkersText)
                                                     .name("Logons")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
+
     let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs)
                                                     .mode(Mode::LinesMarkersText)
                                                     .name("Executes")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
+
+    let cpu_trace = Scatter::new(x_vals.clone(), y_vals_cpu)
+                                                    .mode(Mode::LinesMarkersText)
+                                                    .name("User CPU")
+                                                    .x_axis("x1")
+                                                    .y_axis("y5");
 
     let mut plot = Plot::new();
     plot.add_trace(dbtime_trace);
@@ -156,6 +173,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
     plot.add_trace(calls_trace);
     plot.add_trace(logons_trace);
     plot.add_trace(exec_trace);
+    plot.add_trace(cpu_trace);
 
     for (en,yv) in y_vals_events {
         let event_trace = Scatter::new(x_vals.clone(), yv)
@@ -188,10 +206,11 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
 
     let layout = Layout::new()
         .height(1000)
-        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.25]))
-        .y_axis2(Axis::new().anchor("x1").domain(&[0.25, 0.5]))
-        .y_axis3(Axis::new().anchor("x1").domain(&[0.5, 0.75]))
-        .y_axis4(Axis::new().anchor("x1").domain(&[0.75, 1.]))
+        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.2]))
+        .y_axis2(Axis::new().anchor("x1").domain(&[0.2, 0.4]))
+        .y_axis3(Axis::new().anchor("x1").domain(&[0.4, 0.6]))
+        .y_axis4(Axis::new().anchor("x1").domain(&[0.6, 0.8]))
+        .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
         .hover_mode(HoverMode::XUnified);
 
     plot.set_layout(layout);
