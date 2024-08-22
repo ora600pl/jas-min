@@ -38,14 +38,15 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64) -> TopStats {
             events.sort_by_key(|e| e.total_wait_time_s);
             let l = events.len();
             //We are registering only TOP5 from each snap
-            for i in 1..5 {
+            for i in 1..10 {
                 event_names.entry(events[l-i].event.clone()).or_insert(1);
             }
             //And the same with SQLs
             let mut sqls = awr.awr_doc.sql_elapsed_time;
             sqls.sort_by_key(|s| s.elapsed_time_s as i64);
             let l = sqls.len(); 
-            if l > 0 {
+
+            if l > 5 {
                 for i in 1..5 {
                     sql_ids.entry(sqls[l-i].sql_id.clone()).or_insert(1);
                 }
