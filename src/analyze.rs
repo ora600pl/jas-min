@@ -67,6 +67,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
     let mut y_vals_cpu: Vec<f64> = Vec::new();
+    let mut y_vals_system_cpu: Vec<f64> = Vec::new(); // New
+    let mut y_vals_wio: Vec<f64> = Vec::new(); // New
 
     let mut x_vals: Vec<String> = Vec::new();
 
@@ -123,6 +125,9 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
             }
        }
 
+       y_vals_system_cpu.push(awr.awr_doc.host_cpu.pct_system); // Collect System CPU Load
+       y_vals_wio.push(awr.awr_doc.host_cpu.pct_wio); // Collect WIO Load
+        
        if awr.awr_doc.host_cpu.pct_user < 0.0 {
             y_vals_cpu.push(0.0);
        } else {
@@ -164,9 +169,22 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
 
     let cpu_trace = Scatter::new(x_vals.clone(), y_vals_cpu)
                                                     .mode(Mode::LinesMarkersText)
-                                                    .name("User CPU")
+                                                    .name("CPU User")
                                                     .x_axis("x1")
                                                     .y_axis("y5");
+    
+    let system_cpu_trace = Scatter::new(x_vals.clone(), y_vals_system_cpu)
+                                                    .mode(Mode::LinesMarkersText)
+                                                    .name("CPU System")
+                                                    .x_axis("x1")
+                                                    .y_axis("y5");
+
+    let wio_trace = Scatter::new(x_vals.clone(), y_vals_wio)
+                                                    .mode(Mode::LinesMarkersText)
+                                                    .name("CPU WIO")
+                                                    .x_axis("x1")
+                                                    .y_axis("y5");
+
 
     let mut plot = Plot::new();
     plot.add_trace(dbtime_trace);
@@ -175,6 +193,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
     plot.add_trace(logons_trace);
     plot.add_trace(exec_trace);
     plot.add_trace(cpu_trace);
+    plot.add_trace(system_cpu_trace);
+    plot.add_trace(wio_trace);
 
     for (en,yv) in y_vals_events {
         let event_trace = Scatter::new(x_vals.clone(), yv)
@@ -212,6 +232,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
         .y_axis3(Axis::new().anchor("x1").domain(&[0.4, 0.6]))
         .y_axis4(Axis::new().anchor("x1").domain(&[0.6, 0.8]))
         .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
+        .y_axis6(Axis::new().anchor("x1").domain(&[1.2, 1.4])) // New Y axis for System CPU Load
+        .y_axis7(Axis::new().anchor("x1").domain(&[1.4, 1.6])) // New Y axis for WIO Load
         .hover_mode(HoverMode::XUnified);
 
     plot.set_layout(layout);

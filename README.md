@@ -1,4 +1,7 @@
-jas-min 0.1.0
+jas-min 0.1.1
+
+ChangeLog:
+- Improved 'Host CPU Load' parsing, added to plots (@rakutow)
 
 Kamil Stawiarski <kamil@ora-600.pl>
 
