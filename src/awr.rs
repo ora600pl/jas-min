@@ -9,6 +9,7 @@ use std::str::FromStr;
 use std::collections::HashMap;
 use std::char;
 use crate::analyze::plot_to_file;
+use regex::Regex;
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct LoadProfile {
@@ -46,8 +47,8 @@ pub struct HostCPU {
 	load_avg_begin: f64,
 	load_avg_end: f64,
 	pub pct_user: f64,
-	pct_system: f64,
-	pct_wio: f64,
+	pub pct_system: f64,
+	pub pct_wio: f64,
 	pct_idle: f64,
 }
 
@@ -506,6 +507,40 @@ fn host_cpu(table: ElementRef) -> HostCPU {
 	host_cpu
 }
 
+fn parse_host_cpu_txt(lines: Vec<&str>) -> HostCPU {
+    let mut host_cpu = HostCPU::default();
+    
+    for line in lines.iter() {
+        // Look for the line with CPUs, Cores, Sockets
+        if line.contains("Host CPU") {
+            // Extract the numbers from the line
+            if let Some(captures) = regex::Regex::new(r"CPUs:\s*(\d+)\s*Cores:\s*(\d+)\s*Sockets:\s*(\d+)")
+                                        .unwrap()
+                                        .captures(line) 
+            {
+                host_cpu.cpus = captures.get(1).map_or(0, |m| m.as_str().parse::<u32>().unwrap_or(0));
+                host_cpu.cores = captures.get(2).map_or(0, |m| m.as_str().parse::<u32>().unwrap_or(0));
+                host_cpu.sockets = captures.get(3).map_or(0, |m| m.as_str().parse::<u8>().unwrap_or(0));
+            }
+        }
+
+        // Look for the line with load averages and percentages
+        if line.trim().starts_with(|c: char| c.is_digit(10)) {
+            let columns: Vec<&str> = line.split_whitespace().collect();
+            if columns.len() >= 6 {
+                host_cpu.load_avg_begin = columns[0].parse::<f64>().unwrap_or(0.0);
+                host_cpu.load_avg_end = columns[1].parse::<f64>().unwrap_or(0.0);
+                host_cpu.pct_user = columns[2].parse::<f64>().unwrap_or(0.0);
+                host_cpu.pct_system = columns[3].parse::<f64>().unwrap_or(0.0);
+                host_cpu.pct_idle = columns[4].parse::<f64>().unwrap_or(0.0);
+                host_cpu.pct_wio = columns[5].parse::<f64>().unwrap_or(0.0);
+            }
+        }
+    }
+
+    host_cpu
+}
+
 fn instance_activity_stats_txt(inst_stats_section: Vec<&str>) -> Vec<KeyInstanceStats> {
 	let mut ias: Vec<KeyInstanceStats> = Vec::new();
 	for line in inst_stats_section {
@@ -763,6 +798,12 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		let mut snap_info_lines: Vec<&str> = Vec::new();
 		snap_info_lines.extend_from_slice(&awr_lines[snapshot_index.begin..snapshot_index.end]);
 		awr.snap_info = snap_info_txt(snap_info_lines); 
+
+		let host_cpu_index = find_section_boundries(awr_lines.clone(), "Host CPU", "Instance CPU");
+		if host_cpu_index.begin != 0 && host_cpu_index.end != 0 {
+    		let host_cpu_lines: Vec<&str> = awr_lines[host_cpu_index.begin..host_cpu_index.end+2].to_vec();
+    		awr.host_cpu = parse_host_cpu_txt(host_cpu_lines);
+		}
 
 		let load_profile_index = find_section_boundries(awr_lines.clone(), "Load Profile", "Instance Efficiency");
 		let mut load_profile_lines: Vec<&str> = Vec::new();
