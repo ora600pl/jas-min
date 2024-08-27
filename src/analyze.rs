@@ -166,7 +166,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
                                                     .mode(Mode::LinesMarkersText)
                                                     .name("User CPU")
                                                     .x_axis("x1")
-                                                    .y_axis("y5");
+                                                    .y_axis("y4");
 
     let mut plot = Plot::new();
     plot.add_trace(dbtime_trace);
@@ -205,13 +205,21 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
         plot.add_trace(sql_trace);
     }
 
+    // let layout = Layout::new()
+    //     .height(1000)
+    //     .y_axis(Axis::new().anchor("x1").domain(&[0., 0.2]))
+    //     .y_axis2(Axis::new().anchor("x1").domain(&[0.2, 0.4]))
+    //     .y_axis3(Axis::new().anchor("x1").domain(&[0.4, 0.6]))
+    //     .y_axis4(Axis::new().anchor("x1").domain(&[0.6, 0.8]))
+    //     .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
+    //     .hover_mode(HoverMode::XUnified);
+
     let layout = Layout::new()
         .height(1000)
-        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.2]))
-        .y_axis2(Axis::new().anchor("x1").domain(&[0.2, 0.4]))
-        .y_axis3(Axis::new().anchor("x1").domain(&[0.4, 0.6]))
-        .y_axis4(Axis::new().anchor("x1").domain(&[0.6, 0.8]))
-        .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
+        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.25]))
+        .y_axis2(Axis::new().anchor("x1").domain(&[0.25, 0.5]))
+        .y_axis3(Axis::new().anchor("x1").domain(&[0.5, 0.75]))
+        .y_axis4(Axis::new().anchor("x1").domain(&[0.75, 1.0]))
         .hover_mode(HoverMode::XUnified);
 
     plot.set_layout(layout);
