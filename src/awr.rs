@@ -363,7 +363,8 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foreground
 					}
 					pct_dbtime = f64::from_str(&line[73..pct_dbtime_end].trim().replace(",","")).unwrap();
 				}
-				if statname != "SQL*Net message from client" && statname != "watchdog main loop" && !statname.starts_with("PX Deq") && !statname.starts_with("jobq slave"){
+				if statname != "SQL*Net message from client" && statname != "watchdog main loop" && !statname.starts_with("PX Deq") && !statname.starts_with("jobq slave")
+				   && !statname.starts_with("wait for unread message on b") && !statname.starts_with("Streams AQ: waiting for m") {
 					fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
 				}
 			}
@@ -394,7 +395,8 @@ fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
 
 			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
-			if event != "SQL*Net message from client" && event != "watchdog main loop" && !event.starts_with("PX Deq") && !event.starts_with("jobq slave") {
+			if event != "SQL*Net message from client" && event != "watchdog main loop" && !event.starts_with("PX Deq") && !event.starts_with("jobq slave") 
+			   && !event.starts_with("wait for unread message on b") && !event.starts_with("Streams AQ: waiting for m"){
 				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
 			}
 		}

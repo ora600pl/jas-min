@@ -11,7 +11,6 @@
 *.sln.docstates
 *.txt 
 *.html
-*.py
 *.pyc
 
 # User-specific files (MonoDevelop/Xamarin Studio)
