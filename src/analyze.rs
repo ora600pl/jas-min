@@ -176,10 +176,21 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
     plot.add_trace(exec_trace);
     plot.add_trace(cpu_trace);
 
-    for (en,yv) in y_vals_events {
+    //I want to stort wait events by the number of occuriances -  for this purpose I'm using BTree with two index keys
+    let mut y_vals_events_sorted = BTreeMap::new();
+    for (evname, ev) in y_vals_events {
+        let mut occuriance = 0;
+        for v in &ev {
+            if *v > 0 {
+                occuriance -= 1
+            }
+        }
+        y_vals_events_sorted.insert((occuriance, evname.clone()), ev.clone());
+    }
+    for (key,yv) in y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv)
                                                         .mode(Mode::LinesMarkers)
-                                                        .name(en.clone())
+                                                        .name(key.1.clone())
                                                         .x_axis("x1")
                                                         .y_axis("y3");
         plot.add_trace(event_trace);
@@ -201,26 +212,26 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
                                                         .mode(Mode::LinesMarkers)
                                                         .name(key.1.clone())
                                                         .x_axis("x1")
-                                                        .y_axis("y4").visible(Visible::LegendOnly);
+                                                        .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
     }
 
-    // let layout = Layout::new()
-    //     .height(1000)
-    //     .y_axis(Axis::new().anchor("x1").domain(&[0., 0.2]))
-    //     .y_axis2(Axis::new().anchor("x1").domain(&[0.2, 0.4]))
-    //     .y_axis3(Axis::new().anchor("x1").domain(&[0.4, 0.6]))
-    //     .y_axis4(Axis::new().anchor("x1").domain(&[0.6, 0.8]))
-    //     .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
-    //     .hover_mode(HoverMode::XUnified);
-
     let layout = Layout::new()
         .height(1000)
-        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.25]))
-        .y_axis2(Axis::new().anchor("x1").domain(&[0.25, 0.5]))
-        .y_axis3(Axis::new().anchor("x1").domain(&[0.5, 0.75]))
-        .y_axis4(Axis::new().anchor("x1").domain(&[0.75, 1.0]))
+        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.2]))
+        .y_axis2(Axis::new().anchor("x1").domain(&[0.2, 0.4]))
+        .y_axis3(Axis::new().anchor("x1").domain(&[0.4, 0.6]))
+        .y_axis4(Axis::new().anchor("x1").domain(&[0.6, 0.8]))
+        .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
         .hover_mode(HoverMode::XUnified);
+
+    // let layout = Layout::new()
+    //     .height(1000)
+    //     .y_axis(Axis::new().anchor("x1").domain(&[0., 0.25]))
+    //     .y_axis2(Axis::new().anchor("x1").domain(&[0.25, 0.5]))
+    //     .y_axis3(Axis::new().anchor("x1").domain(&[0.5, 0.75]))
+    //     .y_axis4(Axis::new().anchor("x1").domain(&[0.75, 1.0]))
+    //     .hover_mode(HoverMode::XUnified);
 
     plot.set_layout(layout);
     
