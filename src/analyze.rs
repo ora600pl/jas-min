@@ -14,7 +14,7 @@ struct TopStats {
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64) -> TopStats {
+fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, u8> = BTreeMap::new();
     //so we scan the AWR data
@@ -32,14 +32,17 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64) -> TopStats {
         }
         //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
         //because it means that Oracle spent some time waiting on wait events and not working on CPU
-        if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio {
+        if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
+            println!("Analyzing a peak in {} ({}) for ratio: [{}/{}] = {}", awr.file_name, awr.awr_doc.snap_info.begin_snap_time, cputime, dbtime, cputime/dbtime);
             let mut events = awr.awr_doc.foreground_wait_events;
             //I'm sorting events by total wait time, to get the longest waits at the end
             events.sort_by_key(|e| e.total_wait_time_s);
             let l = events.len();
             //We are registering only TOP5 from each snap
-            for i in 1..10 {
-                event_names.entry(events[l-i].event.clone()).or_insert(1);
+            if l > 10 {
+                for i in 1..10 {
+                    event_names.entry(events[l-i].event.clone()).or_insert(1);
+                }
             }
             //And the same with SQLs
             let mut sqls = awr.awr_doc.sql_elapsed_time;
@@ -58,7 +61,7 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64) -> TopStats {
     top
 }
 
-pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
+pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<u64>> = BTreeMap::new();
@@ -70,7 +73,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
 
     let mut x_vals: Vec<String> = Vec::new();
 
-    let top_stats = find_top_stats(awrs.clone(), db_time_cpu_ratio);
+    let top_stats = find_top_stats(awrs.clone(), db_time_cpu_ratio, filter_db_time);
     let top_events = top_stats.events;
     let top_sqls = top_stats.sqls;
 
@@ -176,16 +179,16 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64) {
     plot.add_trace(exec_trace);
     plot.add_trace(cpu_trace);
 
-    //I want to stort wait events by the number of occuriances -  for this purpose I'm using BTree with two index keys
+    //I want to stort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
     for (evname, ev) in y_vals_events {
-        let mut occuriance = 0;
+        let mut wait_time = 0;
         for v in &ev {
             if *v > 0 {
-                occuriance -= 1
+                wait_time -= *v;
             }
         }
-        y_vals_events_sorted.insert((occuriance, evname.clone()), ev.clone());
+        y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
     }
     for (key,yv) in y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv)

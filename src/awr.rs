@@ -867,7 +867,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 }
 
 
-pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64) -> Result<String, std::io::Error> {
+pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64, filter_db_time: f64) -> Result<String, std::io::Error> {
 	
 	let mut awrs: Vec<AWRS> = Vec::new();
 	for file in fs::read_dir(dirname).unwrap() {
@@ -883,7 +883,7 @@ pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64) -> Result<
 	awrs.sort_by_key(|a| a.awr_doc.snap_info.begin_snap_id);
 	if plot > 0 {
 		let html_fname = format!("{}.html", dirname);
-		plot_to_file(awrs, html_fname, db_time_cpu_ratio);
+		plot_to_file(awrs, html_fname, db_time_cpu_ratio, filter_db_time);
 	}
 	Ok(awr_doc)
 }
