@@ -24,7 +24,7 @@ struct Args {
     server: String,
 
     ///Parse a single text or html file
-    #[clap(short, long, default_value="NO")]
+    #[clap(long, default_value="NO")]
     file: String,
 
     ///Parse whole directory of files
@@ -43,6 +43,9 @@ struct Args {
 	 #[clap(short, long, default_value_t=0.666)]
 	 time_cpu_ratio: f64,
 
+	 ///Filter only for DBTIME greater than (if zero the filter is not effective)
+	 #[clap(short, long, default_value_t=0.0)]
+	 filter_db_time: f64,
 }
 
 
@@ -70,7 +73,7 @@ fn main() {
 					rouille::Response::text(awr_doc)
 				},
 				(GET) (/parsedir/{fname: String}) => {
-					let awr_doc = match awr::parse_awr_dir(&fname, 0, args.time_cpu_ratio) {
+					let awr_doc = match awr::parse_awr_dir(&fname, 0, args.time_cpu_ratio, args.filter_db_time) {
 						Ok(awr) => awr,
 						Err(e) => format!("{{\"status\": \"ERROR\", \"msg\": \"Problem with a file {} - error: {}\"}}", &fname, e),
 					};
@@ -114,7 +117,7 @@ fn main() {
 		let awr_doc = awr::parse_awr_report(&args.file, false).unwrap();
 		println!("{}", awr_doc);
 	} else if args.directory != "NO" {
-		let awr_doc = awr::parse_awr_dir(&args.directory, args.plot, args.time_cpu_ratio).unwrap();
+		let awr_doc = awr::parse_awr_dir(&args.directory, args.plot, args.time_cpu_ratio, args.filter_db_time).unwrap();
 		let mut fname = format!("{}.json", &args.directory);
 		if args.outfile != "NO" {
 			fname = args.outfile;

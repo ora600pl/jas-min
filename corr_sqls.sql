@@ -35,7 +35,7 @@ and   dbt.statname = 'DB time(s):'
 and   lp.statname != 'DB time(s):'
 group by lp.statname 
 having corr(dbt.per_second, lp.total) >= 0.5
-order by avg(lp.total) desc, crr desc nulls last;
+order by crr desc nulls last;
 
 select *
 from PERF_INSTANCE_ACTIVITY;
