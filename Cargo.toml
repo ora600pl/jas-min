@@ -18,3 +18,5 @@ base64 = "0.21.0"
 clap = { version = "3.0", features = ["derive"] }
 plotly = "0.8.4"
 regex = "1.7.1"
+ndarray = "0.16"
+ndarray-stats = "0.6.0"

@@ -33,7 +33,7 @@ pub struct DBInstance {
 pub struct WaitClasses {
 	wait_class: String,
 	waits: u64,
-	total_wait_time_s: u64,
+	total_wait_time_s: f64,
 	avg_wait_ms: f64,
 	db_time_pct: f64,
 }
@@ -63,7 +63,7 @@ pub struct TimeModelStats {
 pub struct ForegroundWaitEvents {
 	pub event: String,
 	waits: u64,
-	pub total_wait_time_s: u64,
+	pub total_wait_time_s: f64,
 	avg_wait: f64,
 	pct_dbtime: f64,
 	begin_snap_time: String,
@@ -350,9 +350,9 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foreground
 			if waits.is_ok() {
 
 				let waits: u64 = waits.unwrap_or(0);
-				let mut total_wait_time = u64::from_str(&line[46..57].trim().replace(",","")).unwrap_or(0);
-				if total_wait_time == 0 {
-					total_wait_time = u64::from_str(&line[38..54].trim().replace(",","")).unwrap_or(0);
+				let mut total_wait_time = f64::from_str(&line[46..57].trim().replace(",","")).unwrap_or(0.0);
+				if total_wait_time == 0.0 {
+					total_wait_time = f64::from_str(&line[38..54].trim().replace(",","")).unwrap_or(0.0);
 				}
 				let avg_wait = f64::from_str(&line[57..64].trim().replace(",","")).unwrap_or(0.0);
 				let mut pct_dbtime = 0.0;
@@ -388,7 +388,7 @@ fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
 			let waits = u64::from_str(&waits[0].trim().replace(",","")).unwrap_or(0);
 
 			let total_wait_time_s = columns[3].text().collect::<Vec<_>>();
-			let total_wait_time_s = u64::from_str(&total_wait_time_s[0].trim().replace(",","")).unwrap_or(0);
+			let total_wait_time_s = f64::from_str(&total_wait_time_s[0].trim().replace(",","")).unwrap_or(0.0);
 
 			let avg_wait = columns[4].text().collect::<Vec<_>>();
 			let avg_wait = f64::from_str(&avg_wait[0].trim().replace(",","")).unwrap_or(0.0);
@@ -592,7 +592,7 @@ fn wait_classes(table: ElementRef) -> Vec<WaitClasses> {
 				let waits = u64::from_str(&waits[0].trim().replace(",","")).unwrap_or(0);
 
 				let total_wait_time = columns[3].text().collect::<Vec<_>>();
-				let total_wait_time = u64::from_str(&total_wait_time[0].trim().replace(",","")).unwrap_or(0);
+				let total_wait_time = f64::from_str(&total_wait_time[0].trim().replace(",","")).unwrap_or(0.0);
 
 				let avg_wait_ms = columns[4].text().collect::<Vec<_>>();
 				let avg_wait_ms = f64::from_str(&avg_wait_ms[0].trim().replace(",","")).unwrap_or(0.0);

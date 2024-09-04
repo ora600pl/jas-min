@@ -6,6 +6,9 @@ use plotly::Plot;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::BTreeMap;
 
+use ndarray::{Array2};
+use ndarray_stats::CorrelationExt;
+ 
 struct TopStats {
     events: BTreeMap<String, u8>,
     sqls:   BTreeMap<String, u8>,
@@ -33,10 +36,10 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
         //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
         //because it means that Oracle spent some time waiting on wait events and not working on CPU
         if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
-            println!("Analyzing a peak in {} ({}) for ratio: [{}/{}] = {}", awr.file_name, awr.awr_doc.snap_info.begin_snap_time, cputime, dbtime, cputime/dbtime);
+            println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.awr_doc.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
             let mut events = awr.awr_doc.foreground_wait_events;
             //I'm sorting events by total wait time, to get the longest waits at the end
-            events.sort_by_key(|e| e.total_wait_time_s);
+            events.sort_by_key(|e| e.total_wait_time_s as i64);
             let l = events.len();
             //We are registering only TOP5 from each snap
             if l > 10 {
@@ -47,7 +50,7 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
             //And the same with SQLs
             let mut sqls = awr.awr_doc.sql_elapsed_time;
             sqls.sort_by_key(|s| s.elapsed_time_s as i64);
-            let l = sqls.len(); 
+            let l = sqls.len();  
 
             if l > 5 {
                 for i in 1..5 {
@@ -61,10 +64,24 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
     top
 }
 
+fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) {
+    let rows = 2;
+    let cols = vec1.len();
+
+    let mut data = Vec::new();
+    data.extend(vec1);
+    data.extend(vec2);
+    
+    let a = Array2::from_shape_vec((rows, cols), data).unwrap();
+    let crr = a.pearson_correlation().unwrap();
+    
+    println!("Correlation of \x1b[2m{}\x1b[0m and \x1b[1m{: <32}\x1b[0m : \t {:.2}", what1, what2, crr.row(0)[1]);
+}
+
 pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
-    let mut y_vals_events: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_logons: Vec<f64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
@@ -76,6 +93,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let top_stats = find_top_stats(awrs.clone(), db_time_cpu_ratio, filter_db_time);
     let top_events = top_stats.events;
     let top_sqls = top_stats.sqls;
+
+    println!("Correlations:\n-------------------------");
 
     for awr in awrs {
         let xval = format!("{} ({})", awr.awr_doc.snap_info.begin_snap_time, awr.awr_doc.snap_info.begin_snap_id);
@@ -90,7 +109,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         for (event, _) in &top_events {
             y_vals_events.entry(event.to_string()).or_insert(Vec::new());
             let mut v = y_vals_events.get_mut(event).unwrap();
-            v.push(0);
+            v.push(0.0);
         }
 
         //Than we can set the current value of the vector to the desired one, if the event is in TOP section in that snap id
@@ -132,10 +151,9 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             y_vals_cpu.push(awr.awr_doc.host_cpu.pct_user);
        }
        
-        
     }
 
-    let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime)
+    let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime.clone())
                                                     .mode(Mode::LinesMarkersText)
                                                     .name("DB Time (s/s)")
                                                     .x_axis("x1")
@@ -184,19 +202,21 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     for (evname, ev) in y_vals_events {
         let mut wait_time = 0;
         for v in &ev {
-            if *v > 0 {
-                wait_time -= *v;
+            if *v > 0.0 {
+                wait_time -= *v as i64;
             }
         }
         y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
     }
     for (key,yv) in y_vals_events_sorted {
-        let event_trace = Scatter::new(x_vals.clone(), yv)
+        let event_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesMarkers)
                                                         .name(key.1.clone())
                                                         .x_axis("x1")
                                                         .y_axis("y3");
         plot.add_trace(event_trace);
+        //We are going to show correlation of each event with DB Time
+        correlation_of("DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
     }
 
     //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
@@ -209,14 +229,16 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             }
         }
         y_vals_sqls_sorted.insert((occuriance, sqlid.clone()), yv.clone());
+        
     }
     for (key,yv) in y_vals_sqls_sorted {
-        let sql_trace = Scatter::new(x_vals.clone(), yv)
+        let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesMarkers)
                                                         .name(key.1.clone())
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
+        correlation_of("DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
     }
 
     let layout = Layout::new()
@@ -228,13 +250,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
         .hover_mode(HoverMode::XUnified);
 
-    // let layout = Layout::new()
-    //     .height(1000)
-    //     .y_axis(Axis::new().anchor("x1").domain(&[0., 0.25]))
-    //     .y_axis2(Axis::new().anchor("x1").domain(&[0.25, 0.5]))
-    //     .y_axis3(Axis::new().anchor("x1").domain(&[0.5, 0.75]))
-    //     .y_axis4(Axis::new().anchor("x1").domain(&[0.75, 1.0]))
-    //     .hover_mode(HoverMode::XUnified);
+    
 
     plot.set_layout(layout);
     
