@@ -1,7 +1,7 @@
 import oracledb
 import requests
 
-audit_id = "prdedi"
+audit_id = "prdehsfa"
 
 conn = oracledb.connect("awranalyzer/awr@localhost:1521/audits")
 cur = conn.cursor()
@@ -9,7 +9,7 @@ cur.execute("alter session set nls_date_format='DD-Mon-YY HH24:MI:SS'")
 cur.execute("alter session set NLS_NUMERIC_CHARACTERS = '.,'")
 
 
-r = requests.get("http://localhost:6751/parsedir/prdedi")
+r = requests.get("http://localhost:6751/parsedir/prdehsfa")
 
 files_json = r.json()
 for f in files_json:

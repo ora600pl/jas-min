@@ -6,7 +6,7 @@ use plotly::Plot;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::BTreeMap;
 
-use ndarray::{Array2};
+use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
  
 struct TopStats {

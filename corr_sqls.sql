@@ -49,20 +49,24 @@ select distinct sqlid, crr
 from V_TOP10_SQLS_ELA_BY_CORR
 order by crr desc;
 
-select round(count(1) over ()/730, 2), 
+select round(count(1) over ()/720, 2), 
       round(avg(ela_by_exec) over (),2),
       round(stddev(ela_by_exec) over (),2),
       max(ela_by_exec) over (),
       min(ela_by_exec) over (),
+      round(avg(executions) over (),2),
+      round(stddev(executions) over (),2),
+      max(executions) over (),
+      min(executions) over (),
        s.*
 from SQL_BY_ELA s
-where SQLID='939464520';
+where SQLID='3581428086';
 
 select count(distinct BEGIN_SNAP)
 from SQL_BY_ELA;
 
 begin
-    pkg_audit.set_context('prdedi', 4);
+    pkg_audit.set_context('prdehsfa', 4);
 end;
 /
 
@@ -89,7 +93,6 @@ select sqlid, p.TOTAL_WAIT_TIME, s.elapsed_time, s.begin_snap,
 from PERF_FORGROUND_EVENTS p, V_FILLED_SQL_BY_ELA2 s 
 where p.BEGIN_SNAP=s.BEGIN_SNAP
 and p.STATNAME in ('db file sequential read')
-and p.AUDIT_ID=sys_context('ctx_audit', 'audit_id')
 order by crr desc nulls last
 )
 select distinct sqlid, crr
