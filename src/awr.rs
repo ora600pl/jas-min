@@ -910,3 +910,11 @@ pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::
     let awr_doc: String = serde_json::to_string_pretty(&awr).unwrap();
 	Ok(awr_doc)
 }
+
+pub fn prarse_json_file(fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
+	let json_file = fs::read_to_string(&fname).expect(&format!("Something wrong with a file {} ", fname));
+	let awrs: Vec<AWRS> = serde_json::from_str(&json_file).expect("Wrong JSON format");
+	let file_and_ext = fname.split(".").collect::<Vec<&str>>();
+	let html_fname = format!("{}.html", file_and_ext[0]);
+	plot_to_file(awrs, html_fname, db_time_cpu_ratio, filter_db_time);
+}

@@ -46,6 +46,10 @@ struct Args {
 	 ///Filter only for DBTIME greater than (if zero the filter is not effective)
 	 #[clap(short, long, default_value_t=0.0)]
 	 filter_db_time: f64,
+
+	 ///Analyze provided JSON file
+	 #[clap(short, long, default_value="NO")]
+	 json_file: String,
 }
 
 
@@ -53,7 +57,7 @@ fn main() {
 
 	let args = Args::parse(); 
 
-	if args.file == "NO" && args.directory == "NO" {
+	if args.file == "NO" && args.directory == "NO" && args.json_file == "NO" {
 
 		println!("Now listening on {}", &args.server);
 
@@ -125,5 +129,7 @@ fn main() {
 		let mut f = fs::File::create(fname).unwrap();
 		f.write_all(awr_doc.as_bytes()).unwrap();
 		
+	} else if args.json_file != "NO" {
+		awr::prarse_json_file(args.json_file, args.time_cpu_ratio, args.filter_db_time);
 	}
 }
