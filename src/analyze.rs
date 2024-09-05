@@ -74,8 +74,11 @@ fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) 
     
     let a = Array2::from_shape_vec((rows, cols), data).unwrap();
     let crr = a.pearson_correlation().unwrap();
-    
-    println!("Correlation of \x1b[2m{}\x1b[0m and \x1b[1m{: <32}\x1b[0m : \t {:.2}", what1, what2, crr.row(0)[1]);
+    if crr.row(0)[1] >= 0.4 { //Correlation considered high enough to mark it
+        println!("\x1b[2m{} | {: <32} : \t {:.2}\x1b[0m", what1, what2, crr.row(0)[1]);
+    } else {
+        println!("{} | {: <32} : \t {:.2}", what1, what2, crr.row(0)[1]);
+    }
 }
 
 pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
@@ -208,6 +211,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         }
         y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
     }
+    let y_vals_events_sorted2 = y_vals_events_sorted.clone();
+
     for (key,yv) in y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesMarkers)
@@ -216,7 +221,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                         .y_axis("y3");
         plot.add_trace(event_trace);
         //We are going to show correlation of each event with DB Time
-        correlation_of("DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
+        correlation_of("Correlation of DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
     }
 
     //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
@@ -238,7 +243,10 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
-        correlation_of("DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
+        correlation_of("Correlation of DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
+        for (key,ev) in &y_vals_events_sorted2 {
+            correlation_of("\t+ ".to_string(), key.1.clone(), yv.clone(), ev.clone());
+        }
     }
 
     let layout = Layout::new()
@@ -250,11 +258,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
         .hover_mode(HoverMode::XUnified);
 
-    
-
     plot.set_layout(layout);
     
-
     plot.use_local_plotly();
     plot.write_html(fname);
     plot.show();
