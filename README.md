@@ -20,21 +20,37 @@ USAGE:
 
 OPTIONS:
 
-    -d, --directory <DIRECTORY>    Parse whole directory of files [default: NO]
+OPTIONS:
+    -d, --directory <DIRECTORY>
+            Parse whole directory of files [default: NO]
 
-    -f, --file <FILE>              Parse a single text or html file [default: NO]
+    -f, --filter-db-time <FILTER_DB_TIME>
+            Filter only for DBTIME greater than (if zero the filter is not effective) [default: 0]
 
-    -h, --help                     Print help information
+        --file <FILE>
+            Parse a single text or html file [default: NO]
 
-    -o, --outfile <OUTFILE>        Write output to nondefault file? Default is directory_name.json
+    -h, --help
+            Print help information
 
-    -p, --plot <plot>              Draw a plot? [default: false]
+    -j, --json-file <JSON_FILE>
+            Analyze provided JSON file [default: NO]
 
-    -s, --server <SERVER>          Run in server mode - you can parse files via GET/POST methods.
+    -o, --outfile <OUTFILE>
+            Write output to nondefault file? Default is directory_name.json [default: NO]
 
-                                   HTTP will listen on 6751 port by default [default: 0.0.0.0:6751]
+    -p, --plot <PLOT>
+            Draw a plot? [default: 1]
 
-    -V, --version                  Print version information
+    -s, --server <SERVER>
+            Run in server mode - you can parse files via GET/POST methods. HTTP will listen on 6751
+            port by default [default: 0.0.0.0:6751]
+
+    -t, --time-cpu-ratio <TIME_CPU_RATIO>
+            Ratio of DB CPU / DB TIME [default: 0.666]
+
+    -V, --version
+            Print version information
     
 
 If you choose to plot a chart, you will see a basic distribution of DB Time vs DB CPU, distribution TOP 5 wait events from the times, when DB CPU was less then 66.6% of DB Time plus some TOP SQLs by Elapsed Time, sorted by amount of occuriance.  
