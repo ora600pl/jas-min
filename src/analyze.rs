@@ -1,7 +1,7 @@
 use crate::awr::{AWRS, AWR, LoadProfile, HostCPU};
 use plotly::color::NamedColor;
 use plotly::Scatter;
-use plotly::common::{ColorBar, Mode, Visible};
+use plotly::common::{ColorBar, Mode, Title, Visible};
 use plotly::Plot;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::BTreeMap;
@@ -13,6 +13,7 @@ struct TopStats {
     events: BTreeMap<String, u8>,
     sqls:   BTreeMap<String, u8>,
 }
+
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
@@ -50,13 +51,10 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
             let mut sqls = awr.awr_doc.sql_elapsed_time;
             sqls.sort_by_key(|s| s.elapsed_time_s as i64);
             let l = sqls.len();  
+
             if l > 5 {
                 for i in 1..5 {
                     sql_ids.entry(sqls[l-i].sql_id.clone()).or_insert(1);
-                }
-            } else if l >= 1 && l <=5 {
-                for i in 0..l {
-                    sql_ids.entry(sqls[i].sql_id.clone()).or_insert(1);
                 }
             }
             
@@ -83,43 +81,16 @@ fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) 
     }
 }
 
-fn mean(data: Vec<f64>) -> Option<f64> {
-    let sum = data.iter().sum::<f64>() as f64;
-    let count = data.len();
-
-    match count {
-        positive if positive > 0 => Some(sum / count as f64),
-        _ => None,
-    }
-}
-
-fn std_deviation(data: Vec<f64>) -> Option<f64> {
-    match (mean(data.clone()), data.len()) {
-        (Some(data_mean), count) if count > 0 => {
-            let variance = data.iter().map(|value| {
-                let diff = data_mean - (*value as f64);
-
-                diff * diff
-            }).sum::<f64>() / count as f64;
-
-            Some(variance.sqrt())
-        },
-        _ => None
-    }
-}
-
-
 pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut y_vals_sqls_exec_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut y_vals_sqls_exec_n: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_logons: Vec<f64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
-    let mut y_vals_cpu: Vec<f64> = Vec::new();
+    let mut y_vals_cpu_user: Vec<f64> = Vec::new();
+    let mut y_vals_cpu_load: Vec<f64> = Vec::new();
 
     let mut x_vals: Vec<String> = Vec::new();
 
@@ -136,14 +107,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         //We have to fill the whole data traces for wait events and SQLs with 0 to be sure that chart won't be moved to one side
         for (sql, _) in &top_sqls {
             y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
-            y_vals_sqls_exec_t.entry(sql.to_string()).or_insert(Vec::new());
-            y_vals_sqls_exec_n.entry(sql.to_string()).or_insert(Vec::new());
             let mut v = y_vals_sqls.get_mut(sql).unwrap();
             v.push(0.0);
-            // let mut v = y_vals_sqls_exec_t.get_mut(sql).unwrap();
-            // v.push(0.0);
-            // let mut v = y_vals_sqls_exec_n.get_mut(sql).unwrap();
-            // v.push(0.0);
         } 
         for (event, _) in &top_events {
             y_vals_events.entry(event.to_string()).or_insert(Vec::new());
@@ -163,10 +128,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             if top_sqls.contains_key(&sqls.sql_id) {
                 let mut v = y_vals_sqls.get_mut(&sqls.sql_id).unwrap();
                 v[x_vals.len()-1] = sqls.elapsed_time_s;
-                let mut v = y_vals_sqls_exec_t.get_mut(&sqls.sql_id).unwrap();
-                v.push(sqls.elpased_time_exec_s);
-                let mut v = y_vals_sqls_exec_n.get_mut(&sqls.sql_id).unwrap();
-                v.push(sqls.executions as f64); 
             }
        }
        let mut is_statspack: bool = false;
@@ -189,10 +150,11 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
        }
 
        if awr.awr_doc.host_cpu.pct_user < 0.0 {
-            y_vals_cpu.push(0.0);
+            y_vals_cpu_user.push(0.0);
        } else {
-            y_vals_cpu.push(awr.awr_doc.host_cpu.pct_user);
+            y_vals_cpu_user.push(awr.awr_doc.host_cpu.pct_user);
        }
+       y_vals_cpu_load.push(100.0-awr.awr_doc.host_cpu.pct_idle);
        
     }
 
@@ -226,9 +188,15 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                     .x_axis("x1")
                                                     .y_axis("y2");
 
-    let cpu_trace = Scatter::new(x_vals.clone(), y_vals_cpu)
+    let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
                                                     .mode(Mode::LinesMarkersText)
-                                                    .name("User CPU")
+                                                    .name("CPU User")
+                                                    .x_axis("x1")
+                                                    .y_axis("y4");
+    
+    let cpu_load = Scatter::new(x_vals.clone(), y_vals_cpu_load)
+                                                    .mode(Mode::LinesMarkersText)
+                                                    .name("CPU Load")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
 
@@ -238,7 +206,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     plot.add_trace(calls_trace);
     plot.add_trace(logons_trace);
     plot.add_trace(exec_trace);
-    plot.add_trace(cpu_trace);
+    plot.add_trace(cpu_user);
+    plot.add_trace(cpu_load);
 
     //I want to stort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
@@ -284,20 +253,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                         .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
         correlation_of("Correlation of DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
-        
-        /* Calculate STDDEV and AVG for sqls executions number */
-        let x = y_vals_sqls_exec_n.get(&key.1.clone()).unwrap().clone();
-        let avg_exec_n = mean(x.clone()).unwrap();
-        let stddev_exec_n = std_deviation(x).unwrap();
-
-        /* Calculate STDDEV and AVG for sqls time per execution */
-        let x = y_vals_sqls_exec_t.get(&key.1.clone()).unwrap().clone();
-        let avg_exec_t = mean(x.clone()).unwrap();
-        let stddev_exec_t = std_deviation(x).unwrap();
-
-        println!("\t\t --- AVG Ela by Exec: {:.2} \tSTDDEV Ela by Exec: {:.2}", avg_exec_t, stddev_exec_t);
-        println!("\t\t --- AVG exec times:  {:.2} \tSTDDEV exec times:  {:.2}", avg_exec_n, stddev_exec_n);
-        
         for (key,ev) in &y_vals_events_sorted2 {
             correlation_of("\t+ ".to_string(), key.1.clone(), yv.clone(), ev.clone());
         }
@@ -305,15 +260,35 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
 
     let layout = Layout::new()
         .height(1000)
-        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.2]))
-        .y_axis2(Axis::new().anchor("x1").domain(&[0.2, 0.4]))
-        .y_axis3(Axis::new().anchor("x1").domain(&[0.4, 0.6]))
-        .y_axis4(Axis::new().anchor("x1").domain(&[0.6, 0.8]))
-        .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
-        .hover_mode(HoverMode::XUnified);
-
+        .y_axis(Axis::new()
+            .anchor("x1")
+            .domain(&[0., 0.2])
+            .title(Title::new("(s/s)"))
+        )
+        .y_axis2(Axis::new()
+            .anchor("x1")
+            .domain(&[0.2, 0.4])
+            .title(Title::new("#"))
+        )
+        .y_axis3(Axis::new()
+            .anchor("x1")
+            .domain(&[0.4, 0.6])
+            .title(Title::new("Wait Events (s)"))
+        )
+        .y_axis4(Axis::new()
+            .anchor("x1")
+            .domain(&[0.6, 0.8])
+            .range(vec![0., 100.])
+            .title(Title::new("CPU Util (%)"))
+        )
+        .y_axis5(Axis::new()
+            .anchor("x1")
+            .domain(&[0.8, 1.0])
+            .title(Title::new("SQL Elapsed Time"))
+            .visible(false) // This axis is not visible by default
+        )
+        .hover_mode(HoverMode::X);
     plot.set_layout(layout);
-    
     plot.use_local_plotly();
     plot.write_html(fname);
     plot.show();
