@@ -48,7 +48,7 @@ pub struct HostCPU {
 	pub pct_user: f64,
 	pct_system: f64,
 	pct_wio: f64,
-	pct_idle: f64,
+	pub pct_idle: f64,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -73,8 +73,8 @@ pub struct ForegroundWaitEvents {
 pub struct SQLElapsedTime {
 	pub sql_id: String,
 	pub elapsed_time_s: f64,
-	pub executions: u64,
-	pub elpased_time_exec_s: f64,
+	executions: u64,
+	elpased_time_exec_s: f64,
 	pct_total: f64,
 	pct_cpu: f64, 
 	pct_io: f64,
