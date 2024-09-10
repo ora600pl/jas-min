@@ -121,6 +121,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut y_vals_execs: Vec<f64> = Vec::new();
     let mut y_vals_cpu_user: Vec<f64> = Vec::new();
     let mut y_vals_cpu_load: Vec<f64> = Vec::new();
+    let mut y_vals_redo_switches: Vec<f64> = Vec::new();
 
     let mut x_vals: Vec<String> = Vec::new();
 
@@ -196,6 +197,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
        }
        y_vals_cpu_load.push(100.0-awr.awr_doc.host_cpu.pct_idle);
        
+       y_vals_redo_switches.push(awr.awr_doc.redo_log.per_hour);
     }
 
     let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime.clone())
@@ -240,6 +242,12 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                     .x_axis("x1")
                                                     .y_axis("y4");
 
+    let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
+                                                    .mode(Mode::LinesMarkersText)
+                                                    .name("Log Switches")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");    
+
     let mut plot = Plot::new();
     plot.add_trace(dbtime_trace);
     plot.add_trace(dbcpu_trace);
@@ -248,6 +256,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     plot.add_trace(exec_trace);
     plot.add_trace(cpu_user);
     plot.add_trace(cpu_load);
+    plot.add_trace(redo_switches);
 
     //I want to stort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
