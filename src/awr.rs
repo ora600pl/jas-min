@@ -121,8 +121,8 @@ pub struct SnapInfo {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct KeyInstanceStats {
-	statname: String,
-	total: u64,
+	pub statname: String,
+	pub total: u64,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -138,7 +138,7 @@ pub struct AWR {
 	pub sql_elapsed_time: Vec<SQLElapsedTime>,
 	sql_cpu_time: Vec<SQLCPUTime>,
 	sql_io_time: Vec<SQLIOTime>,
-	key_instance_stats: Vec<KeyInstanceStats>,
+	pub key_instance_stats: Vec<KeyInstanceStats>,
 	pub snap_info: SnapInfo,
 } 
 
