@@ -549,6 +549,27 @@ fn host_cpu_txt(lines: Vec<&str>) -> HostCPU {
     host_cpu
 }
 
+fn redo_log_switches(table: ElementRef) -> RedoLog {
+	let mut redo_switches = RedoLog::default();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+            let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+			if columns.len() == 3 {
+				let stat_name = columns[0].text().collect::<Vec<_>>();
+				let stat_name = stat_name[0].trim();
+				if stat_name.starts_with("log switches (derived)") {
+					let per_hour = columns[1].text().collect::<Vec<_>>();
+					let per_hour = f64::from_str(&per_hour[0].trim().replace(",","")).unwrap_or(0.0);
+					redo_switches.stat_name = stat_name.to_string();
+					redo_switches.per_hour = per_hour;
+				}	
+			}
+	}
+	redo_switches
+}
+
 fn redo_log_switches_txt(line: &str) -> RedoLog {
     // Example: "log switches (derived)                            37     37.00"
     let mut redo_switches = RedoLog::default();
@@ -804,6 +825,8 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 				awr.snap_info = snap_info(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays Key Instance activity statistics. For each instance, activity total, activity per second, and activity per transaction are displayed" {
 				awr.key_instance_stats = instance_activity_stats(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays thread activity stats in the instance. For each activity , total number of activity and activity per hour are displayed" {
+				awr.redo_log = redo_log_switches(element);
 			}
 		}
 	} else if fname.ends_with("txt") {
