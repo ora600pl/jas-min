@@ -560,7 +560,7 @@ fn redo_log_switches(table: ElementRef) -> RedoLog {
 				let stat_name = columns[0].text().collect::<Vec<_>>();
 				let stat_name = stat_name[0].trim();
 				if stat_name.starts_with("log switches (derived)") {
-					let per_hour = columns[1].text().collect::<Vec<_>>();
+					let per_hour = columns[2].text().collect::<Vec<_>>();
 					let per_hour = f64::from_str(&per_hour[0].trim().replace(",","")).unwrap_or(0.0);
 					redo_switches.stat_name = stat_name.to_string();
 					redo_switches.per_hour = per_hour;
