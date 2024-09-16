@@ -1,7 +1,7 @@
 use crate::awr::{AWRS, AWR, LoadProfile, HostCPU};
 use plotly::color::NamedColor;
 use plotly::Scatter;
-use plotly::common::{ColorBar, Mode, Visible};
+use plotly::common::{ColorBar, Mode, Title, Visible};
 use plotly::Plot;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::BTreeMap;
@@ -119,14 +119,18 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut y_vals_logons: Vec<f64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
-    let mut y_vals_cpu: Vec<f64> = Vec::new();
+    let mut y_vals_cpu_user: Vec<f64> = Vec::new();
+    let mut y_vals_cpu_load: Vec<f64> = Vec::new();
+    let mut y_vals_redo_switches: Vec<f64> = Vec::new();
+    let mut y_excessive_commits: Vec<f64> = Vec::new();
 
     let mut x_vals: Vec<String> = Vec::new();
 
     let top_stats = find_top_stats(awrs.clone(), db_time_cpu_ratio, filter_db_time);
     let top_events = top_stats.events;
     let top_sqls = top_stats.sqls;
-
+    let mut is_excessive_commits: bool = false;
+    
     println!("Correlations:\n-------------------------");
 
     for awr in awrs {
@@ -146,6 +150,9 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             // v.push(0.0);
         } 
         for (event, _) in &top_events {
+            if event.to_string() == "log file sync"{
+                is_excessive_commits = true;
+            }
             y_vals_events.entry(event.to_string()).or_insert(Vec::new());
             let mut v = y_vals_events.get_mut(event).unwrap();
             v.push(0.0);
@@ -167,10 +174,10 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                 v.push(sqls.elpased_time_exec_s);
                 let mut v = y_vals_sqls_exec_n.get_mut(&sqls.sql_id).unwrap();
                 v.push(sqls.executions as f64); 
-            }
+             }
        }
        let mut is_statspack: bool = false;
-       //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
+        //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
        for lp in awr.awr_doc.load_profile {
             if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
                 y_vals_dbtime.push(lp.per_second);
@@ -187,14 +194,41 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                 y_vals_execs.push(lp.per_second);
             }
        }
-
+        // ----- Host CPU
        if awr.awr_doc.host_cpu.pct_user < 0.0 {
-            y_vals_cpu.push(0.0);
+            y_vals_cpu_user.push(0.0);
        } else {
-            y_vals_cpu.push(awr.awr_doc.host_cpu.pct_user);
+            y_vals_cpu_user.push(awr.awr_doc.host_cpu.pct_user);
        }
+       y_vals_cpu_load.push(100.0-awr.awr_doc.host_cpu.pct_idle);
        
+       // ----- Excessive Commits - plot if 'log file sync' is in top events
+       if is_excessive_commits{
+            // ----- Additionally plot Redo Log Switches
+            y_vals_redo_switches.push(awr.awr_doc.redo_log.per_hour);
+            
+            let mut calls: u64 = 0;
+            let mut commits: u64 = 0;
+            let mut rollbacks: u64 = 0;
+            for activity in awr.awr_doc.key_instance_stats{
+                    if activity.statname == "user calls" {
+                        calls = activity.total;
+                    } else if activity.statname == "user commits" {
+                        commits = activity.total;
+                    } else if activity.statname == "user rollbacks" {
+                        rollbacks = activity.total;
+                    }
+            }
+            let excessive_commit = if commits + rollbacks > 0 {
+                    (calls as f64) / ((commits + rollbacks) as f64)
+                    } else {
+                        0.0
+                };
+                y_excessive_commits.push(excessive_commit);
+        }
     }
+
+    let mut plot = Plot::new();
 
     let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime.clone())
                                                     .mode(Mode::LinesMarkersText)
@@ -226,19 +260,40 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                     .x_axis("x1")
                                                     .y_axis("y2");
 
-    let cpu_trace = Scatter::new(x_vals.clone(), y_vals_cpu)
+    let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
                                                     .mode(Mode::LinesMarkersText)
-                                                    .name("User CPU")
+                                                    .name("CPU User")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
+    
+    let cpu_load = Scatter::new(x_vals.clone(), y_vals_cpu_load)
+                                                    .mode(Mode::LinesMarkersText)
+                                                    .name("CPU Load")
+                                                    .x_axis("x1")
+                                                    .y_axis("y4");
+    if is_excessive_commits{
+        let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
+                                                        .mode(Mode::LinesMarkersText)
+                                                        .name("Log Switches")
+                                                        .x_axis("x1")
+                                                        .y_axis("y2");
+        let excessive_commits = Scatter::new(x_vals.clone(), y_excessive_commits)
+                                                        .mode(Mode::LinesMarkersText)
+                                                        .name("Excessive Commits")
+                                                        .x_axis("x1")
+                                                        .y_axis("y2");
+        plot.add_trace(redo_switches);
+        plot.add_trace(excessive_commits);
+    }
 
-    let mut plot = Plot::new();
+    
     plot.add_trace(dbtime_trace);
     plot.add_trace(dbcpu_trace);
     plot.add_trace(calls_trace);
     plot.add_trace(logons_trace);
     plot.add_trace(exec_trace);
-    plot.add_trace(cpu_trace);
+    plot.add_trace(cpu_user);
+    plot.add_trace(cpu_load);
 
     //I want to stort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
@@ -305,15 +360,36 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
 
     let layout = Layout::new()
         .height(1000)
-        .y_axis(Axis::new().anchor("x1").domain(&[0., 0.2]))
-        .y_axis2(Axis::new().anchor("x1").domain(&[0.2, 0.4]))
-        .y_axis3(Axis::new().anchor("x1").domain(&[0.4, 0.6]))
-        .y_axis4(Axis::new().anchor("x1").domain(&[0.6, 0.8]))
-        .y_axis5(Axis::new().anchor("x1").domain(&[0.8, 1.0]))
-        .hover_mode(HoverMode::XUnified);
-
+        .y_axis(Axis::new()
+            .anchor("x1")
+            .domain(&[0., 0.2])
+            .title(Title::new("(s/s)"))
+        )
+        .y_axis2(Axis::new()
+            .anchor("x1")
+            .domain(&[0.2, 0.4])
+            .range(vec![0.,])
+            .title(Title::new("#"))
+        )
+        .y_axis3(Axis::new()
+            .anchor("x1")
+            .domain(&[0.4, 0.6])
+            .title(Title::new("Wait Events (s)"))
+        )
+        .y_axis4(Axis::new()
+            .anchor("x1")
+            .domain(&[0.6, 0.8])
+            .range(vec![0.,])
+            .title(Title::new("CPU Util (%)"))
+        )
+        .y_axis5(Axis::new()
+            .anchor("x1")
+            .domain(&[0.8, 1.0])
+            .title(Title::new("SQL Elapsed Time"))
+            .visible(true)
+        )
+        .hover_mode(HoverMode::X);
     plot.set_layout(layout);
-    
     plot.use_local_plotly();
     plot.write_html(fname);
     plot.show();
