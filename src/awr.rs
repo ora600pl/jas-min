@@ -549,7 +549,7 @@ fn host_cpu_txt(lines: Vec<&str>) -> HostCPU {
     host_cpu
 }
 
-fn redo_log_switches(line: &str) -> RedoLog {
+fn redo_log_switches_txt(line: &str) -> RedoLog {
     // Example: "log switches (derived)                            37     37.00"
     let mut redo_switches = RedoLog::default();
 	let parts: Vec<&str> = line.split_whitespace().collect();
@@ -827,7 +827,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 
 		// Search for the line containing "log switches (derived)"
         if let Some(line) = awr_lines.iter().find(|&&line| line.contains("log switches (derived)")) {
-            awr.redo_log = redo_log_switches(line);
+            awr.redo_log = redo_log_switches_txt(line);
         }
 		
 		let load_profile_index = find_section_boundries(awr_lines.clone(), "Load Profile", "Instance Efficiency");
