@@ -19,6 +19,12 @@ pub struct LoadProfile {
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct RedoLog {
+	pub stat_name: String,
+	pub per_hour: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct DBInstance {
 	db_name: String,
 	db_id: u64,
@@ -48,7 +54,7 @@ pub struct HostCPU {
 	pub pct_user: f64,
 	pct_system: f64,
 	pct_wio: f64,
-	pct_idle: f64,
+	pub pct_idle: f64,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -115,14 +121,15 @@ pub struct SnapInfo {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct KeyInstanceStats {
-	statname: String,
-	total: u64,
+	pub statname: String,
+	pub total: u64,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct AWR {
 	status: String,
 	pub load_profile: Vec<LoadProfile>,
+	pub redo_log: RedoLog,
 	db_instance_information: DBInstance,
 	wait_classes: Vec<WaitClasses>,
 	pub host_cpu: HostCPU,
@@ -131,7 +138,7 @@ pub struct AWR {
 	pub sql_elapsed_time: Vec<SQLElapsedTime>,
 	sql_cpu_time: Vec<SQLCPUTime>,
 	sql_io_time: Vec<SQLIOTime>,
-	key_instance_stats: Vec<KeyInstanceStats>,
+	pub key_instance_stats: Vec<KeyInstanceStats>,
 	pub snap_info: SnapInfo,
 } 
 
@@ -541,6 +548,17 @@ fn host_cpu_txt(lines: Vec<&str>) -> HostCPU {
 
     host_cpu
 }
+
+fn redo_log_switches_txt(line: &str) -> RedoLog {
+    // Example: "log switches (derived)                            37     37.00"
+    let mut redo_switches = RedoLog::default();
+	let parts: Vec<&str> = line.split_whitespace().collect();
+
+    // Assuming the first part is the stat name and the last part is the value
+    redo_switches.stat_name = parts[0..3].join(" ");  // Joining the first 3 parts as the stat name
+    redo_switches.per_hour = parts.last().unwrap().parse::<f64>().unwrap_or(0.0);  // Parsing the last part as the value
+	redo_switches
+}
  
 fn instance_activity_stats_txt(inst_stats_section: Vec<&str>) -> Vec<KeyInstanceStats> {
 	let mut ias: Vec<KeyInstanceStats> = Vec::new();
@@ -807,6 +825,11 @@ fn parse_awr_report_internal(fname: String) -> AWR {
     		awr.host_cpu = host_cpu_txt(host_cpu_lines);
 		}
 
+		// Search for the line containing "log switches (derived)"
+        if let Some(line) = awr_lines.iter().find(|&&line| line.contains("log switches (derived)")) {
+            awr.redo_log = redo_log_switches_txt(line);
+        }
+		
 		let load_profile_index = find_section_boundries(awr_lines.clone(), "Load Profile", "Instance Efficiency");
 		let mut load_profile_lines: Vec<&str> = Vec::new();
 		load_profile_lines.extend_from_slice(&awr_lines[load_profile_index.begin+2..load_profile_index.end]);
