@@ -114,8 +114,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut y_vals_sqls_exec_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut y_vals_sqls_exec_n: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_logons: Vec<f64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
@@ -123,6 +121,14 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut y_vals_cpu_load: Vec<f64> = Vec::new();
     let mut y_vals_redo_switches: Vec<f64> = Vec::new();
     let mut y_excessive_commits: Vec<f64> = Vec::new();
+
+    /*Variables used for statistics computations*/
+    let mut y_vals_events_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
+    let mut y_vals_events_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut y_vals_events_s: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut y_vals_sqls_exec_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut y_vals_sqls_exec_n: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    /********************************************/
 
     let mut x_vals: Vec<String> = Vec::new();
 
@@ -144,16 +150,15 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             y_vals_sqls_exec_n.entry(sql.to_string()).or_insert(Vec::new());
             let mut v = y_vals_sqls.get_mut(sql).unwrap();
             v.push(0.0);
-            // let mut v = y_vals_sqls_exec_t.get_mut(sql).unwrap();
-            // v.push(0.0);
-            // let mut v = y_vals_sqls_exec_n.get_mut(sql).unwrap();
-            // v.push(0.0);
         } 
         for (event, _) in &top_events {
             if event.to_string() == "log file sync"{
                 is_excessive_commits = true;
             }
             y_vals_events.entry(event.to_string()).or_insert(Vec::new());
+            y_vals_events_n.entry(event.to_string()).or_insert(Vec::new());
+            y_vals_events_t.entry(event.to_string()).or_insert(Vec::new());
+            y_vals_events_s.entry(event.to_string()).or_insert(Vec::new());
             let mut v = y_vals_events.get_mut(event).unwrap();
             v.push(0.0);
         }
@@ -163,6 +168,12 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             if top_events.contains_key(&event.event) {
                 let mut v = y_vals_events.get_mut(&event.event).unwrap();
                 v[x_vals.len()-1] = event.total_wait_time_s;
+                let mut v = y_vals_events_n.get_mut(&event.event).unwrap();
+                v.push(event.waits as f64);
+                let mut v = y_vals_events_t.get_mut(&event.event).unwrap();
+                v.push(event.pct_dbtime);
+                let mut v = y_vals_events_s.get_mut(&event.event).unwrap();
+                v.push(event.total_wait_time_s);
             }
        }
        //Same with SQLs
@@ -317,6 +328,27 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         plot.add_trace(event_trace);
         //We are going to show correlation of each event with DB Time
         correlation_of("Correlation of DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
+    
+        /* Calculate STDDEV and AVG for wait event executions number */
+        let x = y_vals_events_n.get(&key.1.clone()).unwrap().clone();
+        let avg_exec_n = mean(x.clone()).unwrap();
+        let stddev_exec_n = std_deviation(x).unwrap();
+
+        /* Calculate STDDEV and AVG for wait event PCT of DB Time */
+        let x = y_vals_events_t.get(&key.1.clone()).unwrap().clone();
+        let avg_exec_t = mean(x.clone()).unwrap();
+        let stddev_exec_t = std_deviation(x).unwrap();
+
+        /* Calculate STDDEV and AVG for wait event cumulative wait time (s) */
+        let x = y_vals_events_s.get(&key.1.clone()).unwrap().clone();
+        let avg_exec_s = mean(x.clone()).unwrap();
+        let stddev_exec_s = std_deviation(x).unwrap();
+
+        println!("\t\t --- AVG PCT of DB Time: {: <16.2} \tSTDDEV PCT of DB Time: {:.2}", avg_exec_t, stddev_exec_t);
+        println!("\t\t --- AVG Wait Time (s):  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}", avg_exec_s, stddev_exec_s);
+        println!("\t\t --- AVG exec times:     {: <16.2} \tSTDDEV exec times:     {:.2}", avg_exec_n, stddev_exec_n);
+        println!("\t\t --- AVG wait/exec (ms): {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", (avg_exec_s/avg_exec_n)*1000.0, (stddev_exec_s/stddev_exec_n)*1000.0);
+
     }
 
     //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys

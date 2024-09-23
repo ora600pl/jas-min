@@ -11,6 +11,7 @@ use clap::Parser;
 mod awr;
 mod ostask;
 mod analyze;
+mod idleevents;
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
