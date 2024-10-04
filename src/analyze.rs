@@ -121,6 +121,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut y_vals_cpu_load: Vec<f64> = Vec::new();
     let mut y_vals_redo_switches: Vec<f64> = Vec::new();
     let mut y_excessive_commits: Vec<f64> = Vec::new();
+    let mut y_cleanout_ktugct: Vec<f64> = Vec::new();
+    let mut y_cleanout_cr: Vec<f64> = Vec::new();
 
     /*Variables used for statistics computations*/
     let mut y_vals_events_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
@@ -221,6 +223,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             let mut calls: u64 = 0;
             let mut commits: u64 = 0;
             let mut rollbacks: u64 = 0;
+            let mut cleanout_ktugct: u64 = 0;
+            let mut cleanout_cr: u64 = 0;
             for activity in awr.awr_doc.key_instance_stats{
                     if activity.statname == "user calls" {
                         calls = activity.total;
@@ -228,6 +232,10 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                         commits = activity.total;
                     } else if activity.statname == "user rollbacks" {
                         rollbacks = activity.total;
+                    } else if activity.statname == "cleanout - number of ktugct calls" {
+                        cleanout_ktugct = activity.total;
+                    } else if activity.statname == "cleanouts only - consistent read" {
+                        cleanout_cr = activity.total;
                     }
             }
             let excessive_commit = if commits + rollbacks > 0 {
@@ -235,7 +243,9 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                     } else {
                         0.0
                 };
-                y_excessive_commits.push(excessive_commit);
+            y_excessive_commits.push(excessive_commit);
+            y_cleanout_ktugct.push(cleanout_ktugct as f64);
+            y_cleanout_cr.push(cleanout_cr as f64);
         }
     }
 
@@ -293,8 +303,20 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                         .name("Excessive Commits")
                                                         .x_axis("x1")
                                                         .y_axis("y2");
+        let cleanout_ktugct_calls = Scatter::new(x_vals.clone(), y_cleanout_ktugct)
+                                                        .mode(Mode::LinesMarkersText)
+                                                        .name("cleanout - number of ktugct calls")
+                                                        .x_axis("x1")
+                                                        .y_axis("y2");
+        let cleanout_cr_only = Scatter::new(x_vals.clone(), y_cleanout_cr)
+                                                        .mode(Mode::LinesMarkersText)
+                                                        .name("cleanouts only - consistent read")
+                                                        .x_axis("x1")
+                                                        .y_axis("y2");
         plot.add_trace(redo_switches);
         plot.add_trace(excessive_commits);
+        plot.add_trace(cleanout_cr_only);
+        plot.add_trace(cleanout_ktugct_calls);
     }
 
     
