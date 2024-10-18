@@ -252,64 +252,64 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut plot = Plot::new();
 
     let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime.clone())
-                                                    .mode(Mode::LinesMarkersText)
+                                                    .mode(Mode::LinesText)
                                                     .name("DB Time (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
 
     let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu)
-                                                    .mode(Mode::LinesMarkersText)
+                                                    .mode(Mode::LinesText)
                                                     .name("DB CPU (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
 
     let calls_trace = Scatter::new(x_vals.clone(), y_vals_calls)
-                                                    .mode(Mode::LinesMarkersText)
+                                                    .mode(Mode::LinesText)
                                                     .name("User Calls")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
 
     let logons_trace = Scatter::new(x_vals.clone(), y_vals_logons)
-                                                    .mode(Mode::LinesMarkersText)
+                                                    .mode(Mode::LinesText)
                                                     .name("Logons")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
 
     let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs)
-                                                    .mode(Mode::LinesMarkersText)
+                                                    .mode(Mode::LinesText)
                                                     .name("Executes")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
 
     let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
-                                                    .mode(Mode::LinesMarkersText)
+                                                    .mode(Mode::LinesText)
                                                     .name("CPU User")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
     
     let cpu_load = Scatter::new(x_vals.clone(), y_vals_cpu_load)
-                                                    .mode(Mode::LinesMarkersText)
+                                                    .mode(Mode::LinesText)
                                                     .name("CPU Load")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
     if is_excessive_commits{
         let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
-                                                        .mode(Mode::LinesMarkersText)
+                                                        .mode(Mode::LinesText)
                                                         .name("Log Switches")
                                                         .x_axis("x1")
                                                         .y_axis("y2");
         let excessive_commits = Scatter::new(x_vals.clone(), y_excessive_commits)
-                                                        .mode(Mode::LinesMarkersText)
+                                                        .mode(Mode::LinesText)
                                                         .name("Excessive Commits")
                                                         .x_axis("x1")
                                                         .y_axis("y2");
         let cleanout_ktugct_calls = Scatter::new(x_vals.clone(), y_cleanout_ktugct)
-                                                        .mode(Mode::LinesMarkersText)
+                                                        .mode(Mode::LinesText)
                                                         .name("cleanout - number of ktugct calls")
                                                         .x_axis("x1")
                                                         .y_axis("y2");
         let cleanout_cr_only = Scatter::new(x_vals.clone(), y_cleanout_cr)
-                                                        .mode(Mode::LinesMarkersText)
+                                                        .mode(Mode::LinesText)
                                                         .name("cleanouts only - consistent read")
                                                         .x_axis("x1")
                                                         .y_axis("y2");
@@ -343,10 +343,10 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
 
     for (key,yv) in y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
-                                                        .mode(Mode::LinesMarkers)
+                                                        .mode(Mode::LinesText)
                                                         .name(key.1.clone())
                                                         .x_axis("x1")
-                                                        .y_axis("y3");
+                                                        .y_axis("y3").visible(Visible::LegendOnly);
         plot.add_trace(event_trace);
         //We are going to show correlation of each event with DB Time
         correlation_of("Correlation of DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
@@ -387,7 +387,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     }
     for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
-                                                        .mode(Mode::LinesMarkers)
+                                                        .mode(Mode::LinesText)
                                                         .name(key.1.clone())
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
