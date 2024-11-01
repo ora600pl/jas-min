@@ -77,9 +77,9 @@ fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) 
     let a = Array2::from_shape_vec((rows, cols), data).unwrap();
     let crr = a.pearson_correlation().unwrap();
     if crr.row(0)[1] >= 0.4 { //Correlation considered high enough to mark it
-        println!("\x1b[2m{} | {: <32} : \t {:.2}\x1b[0m", what1, what2, crr.row(0)[1]);
+        println!("\x1b[2m{: >32} | {: <32} : {:.2}\x1b[0m", what1, what2, crr.row(0)[1]);
     } else {
-        println!("{} | {: <32} : \t {:.2}", what1, what2, crr.row(0)[1]);
+        println!("{: >32} | {: <32} : {:.2}", what1, what2, crr.row(0)[1]);
     }
 }
 
@@ -392,7 +392,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
-        correlation_of("Correlation of DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
+        correlation_of("\n\tCorrelation of DB Time\t".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
         
         /* Calculate STDDEV and AVG for sqls executions number */
         let x = y_vals_sqls_exec_n.get(&key.1.clone()).unwrap().clone();
@@ -408,7 +408,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         println!("\t\t --- AVG exec times:  {:.2} \tSTDDEV exec times:  {:.2}", avg_exec_n, stddev_exec_n);
         
         for (key,ev) in &y_vals_events_sorted2 {
-            correlation_of("\t+ ".to_string(), key.1.clone(), yv.clone(), ev.clone());
+            correlation_of("+".to_string(), key.1.clone(), yv.clone(), ev.clone());
         }
     }
 
