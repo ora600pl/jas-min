@@ -270,7 +270,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             // ----- Excessive Commits - plot if 'log file sync' is in top events
             if is_excessive_commits {
                
-
                 let mut calls: u64 = 0;
                 let mut commits: u64 = 0;
                 let mut rollbacks: u64 = 0;
