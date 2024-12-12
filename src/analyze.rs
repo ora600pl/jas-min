@@ -4,7 +4,7 @@ use plotly::Scatter;
 use plotly::common::{ColorBar, Mode, Title, Visible};
 use plotly::Plot;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
@@ -12,6 +12,7 @@ use ndarray_stats::CorrelationExt;
 struct TopStats {
     events: BTreeMap<String, u8>,
     sqls:   BTreeMap<String, u8>,
+    stat_names: BTreeMap<String, u8>,
 }
 
 //We don't want to plot everything, because it would cause to much trouble 
@@ -19,6 +20,7 @@ struct TopStats {
 fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, u8> = BTreeMap::new();
+    let mut stat_names: BTreeMap<String, u8> = BTreeMap::new();
     //so we scan the AWR data
     for awr in awrs {
         let mut dbtime: f64 = 0.0;
@@ -59,14 +61,17 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
                     sql_ids.entry(sqls[i].sql_id.clone()).or_insert(1);
                 }
             }
-            
+            for stats in awr.awr_doc.key_instance_stats {
+                stat_names.entry(stats.statname.clone()).or_insert(1);
+            }
         }
     }
-    let top = TopStats {events: event_names, sqls: sql_ids,};
+    let top = TopStats {events: event_names, sqls: sql_ids, stat_names: stat_names,};
     top
 }
 
-fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) {
+//Calculate pearson correlation of 2 vectors and return simple result
+fn pearson_correlation_2v(vec1: &Vec<f64>, vec2: &Vec<f64>) -> f64 {
     let rows = 2;
     let cols = vec1.len();
 
@@ -74,12 +79,19 @@ fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) 
     data.extend(vec1);
     data.extend(vec2);
     
-    let a = Array2::from_shape_vec((rows, cols), data).unwrap();
+    let a: ndarray::ArrayBase<ndarray::OwnedRepr<f64>, ndarray::Dim<[usize; 2]>> = Array2::from_shape_vec((rows, cols), data).unwrap();
     let crr = a.pearson_correlation().unwrap();
-    if crr.row(0)[1] >= 0.4 { //Correlation considered high enough to mark it
-        println!("\x1b[2m{: >32} | {: <32} : {:.2}\x1b[0m", what1, what2, crr.row(0)[1]);
+
+    crr.row(0)[1]
+}
+
+fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) {
+    
+    let crr = pearson_correlation_2v(&vec1, &vec2);
+    if crr >= 0.4 || crr <= - 0.4 { //Correlation considered high enough to mark it
+        println!("\x1b[2m{: >32} | {: <32} : {:.2}\x1b[0m", what1, what2, crr);
     } else {
-        println!("{: >32} | {: <32} : {:.2}", what1, what2, crr.row(0)[1]);
+        println!("{: >32} | {: <32} : {:.2}", what1, what2, crr);
     }
 }
 
@@ -108,6 +120,27 @@ fn std_deviation(data: Vec<f64>) -> Option<f64> {
     }
 }
 
+fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_vec: Vec<f64>) {
+    println!("\n");
+    println!("-----------------------------------------------------------------------------------");
+    println!("Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n");
+
+    let mut sorted_correlation: BTreeMap<(i64, String), f64> = BTreeMap::new();
+
+    for (k,v) in instance_stats {
+        if v.len() == dbtime_vec.len() {
+            let crr = pearson_correlation_2v(&v, &dbtime_vec);
+            if crr >= 0.5 || crr <= -0.5 {
+                sorted_correlation.insert(((crr * 1000.0) as i64 , k.clone()), crr);
+            }
+        } else {
+            println!("Can't calculate correlation for {} - diff was {}", &k, dbtime_vec.len() - v.len());
+        }
+    }
+    for (k,v) in sorted_correlation {
+        println!("\t{: >64} : {:.2}", &k.1, v);
+    }
+}
 
 pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
@@ -132,11 +165,16 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut y_vals_sqls_exec_n: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     /********************************************/
 
+    /*HashMap for calculating instance stats correlation*/
+    let mut instance_stats: HashMap<String, Vec<f64>> = HashMap::new();
+    /****************************************************/
+
     let mut x_vals: Vec<String> = Vec::new();
 
     let top_stats = find_top_stats(awrs.clone(), db_time_cpu_ratio, filter_db_time);
     let top_events = top_stats.events;
     let top_sqls = top_stats.sqls;
+    let all_stats = top_stats.stat_names;
     let mut is_excessive_commits: bool = false;
     
     println!("Correlations:\n-------------------------");
@@ -145,7 +183,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         let xval = format!("{} ({})", awr.awr_doc.snap_info.begin_snap_time, awr.awr_doc.snap_info.begin_snap_id);
         x_vals.push(xval.clone());
 
-        //We have to fill the whole data traces for wait events and SQLs with 0 to be sure that chart won't be moved to one side
+        //We have to fill the whole data traces for stats, wait events and SQLs with 0 to be sure that chart won't be moved to one side
         for (sql, _) in &top_sqls {
             y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
             y_vals_sqls_exec_t.entry(sql.to_string()).or_insert(Vec::new());
@@ -153,6 +191,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             let mut v = y_vals_sqls.get_mut(sql).unwrap();
             v.push(0.0);
         } 
+
         for (event, _) in &top_events {
             if event.to_string() == "log file sync"{
                 is_excessive_commits = true;
@@ -162,6 +201,12 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             y_vals_events_t.entry(event.to_string()).or_insert(Vec::new());
             y_vals_events_s.entry(event.to_string()).or_insert(Vec::new());
             let mut v = y_vals_events.get_mut(event).unwrap();
+            v.push(0.0);
+        }
+
+        for (statname, _) in &all_stats {
+            instance_stats.entry(statname.to_string()).or_insert(Vec::new());
+            let mut v = instance_stats.get_mut(statname).unwrap();
             v.push(0.0);
         }
 
@@ -208,45 +253,56 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             }
        }
         // ----- Host CPU
-       if awr.awr_doc.host_cpu.pct_user < 0.0 {
-            y_vals_cpu_user.push(0.0);
-       } else {
-            y_vals_cpu_user.push(awr.awr_doc.host_cpu.pct_user);
-       }
-       y_vals_cpu_load.push(100.0-awr.awr_doc.host_cpu.pct_idle);
-       
-       // ----- Excessive Commits - plot if 'log file sync' is in top events
-       if is_excessive_commits{
-            // ----- Additionally plot Redo Log Switches
-            y_vals_redo_switches.push(awr.awr_doc.redo_log.per_hour);
-            
-            let mut calls: u64 = 0;
-            let mut commits: u64 = 0;
-            let mut rollbacks: u64 = 0;
-            let mut cleanout_ktugct: u64 = 0;
-            let mut cleanout_cr: u64 = 0;
-            for activity in awr.awr_doc.key_instance_stats{
-                    if activity.statname == "user calls" {
-                        calls = activity.total;
-                    } else if activity.statname == "user commits" {
-                        commits = activity.total;
-                    } else if activity.statname == "user rollbacks" {
-                        rollbacks = activity.total;
-                    } else if activity.statname == "cleanout - number of ktugct calls" {
-                        cleanout_ktugct = activity.total;
-                    } else if activity.statname == "cleanouts only - consistent read" {
-                        cleanout_cr = activity.total;
-                    }
-            }
-            let excessive_commit = if commits + rollbacks > 0 {
+        if awr.awr_doc.host_cpu.pct_user < 0.0 {
+             y_vals_cpu_user.push(0.0);
+        } else {
+             y_vals_cpu_user.push(awr.awr_doc.host_cpu.pct_user);
+        }
+        y_vals_cpu_load.push(100.0-awr.awr_doc.host_cpu.pct_idle);
+
+        // ----- Additionally plot Redo Log Switches
+        y_vals_redo_switches.push(awr.awr_doc.redo_log.per_hour);
+
+        for activity in awr.awr_doc.key_instance_stats {
+
+            instance_stats.entry(activity.statname.clone()).or_insert(Vec::new());
+            let mut v = instance_stats.get_mut(&activity.statname).unwrap();
+            v[x_vals.len()-1] = activity.total as f64;
+
+            // ----- Excessive Commits - plot if 'log file sync' is in top events
+            if is_excessive_commits {
+               
+
+                let mut calls: u64 = 0;
+                let mut commits: u64 = 0;
+                let mut rollbacks: u64 = 0;
+                let mut cleanout_ktugct: u64 = 0;
+                let mut cleanout_cr: u64 = 0;
+
+                if activity.statname == "user calls" {
+                    calls = activity.total;
+                } else if activity.statname == "user commits" {
+                    commits = activity.total;
+                } else if activity.statname == "user rollbacks" {
+                    rollbacks = activity.total;
+                } else if activity.statname.starts_with("cleanout - number of ktugct calls") {
+                    cleanout_ktugct = activity.total;
+                } else if activity.statname.starts_with("cleanouts only - consistent read") {
+                    cleanout_cr = activity.total;
+                }
+                let excessive_commit = if commits + rollbacks > 0 {
                     (calls as f64) / ((commits + rollbacks) as f64)
                     } else {
                         0.0
                 };
-            y_excessive_commits.push(excessive_commit);
-            y_cleanout_ktugct.push(cleanout_ktugct as f64);
-            y_cleanout_cr.push(cleanout_cr as f64);
-        }
+                y_excessive_commits.push(excessive_commit);
+                /* This is for printing delayed block cleanouts when log file sync is present*/
+                y_cleanout_ktugct.push(cleanout_ktugct as f64);
+                y_cleanout_cr.push(cleanout_cr as f64);
+
+            }
+       }
+      
     }
 
     let mut plot = Plot::new();
@@ -310,7 +366,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                         .y_axis("y2");
         let cleanout_cr_only = Scatter::new(x_vals.clone(), y_cleanout_cr)
                                                         .mode(Mode::LinesText)
-                                                        .name("cleanouts only - consistent read")
+                                                        .name("cleanouts only - consistent read gets")
                                                         .x_axis("x1")
                                                         .y_axis("y2");
         plot.add_trace(redo_switches);
@@ -411,6 +467,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             correlation_of("+".to_string(), key.1.clone(), yv.clone(), ev.clone());
         }
     }
+
+    report_instance_stats_cor(instance_stats, y_vals_dbtime);
 
     let layout = Layout::new()
         .height(1000)
