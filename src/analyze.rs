@@ -263,6 +263,13 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         // ----- Additionally plot Redo Log Switches
         y_vals_redo_switches.push(awr.awr_doc.redo_log.per_hour);
 
+        let mut calls: u64 = 0;
+        let mut commits: u64 = 0;
+        let mut rollbacks: u64 = 0;
+        let mut cleanout_ktugct: u64 = 0;
+        let mut cleanout_cr: u64 = 0;
+        let mut excessive_commit = 0.0;
+
         for activity in awr.awr_doc.key_instance_stats {
             let mut v = instance_stats.get_mut(&activity.statname).unwrap();
             v[x_vals.len()-1] = activity.total as f64;
@@ -270,12 +277,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             // ----- Excessive Commits - plot if 'log file sync' is in top events
             if is_excessive_commits {
                
-                let mut calls: u64 = 0;
-                let mut commits: u64 = 0;
-                let mut rollbacks: u64 = 0;
-                let mut cleanout_ktugct: u64 = 0;
-                let mut cleanout_cr: u64 = 0;
-
                 if activity.statname == "user calls" {
                     calls = activity.total;
                 } else if activity.statname == "user commits" {
@@ -287,17 +288,18 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                 } else if activity.statname.starts_with("cleanouts only - consistent read") {
                     cleanout_cr = activity.total;
                 }
-                let excessive_commit = if commits + rollbacks > 0 {
+                excessive_commit = if commits + rollbacks > 0 {
                     (calls as f64) / ((commits + rollbacks) as f64)
                     } else {
                         0.0
                 };
-                y_excessive_commits.push(excessive_commit);
-                /* This is for printing delayed block cleanouts when log file sync is present*/
-                y_cleanout_ktugct.push(cleanout_ktugct as f64);
-                y_cleanout_cr.push(cleanout_cr as f64);
-
             }
+       }
+       if is_excessive_commits {
+            y_excessive_commits.push(excessive_commit);
+            /* This is for printing delayed block cleanouts when log file sync is present*/
+            y_cleanout_ktugct.push(cleanout_ktugct as f64);
+            y_cleanout_cr.push(cleanout_cr as f64);
        }
       
     }
