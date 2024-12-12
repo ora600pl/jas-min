@@ -822,7 +822,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 				awr.sql_io_time = sql_io_time(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays snapshot information" {
 				awr.snap_info = snap_info(element);
-			} else if element.value().attr("summary").unwrap() == "This table displays Key Instance activity statistics. For each instance, activity total, activity per second, and activity per transaction are displayed" {
+			} else if element.value().attr("summary").unwrap() == "This table displays Instance activity statistics. For each instance, activity total, activity per second, and activity per transaction are displayed" {
 				awr.key_instance_stats = instance_activity_stats(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays thread activity stats in the instance. For each activity , total number of activity and activity per hour are displayed" {
 				awr.redo_log = redo_log_switches(element);
