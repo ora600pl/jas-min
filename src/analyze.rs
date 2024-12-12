@@ -301,7 +301,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             y_cleanout_ktugct.push(cleanout_ktugct as f64);
             y_cleanout_cr.push(cleanout_cr as f64);
        }
-      
     }
 
     let mut plot = Plot::new();
