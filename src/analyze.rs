@@ -61,9 +61,9 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
                     sql_ids.entry(sqls[i].sql_id.clone()).or_insert(1);
                 }
             }
-            for stats in awr.awr_doc.key_instance_stats {
-                stat_names.entry(stats.statname.clone()).or_insert(1);
-            }
+        }
+        for stats in awr.awr_doc.key_instance_stats {
+            stat_names.entry(stats.statname.clone()).or_insert(1);
         }
     }
     let top = TopStats {events: event_names, sqls: sql_ids, stat_names: stat_names,};
@@ -264,8 +264,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         y_vals_redo_switches.push(awr.awr_doc.redo_log.per_hour);
 
         for activity in awr.awr_doc.key_instance_stats {
-
-            instance_stats.entry(activity.statname.clone()).or_insert(Vec::new());
             let mut v = instance_stats.get_mut(&activity.statname).unwrap();
             v[x_vals.len()-1] = activity.total as f64;
 
