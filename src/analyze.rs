@@ -5,6 +5,7 @@ use plotly::common::{ColorBar, Mode, Title, Visible};
 use plotly::Plot;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::{BTreeMap, HashMap};
+use std::fs;
 
 use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
@@ -42,7 +43,7 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
             //I'm sorting events by total wait time, to get the longest waits at the end
             events.sort_by_key(|e| e.total_wait_time_s as i64);
             let l = events.len();
-            //We are registering only TOP5 from each snap
+            //We are registering only TOP10 from each snap
             if l > 10 {
                 for i in 1..10 {
                     event_names.entry(events[l-i].event.clone()).or_insert(1);
@@ -395,37 +396,106 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     }
     let y_vals_events_sorted2 = y_vals_events_sorted.clone();
 
-    for (key,yv) in y_vals_events_sorted {
+    // WAIT EVENTS Correlation and AVG/STDDEV calcution, print and feed table used for HTML
+    let mut table_events = String::new();
+
+    for (key, yv) in y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
                                                         .name(key.1.clone())
                                                         .x_axis("x1")
                                                         .y_axis("y3").visible(Visible::LegendOnly);
         plot.add_trace(event_trace);
-        //We are going to show correlation of each event with DB Time
-        correlation_of("Correlation of DB Time".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
-    
-        /* Calculate STDDEV and AVG for wait event executions number */
-        let x = y_vals_events_n.get(&key.1.clone()).unwrap().clone();
-        let avg_exec_n = mean(x.clone()).unwrap();
-        let stddev_exec_n = std_deviation(x).unwrap();
+        let event_name = key.1.clone();
+        /* Correlation calc */
+        let corr = pearson_correlation_2v(&y_vals_dbtime.clone(), &yv.clone());
+        // Print Correlation considered high enough to mark it
+        if corr >= 0.4 || corr <= -0.4 { 
+            println!("\x1b[31m{: >32} | {: <32} : {:.2}\x1b[0m", "Correlation of DB Time".to_string(), &event_name, &corr);
+        } else {
+            println!("{: >32} | {: <32} : {:.2}", "Correlation of DB Time".to_string(), &event_name, &corr);
+        }
+        /* STDDEV/AVG Calculations */
+        let x_n = y_vals_events_n.get(&event_name).unwrap().clone();
+        let avg_exec_n = mean(x_n.clone()).unwrap();
+        let stddev_exec_n = std_deviation(x_n).unwrap();
 
-        /* Calculate STDDEV and AVG for wait event PCT of DB Time */
-        let x = y_vals_events_t.get(&key.1.clone()).unwrap().clone();
-        let avg_exec_t = mean(x.clone()).unwrap();
-        let stddev_exec_t = std_deviation(x).unwrap();
+        let x_t = y_vals_events_t.get(&event_name).unwrap().clone();
+        let avg_exec_t = mean(x_t.clone()).unwrap();
+        let stddev_exec_t = std_deviation(x_t).unwrap();
 
-        /* Calculate STDDEV and AVG for wait event cumulative wait time (s) */
-        let x = y_vals_events_s.get(&key.1.clone()).unwrap().clone();
-        let avg_exec_s = mean(x.clone()).unwrap();
-        let stddev_exec_s = std_deviation(x).unwrap();
+        let x_s = y_vals_events_s.get(&event_name).unwrap().clone();
+        let avg_exec_s = mean(x_s.clone()).unwrap();
+        let stddev_exec_s = std_deviation(x_s).unwrap();
 
-        println!("\t\t --- AVG PCT of DB Time: {: <16.2} \tSTDDEV PCT of DB Time: {:.2}", avg_exec_t, stddev_exec_t);
-        println!("\t\t --- AVG Wait Time (s):  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}", avg_exec_s, stddev_exec_s);
-        println!("\t\t --- AVG exec times:     {: <16.2} \tSTDDEV exec times:     {:.2}", avg_exec_n, stddev_exec_n);
-        println!("\t\t --- AVG wait/exec (ms): {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", (avg_exec_s/avg_exec_n)*1000.0, (stddev_exec_s/stddev_exec_n)*1000.0);
-
+        let avg_wait_per_exec_ms = (avg_exec_s / avg_exec_n) * 1000.0;
+        let stddev_wait_per_exec_ms = (stddev_exec_s / stddev_exec_n) * 1000.0;
+        // Print calculations:
+        println!("\t\t --- AVG PCT of DB Time: {: <16.2} \tSTDDEV PCT of DB Time: {:.2}", &avg_exec_t, &stddev_exec_t);
+        println!("\t\t --- AVG Wait Time (s):  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}", &avg_exec_s, &stddev_exec_s);
+        println!("\t\t --- AVG exec times:     {: <16.2} \tSTDDEV exec times:     {:.2}", &avg_exec_n, &stddev_exec_n);
+        println!("\t\t --- AVG wait/exec (ms): {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
+        /* Generate a row for the HTML table */
+        table_events.push_str(&format!(
+            r#"
+            <tr>
+                <td>{}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+            </tr>
+            "#,
+            event_name,
+            avg_exec_t, stddev_exec_t,  // PCT of DB Time
+            avg_exec_s, stddev_exec_s,  // Wait Time (s)
+            avg_exec_n, stddev_exec_n,  // Execution times
+            avg_wait_per_exec_ms, stddev_wait_per_exec_ms,  // Wait per exec (ms)
+            corr
+        ));
     }
+    let table_html = format!(
+        r#"
+        <table id="data-table">
+            <thead>
+                <tr>
+                    <th>Event Name</th>
+                    <th>AVG % of DBTime</th>
+                    <th>STDDEV % of DBTime</th>
+                    <th>AVG Wait Time (s)</th>
+                    <th>STDDEV Wait Time (s)</th>
+                    <th>AVG Exec Times</th>
+                    <th>STDDEV Exec Times</th>
+                    <th>AVG Wait per Exec (ms)</th>
+                    <th>STDDEV Wait per Exec (ms)</th>
+                    <th>Correlation of DBTime</th>
+                </tr>
+            </thead>
+            <tbody>
+            {}
+            </tbody>
+        </table>
+        <script>
+            const button = document.getElementById('show-table-button');
+            const table = document.getElementById('data-table');
+            button.addEventListener('click', () => {{
+                if (table.style.display === 'none' || table.style.display === '') {{
+                    table.style.display = 'table'; // Show the table
+                    button.textContent = 'TOP Wait Events'; // Update button text
+                }} else {{
+                    table.style.display = 'none'; // Hide the table
+                    button.textContent = 'TOP Wait Events'; // Update button text
+                }}
+            }});
+        </script>
+        "#,
+        table_events
+    );
 
     //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
     let mut y_vals_sqls_sorted = BTreeMap::new(); 
@@ -465,26 +535,16 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             correlation_of("+".to_string(), key.1.clone(), yv.clone(), ev.clone());
         }
     }
-
+    
     report_instance_stats_cor(instance_stats, y_vals_dbtime);
 
     let layout = Layout::new()
         .height(1000)
-        .y_axis(Axis::new()
+        .y_axis5(Axis::new()
             .anchor("x1")
-            .domain(&[0., 0.2])
-            .title(Title::new("(s/s)"))
-        )
-        .y_axis2(Axis::new()
-            .anchor("x1")
-            .domain(&[0.2, 0.4])
-            .range(vec![0.,])
-            .title(Title::new("#"))
-        )
-        .y_axis3(Axis::new()
-            .anchor("x1")
-            .domain(&[0.4, 0.6])
-            .title(Title::new("Wait Events (s)"))
+            .domain(&[0.8, 1.0])
+            .title(Title::new("SQL Elapsed Time"))
+            .visible(true)
         )
         .y_axis4(Axis::new()
             .anchor("x1")
@@ -492,18 +552,82 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             .range(vec![0.,])
             .title(Title::new("CPU Util (%)"))
         )
-        .y_axis5(Axis::new()
+        .y_axis3(Axis::new()
             .anchor("x1")
-            .domain(&[0.8, 1.0])
-            .title(Title::new("SQL Elapsed Time"))
-            .visible(true)
+            .domain(&[0.4, 0.6])
+            .title(Title::new("Wait Events (s)"))
+        )
+        .y_axis2(Axis::new()
+            .anchor("x1")
+            .domain(&[0.2, 0.4])
+            .range(vec![0.,])
+            .title(Title::new("#"))
+        )
+        .y_axis(Axis::new()
+            .anchor("x1")
+            .domain(&[0., 0.2])
+            .title(Title::new("(s/s)"))
         )
         .hover_mode(HoverMode::X);
     plot.set_layout(layout);
     plot.use_local_plotly();
-    plot.write_html(fname);
+    plot.write_html(fname.clone());
     plot.show();
+    // Modify HTML and inject Additional sections - Buttons, Tables, etc
+    let mut plotly_html = fs::read_to_string(&fname)
+        .expect("Failed to read Plotly HTML file");
 
+    // Inject the table HTML before the closing </body> tag
+    plotly_html = plotly_html.replace("<head>", &format!("<head>\n{}", "<title>JAS-MIN</title>
+    <style>
+        #data-table {
+            display: none;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        table {
+            margin-top: 20px;
+            border-collapse: collapse;
+            width: 100%;
+            min-width: 400px;
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            font-size: 0.9em;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.15);
+        }
+
+        table thead tr {
+            background-color: #009876;
+            color: #ffffff;
+            text-align: center;
+        }
+        table th,
+        table td {
+            padding: 12px 15px;
+            text-align: center;
+        }
+        table tbody tr {
+            border-bottom: 1px solid #dddddd;
+        }
+
+        table tbody tr:nth-of-type(even) {
+            background-color: #f3f3f3;
+        }
+
+        table tbody tr:last-of-type {
+            border-bottom: 2px solid #009876;
+        }
+    </style>"));
+    plotly_html = plotly_html.replace("<body>",&format!("<body>\n\t{}","<button id=\"show-table-button\">TOP Wait Events</button>"));
+    plotly_html = plotly_html.replace("<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", &format!("{}\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", table_html));
+
+    // Write the updated HTML back to the file
+    fs::write(&fname, plotly_html)
+        .expect("Failed to write updated Plotly HTML file");
 }
 
   
