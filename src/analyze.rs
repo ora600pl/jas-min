@@ -411,9 +411,9 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         let corr = pearson_correlation_2v(&y_vals_dbtime.clone(), &yv.clone());
         // Print Correlation considered high enough to mark it
         if corr >= 0.4 || corr <= -0.4 { 
-            println!("\x1b[31m{: >32} | {: <32} : {:.2}\x1b[0m", "Correlation of DB Time".to_string(), &event_name, &corr);
+            println!("{: >5}\n\t\t --- \x1b[31mCorrelation of DB Time: {:.2}\x1b[0m", &event_name, &corr);
         } else {
-            println!("{: >32} | {: <32} : {:.2}", "Correlation of DB Time".to_string(), &event_name, &corr);
+            println!("{: >5}\n\t\t --- Correlation of DB Time: {:.2}",&event_name, &corr);
         }
         /* STDDEV/AVG Calculations */
         let x_n = y_vals_events_n.get(&event_name).unwrap().clone();
