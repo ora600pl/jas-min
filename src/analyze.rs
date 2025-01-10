@@ -408,7 +408,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         plot.add_trace(event_trace);
         let event_name = key.1.clone();
         /* Correlation calc */
-        let corr = pearson_correlation_2v(&y_vals_dbtime.clone(), &yv.clone());
+        let corr = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
         if corr >= 0.4 || corr <= -0.4 { 
             println!("{: >5}\n\t\t --- \x1b[31mCorrelation of DB Time: {:.2}\x1b[0m", &event_name, &corr);
