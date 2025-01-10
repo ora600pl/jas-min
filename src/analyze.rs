@@ -572,7 +572,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     plot.set_layout(layout);
     plot.use_local_plotly();
     plot.write_html(fname.clone());
-    plot.show();
+    //plot.show();
     // Modify HTML and inject Additional sections - Buttons, Tables, etc
     let mut plotly_html = fs::read_to_string(&fname)
         .expect("Failed to read Plotly HTML file");
