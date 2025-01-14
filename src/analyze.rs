@@ -177,9 +177,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let top_sqls = top_stats.sqls;
     let all_stats = top_stats.stat_names;
     let mut is_excessive_commits: bool = false;
-    
-    println!("Correlations:\n-------------------------");
 
+    /* ------ Preparing data ------ */
     for awr in awrs {
         let xval = format!("{} ({})", awr.awr_doc.snap_info.begin_snap_time, awr.awr_doc.snap_info.begin_snap_id);
         x_vals.push(xval.clone());
@@ -315,7 +314,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
          }
          y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
      }
-     let y_vals_events_sorted2 = y_vals_events_sorted.clone();
 
     //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
     let mut y_vals_sqls_sorted = BTreeMap::new(); 
@@ -330,7 +328,9 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         
     }
 
+
     // ------ Ploting and reporting starts ----------
+    println!("Correlations:\n-------------------------");
 
     let mut plot = Plot::new();
 
@@ -414,7 +414,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     // WAIT EVENTS Correlation and AVG/STDDEV calcution, print and feed table used for HTML
     let mut table_events = String::new();
 
-    for (key, yv) in y_vals_events_sorted {
+    for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
                                                         .name(key.1.clone())
@@ -534,7 +534,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         println!("\t\t --- AVG Ela by Exec: {:.2} \tSTDDEV Ela by Exec: {:.2}", avg_exec_t, stddev_exec_t);
         println!("\t\t --- AVG exec times:  {:.2} \tSTDDEV exec times:  {:.2}", avg_exec_n, stddev_exec_n);
         
-        for (key,ev) in &y_vals_events_sorted2 {
+        for (key,ev) in &y_vals_events_sorted {
             correlation_of("+".to_string(), key.1.clone(), yv.clone(), ev.clone());
         }
     }
