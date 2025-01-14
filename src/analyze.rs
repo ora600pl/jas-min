@@ -304,6 +304,34 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
        }
     }
 
+     //I want to stort wait events by most heavy ones across the whole period
+     let mut y_vals_events_sorted = BTreeMap::new();
+     for (evname, ev) in y_vals_events {
+         let mut wait_time = 0;
+         for v in &ev {
+             if *v > 0.0 {
+                 wait_time -= *v as i64;
+             }
+         }
+         y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
+     }
+     let y_vals_events_sorted2 = y_vals_events_sorted.clone();
+
+    //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
+    let mut y_vals_sqls_sorted = BTreeMap::new(); 
+    for (sqlid, yv) in y_vals_sqls {
+        let mut occuriance = 0;
+        for v in &yv {
+            if *v > 0.0 {
+                occuriance -= 1;
+            }
+        }
+        y_vals_sqls_sorted.insert((occuriance, sqlid.clone()), yv.clone());
+        
+    }
+
+    // ------ Ploting and reporting starts ----------
+
     let mut plot = Plot::new();
 
     let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime.clone())
@@ -382,19 +410,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     plot.add_trace(exec_trace);
     plot.add_trace(cpu_user);
     plot.add_trace(cpu_load);
-
-    //I want to stort wait events by most heavy ones across the whole period
-    let mut y_vals_events_sorted = BTreeMap::new();
-    for (evname, ev) in y_vals_events {
-        let mut wait_time = 0;
-        for v in &ev {
-            if *v > 0.0 {
-                wait_time -= *v as i64;
-            }
-        }
-        y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
-    }
-    let y_vals_events_sorted2 = y_vals_events_sorted.clone();
 
     // WAIT EVENTS Correlation and AVG/STDDEV calcution, print and feed table used for HTML
     let mut table_events = String::new();
@@ -497,18 +512,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         table_events
     );
 
-    //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
-    let mut y_vals_sqls_sorted = BTreeMap::new(); 
-    for (sqlid, yv) in y_vals_sqls {
-        let mut occuriance = 0;
-        for v in &yv {
-            if *v > 0.0 {
-                occuriance -= 1;
-            }
-        }
-        y_vals_sqls_sorted.insert((occuriance, sqlid.clone()), yv.clone());
-        
-    }
     for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)

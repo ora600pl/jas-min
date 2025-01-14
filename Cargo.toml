@@ -1,6 +1,6 @@
 [package]
 name = "jas-min"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radosław Kut <radek@ora-600.pl>"]
 
@@ -11,7 +11,6 @@ authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radosław Kut <radek@ora-600.
 scraper = "0.14.0"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-rouille = "3.6.2"
 execute = "0.2.11"
 linked-hash-map = { version = "0.5.6", features = ["serde_impl"] }
 base64 = "0.21.0"
