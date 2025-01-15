@@ -6,6 +6,8 @@ use plotly::Plot;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use colored::*;
+
 
 use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
@@ -89,11 +91,13 @@ fn pearson_correlation_2v(vec1: &Vec<f64>, vec2: &Vec<f64>) -> f64 {
 fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) {
     
     let crr = pearson_correlation_2v(&vec1, &vec2);
+    let corr_text = format!("{: >32} | {: <32} : {:.2}", what1, what2, crr);
     if crr >= 0.4 || crr <= - 0.4 { //Correlation considered high enough to mark it
-        println!("\x1b[2m{: >32} | {: <32} : {:.2}\x1b[0m", what1, what2, crr);
+        println!("{}",corr_text.red().bold());
     } else {
-        println!("{: >32} | {: <32} : {:.2}", what1, what2, crr);
+        println!("{}", corr_text);
     }
+    
 }
 
 fn mean(data: Vec<f64>) -> Option<f64> {
@@ -330,7 +334,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
 
 
     // ------ Ploting and reporting starts ----------
-    println!("Correlations:\n-------------------------");
+    println!("Statistical Computations:\n-------------------------");
 
     let mut plot = Plot::new();
 
@@ -425,15 +429,17 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         /* Correlation calc */
         let corr = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
+        println!("\t{: >5}", &event_name);
+        let correlation_info = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
-            println!("{: >5}\n\t\t --- \x1b[31mCorrelation of DB Time: {:.2}\x1b[0m", &event_name, &corr);
+            print!("{: >50}", correlation_info.red().bold());
         } else {
-            println!("{: >5}\n\t\t --- Correlation of DB Time: {:.2}",&event_name, &corr);
+            print!("{: >50}", correlation_info);
         }
         /* STDDEV/AVG Calculations */
         let x_n = y_vals_events_n.get(&event_name).unwrap().clone();
         let avg_exec_n = mean(x_n.clone()).unwrap();
-        let stddev_exec_n = std_deviation(x_n).unwrap();
+        let stddev_exec_n = std_deviation(x_n.clone()).unwrap();
 
         let x_t = y_vals_events_t.get(&event_name).unwrap().clone();
         let avg_exec_t = mean(x_t.clone()).unwrap();
@@ -446,10 +452,11 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         let avg_wait_per_exec_ms = (avg_exec_s / avg_exec_n) * 1000.0;
         let stddev_wait_per_exec_ms = (stddev_exec_s / stddev_exec_n) * 1000.0;
         // Print calculations:
-        println!("\t\t --- AVG PCT of DB Time: {: <16.2} \tSTDDEV PCT of DB Time: {:.2}", &avg_exec_t, &stddev_exec_t);
-        println!("\t\t --- AVG Wait Time (s):  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}", &avg_exec_s, &stddev_exec_s);
-        println!("\t\t --- AVG exec times:     {: <16.2} \tSTDDEV exec times:     {:.2}", &avg_exec_n, &stddev_exec_n);
-        println!("\t\t --- AVG wait/exec (ms): {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
+        println!("\t\tMarked as TOP in {:.2}% of probes",  (x_n.len() as f64 / x_vals.len() as f64 )* 100.0);
+        println!("{: >39}  {: <16.2} \tSTDDEV PCT of DB Time: {:.2}",   "--- AVG PCT of DB Time:", &avg_exec_t, &stddev_exec_t);
+        println!("{: >38}  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}",   "--- AVG Wait Time (s):",  &avg_exec_s, &stddev_exec_s);
+        println!("{: >40}  {: <16.2} \tSTDDEV exec times:     {:.2}",   "--- AVG exec times:     ", &avg_exec_n, &stddev_exec_n);
+        println!("{: >39}  {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         /* Generate a row for the HTML table */
         table_events.push_str(&format!(
             r#"
@@ -519,8 +526,20 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
-        correlation_of("\n\tCorrelation of DB Time\t".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
+        //correlation_of("\n\tCorrelation of DB Time\t".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
         
+        let sql_id = key.1.clone();
+        /* Correlation calc */
+        let corr = pearson_correlation_2v(&y_vals_dbtime, &yv);
+        // Print Correlation considered high enough to mark it
+        println!("\t{: >5}", &sql_id);
+        let correlation_info = format!("--- Correlation with DB Time: {:.2}", &corr);
+        if corr >= 0.4 || corr <= -0.4 { 
+            print!("{: >49}", correlation_info.red().bold());
+        } else {
+            print!("{: >49}", correlation_info);
+        }
+
         /* Calculate STDDEV and AVG for sqls executions number */
         let x = y_vals_sqls_exec_n.get(&key.1.clone()).unwrap().clone();
         let avg_exec_n = mean(x.clone()).unwrap();
@@ -529,10 +548,11 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         /* Calculate STDDEV and AVG for sqls time per execution */
         let x = y_vals_sqls_exec_t.get(&key.1.clone()).unwrap().clone();
         let avg_exec_t = mean(x.clone()).unwrap();
-        let stddev_exec_t = std_deviation(x).unwrap();
+        let stddev_exec_t = std_deviation(x.clone()).unwrap();
 
-        println!("\t\t --- AVG Ela by Exec: {:.2} \tSTDDEV Ela by Exec: {:.2}", avg_exec_t, stddev_exec_t);
-        println!("\t\t --- AVG exec times:  {:.2} \tSTDDEV exec times:  {:.2}", avg_exec_n, stddev_exec_n);
+        println!("{: >24}{:.2}% of probes", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
+        println!("{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
+        println!("{: >34} {: <16.2} \tSTDDEV exec times:  {:.2}", "--- AVG exec times:", avg_exec_n, stddev_exec_n);
         
         for (key,ev) in &y_vals_events_sorted {
             correlation_of("+".to_string(), key.1.clone(), yv.clone(), ev.clone());
