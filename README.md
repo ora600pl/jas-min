@@ -1,6 +1,8 @@
-jas-min 0.1.0
+jas-min 0.3.0
 
 Kamil Stawiarski <kamil@ora-600.pl>
+
+Rdosław Kut <radek@ora-600.pl>
 
 This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization
 
@@ -41,10 +43,6 @@ OPTIONS:
 
     -p, --plot <PLOT>
             Draw a plot? [default: 1]
-
-    -s, --server <SERVER>
-            Run in server mode - you can parse files via GET/POST methods. HTTP will listen on 6751
-            port by default [default: 0.0.0.0:6751]
 
     -t, --time-cpu-ratio <TIME_CPU_RATIO>
             Ratio of DB CPU / DB TIME [default: 0.666]
