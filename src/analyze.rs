@@ -155,6 +155,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut y_vals_logons: Vec<f64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
+    let mut y_vals_parses: Vec<f64> = Vec::new();
+    let mut y_vals_hparses: Vec<f64> = Vec::new();
     let mut y_vals_cpu_user: Vec<f64> = Vec::new();
     let mut y_vals_cpu_load: Vec<f64> = Vec::new();
     let mut y_vals_redo_switches: Vec<f64> = Vec::new();
@@ -180,7 +182,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let top_events = top_stats.events;
     let top_sqls = top_stats.sqls;
     let all_stats = top_stats.stat_names;
-    let mut is_excessive_commits: bool = false;
+    let mut is_logfilesync_high: bool = false;
 
     /* ------ Preparing data ------ */
     for awr in awrs {
@@ -198,7 +200,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
 
         for (event, _) in &top_events {
             if event.to_string() == "log file sync"{
-                is_excessive_commits = true;
+                is_logfilesync_high = true;
             }
             y_vals_events.entry(event.to_string()).or_insert(Vec::new());
             y_vals_events_n.entry(event.to_string()).or_insert(Vec::new());
@@ -254,6 +256,10 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                 y_vals_logons.push(lp.per_second*60.0*60.0);
             } else if lp.stat_name.starts_with("Executes") {
                 y_vals_execs.push(lp.per_second);
+            } else if lp.stat_name.starts_with("Parses") {
+                y_vals_parses.push(lp.per_second);
+            } else if lp.stat_name.starts_with("Hard parses") {
+                y_vals_hparses.push(lp.per_second);
             }
        }
         // ----- Host CPU
@@ -278,8 +284,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             let mut v = instance_stats.get_mut(&activity.statname).unwrap();
             v[x_vals.len()-1] = activity.total as f64;
 
-            // ----- Excessive Commits - plot if 'log file sync' is in top events
-            if is_excessive_commits {
+            // Plot additional stats if 'log file sync' is in top events
+            if is_logfilesync_high {
                
                 if activity.statname == "user calls" {
                     calls = activity.total;
@@ -299,7 +305,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                 };
             }
        }
-       if is_excessive_commits {
+       if is_logfilesync_high {
             y_excessive_commits.push(excessive_commit);
             /* This is for printing delayed block cleanouts when log file sync is present*/
             y_cleanout_ktugct.push(cleanout_ktugct as f64);
@@ -367,7 +373,19 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                     .name("Executes")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
+    
+    let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses)
+                                                    .mode(Mode::LinesText)
+                                                    .name("Parses")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
 
+    let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses)
+                                                    .mode(Mode::LinesText)
+                                                    .name("Hard Parses")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+                                                    
     let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
                                                     .mode(Mode::LinesText)
                                                     .name("CPU User")
@@ -379,7 +397,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                     .name("CPU Load")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
-    if is_excessive_commits{
+    if is_logfilesync_high{
         let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
                                                         .mode(Mode::LinesText)
                                                         .name("Log Switches")
@@ -412,10 +430,12 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     plot.add_trace(calls_trace);
     plot.add_trace(logons_trace);
     plot.add_trace(exec_trace);
+    plot.add_trace(parses_trace);
+    plot.add_trace(hparses_trace);
     plot.add_trace(cpu_user);
     plot.add_trace(cpu_load);
 
-    // WAIT EVENTS Correlation and AVG/STDDEV calcution, print and feed table used for HTML
+    // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut table_events = String::new();
 
     for (key, yv) in &y_vals_events_sorted {
@@ -652,5 +672,3 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     fs::write(&fname, plotly_html)
         .expect("Failed to write updated Plotly HTML file");
 }
-
-  
