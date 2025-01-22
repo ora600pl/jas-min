@@ -265,11 +265,20 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut is_logfilesync_high: bool = false;
     
     // Extract the parent directory and generate FG Events html plots
-    let mut dir_path = Path::new(&fname).parent().unwrap_or(Path::new("")).to_str().unwrap_or("");
+    let dir_path = Path::new(&fname).parent().unwrap_or(Path::new("")).to_str().unwrap_or("");
+    let mut html_dir = String::new();
+    let mut stripped_fname = fname.as_str();
     if dir_path.len() == 0 {
-        dir_path = ".";
+        html_dir = format!("{}_reports", &fname);
+    } else {
+        stripped_fname = Path::new(&fname).file_name().unwrap().to_str().unwrap();
+        html_dir = format!("{}/{}_reports", &dir_path, &stripped_fname);
     }
-    generate_fgevents_plotfiles(&awrs, &top_events,dir_path);
+    
+    fs::create_dir(&html_dir).unwrap_or_default();
+    generate_fgevents_plotfiles(&awrs, &top_events,&html_dir);
+    let fname = format!("{}/{}", html_dir, &stripped_fname);
+
     /* ------ Preparing data ------ */
     for awr in awrs {
         let xval = format!("{} ({})", awr.awr_doc.snap_info.begin_snap_time, awr.awr_doc.snap_info.begin_snap_id);
