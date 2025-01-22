@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use colored::*;
+use open::*;
 
 use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
@@ -265,19 +266,21 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut is_logfilesync_high: bool = false;
     
     // Extract the parent directory and generate FG Events html plots
+
+    //This will be empty if -d or -j specified without whole path
     let dir_path = Path::new(&fname).parent().unwrap_or(Path::new("")).to_str().unwrap_or("");
-    let mut html_dir = String::new();
-    let mut stripped_fname = fname.as_str();
+    let mut html_dir = String::new(); //variable for html files directory
+    let mut stripped_fname = fname.as_str(); //without whole path to a file this will be just a file name
     if dir_path.len() == 0 {
-        html_dir = format!("{}_reports", &fname);
-    } else {
+        html_dir = format!("{}_reports", &fname); 
+    } else { //if the whole path was specified we are extracting file name and seting html_dir properly 
         stripped_fname = Path::new(&fname).file_name().unwrap().to_str().unwrap();
         html_dir = format!("{}/{}_reports", &dir_path, &stripped_fname);
     }
     
     fs::create_dir(&html_dir).unwrap_or_default();
     generate_fgevents_plotfiles(&awrs, &top_events,&html_dir);
-    let fname = format!("{}/{}", html_dir, &stripped_fname);
+    let fname = format!("{}/{}", html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
     for awr in awrs {
@@ -770,4 +773,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
         .expect("Failed to write updated Plotly HTML file");
+
+    open::that(fname);
 }
