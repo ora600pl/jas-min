@@ -1,17 +1,18 @@
-use crate::awr::{AWRS, AWR, LoadProfile, HostCPU};
+use crate::awr::{AWRS, AWR, ForegroundWaitEvents, LoadProfile, HostCPU};
 use plotly::color::NamedColor;
-use plotly::Scatter;
-use plotly::common::{ColorBar, Mode, Title, Visible};
-use plotly::Plot;
+use plotly::{Plot, Histogram, BoxPlot, Scatter};
+use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation};
+use plotly::box_plot::BoxMean;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::path::Path;
 use colored::*;
-
 
 use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
- 
+use ndarray_stats::histogram::Grid;
+
 struct TopStats {
     events: BTreeMap<String, u8>,
     sqls:   BTreeMap<String, u8>,
@@ -147,6 +148,85 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
     }
 }
 
+// Filter and generate histogram for top events
+fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u8>, dirpath: &str) {
+    // Filter ForegroundWaitEvents based on top_events
+    let filtered_events: Vec<&ForegroundWaitEvents> = awrs
+        .iter()
+        .flat_map(|awr| &awr.awr_doc.foreground_wait_events)
+        .filter(|event| top_events.contains_key(&event.event))
+        .collect();
+
+    // Group data by event
+    let mut data_by_event: HashMap<String, Vec<f64>> = HashMap::new();
+    for event in filtered_events {
+        data_by_event.entry(event.event.clone())
+            .or_insert_with(Vec::new)
+            .push(event.pct_dbtime);
+    }
+
+    // Create the histogram for each event and save it as separate file
+    for (event, pct_dbtime_values) in data_by_event {
+        let mut plot = Plot::new();
+
+        //Add Histogram
+        let histogram = Histogram::new(pct_dbtime_values.clone())
+           .name("Histogram")
+            //.n_bins_x(100) // Number of bins
+            .x_axis("x1")
+            .y_axis("y1");
+        plot.add_trace(histogram);
+
+        // Add Box Plot
+        let box_plot = BoxPlot::new_xy(pct_dbtime_values.clone(),vec![event.clone();pct_dbtime_values.clone().len()])
+            .name("Box Plot")
+            .box_mean(BoxMean::True)
+            .orientation(Orientation::Horizontal) // Make the box plot horizontal
+            .x_axis("x1")
+            .y_axis("y2");
+        plot.add_trace(box_plot);
+
+        let layout = Layout::new()
+            .title(Title::new(&format!("'{}'", event)))
+            .grid(
+                LayoutGrid::new()
+                    .rows(2) // 2 rows: one for box plot, one for histogram
+                    .columns(1), // Single column
+                    //.row_order(Grid::TopToBottom),
+            )
+            .x_axis(
+                Axis::new()
+                    .title(Title::new("%DBTime"))
+                    .domain(&[0.0, 1.0]) // Shared domain
+                    .anchor("y1")
+                    .range(vec![0.,]),
+            )
+            .y_axis(
+                Axis::new()
+                    .domain(&[0.0, 0.7]) // Lower domain for the histogram
+                    .anchor("x1")
+                    .range(vec![0.,]),
+            )
+            .y_axis2(
+                Axis::new()
+                    .domain(&[0.7, 1.0]) // Upper domain for the box plot
+                    .anchor("x1")
+                    .range(vec![0.,]),
+            );
+            plot.set_layout(layout);
+    
+        // Replace invalid characters for filenames (e.g., slashes or spaces)
+        let safe_event_name = event.replace("/", "_").replace(" ", "_").replace(":","");
+        let file_name = format!("{}/{}.html", dirpath, safe_event_name);
+
+        // Save the plot as an HTML file
+        let path = Path::new(&file_name);
+        //plot.save(path).expect("Failed to save plot to file");
+        plot.write_html(path);
+    }
+    println!("Saved plots for events to '{}'", dirpath);
+}
+
 pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
@@ -155,6 +235,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut y_vals_logons: Vec<f64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
+    let mut y_vals_parses: Vec<f64> = Vec::new();
+    let mut y_vals_hparses: Vec<f64> = Vec::new();
     let mut y_vals_cpu_user: Vec<f64> = Vec::new();
     let mut y_vals_cpu_load: Vec<f64> = Vec::new();
     let mut y_vals_redo_switches: Vec<f64> = Vec::new();
@@ -180,8 +262,11 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let top_events = top_stats.events;
     let top_sqls = top_stats.sqls;
     let all_stats = top_stats.stat_names;
-    let mut is_excessive_commits: bool = false;
-
+    let mut is_logfilesync_high: bool = false;
+    
+    // Extract the parent directory and generate FG Events html plots
+    let dir_path = Path::new(&fname).parent().unwrap_or(Path::new("")).to_str().unwrap_or("");
+    generate_fgevents_plotfiles(&awrs, &top_events,dir_path);
     /* ------ Preparing data ------ */
     for awr in awrs {
         let xval = format!("{} ({})", awr.awr_doc.snap_info.begin_snap_time, awr.awr_doc.snap_info.begin_snap_id);
@@ -198,7 +283,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
 
         for (event, _) in &top_events {
             if event.to_string() == "log file sync"{
-                is_excessive_commits = true;
+                is_logfilesync_high = true;
             }
             y_vals_events.entry(event.to_string()).or_insert(Vec::new());
             y_vals_events_n.entry(event.to_string()).or_insert(Vec::new());
@@ -254,6 +339,10 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                 y_vals_logons.push(lp.per_second*60.0*60.0);
             } else if lp.stat_name.starts_with("Executes") {
                 y_vals_execs.push(lp.per_second);
+            } else if lp.stat_name.starts_with("Parses") {
+                y_vals_parses.push(lp.per_second);
+            } else if lp.stat_name.starts_with("Hard parses") {
+                y_vals_hparses.push(lp.per_second);
             }
        }
         // ----- Host CPU
@@ -278,8 +367,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             let mut v = instance_stats.get_mut(&activity.statname).unwrap();
             v[x_vals.len()-1] = activity.total as f64;
 
-            // ----- Excessive Commits - plot if 'log file sync' is in top events
-            if is_excessive_commits {
+            // Plot additional stats if 'log file sync' is in top events
+            if is_logfilesync_high {
                
                 if activity.statname == "user calls" {
                     calls = activity.total;
@@ -299,7 +388,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                 };
             }
        }
-       if is_excessive_commits {
+       if is_logfilesync_high {
             y_excessive_commits.push(excessive_commit);
             /* This is for printing delayed block cleanouts when log file sync is present*/
             y_cleanout_ktugct.push(cleanout_ktugct as f64);
@@ -367,7 +456,19 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                     .name("Executes")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
+    
+    let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses)
+                                                    .mode(Mode::LinesText)
+                                                    .name("Parses")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
 
+    let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses)
+                                                    .mode(Mode::LinesText)
+                                                    .name("Hard Parses")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+                                                    
     let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
                                                     .mode(Mode::LinesText)
                                                     .name("CPU User")
@@ -379,7 +480,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                     .name("CPU Load")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
-    if is_excessive_commits{
+    if is_logfilesync_high{
         let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
                                                         .mode(Mode::LinesText)
                                                         .name("Log Switches")
@@ -412,10 +513,12 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     plot.add_trace(calls_trace);
     plot.add_trace(logons_trace);
     plot.add_trace(exec_trace);
+    plot.add_trace(parses_trace);
+    plot.add_trace(hparses_trace);
     plot.add_trace(cpu_user);
     plot.add_trace(cpu_load);
 
-    // WAIT EVENTS Correlation and AVG/STDDEV calcution, print and feed table used for HTML
+    // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut table_events = String::new();
 
     for (key, yv) in &y_vals_events_sorted {
@@ -452,16 +555,19 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         let avg_wait_per_exec_ms = (avg_exec_s / avg_exec_n) * 1000.0;
         let stddev_wait_per_exec_ms = (stddev_exec_s / stddev_exec_n) * 1000.0;
         // Print calculations:
+        
         println!("\t\tMarked as TOP in {:.2}% of probes",  (x_n.len() as f64 / x_vals.len() as f64 )* 100.0);
         println!("{: >39}  {: <16.2} \tSTDDEV PCT of DB Time: {:.2}",   "--- AVG PCT of DB Time:", &avg_exec_t, &stddev_exec_t);
         println!("{: >38}  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}",   "--- AVG Wait Time (s):",  &avg_exec_s, &stddev_exec_s);
         println!("{: >40}  {: <16.2} \tSTDDEV exec times:     {:.2}",   "--- AVG exec times:     ", &avg_exec_n, &stddev_exec_n);
         println!("{: >39}  {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
+        
         /* Generate a row for the HTML table */
+        let safe_event_name = event_name.replace("/", "_").replace(" ", "_").replace(":","");
         table_events.push_str(&format!(
             r#"
             <tr>
-                <td>{}</td>
+                <td><a href="{}.html" target="_blank">{}</a></td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
@@ -473,6 +579,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                 <td>{:.2}</td>
             </tr>
             "#,
+            safe_event_name,
             event_name,
             avg_exec_t, stddev_exec_t,  // PCT of DB Time
             avg_exec_s, stddev_exec_s,  // Wait Time (s)
@@ -526,7 +633,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
-        //correlation_of("\n\tCorrelation of DB Time\t".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
+        correlation_of("\n\tCorrelation of DB Time\t".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
         
         let sql_id = key.1.clone();
         /* Correlation calc */
@@ -549,7 +656,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         let x = y_vals_sqls_exec_t.get(&key.1.clone()).unwrap().clone();
         let avg_exec_t = mean(x.clone()).unwrap();
         let stddev_exec_t = std_deviation(x.clone()).unwrap();
-
+        
         println!("{: >24}{:.2}% of probes", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         println!("{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
         println!("{: >34} {: <16.2} \tSTDDEV exec times:  {:.2}", "--- AVG exec times:", avg_exec_n, stddev_exec_n);
@@ -559,7 +666,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         }
     }
     
-    report_instance_stats_cor(instance_stats, y_vals_dbtime);
+    //report_instance_stats_cor(instance_stats, y_vals_dbtime);
 
     let layout = Layout::new()
         .height(1000)
@@ -652,5 +759,3 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     fs::write(&fname, plotly_html)
         .expect("Failed to write updated Plotly HTML file");
 }
-
-  
