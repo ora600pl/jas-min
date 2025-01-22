@@ -265,7 +265,10 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let mut is_logfilesync_high: bool = false;
     
     // Extract the parent directory and generate FG Events html plots
-    let dir_path = Path::new(&fname).parent().unwrap_or(Path::new("")).to_str().unwrap_or("");
+    let mut dir_path = Path::new(&fname).parent().unwrap_or(Path::new("")).to_str().unwrap_or("");
+    if dir_path.len() == 0 {
+        dir_path = ".";
+    }
     generate_fgevents_plotfiles(&awrs, &top_events,dir_path);
     /* ------ Preparing data ------ */
     for awr in awrs {
@@ -633,7 +636,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
-        correlation_of("\n\tCorrelation of DB Time\t".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
+        //correlation_of("\n\tCorrelation of DB Time\t".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
         
         let sql_id = key.1.clone();
         /* Correlation calc */
@@ -666,7 +669,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         }
     }
     
-    //report_instance_stats_cor(instance_stats, y_vals_dbtime);
+    report_instance_stats_cor(instance_stats, y_vals_dbtime);
 
     let layout = Layout::new()
         .height(1000)
