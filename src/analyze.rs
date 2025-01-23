@@ -159,39 +159,70 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
         .collect();
 
     // Group data by event
-    let mut data_by_event: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut data_by_event: HashMap<String, (Vec<f64>, HashMap<String, Vec<f32>>)> = HashMap::new();
     for event in filtered_events {
-        data_by_event.entry(event.event.clone())
-            .or_insert_with(Vec::new)
-            .push(event.pct_dbtime);
+        let entry = data_by_event.entry(event.event.clone()).or_insert_with(|| (Vec::new(), HashMap::new()));
+        entry.0.push(event.pct_dbtime); // Add pct_dbtime to the grouped data
+        for (bucket, value) in &event.waitevent_histogram_ms { // Add waitevent_histogram_ms to the grouped data
+            entry.1.entry(bucket.clone()).or_insert_with(Vec::new).push(*value);
+        }
     }
 
     // Create the histogram for each event and save it as separate file
-    for (event, pct_dbtime_values) in data_by_event {
+    for (event, (pct_dbtime_values, histogram_data)) in data_by_event {
         let mut plot = Plot::new();
+        let event_name = format!("{}",&event);
 
-        //Add Histogram
-        let histogram = Histogram::new(pct_dbtime_values.clone())
-           .name("Histogram")
+        //Add Histogram for DBTime
+        let dbt_histogram = Histogram::new(pct_dbtime_values.clone())
+           .name(&event_name)
+           .legend_group(&event_name)
             //.n_bins_x(100) // Number of bins
             .x_axis("x1")
-            .y_axis("y1");
-        plot.add_trace(histogram);
+            .y_axis("y1")
+            .show_legend(true);
+        plot.add_trace(dbt_histogram);
 
-        // Add Box Plot
-        let box_plot = BoxPlot::new_xy(pct_dbtime_values.clone(),vec![event.clone();pct_dbtime_values.clone().len()])
-            .name("Box Plot")
+        // Add Box Plot for DBTime
+        let dbt_box_plot = BoxPlot::new_xy(pct_dbtime_values.clone(),vec![event.clone();pct_dbtime_values.clone().len()])
+            .name("")
+            .legend_group(&event_name)
             .box_mean(BoxMean::True)
-            .orientation(Orientation::Horizontal) // Make the box plot horizontal
+            .orientation(Orientation::Horizontal)
             .x_axis("x1")
-            .y_axis("y2");
-        plot.add_trace(box_plot);
+            .y_axis("y2")
+            .show_legend(false);
+        plot.add_trace(dbt_box_plot);
+
+        // Add Bar Plots for Histogram Buckets
+        for (bucket, values) in histogram_data {
+            let bucket_name = format!("{}", bucket);
+            let ms_bucket_histogram = Histogram::new(values.clone())
+                .name(&bucket_name)
+                .legend_group(&bucket_name)
+                //.n_bins_x(100) // Number of bins
+                .x_axis("x2")
+                .y_axis("y3")
+                .show_legend(true);
+            plot.add_trace(ms_bucket_histogram);
+
+            let ms_bucket_box_plot = BoxPlot::new_xy(values.clone(),vec![bucket.clone()])// Use values for y-axis, // Use bucket names for x-axis
+                .name("")
+                .legend_group(&bucket_name)
+                .box_mean(BoxMean::True)
+                .orientation(Orientation::Horizontal)
+                .x_axis("x2")
+                .y_axis("y4")
+                .show_legend(false);
+            plot.add_trace(ms_bucket_box_plot);
+        }
 
         let layout = Layout::new()
             .title(Title::new(&format!("'{}'", event)))
+            .height(800)
             .grid(
                 LayoutGrid::new()
-                    .rows(2) // 2 rows: one for box plot, one for histogram
+                    .rows(3) // 2 rows: one for box plot, one for histogram
                     .columns(1), // Single column
                     //.row_order(Grid::TopToBottom),
             )
@@ -204,15 +235,31 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
             )
             .y_axis(
                 Axis::new()
-                    .domain(&[0.0, 0.7]) // Lower domain for the histogram
+                    .domain(&[0.0, 0.4]) // Lower domain for the histogram
                     .anchor("x1")
                     .range(vec![0.,]),
             )
             .y_axis2(
                 Axis::new()
-                    .domain(&[0.7, 1.0]) // Upper domain for the box plot
+                    .domain(&[0.4, 0.5]) // Upper domain for the box plot
                     .anchor("x1")
                     .range(vec![0.,]),
+            )
+            .x_axis2(
+                Axis::new()
+                    .title(Title::new("Wait Event ms"))
+                    .domain(&[0.0, 1.0]) // Shared domain
+                    .anchor("y3"),
+            )
+            .y_axis3(
+                Axis::new()
+                    .domain(&[0.6, 0.8]) // Upper domain for the bucket histograms
+                    .anchor("x2"),
+            )
+            .y_axis4(
+                Axis::new()
+                    .domain(&[0.8, 1.0]) // Upper domain for the bucket histograms
+                    .anchor("x2"),
             );
             plot.set_layout(layout);
     
