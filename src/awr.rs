@@ -387,6 +387,71 @@ fn waitevent_histogram_ms(table: ElementRef) -> HashMap<String, HashMap<String, 
 	histogram
 }
 
+fn waitevent_histogram_ms_txt(events_histogram_section: Vec<&str>, event_names: HashMap<String, String>) -> HashMap<String, HashMap<String, f32>> {
+	let mut histogram: HashMap<String, HashMap<String, f32>> = HashMap::new();
+	for line in events_histogram_section {
+		if line.len() > 26 {
+			let mut hist_values: HashMap<String, f32> = HashMap::from([
+				("<1ms".to_string(), 0.0),
+				("<2ms".to_string(), 0.0),
+				("<4ms".to_string(), 0.0),
+				("<8ms".to_string(), 0.0),
+				("<16ms".to_string(), 0.0),
+				("<32ms".to_string(), 0.0),
+				("<=1s".to_string(), 0.0),
+				(">1s".to_string(), 0.0),
+			]);
+
+			let mut event_name = line[0..26].to_string().trim().to_string();
+			if event_names.contains_key(&event_name) {
+				event_name = event_names.get(&event_name).unwrap().clone();
+				if line.len() >= 37 {
+					let pct_val = f32::from_str(&line[33..38].trim().replace(",","")).unwrap_or(0.0);
+					let x = hist_values.get_mut("<1ms").unwrap();
+					*x = pct_val;
+				}
+				if line.len() >= 43 {
+					let pct_val = f32::from_str(&line[39..44].trim().replace(",","")).unwrap_or(0.0);
+					let x = hist_values.get_mut("<2ms").unwrap();
+					*x = pct_val;
+				}
+				if line.len() >= 49 {
+					let pct_val = f32::from_str(&line[45..50].trim().replace(",","")).unwrap_or(0.0);
+					let x = hist_values.get_mut("<4ms").unwrap();
+					*x = pct_val;
+				}
+				if line.len() >= 55 {
+					let pct_val = f32::from_str(&line[51..56].trim().replace(",","")).unwrap_or(0.0);
+					let x = hist_values.get_mut("<8ms").unwrap();
+					*x = pct_val;
+				}
+				if line.len() >= 61 {
+					let pct_val = f32::from_str(&line[57..62].trim().replace(",","")).unwrap_or(0.0);
+					let x = hist_values.get_mut("<16ms").unwrap();
+					*x = pct_val;
+				}
+				if line.len() >= 67 {
+					let pct_val = f32::from_str(&line[63..68].trim().replace(",","")).unwrap_or(0.0);
+					let x = hist_values.get_mut("<32ms").unwrap();
+					*x = pct_val;
+				}
+				if line.len() >= 73 {
+					let pct_val = f32::from_str(&line[69..74].trim().replace(",","")).unwrap_or(0.0);
+					let x = hist_values.get_mut("<=1s").unwrap();
+					*x = pct_val;
+				}
+				if line.len() >= 79 {
+					let pct_val = f32::from_str(&line[75..80].trim().replace(",","")).unwrap_or(0.0);
+					let x = hist_values.get_mut(">1s").unwrap();
+					*x = pct_val;
+				}
+				histogram.insert(event_name.clone(), hist_values.clone());
+			}
+		}
+	}
+	histogram
+}
+
 fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<ForegroundWaitEvents> {
 	let mut fg: Vec<ForegroundWaitEvents> = Vec::new();
 	for line in foreground_events_section {
@@ -948,7 +1013,28 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		inst_stats.extend_from_slice(&awr_lines[instance_act_index.begin..instance_act_index.end+2]);
 		awr.key_instance_stats = instance_activity_stats_txt(inst_stats);
 
-
+		let mut event_names: HashMap<String, String> = HashMap::new();
+		for ev in &awr.foreground_wait_events {
+			if ev.event.len() >= 26 {
+				event_names.insert(ev.event[0..26].to_string(), ev.event.clone());
+			} else {
+				event_names.insert(ev.event.to_string(), ev.event.clone());
+			}
+		}
+		let event_histogram_start = format!("{}{}", 12u8 as char, "Wait Event Histogram");
+		let event_histogram_end = format!("{}{}", 12u8 as char, "SQL ordered by CPU");
+		let event_histogram_index = find_section_boundries(awr_lines.clone(), &event_histogram_start, &event_histogram_end);
+		let mut event_hist: Vec<&str> = Vec::new();
+		event_hist.extend_from_slice(&awr_lines[event_histogram_index.begin..event_histogram_index.end+2]);
+		let event_histogram = waitevent_histogram_ms_txt(event_hist, event_names);
+		if event_histogram.len() > 0 {
+			for ev in awr.foreground_wait_events.iter_mut() {
+				if event_histogram.contains_key(&ev.event) {
+					let histogram = event_histogram.get(&ev.event).unwrap().clone();
+					ev.waitevent_histogram_ms = histogram;
+				}
+			}
+		}
 	}
 	for lpi in 0..awr.load_profile.len() {
 		awr.load_profile[lpi].begin_snap_time = awr.snap_info.begin_snap_time.clone();
