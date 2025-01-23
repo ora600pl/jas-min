@@ -1027,7 +1027,6 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		let mut event_hist: Vec<&str> = Vec::new();
 		event_hist.extend_from_slice(&awr_lines[event_histogram_index.begin..event_histogram_index.end+2]);
 		let event_histogram = waitevent_histogram_ms_txt(event_hist, event_names);
-		println!("{}", event_histogram.len());
 		if event_histogram.len() > 0 {
 			for ev in awr.foreground_wait_events.iter_mut() {
 				if event_histogram.contains_key(&ev.event) {
