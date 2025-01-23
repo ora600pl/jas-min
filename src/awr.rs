@@ -6,7 +6,7 @@ use std::result;
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::char;
 use crate::analyze::plot_to_file;
 use crate::idleevents::is_idle;
@@ -74,6 +74,7 @@ pub struct ForegroundWaitEvents {
 	pub avg_wait: f64,
 	pub pct_dbtime: f64,
 	begin_snap_time: String,
+	pub waitevent_histogram_ms: HashMap<String,f32>,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -347,6 +348,45 @@ fn sql_io_time(table: ElementRef) -> Vec<SQLIOTime> {
 	sql_io_time
 }
 
+fn waitevent_histogram_ms(table: ElementRef) -> HashMap<String, HashMap<String, f32>> {
+	let mut histogram: HashMap<String, HashMap<String, f32>> = HashMap::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+	let header_selector = Selector::parse("th").unwrap();
+	let mut proper_table = false;
+	let mut buckets: Vec<String> = Vec::new();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		let headers = row.select(&header_selector).collect::<Vec<_>>();
+		if headers.len() == 10 && !proper_table {
+			let header_check = headers[3].text().collect::<Vec<_>>();
+			let header_check = header_check[0].trim();
+			if header_check == "<1ms" || header_check == "<2ms" {
+				proper_table = true;
+			}
+			for i in 2..10 {
+				let h = headers[i].text().collect::<Vec<_>>();
+				let h = h[0].trim();
+				buckets.push(h.to_string());
+			}
+		} else if columns.len() == 10 && proper_table {
+			let event = columns[0].text().collect::<Vec<_>>();
+			let event = event[0].trim();
+
+			for i in 2..10 {
+				let pct_time = columns[i].text().collect::<Vec<_>>();
+				let pct_time = f32::from_str(&pct_time[0].trim().replace(",","")).unwrap_or(0.0);
+				histogram.entry(event.to_string()).or_insert(HashMap::new());
+				let mut v = histogram.get_mut(event).unwrap();
+				v.entry(buckets[i-2].clone()).or_insert(pct_time);
+			}
+		} 
+	}
+
+	histogram
+}
+
 fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<ForegroundWaitEvents> {
 	let mut fg: Vec<ForegroundWaitEvents> = Vec::new();
 	for line in foreground_events_section {
@@ -372,13 +412,15 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foreground
 					pct_dbtime = f64::from_str(&line[73..pct_dbtime_end].trim().replace(",","")).unwrap();
 				}
 				if !is_idle(&statname) {
-					fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
+					fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() , waitevent_histogram_ms: HashMap::new()})
 				}
 			}
 		}
 	}
 	fg
-}
+}	
+
+
 
 fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
 	let mut foreground_wait_events: Vec<ForegroundWaitEvents> = Vec::new();
@@ -403,7 +445,7 @@ fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
 			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
 			if !is_idle(&event) {
-				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() })
+				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string(), waitevent_histogram_ms: HashMap::new() })
 			}
 		}
 	}
@@ -826,6 +868,16 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 				awr.key_instance_stats = instance_activity_stats(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays thread activity stats in the instance. For each activity , total number of activity and activity per hour are displayed" {
 				awr.redo_log = redo_log_switches(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays total number of waits, and information about total wait time, for each wait event" {
+				let event_histogram = waitevent_histogram_ms(element);
+				if event_histogram.len() > 0 {
+					for ev in awr.foreground_wait_events.iter_mut() {
+						if event_histogram.contains_key(&ev.event) {
+							let histogram = event_histogram.get(&ev.event).unwrap().clone();
+							ev.waitevent_histogram_ms = histogram;
+						}
+					}
+				}
 			}
 		}
 	} else if fname.ends_with("txt") {
