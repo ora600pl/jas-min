@@ -1022,11 +1022,12 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 			}
 		}
 		let event_histogram_start = format!("{}{}", 12u8 as char, "Wait Event Histogram");
-		let event_histogram_end = format!("{}{}", 12u8 as char, "SQL ordered by CPU");
+		let event_histogram_end = format!("{}{}", 12u8 as char, "SQL ordered by");
 		let event_histogram_index = find_section_boundries(awr_lines.clone(), &event_histogram_start, &event_histogram_end);
 		let mut event_hist: Vec<&str> = Vec::new();
 		event_hist.extend_from_slice(&awr_lines[event_histogram_index.begin..event_histogram_index.end+2]);
 		let event_histogram = waitevent_histogram_ms_txt(event_hist, event_names);
+		println!("{}", event_histogram.len());
 		if event_histogram.len() > 0 {
 			for ev in awr.foreground_wait_events.iter_mut() {
 				if event_histogram.contains_key(&ev.event) {
