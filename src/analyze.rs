@@ -151,6 +151,19 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
 
 // Filter and generate histogram for top events
 fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u8>, dirpath: &str) {
+    
+    //Make colors consistent across buckets 
+    let bucket_colors: HashMap<String, String> = HashMap::from([
+        ("<1ms".to_string(), "#1fb4b4".to_string()), // Ocean Blue
+        ("<2ms".to_string(), "#ff7f0e".to_string()), // Orange
+        ("<4ms".to_string(), "#2ca02c".to_string()), // Green
+        ("<8ms".to_string(), "#f21f5b".to_string()), // Red
+        ("<16ms".to_string(), "#ba40f7".to_string()), // Purple
+        ("<32ms".to_string(), "#8c564b".to_string()), // Brown
+        ("<=1s".to_string(), "#e377c2".to_string()), // Pink
+        (">1s".to_string(), "#a8c204".to_string())  // Dirty Yellow
+    ]);
+
     // Filter ForegroundWaitEvents based on top_events
     let filtered_events: Vec<&ForegroundWaitEvents> = awrs
         .iter()
@@ -159,59 +172,114 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
         .collect();
 
     // Group data by event
-    let mut data_by_event: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut data_by_event: HashMap<String, (Vec<f64>, HashMap<String, Vec<f32>>)> = HashMap::new();
     for event in filtered_events {
-        data_by_event.entry(event.event.clone())
-            .or_insert_with(Vec::new)
-            .push(event.pct_dbtime);
+        let entry = data_by_event.entry(event.event.clone()).or_insert_with(|| (Vec::new(), HashMap::new()));
+        entry.0.push(event.pct_dbtime); // Add pct_dbtime
+        for (bucket, value) in &event.waitevent_histogram_ms { // Add waitevent_histogram_ms
+            entry.1.entry(bucket.clone()).or_insert_with(Vec::new).push(*value);
+        }
     }
 
     // Create the histogram for each event and save it as separate file
-    for (event, pct_dbtime_values) in data_by_event {
+    for (event, (pct_dbtime_values, histogram_data)) in data_by_event {
         let mut plot = Plot::new();
-
-        //Add Histogram
-        let histogram = Histogram::new(pct_dbtime_values.clone())
-           .name("Histogram")
+        let event_name = format!("{}",&event);
+        //Add Histogram for DBTime
+        let dbt_histogram = Histogram::new(pct_dbtime_values.clone())
+           .name(&event_name)
+           .legend_group(&event_name)
             //.n_bins_x(100) // Number of bins
             .x_axis("x1")
-            .y_axis("y1");
-        plot.add_trace(histogram);
+            .y_axis("y1")
+            .show_legend(true);
+        plot.add_trace(dbt_histogram);
 
-        // Add Box Plot
-        let box_plot = BoxPlot::new_xy(pct_dbtime_values.clone(),vec![event.clone();pct_dbtime_values.clone().len()])
-            .name("Box Plot")
+        // Add Box Plot for DBTime
+        let dbt_box_plot = BoxPlot::new_xy(pct_dbtime_values.clone(),vec![event.clone();pct_dbtime_values.clone().len()])
+            .name("")
+            .legend_group(&event_name)
             .box_mean(BoxMean::True)
-            .orientation(Orientation::Horizontal) // Make the box plot horizontal
+            .orientation(Orientation::Horizontal)
             .x_axis("x1")
-            .y_axis("y2");
-        plot.add_trace(box_plot);
+            .y_axis("y2")
+            .show_legend(false);
+        plot.add_trace(dbt_box_plot);
+
+        // Add Bar Plots for Histogram Buckets
+        for (bucket, values) in histogram_data {
+            let default_color = "#000000".to_string(); // Store default in a variable
+            let color = bucket_colors.get(&bucket).unwrap_or(&default_color);
+            let bucket_name = format!("{}", &bucket);
+            let ms_bucket_histogram = Histogram::new(values.clone())
+                .name(&bucket_name)
+                .legend_group(&bucket_name)
+                //.n_bins_x(100) // Number of bins
+                .x_axis("x2")
+                .y_axis("y3")
+                .marker(plotly::common::Marker::new().color(color.clone()).opacity(0.7))
+                .show_legend(true);
+            plot.add_trace(ms_bucket_histogram);
+
+            let ms_bucket_box_plot = BoxPlot::new_xy(values.clone(),vec![bucket.clone();values.clone().len()])// Use values for y-axis, // Use bucket names for x-axis
+                .name("")
+                .legend_group(&bucket_name)
+                .box_mean(BoxMean::True)
+                .orientation(Orientation::Horizontal)
+                .x_axis("x2")
+                .y_axis("y4")
+                .marker(plotly::common::Marker::new().color(color.clone()).opacity(0.7))
+                .show_legend(false);
+            plot.add_trace(ms_bucket_box_plot);
+        }
 
         let layout = Layout::new()
             .title(Title::new(&format!("'{}'", event)))
+            .height(900)
+            .bar_gap(0.0)
+            .bar_mode(plotly::layout::BarMode::Overlay)
             .grid(
                 LayoutGrid::new()
-                    .rows(2) // 2 rows: one for box plot, one for histogram
-                    .columns(1), // Single column
+                    .rows(4)
+                    .columns(1),
                     //.row_order(Grid::TopToBottom),
             )
             .x_axis(
                 Axis::new()
-                    .title(Title::new("%DBTime"))
-                    .domain(&[0.0, 1.0]) // Shared domain
+                    .title(Title::new("% DBTime"))
+                    .domain(&[0.0, 1.0])
                     .anchor("y1")
                     .range(vec![0.,]),
             )
             .y_axis(
                 Axis::new()
-                    .domain(&[0.0, 0.7]) // Lower domain for the histogram
+                    .domain(&[0.0, 0.3])
                     .anchor("x1")
                     .range(vec![0.,]),
             )
             .y_axis2(
                 Axis::new()
-                    .domain(&[0.7, 1.0]) // Upper domain for the box plot
+                    .domain(&[0.3, 0.35])
                     .anchor("x1")
+                    .range(vec![0.,]),
+            )
+            .x_axis2(
+                Axis::new()
+                    .title(Title::new("% Wait Event ms"))
+                    .domain(&[0.0, 1.0])
+                    .anchor("y3")
+                    .range(vec![0.,]),
+            )
+            .y_axis3(
+                Axis::new()
+                    .domain(&[0.45, 0.8])
+                    .anchor("x2")
+                    .range(vec![0.,]),
+            )
+            .y_axis4(
+                Axis::new()
+                    .domain(&[0.83, 1.0])
+                    .anchor("x2")
                     .range(vec![0.,]),
             );
             plot.set_layout(layout);
