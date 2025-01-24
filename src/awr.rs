@@ -74,7 +74,7 @@ pub struct ForegroundWaitEvents {
 	pub avg_wait: f64,
 	pub pct_dbtime: f64,
 	begin_snap_time: String,
-	pub waitevent_histogram_ms: HashMap<String,f32>,
+	pub waitevent_histogram_ms: BTreeMap<String,f32>,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -348,8 +348,8 @@ fn sql_io_time(table: ElementRef) -> Vec<SQLIOTime> {
 	sql_io_time
 }
 
-fn waitevent_histogram_ms(table: ElementRef) -> HashMap<String, HashMap<String, f32>> {
-	let mut histogram: HashMap<String, HashMap<String, f32>> = HashMap::new();
+fn waitevent_histogram_ms(table: ElementRef) -> HashMap<String, BTreeMap<String, f32>> {
+	let mut histogram: HashMap<String, BTreeMap<String, f32>> = HashMap::new();
 	let row_selector = Selector::parse("tr").unwrap();
     let column_selector = Selector::parse("td").unwrap();
 	let header_selector = Selector::parse("th").unwrap();
@@ -377,9 +377,10 @@ fn waitevent_histogram_ms(table: ElementRef) -> HashMap<String, HashMap<String, 
 			for i in 2..10 {
 				let pct_time = columns[i].text().collect::<Vec<_>>();
 				let pct_time = f32::from_str(&pct_time[0].trim().replace(",","")).unwrap_or(0.0);
-				histogram.entry(event.to_string()).or_insert(HashMap::new());
+				histogram.entry(event.to_string()).or_insert(BTreeMap::new());
 				let mut v = histogram.get_mut(event).unwrap();
-				v.entry(buckets[i-2].clone()).or_insert(pct_time);
+				let bucket = format!("Bucket {}: {}", i-2, buckets[i-2].clone());
+				v.entry(bucket).or_insert(pct_time);
 			}
 		} 
 	}
@@ -387,19 +388,19 @@ fn waitevent_histogram_ms(table: ElementRef) -> HashMap<String, HashMap<String, 
 	histogram
 }
 
-fn waitevent_histogram_ms_txt(events_histogram_section: Vec<&str>, event_names: HashMap<String, String>) -> HashMap<String, HashMap<String, f32>> {
-	let mut histogram: HashMap<String, HashMap<String, f32>> = HashMap::new();
+fn waitevent_histogram_ms_txt(events_histogram_section: Vec<&str>, event_names: HashMap<String, String>) -> HashMap<String, BTreeMap<String, f32>> {
+	let mut histogram: HashMap<String, BTreeMap<String, f32>> = HashMap::new();
 	for line in events_histogram_section {
 		if line.len() > 26 {
-			let mut hist_values: HashMap<String, f32> = HashMap::from([
-				("<1ms".to_string(), 0.0),
-				("<2ms".to_string(), 0.0),
-				("<4ms".to_string(), 0.0),
-				("<8ms".to_string(), 0.0),
-				("<16ms".to_string(), 0.0),
-				("<32ms".to_string(), 0.0),
-				("<=1s".to_string(), 0.0),
-				(">1s".to_string(), 0.0),
+			let mut hist_values: BTreeMap<String, f32> = BTreeMap::from([
+				("Bucket 1: <1ms".to_string(), 0.0),
+				("Bucket 2: <2ms".to_string(), 0.0),
+				("Bucket 3: <4ms".to_string(), 0.0),
+				("Bucket 4: <8ms".to_string(), 0.0),
+				("Bucket 5: <16ms".to_string(), 0.0),
+				("Bucket 6: <32ms".to_string(), 0.0),
+				("Bucket 7: <=1s".to_string(), 0.0),
+				("Bucket 8: >1s".to_string(), 0.0),
 			]);
 
 			let mut event_name = line[0..26].to_string().trim().to_string();
@@ -407,42 +408,42 @@ fn waitevent_histogram_ms_txt(events_histogram_section: Vec<&str>, event_names: 
 				event_name = event_names.get(&event_name).unwrap().clone();
 				if line.len() >= 37 {
 					let pct_val = f32::from_str(&line[33..38].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("<1ms").unwrap();
+					let x = hist_values.get_mut("Bucket 1: <1ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 43 {
 					let pct_val = f32::from_str(&line[39..44].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("<2ms").unwrap();
+					let x = hist_values.get_mut("Bucket 2: <2ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 49 {
 					let pct_val = f32::from_str(&line[45..50].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("<4ms").unwrap();
+					let x = hist_values.get_mut("Bucket 3: <4ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 55 {
 					let pct_val = f32::from_str(&line[51..56].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("<8ms").unwrap();
+					let x = hist_values.get_mut("Bucket 4: <8ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 61 {
 					let pct_val = f32::from_str(&line[57..62].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("<16ms").unwrap();
+					let x = hist_values.get_mut("Bucket 5: <16ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 67 {
 					let pct_val = f32::from_str(&line[63..68].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("<32ms").unwrap();
+					let x = hist_values.get_mut("Bucket 6: <32ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 73 {
 					let pct_val = f32::from_str(&line[69..74].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("<=1s").unwrap();
+					let x = hist_values.get_mut("Bucket 7: <=1s").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 79 {
 					let pct_val = f32::from_str(&line[75..80].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut(">1s").unwrap();
+					let x = hist_values.get_mut("Bucket 8: >1s").unwrap();
 					*x = pct_val;
 				}
 				histogram.insert(event_name.clone(), hist_values.clone());
@@ -477,7 +478,7 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foreground
 					pct_dbtime = f64::from_str(&line[73..pct_dbtime_end].trim().replace(",","")).unwrap();
 				}
 				if !is_idle(&statname) {
-					fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() , waitevent_histogram_ms: HashMap::new()})
+					fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() , waitevent_histogram_ms: BTreeMap::new()})
 				}
 			}
 		}
@@ -510,7 +511,7 @@ fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
 			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
 			if !is_idle(&event) {
-				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string(), waitevent_histogram_ms: HashMap::new() })
+				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string(), waitevent_histogram_ms: BTreeMap::new() })
 			}
 		}
 	}
