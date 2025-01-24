@@ -162,8 +162,8 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
     let mut data_by_event: HashMap<String, (Vec<f64>, HashMap<String, Vec<f32>>)> = HashMap::new();
     for event in filtered_events {
         let entry = data_by_event.entry(event.event.clone()).or_insert_with(|| (Vec::new(), HashMap::new()));
-        entry.0.push(event.pct_dbtime); // Add pct_dbtime to the grouped data
-        for (bucket, value) in &event.waitevent_histogram_ms { // Add waitevent_histogram_ms to the grouped data
+        entry.0.push(event.pct_dbtime); // Add pct_dbtime
+        for (bucket, value) in &event.waitevent_histogram_ms { // Add waitevent_histogram_ms
             entry.1.entry(bucket.clone()).or_insert_with(Vec::new).push(*value);
         }
     }
@@ -172,7 +172,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
     for (event, (pct_dbtime_values, histogram_data)) in data_by_event {
         let mut plot = Plot::new();
         let event_name = format!("{}",&event);
-
+        //println!("{}: DBT {:?}",&event,&pct_dbtime_values);
         //Add Histogram for DBTime
         let dbt_histogram = Histogram::new(pct_dbtime_values.clone())
            .name(&event_name)
@@ -196,7 +196,8 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
 
         // Add Bar Plots for Histogram Buckets
         for (bucket, values) in histogram_data {
-            let bucket_name = format!("{}", bucket);
+            //println!("    {}: {:?}", &bucket, &values);
+            let bucket_name = format!("{}", &bucket);
             let ms_bucket_histogram = Histogram::new(values.clone())
                 .name(&bucket_name)
                 .legend_group(&bucket_name)
@@ -206,7 +207,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
                 .show_legend(true);
             plot.add_trace(ms_bucket_histogram);
 
-            let ms_bucket_box_plot = BoxPlot::new_xy(values.clone(),vec![bucket.clone()])// Use values for y-axis, // Use bucket names for x-axis
+            let ms_bucket_box_plot = BoxPlot::new_xy(values.clone(),vec![bucket.clone();values.clone().len()])// Use values for y-axis, // Use bucket names for x-axis
                 .name("")
                 .legend_group(&bucket_name)
                 .box_mean(BoxMean::True)
@@ -222,8 +223,8 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
             .height(800)
             .grid(
                 LayoutGrid::new()
-                    .rows(3) // 2 rows: one for box plot, one for histogram
-                    .columns(1), // Single column
+                    .rows(4)
+                    .columns(1),
                     //.row_order(Grid::TopToBottom),
             )
             .x_axis(
@@ -235,13 +236,13 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
             )
             .y_axis(
                 Axis::new()
-                    .domain(&[0.0, 0.4]) // Lower domain for the histogram
+                    .domain(&[0.0, 0.3]) // Lower domain for the histogram
                     .anchor("x1")
                     .range(vec![0.,]),
             )
             .y_axis2(
                 Axis::new()
-                    .domain(&[0.4, 0.5]) // Upper domain for the box plot
+                    .domain(&[0.3, 0.4]) // Upper domain for the box plot
                     .anchor("x1")
                     .range(vec![0.,]),
             )
@@ -249,17 +250,20 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
                 Axis::new()
                     .title(Title::new("Wait Event ms"))
                     .domain(&[0.0, 1.0]) // Shared domain
-                    .anchor("y3"),
+                    .anchor("y3")
+                    .range(vec![0.,]),
             )
             .y_axis3(
                 Axis::new()
-                    .domain(&[0.6, 0.8]) // Upper domain for the bucket histograms
-                    .anchor("x2"),
+                    .domain(&[0.5, 0.8]) // Upper domain for the bucket histograms
+                    .anchor("x2")
+                    .range(vec![0.,]),
             )
             .y_axis4(
                 Axis::new()
                     .domain(&[0.8, 1.0]) // Upper domain for the bucket histograms
-                    .anchor("x2"),
+                    .anchor("x2")
+                    .range(vec![0.,]),
             );
             plot.set_layout(layout);
     
