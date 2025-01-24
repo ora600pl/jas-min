@@ -154,14 +154,14 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
     
     //Make colors consistent across buckets 
     let bucket_colors: HashMap<String, String> = HashMap::from([
-        ("<1ms".to_string(), "#1fb4b4".to_string()), // Ocean Blue
-        ("<2ms".to_string(), "#ff7f0e".to_string()), // Orange
-        ("<4ms".to_string(), "#2ca02c".to_string()), // Green
-        ("<8ms".to_string(), "#f21f5b".to_string()), // Red
-        ("<16ms".to_string(), "#ba40f7".to_string()), // Purple
-        ("<32ms".to_string(), "#8c564b".to_string()), // Brown
-        ("<=1s".to_string(), "#e377c2".to_string()), // Pink
-        (">1s".to_string(), "#a8c204".to_string())  // Dirty Yellow
+        ("Bucket 1: <1ms".to_string(), "#1fb4b4".to_string()), // Ocean Blue
+        ("Bucket 2: <2ms".to_string(), "#ff7f0e".to_string()), // Orange
+        ("Bucket 3: <4ms".to_string(), "#2ca02c".to_string()), // Green
+        ("Bucket 4: <8ms".to_string(), "#f21f5b".to_string()), // Red
+        ("Bucket 5: <16ms".to_string(), "#ba40f7".to_string()), // Purple
+        ("Bucket 6: <32ms".to_string(), "#8c564b".to_string()), // Brown
+        ("Bucket 7: <=1s".to_string(), "#e377c2".to_string()), // Pink
+        ("Bucket 8: >1s".to_string(), "#a8c204".to_string())  // Dirty Yellow
     ]);
 
     // Filter ForegroundWaitEvents based on top_events
@@ -172,9 +172,9 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
         .collect();
 
     // Group data by event
-    let mut data_by_event: HashMap<String, (Vec<f64>, HashMap<String, Vec<f32>>)> = HashMap::new();
+    let mut data_by_event: HashMap<String, (Vec<f64>, BTreeMap<String, Vec<f32>>)> = HashMap::new();
     for event in filtered_events {
-        let entry = data_by_event.entry(event.event.clone()).or_insert_with(|| (Vec::new(), HashMap::new()));
+        let entry = data_by_event.entry(event.event.clone()).or_insert_with(|| (Vec::new(), BTreeMap::new()));
         entry.0.push(event.pct_dbtime); // Add pct_dbtime
         for (bucket, value) in &event.waitevent_histogram_ms { // Add waitevent_histogram_ms
             entry.1.entry(bucket.clone()).or_insert_with(Vec::new).push(*value);
