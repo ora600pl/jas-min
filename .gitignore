@@ -13,6 +13,7 @@
 *.html
 *.pyc
 .rustc_info.json
+/target/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
