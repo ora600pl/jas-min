@@ -114,6 +114,18 @@ pub struct SQLIOTime {
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct SQLGets {
+	sql_id: String,
+	buffer_gets: f64,
+	executions: u64,
+	gets_per_exec: f64,
+	pct_total: f64,
+	pct_cpu: f64, 
+	pct_io: f64,
+	sql_module: String,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SnapInfo {
 	pub begin_snap_id: u32,
 	end_snap_id: u32,
@@ -138,8 +150,9 @@ pub struct AWR {
 	time_model_stats: Vec<TimeModelStats>,
 	pub foreground_wait_events: Vec<ForegroundWaitEvents>,
 	pub sql_elapsed_time: Vec<SQLElapsedTime>,
-	sql_cpu_time: Vec<SQLCPUTime>,
-	sql_io_time: Vec<SQLIOTime>,
+	pub sql_cpu_time: HashMap<String, SQLCPUTime>,
+	pub sql_io_time: HashMap<String, SQLIOTime>,
+	pub sql_gets: HashMap<String, SQLGets>,
 	pub key_instance_stats: Vec<KeyInstanceStats>,
 	pub snap_info: SnapInfo,
 } 
@@ -238,8 +251,8 @@ fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
 	sql_elapsed_time
 }
 
-fn sql_cpu_time_txt(sql_cpu_section: Vec<&str>) -> Vec<SQLCPUTime> {
-	let mut sql_cpu_time: Vec<SQLCPUTime> = Vec::new();
+fn sql_cpu_time_txt(sql_cpu_section: Vec<&str>) -> HashMap<String, SQLCPUTime> {
+	let mut sql_cpu_time: HashMap<String, SQLCPUTime> = HashMap::new();
 	for line in sql_cpu_section {
 		let fields = line.split_whitespace().collect::<Vec<&str>>();
 		if fields.len()>=6 {
@@ -257,7 +270,7 @@ fn sql_cpu_time_txt(sql_cpu_section: Vec<&str>) -> Vec<SQLCPUTime> {
 				let ela_time = ela_time.unwrap();
 				let buf_gets = buf_gets.unwrap();
 				let sql_id_hash = fields[6].trim().to_string();
-				sql_cpu_time.push(SQLCPUTime{sql_id: sql_id_hash, 
+				sql_cpu_time.entry(sql_id_hash.clone()).or_insert(SQLCPUTime{sql_id: sql_id_hash, 
 												cpu_time_s: cpu_time, 
 												executions: executions, 
 												cpu_time_exec_s: cpu_exec, 
@@ -270,8 +283,8 @@ fn sql_cpu_time_txt(sql_cpu_section: Vec<&str>) -> Vec<SQLCPUTime> {
 }
 
 
-fn sql_cpu_time(table: ElementRef) -> Vec<SQLCPUTime> {
-	let mut sql_cpu_time: Vec<SQLCPUTime> = Vec::new();
+fn sql_cpu_time(table: ElementRef) -> HashMap<String,SQLCPUTime> {
+	let mut sql_cpu_time: HashMap<String,SQLCPUTime> = HashMap::new();
 	let row_selector = Selector::parse("tr").unwrap();
     let column_selector = Selector::parse("td").unwrap();
 
@@ -302,15 +315,15 @@ fn sql_cpu_time(table: ElementRef) -> Vec<SQLCPUTime> {
 			let sql_module = columns[8].text().collect::<Vec<_>>();
 			let sql_module = sql_module[0].trim().to_string();
 
-			sql_cpu_time.push(SQLCPUTime { sql_id, cpu_time_s, executions, cpu_time_exec_s, pct_total, pct_cpu, pct_io, sql_module })
+			sql_cpu_time.entry(sql_id.clone()).or_insert(SQLCPUTime { sql_id, cpu_time_s, executions, cpu_time_exec_s, pct_total, pct_cpu, pct_io, sql_module });
 		}
 	}
 
 	sql_cpu_time
 }
 
-fn sql_io_time(table: ElementRef) -> Vec<SQLIOTime> {
-	let mut sql_io_time: Vec<SQLIOTime> = Vec::new();
+fn sql_io_time(table: ElementRef) -> HashMap<String,SQLIOTime> {
+	let mut sql_io_time: HashMap<String,SQLIOTime> = HashMap::new();
 	let row_selector = Selector::parse("tr").unwrap();
     let column_selector = Selector::parse("td").unwrap();
 
@@ -341,11 +354,78 @@ fn sql_io_time(table: ElementRef) -> Vec<SQLIOTime> {
 			let sql_module = columns[8].text().collect::<Vec<_>>();
 			let sql_module = sql_module[0].trim().to_string();
 
-			sql_io_time.push(SQLIOTime { sql_id, io_time_s, executions, io_time_exec_s, pct_total, pct_cpu, pct_io, sql_module })
+			sql_io_time.entry(sql_id.clone()).or_insert(SQLIOTime { sql_id, io_time_s, executions, io_time_exec_s, pct_total, pct_cpu, pct_io, sql_module });
 		}
 	}
 
 	sql_io_time
+}
+
+fn sql_gets(table: ElementRef) -> HashMap<String,SQLGets> {
+	let mut sql_gets: HashMap<String,SQLGets> = HashMap::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() >= 10 {
+			let sql_id = columns[7].text().collect::<Vec<_>>();
+			let sql_id = sql_id[0].trim().to_string();
+			
+			let buffer_gets = columns[0].text().collect::<Vec<_>>();
+			let buffer_gets = f64::from_str(&buffer_gets[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let executions = columns[1].text().collect::<Vec<_>>();
+			let executions = u64::from_str(&executions[0].trim().replace(",","")).unwrap_or(0);
+			
+			let gets_per_exec = columns[2].text().collect::<Vec<_>>();
+			let gets_per_exec = f64::from_str(&gets_per_exec[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let pct_total = columns[3].text().collect::<Vec<_>>();
+			let pct_total = f64::from_str(&pct_total[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let pct_cpu = columns[5].text().collect::<Vec<_>>();
+			let pct_cpu = f64::from_str(&pct_cpu[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let pct_io = columns[6].text().collect::<Vec<_>>();
+			let pct_io = f64::from_str(&pct_io[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let sql_module = columns[8].text().collect::<Vec<_>>();
+			let sql_module = sql_module[0].trim().to_string();
+
+			sql_gets.entry(sql_id.clone()).or_insert(SQLGets { sql_id, buffer_gets, executions, gets_per_exec, pct_total, pct_cpu, pct_io, sql_module });
+		}
+	}
+
+	sql_gets
+}
+
+fn sql_gets_txt(sql_gets_section: Vec<&str>) -> HashMap<String, SQLGets> {
+	let mut sql_gets: HashMap<String, SQLGets> = HashMap::new();
+	for line in sql_gets_section {
+		let fields = line.split_whitespace().collect::<Vec<&str>>();
+		if fields.len()>=6 {
+			let buffer_gets = f64::from_str(&fields[0].trim().replace(",",""));
+			let executions = u64::from_str(&fields[1].trim().replace(",",""));
+			let gets_exec = f64::from_str(&fields[2].trim().replace(",",""));
+			let pct_total = f64::from_str(&fields[3].trim().replace(",",""));
+			
+			if fields.len() == 7 && buffer_gets.is_ok() && gets_exec.is_ok() && executions.is_ok() && pct_total.is_ok() {
+				let buffer_gets = buffer_gets.unwrap();
+				let executions = executions.unwrap();
+				let pct_total = pct_total.unwrap();
+				let gets_exec = gets_exec.unwrap();
+				let sql_id_hash = fields[6].trim().to_string();
+				sql_gets.entry(sql_id_hash.clone()).or_insert(SQLGets{sql_id: sql_id_hash, 
+												buffer_gets: buffer_gets, 
+												executions: executions, 
+												gets_per_exec: gets_exec,
+												pct_total: pct_total, 
+												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string()});
+			}
+		}
+	}
+	sql_gets
 }
 
 fn waitevent_histogram_ms(table: ElementRef) -> HashMap<String, BTreeMap<String, f32>> {
@@ -878,19 +958,19 @@ fn load_profile(table: ElementRef) -> Vec<LoadProfile>{
     let column_selector = Selector::parse("td").unwrap();
     let mut lp: Vec<LoadProfile> = Vec::new();
     for row in table.select(&row_selector) {
-	let columns = row.select(&column_selector).collect::<Vec<_>>();
-	if columns.len() == 5 {
-		let statname = columns[0].text().collect::<Vec<_>>();
-		let statname = statname[0].trim();
-		
-		let per_second = columns[1].text().collect::<Vec<_>>();
-		let per_second = f64::from_str(&per_second[0].trim().replace(",","")).unwrap_or(0.0);
+		let columns = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() == 5 {
+			let statname = columns[0].text().collect::<Vec<_>>();
+			let statname = statname[0].trim();
+			
+			let per_second = columns[1].text().collect::<Vec<_>>();
+			let per_second = f64::from_str(&per_second[0].trim().replace(",","")).unwrap_or(0.0);
 
-		let per_transaction = columns[2].text().collect::<Vec<_>>();
-		let per_transaction = f64::from_str(&per_transaction[0].trim().replace(",", "")).unwrap_or(0.0);
+			let per_transaction = columns[2].text().collect::<Vec<_>>();
+			let per_transaction = f64::from_str(&per_transaction[0].trim().replace(",", "")).unwrap_or(0.0);
 
-		lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction, begin_snap_time: "".to_string()});
-	}
+			lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction, begin_snap_time: "".to_string()});
+		}
     }
     lp
 }
@@ -928,6 +1008,8 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 				awr.sql_cpu_time = sql_cpu_time(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays top SQL by user I/O time" {
 				awr.sql_io_time = sql_io_time(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays top SQL by buffer gets" {
+				awr.sql_gets = sql_gets(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays snapshot information" {
 				awr.snap_info = snap_info(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays Instance activity statistics. For each instance, activity total, activity per second, and activity per transaction are displayed" {
@@ -993,6 +1075,13 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		sql_cpu.extend_from_slice(&awr_lines[sql_cpu_index.begin..sql_cpu_index.end]);
 		awr.sql_cpu_time = sql_cpu_time_txt(sql_cpu);
 
+		let sql_gets_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
+		let sql_gets_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
+		let sql_gets_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end);
+		let mut sql_gets: Vec<&str> = Vec::new();
+		sql_gets.extend_from_slice(&awr_lines[sql_gets_index.begin..sql_gets_index.end]);
+		awr.sql_gets = sql_gets_txt(sql_gets);
+
 		let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed time");
 		let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
 		let mut sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end);
@@ -1056,7 +1145,7 @@ pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64, filter_db_
 	let mut awrs: Vec<AWRS> = Vec::new();
 	for file in fs::read_dir(dirname).unwrap() {
 		let fname = &file.unwrap().path().display().to_string();
-		if (fname.contains("awr") || fname.contains("sp_")) {
+		if ((fname.contains("awr") || fname.contains("sp_")) && (fname.ends_with("txt") || fname.ends_with("html"))) {
 			let file_name = fname.split("/").collect::<Vec<&str>>();
 			let file_name = file_name.last().unwrap().to_string();
 			awrs.push(AWRS{file_name: file_name.clone(), awr_doc: parse_awr_report_internal(fname.to_string())});
