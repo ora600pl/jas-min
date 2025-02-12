@@ -91,7 +91,7 @@ pub struct SQLElapsedTime {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SQLCPUTime {
-	sql_id: String,
+	pub sql_id: String,
 	cpu_time_s: f64,
 	executions: u64,
 	cpu_time_exec_s: f64,
@@ -103,7 +103,7 @@ pub struct SQLCPUTime {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SQLIOTime {
-	sql_id: String,
+	pub sql_id: String,
 	io_time_s: f64,
 	executions: u64,
 	io_time_exec_s: f64,
@@ -115,7 +115,7 @@ pub struct SQLIOTime {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SQLGets {
-	sql_id: String,
+	pub sql_id: String,
 	buffer_gets: f64,
 	executions: u64,
 	gets_per_exec: f64,
