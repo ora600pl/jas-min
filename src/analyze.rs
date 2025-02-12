@@ -1,4 +1,4 @@
-use crate::awr::{AWRS, AWR, ForegroundWaitEvents, LoadProfile, HostCPU};
+use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, AWR, AWRS};
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation};
@@ -125,6 +125,33 @@ fn std_deviation(data: Vec<f64>) -> Option<f64> {
         },
         _ => None
     }
+}
+
+fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWRS>) -> String {
+    let probe_size = awrs.len() as f64;
+
+    let mut sql_io_time = 0.0;
+    let mut sql_gets = 0.0;
+
+    //Filter HashMaps of SQL ordered by CPU Time to find how many times the given sqlid was marked in top section
+    let sql_cpu: Vec<&HashMap<String,SQLCPUTime>> = awrs.iter().map(|awr| &awr.awr_doc.sql_cpu_time)
+                                                  .filter(|sql| sql.contains_key(sqlid)).collect(); 
+
+    let sql_cpu_count = sql_cpu.len() as f64;
+
+    //Filter HashMaps of SQL ordered by User IO to find how many times the given sqlid was marked in top section
+    let sql_io: Vec<&HashMap<String, SQLIOTime>> = awrs.iter().map(|awr| &awr.awr_doc.sql_io_time)
+                                                 .filter(|sql|sql.contains_key(sqlid)).collect();
+    let sql_io_count = sql_io.len() as f64;
+
+     //Filter HashMaps of SQL ordered by GETS to find how many times the given sqlid was marked in top section
+     let sql_gets: Vec<&HashMap<String, SQLGets>> = awrs.iter().map(|awr| &awr.awr_doc.sql_gets)
+                                                    .filter(|sql|sql.contains_key(sqlid)).collect();
+    let sql_gets_count = sql_gets.len() as f64;
+
+    let top_sections = format!("Also found in top sections: SQL CPU [{:.2}%] | SQL I/O [{:.2}%] | SQL GETS [{:.2}%]", sql_cpu_count/probe_size*100.0, sql_io_count/probe_size*100.0, sql_gets_count/probe_size*100.0);
+
+    top_sections
 }
 
 fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_vec: Vec<f64>) {
@@ -351,7 +378,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     let fname = format!("{}/{}", html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
-    for awr in awrs {
+    for awr in &awrs {
         let xval = format!("{} ({})", awr.awr_doc.snap_info.begin_snap_time, awr.awr_doc.snap_info.begin_snap_id);
         x_vals.push(xval.clone());
 
@@ -383,7 +410,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         }
 
         //Than we can set the current value of the vector to the desired one, if the event is in TOP section in that snap id
-       for event in awr.awr_doc.foreground_wait_events { 
+       for event in &awr.awr_doc.foreground_wait_events { 
             if top_events.contains_key(&event.event) {
                 let mut v = y_vals_events.get_mut(&event.event).unwrap();
                 v[x_vals.len()-1] = event.total_wait_time_s;
@@ -396,7 +423,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             }
        }
        //Same with SQLs
-       for sqls in awr.awr_doc.sql_elapsed_time {
+       for sqls in &awr.awr_doc.sql_elapsed_time {
             if top_sqls.contains_key(&sqls.sql_id) {
                 let mut v = y_vals_sqls.get_mut(&sqls.sql_id).unwrap();
                 v[x_vals.len()-1] = sqls.elapsed_time_s;
@@ -408,7 +435,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
        }
        let mut is_statspack: bool = false;
         //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
-       for lp in awr.awr_doc.load_profile {
+       for lp in &awr.awr_doc.load_profile {
             if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
                 y_vals_dbtime.push(lp.per_second);
                 if lp.stat_name.starts_with("DB time") {
@@ -446,7 +473,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         let mut cleanout_cr: u64 = 0;
         let mut excessive_commit = 0.0;
 
-        for activity in awr.awr_doc.key_instance_stats {
+        for activity in &awr.awr_doc.key_instance_stats {
             let mut v = instance_stats.get_mut(&activity.statname).unwrap();
             v[x_vals.len()-1] = activity.total as f64;
 
@@ -722,7 +749,9 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         /* Correlation calc */
         let corr = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
-        println!("\t{: >5}", &sql_id);
+        let top_sections = report_top_sql_sections(&sql_id, &awrs);
+        println!("\n\t{: >5} \t ({})", &sql_id.bold(), top_sections.italic());
+
         let correlation_info = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
             print!("{: >49}", correlation_info.red().bold());
@@ -743,6 +772,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         println!("{: >24}{:.2}% of probes", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         println!("{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
         println!("{: >34} {: <16.2} \tSTDDEV exec times:  {:.2}", "--- AVG exec times:", avg_exec_n, stddev_exec_n);
+
+       
         
         for (key,ev) in &y_vals_events_sorted {
             correlation_of("+".to_string(), key.1.clone(), yv.clone(), ev.clone());
