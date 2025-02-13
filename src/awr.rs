@@ -86,7 +86,7 @@ pub struct SQLElapsedTime {
 	pct_total: f64,
 	pct_cpu: f64, 
 	pct_io: f64,
-	sql_module: String,
+	pub sql_module: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -126,6 +126,18 @@ pub struct SQLGets {
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct SQLReads {
+	pub sql_id: String,
+	physical_reads: f64,
+	executions: u64,
+	reads_per_exec: f64,
+	pct_total: f64,
+	cpu_time_pct: f64, //in Statspack it is CPU Time - in AWR it is PCT CPU
+	pct_io: f64, //doesn't exists in statspack
+	sql_module: String,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SnapInfo {
 	pub begin_snap_id: u32,
 	end_snap_id: u32,
@@ -153,6 +165,7 @@ pub struct AWR {
 	pub sql_cpu_time: HashMap<String, SQLCPUTime>,
 	pub sql_io_time: HashMap<String, SQLIOTime>,
 	pub sql_gets: HashMap<String, SQLGets>,
+	pub sql_reads: HashMap<String, SQLReads>,
 	pub key_instance_stats: Vec<KeyInstanceStats>,
 	pub snap_info: SnapInfo,
 } 
@@ -182,6 +195,7 @@ fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: 
 
 fn sql_ela_time_txt(sql_ela_section: Vec<&str>) -> Vec<SQLElapsedTime> {
 	let mut sql_ela_time: Vec<SQLElapsedTime> = Vec::new();
+	let mut sql_id_hash = String::new();
 	for line in sql_ela_section {
 		let fields = line.split_whitespace().collect::<Vec<&str>>();
 		if fields.len()>=6 {
@@ -198,14 +212,20 @@ fn sql_ela_time_txt(sql_ela_section: Vec<&str>) -> Vec<SQLElapsedTime> {
 				let pct_total = pct_total.unwrap();
 				let cpu_time = cpu_time.unwrap();
 				let ph_reads = ph_reads.unwrap();
-				let sql_id_hash = fields[6].trim().to_string();
-				sql_ela_time.push(SQLElapsedTime{sql_id: sql_id_hash, 
+				sql_id_hash = fields[6].trim().to_string();
+				sql_ela_time.push(SQLElapsedTime{sql_id: sql_id_hash.clone(), 
 												elapsed_time_s: ela_time, 
 												executions: executions, 
 												elpased_time_exec_s: ela_exec, 
 												pct_total: pct_total, 
 												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string()});
 			}
+		}
+		if line.starts_with("Module:") && !sql_id_hash.is_empty() {
+			let fields = line.split(":").collect::<Vec<&str>>();
+			let module = fields[1].trim();
+			let mut sql = sql_ela_time.last_mut().unwrap();
+			sql.sql_module = module.trim().to_string();
 		}
 	}
 	sql_ela_time
@@ -253,6 +273,7 @@ fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
 
 fn sql_cpu_time_txt(sql_cpu_section: Vec<&str>) -> HashMap<String, SQLCPUTime> {
 	let mut sql_cpu_time: HashMap<String, SQLCPUTime> = HashMap::new();
+	let mut sql_id_hash = String::new();
 	for line in sql_cpu_section {
 		let fields = line.split_whitespace().collect::<Vec<&str>>();
 		if fields.len()>=6 {
@@ -269,14 +290,20 @@ fn sql_cpu_time_txt(sql_cpu_section: Vec<&str>) -> HashMap<String, SQLCPUTime> {
 				let pct_total = pct_total.unwrap();
 				let ela_time = ela_time.unwrap();
 				let buf_gets = buf_gets.unwrap();
-				let sql_id_hash = fields[6].trim().to_string();
-				sql_cpu_time.entry(sql_id_hash.clone()).or_insert(SQLCPUTime{sql_id: sql_id_hash, 
+				sql_id_hash = fields[6].trim().to_string();
+				sql_cpu_time.entry(sql_id_hash.clone()).or_insert(SQLCPUTime{sql_id: sql_id_hash.clone(), 
 												cpu_time_s: cpu_time, 
 												executions: executions, 
 												cpu_time_exec_s: cpu_exec, 
 												pct_total: pct_total, 
 												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string()});
 			}
+		}
+		if line.starts_with("Module:") && !sql_id_hash.is_empty() {
+			let fields = line.split(":").collect::<Vec<&str>>();
+			let module = fields[1].trim();
+			let mut sql = sql_cpu_time.get_mut(&sql_id_hash).unwrap();
+			sql.sql_module = module.to_string();
 		}
 	}
 	sql_cpu_time
@@ -402,6 +429,7 @@ fn sql_gets(table: ElementRef) -> HashMap<String,SQLGets> {
 
 fn sql_gets_txt(sql_gets_section: Vec<&str>) -> HashMap<String, SQLGets> {
 	let mut sql_gets: HashMap<String, SQLGets> = HashMap::new();
+	let mut sql_id_hash: String = String::new();
 	for line in sql_gets_section {
 		let fields = line.split_whitespace().collect::<Vec<&str>>();
 		if fields.len()>=6 {
@@ -415,8 +443,8 @@ fn sql_gets_txt(sql_gets_section: Vec<&str>) -> HashMap<String, SQLGets> {
 				let executions = executions.unwrap();
 				let pct_total = pct_total.unwrap();
 				let gets_exec = gets_exec.unwrap();
-				let sql_id_hash = fields[6].trim().to_string();
-				sql_gets.entry(sql_id_hash.clone()).or_insert(SQLGets{sql_id: sql_id_hash, 
+				sql_id_hash = fields[6].trim().to_string();
+				sql_gets.entry(sql_id_hash.clone()).or_insert(SQLGets{sql_id: sql_id_hash.clone(), 
 												buffer_gets: buffer_gets, 
 												executions: executions, 
 												gets_per_exec: gets_exec,
@@ -424,8 +452,92 @@ fn sql_gets_txt(sql_gets_section: Vec<&str>) -> HashMap<String, SQLGets> {
 												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string()});
 			}
 		}
+		if line.starts_with("Module:") && !sql_id_hash.is_empty() {
+			let fields = line.split(":").collect::<Vec<&str>>();
+			let module = fields[1].trim();
+			let mut sql = sql_gets.get_mut(&sql_id_hash).unwrap();
+			sql.sql_module = module.to_string();
+		}
 	}
 	sql_gets
+}
+
+
+fn sql_reads(table: ElementRef) -> HashMap<String,SQLReads> {
+	let mut sql_reads: HashMap<String,SQLReads> = HashMap::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() >= 10 {
+			let sql_id = columns[7].text().collect::<Vec<_>>();
+			let sql_id = sql_id[0].trim().to_string();
+			
+			let physical_reads = columns[0].text().collect::<Vec<_>>();
+			let physical_reads = f64::from_str(&physical_reads[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let executions = columns[1].text().collect::<Vec<_>>();
+			let executions = u64::from_str(&executions[0].trim().replace(",","")).unwrap_or(0);
+			
+			let reads_per_exec = columns[2].text().collect::<Vec<_>>();
+			let reads_per_exec = f64::from_str(&reads_per_exec[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let pct_total = columns[3].text().collect::<Vec<_>>();
+			let pct_total = f64::from_str(&pct_total[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let pct_cpu = columns[5].text().collect::<Vec<_>>();
+			let pct_cpu = f64::from_str(&pct_cpu[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let pct_io = columns[6].text().collect::<Vec<_>>();
+			let pct_io = f64::from_str(&pct_io[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let sql_module = columns[8].text().collect::<Vec<_>>();
+			let sql_module = sql_module[0].trim().to_string();
+
+			sql_reads.entry(sql_id.clone()).or_insert(SQLReads { sql_id, physical_reads, executions, reads_per_exec, pct_total, cpu_time_pct: pct_cpu, pct_io, sql_module });
+		}
+	}
+
+	sql_reads
+}
+
+
+fn sql_reads_txt(sql_gets_section: Vec<&str>) -> HashMap<String, SQLReads> {
+	let mut sql_reads: HashMap<String, SQLReads> = HashMap::new();
+	let mut sql_id_hash: String = String::new();
+	for line in sql_gets_section {
+		let fields = line.split_whitespace().collect::<Vec<&str>>();
+		if fields.len()>=6 {
+			let physical_reads = f64::from_str(&fields[0].trim().replace(",",""));
+			let executions = u64::from_str(&fields[1].trim().replace(",",""));
+			let reads_exec = f64::from_str(&fields[2].trim().replace(",",""));
+			let pct_total = f64::from_str(&fields[3].trim().replace(",",""));
+			let cpu_time = f64::from_str(&fields[4].trim().replace(",",""));
+			
+			if fields.len() == 7 && physical_reads.is_ok() && reads_exec.is_ok() && executions.is_ok() && pct_total.is_ok() && cpu_time.is_ok() {
+				let physical_reads = physical_reads.unwrap();
+				let executions = executions.unwrap();
+				let pct_total = pct_total.unwrap();
+				let reads_exec = reads_exec.unwrap();
+				let cpu_time = cpu_time.unwrap();
+				sql_id_hash = fields[6].trim().to_string();
+				sql_reads.entry(sql_id_hash.clone()).or_insert(SQLReads{sql_id: sql_id_hash.clone(), 
+												physical_reads: physical_reads, 
+												executions: executions, 
+												reads_per_exec: reads_exec,
+												pct_total: pct_total,
+												cpu_time_pct:cpu_time, pct_io: -1.0, sql_module: "?".to_string()});
+			}
+		}
+		if line.starts_with("Module:") && !sql_id_hash.is_empty() {
+			let fields = line.split(":").collect::<Vec<&str>>();
+			let module = fields[1].trim();
+			let mut sql = sql_reads.get_mut(&sql_id_hash).unwrap();
+			sql.sql_module = module.to_string();
+		}
+	}
+	sql_reads
 }
 
 fn waitevent_histogram_ms(table: ElementRef) -> HashMap<String, BTreeMap<String, f32>> {
@@ -1010,6 +1122,8 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 				awr.sql_io_time = sql_io_time(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays top SQL by buffer gets" {
 				awr.sql_gets = sql_gets(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays top SQL by physical reads" {
+				awr.sql_reads = sql_reads(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays snapshot information" {
 				awr.snap_info = snap_info(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays Instance activity statistics. For each instance, activity total, activity per second, and activity per transaction are displayed" {
@@ -1081,6 +1195,13 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		let mut sql_gets: Vec<&str> = Vec::new();
 		sql_gets.extend_from_slice(&awr_lines[sql_gets_index.begin..sql_gets_index.end]);
 		awr.sql_gets = sql_gets_txt(sql_gets);
+
+		let sql_reads_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
+		let sql_reads_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Executions");
+		let sql_reads_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end);
+		let mut sql_reads: Vec<&str> = Vec::new();
+		sql_reads.extend_from_slice(&awr_lines[sql_reads_index.begin..sql_reads_index.end]);
+		awr.sql_reads = sql_reads_txt(sql_reads);
 
 		let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed time");
 		let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
