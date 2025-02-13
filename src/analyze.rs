@@ -1,4 +1,4 @@
-use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, AWR, AWRS};
+use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRS};
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation};
@@ -16,7 +16,7 @@ use ndarray_stats::histogram::Grid;
 
 struct TopStats {
     events: BTreeMap<String, u8>,
-    sqls:   BTreeMap<String, u8>,
+    sqls:   BTreeMap<String, String>,
     stat_names: BTreeMap<String, u8>,
 }
 
@@ -24,7 +24,7 @@ struct TopStats {
 //we need to find only essential wait events and SQLIDs 
 fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
-    let mut sql_ids: BTreeMap<String, u8> = BTreeMap::new();
+    let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
     let mut stat_names: BTreeMap<String, u8> = BTreeMap::new();
     //so we scan the AWR data
     for awr in awrs {
@@ -59,11 +59,11 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
             let l = sqls.len();  
             if l > 5 {
                 for i in 1..5 {
-                    sql_ids.entry(sqls[l-i].sql_id.clone()).or_insert(1);
+                    sql_ids.entry(sqls[l-i].sql_id.clone()).or_insert(sqls[l-i].sql_module.clone());
                 }
             } else if l >= 1 && l <=5 {
                 for i in 0..l {
-                    sql_ids.entry(sqls[i].sql_id.clone()).or_insert(1);
+                    sql_ids.entry(sqls[i].sql_id.clone()).or_insert(sqls[i].sql_module.clone());
                 }
             }
         }
@@ -133,6 +133,12 @@ fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWRS>) -> String {
     let mut sql_io_time = 0.0;
     let mut sql_gets = 0.0;
 
+    let mut is_statspack = false;
+    
+    if awrs[0].file_name.ends_with(".txt") {
+        is_statspack = true;
+    }
+
     //Filter HashMaps of SQL ordered by CPU Time to find how many times the given sqlid was marked in top section
     let sql_cpu: Vec<&HashMap<String,SQLCPUTime>> = awrs.iter().map(|awr| &awr.awr_doc.sql_cpu_time)
                                                   .filter(|sql| sql.contains_key(sqlid)).collect(); 
@@ -149,7 +155,15 @@ fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWRS>) -> String {
                                                     .filter(|sql|sql.contains_key(sqlid)).collect();
     let sql_gets_count = sql_gets.len() as f64;
 
-    let top_sections = format!("Also found in top sections: SQL CPU [{:.2}%] | SQL I/O [{:.2}%] | SQL GETS [{:.2}%]", sql_cpu_count/probe_size*100.0, sql_io_count/probe_size*100.0, sql_gets_count/probe_size*100.0);
+     //Filter HashMaps of SQL ordered by READS to find how many times the given sqlid was marked in top section
+     let sql_reads: Vec<&HashMap<String, SQLReads>> = awrs.iter().map(|awr| &awr.awr_doc.sql_reads)
+                                                    .filter(|sql|sql.contains_key(sqlid)).collect();
+    let sql_reads_count = sql_reads.len() as f64;
+
+    let mut top_sections = format!("Also found in top sections: SQL CPU [{:.2}%] | SQL I/O [{:.2}%] | SQL GETS [{:.2}%] | SQL READS [{:.2}%]", sql_cpu_count/probe_size*100.0, sql_io_count/probe_size*100.0, sql_gets_count/probe_size*100.0, sql_reads_count/probe_size*100.0);
+    if is_statspack {
+        top_sections = format!("Also found in top sections: SQL CPU [{:.2}%] | SQL GETS [{:.2}%] | SQL READS [{:.2}%]", sql_cpu_count/probe_size*100.0, sql_gets_count/probe_size*100.0, sql_reads_count/probe_size*100.0);
+    }
 
     top_sections
 }
@@ -772,6 +786,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         println!("{: >24}{:.2}% of probes", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         println!("{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
         println!("{: >34} {: <16.2} \tSTDDEV exec times:  {:.2}", "--- AVG exec times:", avg_exec_n, stddev_exec_n);
+        println!("{: >23} {} ", "MODULE: ", top_sqls.get(&sql_id).unwrap().blue());
 
        
         
