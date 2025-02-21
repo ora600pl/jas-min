@@ -27,13 +27,18 @@ pub struct RedoLog {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct DBInstance {
-	db_name: String,
-	db_id: u64,
-	instance_name: String, 
-	instance_num: u8,
-	startup_time: String,
-	release: String,
-	rac: String,
+	//db_name: String,
+	pub db_id: u64,
+	//instance_name: String, 
+	pub instance_num: u8,
+	pub startup_time: String,
+	pub release: String,
+	pub rac: String,
+	pub platform: String,
+	pub cpus: u16,
+	pub cores: u16,
+	pub sockets: u8,
+	pub memory: u16,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -153,10 +158,10 @@ pub struct KeyInstanceStats {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct AWR {
+	pub file_name: String,
 	status: String,
 	pub load_profile: Vec<LoadProfile>,
 	pub redo_log: RedoLog,
-	db_instance_information: DBInstance,
 	wait_classes: Vec<WaitClasses>,
 	pub host_cpu: HostCPU,
 	time_model_stats: Vec<TimeModelStats>,
@@ -170,11 +175,11 @@ pub struct AWR {
 	pub snap_info: SnapInfo,
 } 
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
-pub struct AWRS {
-	pub file_name: String,
-	pub awr_doc: AWR,
-} 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AWRSCollection {
+    pub db_instance_information: DBInstance,
+    pub awrs: Vec<AWR>,
+}
 
 #[derive(Debug)]
 struct SectionIdx {
@@ -997,44 +1002,104 @@ fn snap_info(table: ElementRef) -> SnapInfo {
 }
 
 
-fn instance_info(table: ElementRef) -> DBInstance {
+fn parse_instance_info_table(table: ElementRef) -> Option<DBInstance> {
+    let th_selector = Selector::parse("th").unwrap();
+    let tr_selector = Selector::parse("tr").unwrap();
+    let td_selector = Selector::parse("td").unwrap();
+
+    let headers: Vec<String> = table.select(&th_selector).map(|h| h.text().collect::<String>().trim().to_string()).collect();
+
+    if headers.len() == 8 {
+        if let Some(data_row) = table.select(&tr_selector).nth(1) {
+            let cols: Vec<String> = data_row
+                .select(&td_selector)
+                .map(|td| td.text().collect::<String>().trim().to_string())
+                .collect();
+            if cols.len() >= 7 {
+                let mut dbi = DBInstance::default();
+                dbi.db_id = u64::from_str(&cols[1]).unwrap_or(0);
+                dbi.release = cols[5].clone();
+                dbi.rac = cols[6].clone();
+                return Some(dbi);
+            }
+        }
+    }
+    None
+}
+
+fn parse_instance_details_table(table: ElementRef) -> Option<DBInstance> { // Expected headers: "Instance", "Inst Num", "Startup Time", "User Name", "System Data Visible".
+    let th_selector = Selector::parse("th").unwrap();
+    let tr_selector = Selector::parse("tr").unwrap();
+    let td_selector = Selector::parse("td").unwrap();
+
+    let headers: Vec<String> = table.select(&th_selector).map(|h| h.text().collect::<String>().trim().to_string()).collect();
+
+    if headers.len() == 5 {
+        if let Some(data_row) = table.select(&tr_selector).nth(1) {
+            let cols: Vec<String> = data_row
+                .select(&td_selector)
+                .map(|td| td.text().collect::<String>().trim().to_string())
+                .collect();
+            if cols.len() >= 3 {
+                let mut dbi = DBInstance::default();
+                dbi.instance_num = u8::from_str(&cols[1]).unwrap_or(0);
+                dbi.startup_time = cols[2].clone();
+                return Some(dbi);
+            }
+        }
+    }
+    None
+}
+
+fn parse_host_info_table(table: ElementRef) -> Option<DBInstance> { //Expected headers: "Host Name", "Platform", "CPUs", "Cores", "Sockets", "Memory (GB)".
+    let th_selector = Selector::parse("th").unwrap();
+    let tr_selector = Selector::parse("tr").unwrap();
+    let td_selector = Selector::parse("td").unwrap();
+
+    let headers: Vec<String> = table.select(&th_selector).map(|h| h.text().collect::<String>().trim().to_string()).collect();
+
+    if headers.len() == 6 {
+        if let Some(data_row) = table.select(&tr_selector).nth(1) {
+            let cols: Vec<String> = data_row
+                .select(&td_selector)
+                .map(|td| td.text().collect::<String>().trim().to_string())
+                .collect();
+            if cols.len() >= 6 {
+                let mut dbi = DBInstance::default();
+                dbi.platform = cols[1].clone();
+                dbi.cpus = u16::from_str(&cols[2]).unwrap_or(0);
+                dbi.cores = u16::from_str(&cols[3]).unwrap_or(0);
+                dbi.sockets = u8::from_str(&cols[4]).unwrap_or(0);
+                let mem: f32 = cols[5].parse().unwrap_or(0.0);
+                dbi.memory = mem.round() as u16;
+                return Some(dbi);
+            }
+        }
+    }
+    None
+}
+
+fn instance_info_txt(info_section: Vec<&str>) -> DBInstance {
 	let mut dbi = DBInstance::default();
-	let row_selector = Selector::parse("tr").unwrap();
-    let column_selector = Selector::parse("td").unwrap();
-
-	for row in table.select(&row_selector) {
-        	let columns = row.select(&column_selector).collect::<Vec<_>>();
-        	if columns.len() == 7 {
-				let dbname = columns[0].text().collect::<Vec<_>>();
-				let dbname = dbname[0].trim();
-
-				let dbid = columns[1].text().collect::<Vec<_>>();
-				let dbid = u64::from_str(&dbid[0].trim()).unwrap_or(0);
-
-				let iname = columns[2].text().collect::<Vec<_>>();
-				let iname = iname[0].trim();
-
-				let inum = columns[3].text().collect::<Vec<_>>();
-				let inum = u8::from_str(&inum[0].trim()).unwrap_or(0);
-
-				let startup_time = columns[4].text().collect::<Vec<_>>();
-				let startup_time = startup_time[0].trim();
-
-				let release = columns[5].text().collect::<Vec<_>>();
-				let release = release[0].trim();
-
-				let israc = columns[6].text().collect::<Vec<_>>();
-				let israc = israc[0].trim();
-
-				dbi = DBInstance{db_name: dbname.to_string(), 
-						db_id: dbid, 
-						instance_name: iname.to_string(), 
-						instance_num: inum, 
-						startup_time: startup_time.to_string(), 
-						release: release.to_string(), 
-						rac: israc.to_string()};
-		}
-	}
+	let mut db_info = info_section.first().unwrap().trim();
+	let mut host_info = info_section.last().unwrap().trim();
+	let db_tokens: Vec<&str> = db_info.split_whitespace().collect();
+    if db_tokens.len() >= 7 {
+        dbi.db_id = db_tokens[0].parse().unwrap_or_default();
+        dbi.instance_num = db_tokens[2].parse().unwrap_or_default();
+        dbi.startup_time = format!("{} {}", db_tokens[3], db_tokens[4]);
+        dbi.release = db_tokens[5].to_string();
+        dbi.rac = db_tokens[6].to_string();
+    }
+	let host_tokens: Vec<&str> = host_info.split_whitespace().collect();
+	if host_tokens.len() >= 8 {
+        dbi.platform = host_tokens[1..4].join(" ");
+        dbi.cpus = host_tokens[4].parse().unwrap_or_default();
+        dbi.cores = host_tokens[5].parse().unwrap_or_default();
+        dbi.sockets = host_tokens[6].parse().unwrap_or_default();
+        let mem: f32 = host_tokens[7].parse().unwrap_or(0.0);
+        dbi.memory = mem.round() as u16;
+    }
 	dbi
 }
 
@@ -1087,6 +1152,52 @@ fn load_profile(table: ElementRef) -> Vec<LoadProfile>{
     lp
 }
 
+fn parse_db_instance_information(fname: String) -> DBInstance {
+	let mut db_instance_information = DBInstance::default();
+    if fname.ends_with("html") {
+        let html = fs::read_to_string(&fname)
+            .expect(&format!("Couldn't open awr file {}", fname));
+        let doc = Html::parse_document(&html);
+        let table_selector = Selector::parse("table").unwrap();
+
+        for table in doc.select(&table_selector) {
+            if let Some(summary) = table.value().attr("summary") {
+                if summary == "This table displays database instance information" {
+                    if let Some(inst_info) = parse_instance_info_table(table) {
+                        // Merge fields from the first table:
+                        db_instance_information.db_id = inst_info.db_id;
+                        db_instance_information.release = inst_info.release;
+                        db_instance_information.rac = inst_info.rac;
+                    }
+                    if let Some(inst_details) = parse_instance_details_table(table) {
+                        // Merge fields from the second table:
+                        db_instance_information.instance_num = inst_details.instance_num;
+                        db_instance_information.startup_time = inst_details.startup_time;
+                    }
+                } else if summary == "This table displays host information" {
+                    if let Some(host_info) = parse_host_info_table(table) {
+                        // Merge fields from the host table:
+                        db_instance_information.platform = host_info.platform;
+                        db_instance_information.cpus = host_info.cpus;
+                        db_instance_information.cores = host_info.cores;
+                        db_instance_information.sockets = host_info.sockets;
+                        db_instance_information.memory = host_info.memory;
+                    }
+                }
+            }
+        }
+	} else if fname.ends_with("txt") {
+		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname));
+    	let awr_lines = awr_rep.split("\n").collect::<Vec<&str>>();
+ 
+		let mut instance_info = find_section_boundries(awr_lines.clone(), "Database    DB Id", "Snapshot       Snap Id");
+		let mut instance_info_lines: Vec<&str> = Vec::new();
+		instance_info_lines.extend_from_slice(&awr_lines[instance_info.begin+2..instance_info.end]);
+		db_instance_information = instance_info_txt(instance_info_lines);
+	}
+	db_instance_information
+}
+
 fn parse_awr_report_internal(fname: String) -> AWR {
 	let mut awr: AWR = AWR::default();
 	if fname.ends_with("html") {
@@ -1104,8 +1215,6 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		for element in doc.select(&table_selector) {
 			if element.value().attr("summary").unwrap() == "This table displays load profile" {
 				awr.load_profile = load_profile(element);
-			} else if element.value().attr("summary").unwrap() == "This table displays database instance information" {
-				awr.db_instance_information = instance_info(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays foreground wait class statistics" {
 				awr.wait_classes = wait_classes(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays system load statistics" {
@@ -1145,7 +1254,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 	} else if fname.ends_with("txt") {
 		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname));
     	let awr_lines = awr_rep.split("\n").collect::<Vec<&str>>();
- 
+
 		let mut snapshot_index = find_section_boundries(awr_lines.clone(), "Snapshot       Snap Id", "Cache Sizes");
 		if snapshot_index.begin == 0 && snapshot_index.end == 0 {
 			snapshot_index = find_section_boundries(awr_lines.clone(), "              Snap Id", "Top ADDM Findings");
@@ -1263,22 +1372,32 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 
 pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64, filter_db_time: f64) -> Result<String, std::io::Error> {
 	
-	let mut awrs: Vec<AWRS> = Vec::new();
+	let mut awr_vec: Vec<AWR> = Vec::new();
+	let mut is_instance_info: Option<DBInstance> = None; // to grab DBInstance info from the first file
 	for file in fs::read_dir(dirname).unwrap() {
 		let fname = &file.unwrap().path().display().to_string();
 		if ((fname.contains("awr") || fname.contains("sp_")) && (fname.ends_with("txt") || fname.ends_with("html"))) {
 			let file_name = fname.split("/").collect::<Vec<&str>>();
 			let file_name = file_name.last().unwrap().to_string();
-			awrs.push(AWRS{file_name: file_name.clone(), awr_doc: parse_awr_report_internal(fname.to_string())});
+			if is_instance_info.is_none() {
+                is_instance_info = Some(parse_db_instance_information(fname.to_string()));
+            }
+			let mut awr_doc = parse_awr_report_internal(fname.to_string());
+			awr_doc.file_name = file_name;
+			awr_vec.push(awr_doc);
 		}
     }
-	awrs.sort_by_key(|a| a.awr_doc.snap_info.begin_snap_id);
-	let awr_doc: String = serde_json::to_string_pretty(&awrs).unwrap();
-	if plot > 0 {
-		let html_fname = format!("{}.html", dirname);
-		plot_to_file(awrs, html_fname, db_time_cpu_ratio, filter_db_time);
-	}
-	Ok(awr_doc)
+	awr_vec.sort_by_key(|a| a.snap_info.begin_snap_id);
+    let collection = AWRSCollection {
+        db_instance_information: is_instance_info.unwrap_or_default(),
+        awrs: awr_vec,
+    };
+    let json_str = serde_json::to_string_pretty(&collection).unwrap();
+    if plot > 0 {
+        let html_fname = format!("{}.html", dirname);
+        plot_to_file(collection, html_fname, db_time_cpu_ratio, filter_db_time);
+    }
+    Ok(json_str)
 }
 
 pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::Error> {
@@ -1306,9 +1425,9 @@ pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::
 
 pub fn prarse_json_file(fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
 	let json_file = fs::read_to_string(&fname).expect(&format!("Something wrong with a file {} ", fname));
-	let mut awrs: Vec<AWRS> = serde_json::from_str(&json_file).expect("Wrong JSON format");
-	let file_and_ext = fname.split(".").collect::<Vec<&str>>();
-	let html_fname = format!("{}.html", file_and_ext[0]);
-	awrs.sort_by_key(|a| a.awr_doc.snap_info.begin_snap_id);
-	plot_to_file(awrs, html_fname, db_time_cpu_ratio, filter_db_time);
+	let mut collection: AWRSCollection = serde_json::from_str(&json_file).expect("Wrong JSON format");
+	collection.awrs.sort_by_key(|a| a.snap_info.begin_snap_id);
+	let file_and_ext: Vec<&str> = fname.split('.').collect();
+    let html_fname = format!("{}.html", file_and_ext[0]);
+	plot_to_file(collection, html_fname, db_time_cpu_ratio, filter_db_time);
 }
