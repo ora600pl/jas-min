@@ -1,4 +1,4 @@
-use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRS};
+use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation};
@@ -22,7 +22,7 @@ struct TopStats {
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) -> TopStats {
+fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
     let mut stat_names: BTreeMap<String, u8> = BTreeMap::new();
@@ -31,7 +31,7 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
         let mut dbtime: f64 = 0.0;
         let mut cputime: f64 = 0.0;
         //We want to find dbtime and cputime because based on their delta we will base our decisions 
-        for lp in awr.awr_doc.load_profile {
+        for lp in awr.load_profile {
             if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
                 dbtime = lp.per_second;
                 
@@ -42,8 +42,8 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
         //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
         //because it means that Oracle spent some time waiting on wait events and not working on CPU
         if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
-            println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.awr_doc.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
-            let mut events = awr.awr_doc.foreground_wait_events;
+            println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
+            let mut events = awr.foreground_wait_events;
             //I'm sorting events by total wait time, to get the longest waits at the end
             events.sort_by_key(|e| e.total_wait_time_s as i64);
             let l = events.len();
@@ -54,7 +54,7 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
                 }
             }
             //And the same with SQLs
-            let mut sqls = awr.awr_doc.sql_elapsed_time;
+            let mut sqls = awr.sql_elapsed_time;
             sqls.sort_by_key(|s| s.elapsed_time_s as i64);
             let l = sqls.len();  
             if l > 5 {
@@ -67,7 +67,7 @@ fn find_top_stats(awrs: Vec<AWRS>, db_time_cpu_ratio: f64, filter_db_time: f64) 
                 }
             }
         }
-        for stats in awr.awr_doc.key_instance_stats {
+        for stats in awr.key_instance_stats {
             stat_names.entry(stats.statname.clone()).or_insert(1);
         }
     }
@@ -127,7 +127,7 @@ fn std_deviation(data: Vec<f64>) -> Option<f64> {
     }
 }
 
-fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWRS>) -> String {
+fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> String {
     let probe_size = awrs.len() as f64;
 
     let mut sql_io_time = 0.0;
@@ -140,23 +140,23 @@ fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWRS>) -> String {
     }
 
     //Filter HashMaps of SQL ordered by CPU Time to find how many times the given sqlid was marked in top section
-    let sql_cpu: Vec<&HashMap<String,SQLCPUTime>> = awrs.iter().map(|awr| &awr.awr_doc.sql_cpu_time)
+    let sql_cpu: Vec<&HashMap<String,SQLCPUTime>> = awrs.iter().map(|awr| &awr.sql_cpu_time)
                                                   .filter(|sql| sql.contains_key(sqlid)).collect(); 
 
     let sql_cpu_count = sql_cpu.len() as f64;
 
     //Filter HashMaps of SQL ordered by User IO to find how many times the given sqlid was marked in top section
-    let sql_io: Vec<&HashMap<String, SQLIOTime>> = awrs.iter().map(|awr| &awr.awr_doc.sql_io_time)
+    let sql_io: Vec<&HashMap<String, SQLIOTime>> = awrs.iter().map(|awr| &awr.sql_io_time)
                                                  .filter(|sql|sql.contains_key(sqlid)).collect();
     let sql_io_count = sql_io.len() as f64;
 
      //Filter HashMaps of SQL ordered by GETS to find how many times the given sqlid was marked in top section
-     let sql_gets: Vec<&HashMap<String, SQLGets>> = awrs.iter().map(|awr| &awr.awr_doc.sql_gets)
+     let sql_gets: Vec<&HashMap<String, SQLGets>> = awrs.iter().map(|awr| &awr.sql_gets)
                                                     .filter(|sql|sql.contains_key(sqlid)).collect();
     let sql_gets_count = sql_gets.len() as f64;
 
      //Filter HashMaps of SQL ordered by READS to find how many times the given sqlid was marked in top section
-     let sql_reads: Vec<&HashMap<String, SQLReads>> = awrs.iter().map(|awr| &awr.awr_doc.sql_reads)
+     let sql_reads: Vec<&HashMap<String, SQLReads>> = awrs.iter().map(|awr| &awr.sql_reads)
                                                     .filter(|sql|sql.contains_key(sqlid)).collect();
     let sql_reads_count = sql_reads.len() as f64;
 
@@ -191,7 +191,7 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
 }
 
 // Filter and generate histogram for top events
-fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u8>, dirpath: &str) {
+fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, dirpath: &str) {
     
     //Make colors consistent across buckets 
     let bucket_colors: HashMap<String, String> = HashMap::from([
@@ -208,7 +208,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
     // Filter ForegroundWaitEvents based on top_events
     let filtered_events: Vec<&ForegroundWaitEvents> = awrs
         .iter()
-        .flat_map(|awr| &awr.awr_doc.foreground_wait_events)
+        .flat_map(|awr| &awr.foreground_wait_events)
         .filter(|event| top_events.contains_key(&event.event))
         .collect();
 
@@ -337,7 +337,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWRS>, top_events: &BTreeMap<String, u
     println!("Saved plots for events to '{}'", dirpath);
 }
 
-pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
+pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
@@ -368,7 +368,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
 
     let mut x_vals: Vec<String> = Vec::new();
 
-    let top_stats = find_top_stats(awrs.clone(), db_time_cpu_ratio, filter_db_time);
+    let top_stats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time);
     let top_events = top_stats.events;
     let top_sqls = top_stats.sqls;
     let all_stats = top_stats.stat_names;
@@ -388,12 +388,12 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
     }
     
     fs::create_dir(&html_dir).unwrap_or_default();
-    generate_fgevents_plotfiles(&awrs, &top_events,&html_dir);
+    generate_fgevents_plotfiles(&collection.awrs, &top_events,&html_dir);
     let fname = format!("{}/{}", html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
-    for awr in &awrs {
-        let xval = format!("{} ({})", awr.awr_doc.snap_info.begin_snap_time, awr.awr_doc.snap_info.begin_snap_id);
+    for awr in &collection.awrs {
+        let xval = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
         x_vals.push(xval.clone());
 
         //We have to fill the whole data traces for stats, wait events and SQLs with 0 to be sure that chart won't be moved to one side
@@ -424,7 +424,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         }
 
         //Than we can set the current value of the vector to the desired one, if the event is in TOP section in that snap id
-       for event in &awr.awr_doc.foreground_wait_events { 
+       for event in &awr.foreground_wait_events { 
             if top_events.contains_key(&event.event) {
                 let mut v = y_vals_events.get_mut(&event.event).unwrap();
                 v[x_vals.len()-1] = event.total_wait_time_s;
@@ -437,7 +437,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             }
        }
        //Same with SQLs
-       for sqls in &awr.awr_doc.sql_elapsed_time {
+       for sqls in &awr.sql_elapsed_time {
             if top_sqls.contains_key(&sqls.sql_id) {
                 let mut v = y_vals_sqls.get_mut(&sqls.sql_id).unwrap();
                 v[x_vals.len()-1] = sqls.elapsed_time_s;
@@ -449,7 +449,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
        }
        let mut is_statspack: bool = false;
         //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
-       for lp in &awr.awr_doc.load_profile {
+       for lp in &awr.load_profile {
             if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
                 y_vals_dbtime.push(lp.per_second);
                 if lp.stat_name.starts_with("DB time") {
@@ -470,15 +470,15 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             }
        }
         // ----- Host CPU
-        if awr.awr_doc.host_cpu.pct_user < 0.0 {
+        if awr.host_cpu.pct_user < 0.0 {
              y_vals_cpu_user.push(0.0);
         } else {
-             y_vals_cpu_user.push(awr.awr_doc.host_cpu.pct_user);
+             y_vals_cpu_user.push(awr.host_cpu.pct_user);
         }
-        y_vals_cpu_load.push(100.0-awr.awr_doc.host_cpu.pct_idle);
+        y_vals_cpu_load.push(100.0-awr.host_cpu.pct_idle);
 
         // ----- Additionally plot Redo Log Switches
-        y_vals_redo_switches.push(awr.awr_doc.redo_log.per_hour);
+        y_vals_redo_switches.push(awr.redo_log.per_hour);
 
         let mut calls: u64 = 0;
         let mut commits: u64 = 0;
@@ -487,7 +487,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         let mut cleanout_cr: u64 = 0;
         let mut excessive_commit = 0.0;
 
-        for activity in &awr.awr_doc.key_instance_stats {
+        for activity in &awr.key_instance_stats {
             let mut v = instance_stats.get_mut(&activity.statname).unwrap();
             v[x_vals.len()-1] = activity.total as f64;
 
@@ -520,17 +520,17 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
        }
     }
 
-     //I want to stort wait events by most heavy ones across the whole period
-     let mut y_vals_events_sorted = BTreeMap::new();
-     for (evname, ev) in y_vals_events {
-         let mut wait_time = 0;
-         for v in &ev {
-             if *v > 0.0 {
-                 wait_time -= *v as i64;
-             }
-         }
-         y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
-     }
+    //I want to stort wait events by most heavy ones across the whole period
+    let mut y_vals_events_sorted = BTreeMap::new();
+    for (evname, ev) in y_vals_events {
+        let mut wait_time = 0;
+        for v in &ev {
+            if *v > 0.0 {
+                wait_time -= *v as i64;
+            }
+        }
+        y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
+    }
 
     //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
     let mut y_vals_sqls_sorted = BTreeMap::new(); 
@@ -544,7 +544,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         y_vals_sqls_sorted.insert((occuriance, sqlid.clone()), yv.clone());
         
     }
-
 
     // ------ Ploting and reporting starts ----------
     println!("Statistical Computations:\n-------------------------");
@@ -630,7 +629,6 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         plot.add_trace(cleanout_cr_only);
         plot.add_trace(cleanout_ktugct_calls);
     }
-
     
     plot.add_trace(dbtime_trace);
     plot.add_trace(dbcpu_trace);
@@ -763,7 +761,7 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         /* Correlation calc */
         let corr = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
-        let top_sections = report_top_sql_sections(&sql_id, &awrs);
+        let top_sections = report_top_sql_sections(&sql_id, &collection.awrs);
         println!("\n\t{: >5} \t ({})", &sql_id.bold(), top_sections.italic());
 
         let correlation_info = format!("--- Correlation with DB Time: {:.2}", &corr);
@@ -837,6 +835,8 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
         .expect("Failed to read Plotly HTML file");
 
     // Inject the table HTML before the closing </body> tag
+
+    
     plotly_html = plotly_html.replace("<head>", &format!("<head>\n{}", "<title>JAS-MIN</title>
     <style>
         #data-table {
@@ -858,7 +858,13 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             font-size: 0.9em;
             box-shadow: 0 0 20px rgba(0, 0, 0, 0.15);
         }
-
+        #db-instance-info{
+            margin-bottom: 20px;
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            font-size: 0.9em;
+            background-color: #ffd9d9;
+            display: flex;
+        }
         table thead tr {
             background-color: #009876;
             color: #ffffff;
@@ -881,7 +887,32 @@ pub fn plot_to_file(awrs: Vec<AWRS>, fname: String, db_time_cpu_ratio: f64, filt
             border-bottom: 2px solid #009876;
         }
     </style>"));
-    plotly_html = plotly_html.replace("<body>",&format!("<body>\n\t{}","<button id=\"show-table-button\">TOP Wait Events</button>"));
+    let db_instance_info_html = format!(
+        "<div id=\"db-instance-info\" style=\"margin-bottom: 20px;\">
+            <span><strong>DB ID:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Platform:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Release:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Startup Time:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;RAC:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Instance Number:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;CPUs:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Cores:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Sockets:</strong> {} </span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Memory (G):</strong> {} </span>
+            <span style=\"margin-left: auto;\"> <strong>JAS-MIN &nbsp;&nbsp;&nbsp</strong></span>
+         </div>",
+        collection.db_instance_information.db_id,
+        collection.db_instance_information.platform,
+        collection.db_instance_information.release,
+        collection.db_instance_information.startup_time,
+        collection.db_instance_information.rac,
+        collection.db_instance_information.instance_num,
+        collection.db_instance_information.cpus,
+        collection.db_instance_information.cores,
+        collection.db_instance_information.sockets,
+        collection.db_instance_information.memory
+    );
+    plotly_html = plotly_html.replace("<body>",&format!("<body>\n\t{}\n\t{}",db_instance_info_html,"<button id=\"show-table-button\">TOP Wait Events</button>"));
     plotly_html = plotly_html.replace("<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", &format!("{}\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", table_html));
 
     // Write the updated HTML back to the file
