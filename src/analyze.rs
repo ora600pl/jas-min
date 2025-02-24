@@ -254,6 +254,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
             .orientation(Orientation::Horizontal)
             .x_axis("x1")
             .y_axis("y2")
+            .marker(plotly::common::Marker::new().color("#e377c2".to_string()).opacity(0.7))
             .show_legend(false);
         plot.add_trace(dbt_box_plot);
 
@@ -262,10 +263,12 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
             let default_color = "#000000".to_string(); // Store default in a variable
             let color = bucket_colors.get(&bucket).unwrap_or(&default_color);
             let bucket_name = format!("{}", &bucket);
+
             let ms_bucket_histogram = Histogram::new(values.clone())
                 .name(&bucket_name)
                 .legend_group(&bucket_name)
-                //.n_bins_x(100) // Number of bins
+                .auto_bin_x(true)
+                //.n_bins_x(50) // Number of bins
                 .x_axis("x2")
                 .y_axis("y3")
                 .marker(plotly::common::Marker::new().color(color.clone()).opacity(0.7))
@@ -669,6 +672,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
 
     // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut table_events = String::new();
+    let mut table_sqls = String::new();
 
     for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
@@ -711,12 +715,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         println!("{: >40}  {: <16.2} \tSTDDEV exec times:     {:.2}",   "--- AVG exec times:     ", &avg_exec_n, &stddev_exec_n);
         println!("{: >39}  {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
-        /* Generate a row for the HTML table */
+        /* EVENTS - Generate a row for the HTML table */
         let safe_event_name = event_name.replace("/", "_").replace(" ", "_").replace(":","");
         table_events.push_str(&format!(
             r#"
             <tr>
                 <td><a href="{}.html" target="_blank">{}</a></td>
+                <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
@@ -734,12 +739,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             avg_exec_s, stddev_exec_s,  // Wait Time (s)
             avg_exec_n, stddev_exec_n,  // Execution times
             avg_wait_per_exec_ms, stddev_wait_per_exec_ms,  // Wait per exec (ms)
-            corr
+            corr,
+            (x_n.len() as f64 / x_vals.len() as f64 )* 100.0
         ));
     }
-    let table_html = format!(
+    let event_table_html = format!(
         r#"
-        <table id="data-table">
+        <table id="events-table">
             <thead>
                 <tr>
                     <th>Event Name</th>
@@ -752,6 +758,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                     <th>AVG Wait per Exec (ms)</th>
                     <th>STDDEV Wait per Exec (ms)</th>
                     <th>Correlation of DBTime</th>
+                    <th>TOP in % Probes</th>
                 </tr>
             </thead>
             <tbody>
@@ -759,15 +766,15 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             </tbody>
         </table>
         <script>
-            const button = document.getElementById('show-table-button');
-            const table = document.getElementById('data-table');
-            button.addEventListener('click', () => {{
-                if (table.style.display === 'none' || table.style.display === '') {{
-                    table.style.display = 'table'; // Show the table
-                    button.textContent = 'TOP Wait Events'; // Update button text
+            const eventsButton = document.getElementById('show-events-button');
+            const eventsTable = document.getElementById('events-table');
+            eventsButton.addEventListener('click', () => {{
+                if (eventsTable.style.display === 'none' || eventsTable.style.display === '') {{
+                    eventsTable.style.display = 'table';
+                    eventsButton.textContent = 'TOP Wait Events';
                 }} else {{
-                    table.style.display = 'none'; // Hide the table
-                    button.textContent = 'TOP Wait Events'; // Update button text
+                    eventsTable.style.display = 'none';
+                    eventsButton.textContent = 'TOP Wait Events';
                 }}
             }});
         </script>
@@ -789,7 +796,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         let corr = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
         let top_sections = report_top_sql_sections(&sql_id, &collection.awrs);
-        println!("\n\t{: >5} \t ({})", &sql_id.bold(), top_sections.italic());
+        println!("\n\t{: >5} \t ({})", &sql_id.bold(), &top_sections.italic());
 
         let correlation_info = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
@@ -813,12 +820,100 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         println!("{: >34} {: <16.2} \tSTDDEV exec times:  {:.2}", "--- AVG exec times:", avg_exec_n, stddev_exec_n);
         println!("{: >23} {} ", "MODULE: ", top_sqls.get(&sql_id).unwrap().blue());
 
-       
+        /* SQLs - Generate a row for the HTML table */
+        table_sqls.push_str(&format!(
+            r#"
+            <tr>
+                <td><a href="{}.html" target="_blank">{}</a></td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+            </tr>
+            "#,
+                &sql_id, &sql_id,
+                avg_exec_t, stddev_exec_t,  // PCT of DB Time
+                avg_exec_n, stddev_exec_n,  // Execution times
+                corr,
+                (x.len() as f64 / x_vals.len() as f64 )* 100.0
+            )
+        );
         
         for (key,ev) in &y_vals_events_sorted {
             correlation_of("+".to_string(), key.1.clone(), yv.clone(), ev.clone());
         }
+
+        let filename = format!("{}/{}.html", html_dir,sql_id);
+        // Format the content as HTML
+        let html_content = format!(
+            r#"<!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>{sql_id}</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; }}
+                        .content {{ font-size: 16px; }}
+                        .bold {{ font-weight: bold; }}
+                        .italic {{ font-style: italic; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="content">
+                        <p><span class="bold">{sql_id}</span> (<span class="italic">{top_section}</span>)</p>
+                    </div>
+                </body>
+                </html>
+                "#,
+                sql_id=sql_id,
+                top_section=top_sections
+        );
+
+        // Write to the file
+        if let Err(e) = fs::write(&filename, html_content) {
+            eprintln!("Error writing file {}: {}", filename, e);
+        } else {
+            println!("SQLid Saved to file: {}", filename);
+        }
     }
+    let sqls_table_html = format!(
+        r#"
+        <table id="sqls-table">
+            <thead>
+                <tr>
+                    <th>SQL ID</th>
+                    <th>AVG Ela by Exec</th>
+                    <th>STDDEV Ela by Exec</th>
+                    <th>AVG exec times</th>
+                    <th>STDDEV exec times</th>
+                    <th>Correlation of DBTime</th>
+                    <th>TOP in % Probes</th>
+                </tr>
+            </thead>
+            <tbody>
+            {}
+            </tbody>
+        </table>
+        <script>
+            const sqlsButton = document.getElementById('show-sqls-button');
+            const sqlsTable = document.getElementById('sqls-table');
+            sqlsButton.addEventListener('click', () => {{
+                if (sqlsTable.style.display === 'none' || sqlsTable.style.display === '') {{
+                    sqlsTable.style.display = 'table';
+                    sqlsButton.textContent = 'TOP SQLs';
+                }} else {{
+                    sqlsTable.style.display = 'none';
+                    sqlsButton.textContent = 'TOP SQLs';
+                }}
+            }});
+        </script>
+        "#,
+        table_sqls
+    );
+
     
     report_instance_stats_cor(instance_stats, y_vals_dbtime);
 
@@ -866,7 +961,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     
     plotly_html = plotly_html.replace("<head>", &format!("<head>\n{}", "<title>JAS-MIN</title>
     <style>
-        #data-table {
+        #events-table {
+            display: none;
+        }
+        
+        #sqls-table {
             display: none;
         }
 
@@ -914,6 +1013,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             border-bottom: 2px solid #009876;
         }
     </style>"));
+
     let db_instance_info_html = format!(
         "<div id=\"db-instance-info\" style=\"margin-bottom: 20px;\">
             <span><strong>DB ID:</strong> {}</span>
@@ -939,8 +1039,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         collection.db_instance_information.sockets,
         collection.db_instance_information.memory
     );
-    plotly_html = plotly_html.replace("<body>",&format!("<body>\n\t{}\n\t{}",db_instance_info_html,"<button id=\"show-table-button\">TOP Wait Events</button>"));
-    plotly_html = plotly_html.replace("<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", &format!("{}\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", table_html));
+    
+    plotly_html = plotly_html.replace(
+        "<body>",
+        &format!("<body>\n\t{}\n\t{}\n\t{}",db_instance_info_html,"<button id=\"show-events-button\">TOP Wait Events</button>","<button id=\"show-sqls-button\">TOP SQLs</button>")
+    );
+    plotly_html = plotly_html.replace(
+        "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
+        &format!("{}{}\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", event_table_html,sqls_table_html));
 
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
