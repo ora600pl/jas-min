@@ -198,44 +198,6 @@ fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: 
 	si
 }
 
-fn sql_ela_time_txt(sql_ela_section: Vec<&str>) -> Vec<SQLElapsedTime> {
-	let mut sql_ela_time: Vec<SQLElapsedTime> = Vec::new();
-	let mut sql_id_hash = String::new();
-	for line in sql_ela_section {
-		let fields = line.split_whitespace().collect::<Vec<&str>>();
-		if fields.len()>=6 {
-			let ela_time = f64::from_str(&fields[0].trim().replace(",",""));
-			let executions = u64::from_str(&fields[1].trim().replace(",",""));
-			let ela_exec = f64::from_str(&fields[2].trim().replace(",",""));
-			let pct_total = f64::from_str(&fields[3].trim().replace(",",""));
-			let cpu_time = f64::from_str(&fields[4].trim().replace(",",""));
-			let ph_reads = f64::from_str(&fields[5].trim().replace(",",""));
-			if fields.len() == 7 && ela_time.is_ok() && executions.is_ok() && ela_exec.is_ok() && pct_total.is_ok() && cpu_time.is_ok() && ph_reads.is_ok() {
-				let ela_time = ela_time.unwrap();
-				let executions = executions.unwrap();
-				let ela_exec = ela_exec.unwrap();
-				let pct_total = pct_total.unwrap();
-				let cpu_time = cpu_time.unwrap();
-				let ph_reads = ph_reads.unwrap();
-				sql_id_hash = fields[6].trim().to_string();
-				sql_ela_time.push(SQLElapsedTime{sql_id: sql_id_hash.clone(), 
-												elapsed_time_s: ela_time, 
-												executions: executions, 
-												elpased_time_exec_s: ela_exec, 
-												pct_total: pct_total, 
-												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string()});
-			}
-		}
-		if line.starts_with("Module:") && !sql_id_hash.is_empty() {
-			let fields = line.split(":").collect::<Vec<&str>>();
-			let module = fields[1].trim();
-			let mut sql = sql_ela_time.last_mut().unwrap();
-			sql.sql_module = module.trim().to_string();
-		}
-	}
-	sql_ela_time
-}
-
 fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
 	let mut sql_elapsed_time: Vec<SQLElapsedTime> = Vec::new();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -276,30 +238,30 @@ fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
 	sql_elapsed_time
 }
 
-fn sql_cpu_time_txt(sql_cpu_section: Vec<&str>) -> HashMap<String, SQLCPUTime> {
-	let mut sql_cpu_time: HashMap<String, SQLCPUTime> = HashMap::new();
+fn sql_ela_time_txt(sql_ela_section: Vec<&str>) -> Vec<SQLElapsedTime> {
+	let mut sql_ela_time: Vec<SQLElapsedTime> = Vec::new();
 	let mut sql_id_hash = String::new();
-	for line in sql_cpu_section {
+	for line in sql_ela_section {
 		let fields = line.split_whitespace().collect::<Vec<&str>>();
 		if fields.len()>=6 {
-			let cpu_time = f64::from_str(&fields[0].trim().replace(",",""));
+			let ela_time = f64::from_str(&fields[0].trim().replace(",",""));
 			let executions = u64::from_str(&fields[1].trim().replace(",",""));
-			let cpu_exec = f64::from_str(&fields[2].trim().replace(",",""));
+			let ela_exec = f64::from_str(&fields[2].trim().replace(",",""));
 			let pct_total = f64::from_str(&fields[3].trim().replace(",",""));
-			let ela_time = f64::from_str(&fields[4].trim().replace(",",""));
-			let buf_gets = f64::from_str(&fields[5].trim().replace(",",""));
-			if fields.len() == 7 && cpu_time.is_ok() && ela_time.is_ok() && executions.is_ok() && cpu_exec.is_ok() && pct_total.is_ok() && buf_gets.is_ok() {
-				let cpu_time = cpu_time.unwrap();
-				let executions = executions.unwrap();
-				let cpu_exec = cpu_exec.unwrap();
-				let pct_total = pct_total.unwrap();
+			let cpu_time = f64::from_str(&fields[4].trim().replace(",",""));
+			let ph_reads = f64::from_str(&fields[5].trim().replace(",",""));
+			if fields.len() == 7 && ela_time.is_ok() && executions.is_ok() && ela_exec.is_ok() && pct_total.is_ok() && cpu_time.is_ok() && ph_reads.is_ok() {
 				let ela_time = ela_time.unwrap();
-				let buf_gets = buf_gets.unwrap();
+				let executions = executions.unwrap();
+				let ela_exec = ela_exec.unwrap();
+				let pct_total = pct_total.unwrap();
+				let cpu_time = cpu_time.unwrap();
+				let ph_reads = ph_reads.unwrap();
 				sql_id_hash = fields[6].trim().to_string();
-				sql_cpu_time.entry(sql_id_hash.clone()).or_insert(SQLCPUTime{sql_id: sql_id_hash.clone(), 
-												cpu_time_s: cpu_time, 
+				sql_ela_time.push(SQLElapsedTime{sql_id: sql_id_hash.clone(), 
+												elapsed_time_s: ela_time, 
 												executions: executions, 
-												cpu_time_exec_s: cpu_exec, 
+												elpased_time_exec_s: ela_exec, 
 												pct_total: pct_total, 
 												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string()});
 			}
@@ -307,13 +269,12 @@ fn sql_cpu_time_txt(sql_cpu_section: Vec<&str>) -> HashMap<String, SQLCPUTime> {
 		if line.starts_with("Module:") && !sql_id_hash.is_empty() {
 			let fields = line.split(":").collect::<Vec<&str>>();
 			let module = fields[1].trim();
-			let mut sql = sql_cpu_time.get_mut(&sql_id_hash).unwrap();
-			sql.sql_module = module.to_string();
+			let mut sql = sql_ela_time.last_mut().unwrap();
+			sql.sql_module = module.trim().to_string();
 		}
 	}
-	sql_cpu_time
+	sql_ela_time
 }
-
 
 fn sql_cpu_time(table: ElementRef) -> HashMap<String,SQLCPUTime> {
 	let mut sql_cpu_time: HashMap<String,SQLCPUTime> = HashMap::new();
@@ -351,6 +312,44 @@ fn sql_cpu_time(table: ElementRef) -> HashMap<String,SQLCPUTime> {
 		}
 	}
 
+	sql_cpu_time
+}
+
+fn sql_cpu_time_txt(sql_cpu_section: Vec<&str>) -> HashMap<String, SQLCPUTime> {
+	let mut sql_cpu_time: HashMap<String, SQLCPUTime> = HashMap::new();
+	let mut sql_id_hash = String::new();
+	for line in sql_cpu_section {
+		let fields = line.split_whitespace().collect::<Vec<&str>>();
+		if fields.len()>=6 {
+			let cpu_time = f64::from_str(&fields[0].trim().replace(",",""));
+			let executions = u64::from_str(&fields[1].trim().replace(",",""));
+			let cpu_exec = f64::from_str(&fields[2].trim().replace(",",""));
+			let pct_total = f64::from_str(&fields[3].trim().replace(",",""));
+			let ela_time = f64::from_str(&fields[4].trim().replace(",",""));
+			let buf_gets = f64::from_str(&fields[5].trim().replace(",",""));
+			if fields.len() == 7 && cpu_time.is_ok() && ela_time.is_ok() && executions.is_ok() && cpu_exec.is_ok() && pct_total.is_ok() && buf_gets.is_ok() {
+				let cpu_time = cpu_time.unwrap();
+				let executions = executions.unwrap();
+				let cpu_exec = cpu_exec.unwrap();
+				let pct_total = pct_total.unwrap();
+				let ela_time = ela_time.unwrap();
+				let buf_gets = buf_gets.unwrap();
+				sql_id_hash = fields[6].trim().to_string();
+				sql_cpu_time.entry(sql_id_hash.clone()).or_insert(SQLCPUTime{sql_id: sql_id_hash.clone(), 
+												cpu_time_s: cpu_time, 
+												executions: executions, 
+												cpu_time_exec_s: cpu_exec, 
+												pct_total: pct_total, 
+												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string()});
+			}
+		}
+		if line.starts_with("Module:") && !sql_id_hash.is_empty() {
+			let fields = line.split(":").collect::<Vec<&str>>();
+			let module = fields[1].trim();
+			let mut sql = sql_cpu_time.get_mut(&sql_id_hash).unwrap();
+			sql.sql_module = module.to_string();
+		}
+	}
 	sql_cpu_time
 }
 
@@ -650,6 +649,37 @@ fn waitevent_histogram_ms_txt(events_histogram_section: Vec<&str>, event_names: 
 	histogram
 }
 
+fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
+	let mut foreground_wait_events: Vec<ForegroundWaitEvents> = Vec::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() == 7 {
+			let event = columns[0].text().collect::<Vec<_>>();
+			let event = event[0].trim();
+
+			let waits = columns[1].text().collect::<Vec<_>>();
+			let waits = u64::from_str(&waits[0].trim().replace(",","")).unwrap_or(0);
+
+			let total_wait_time_s = columns[3].text().collect::<Vec<_>>();
+			let total_wait_time_s = f64::from_str(&total_wait_time_s[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let avg_wait = columns[4].text().collect::<Vec<_>>();
+			let avg_wait = f64::from_str(&avg_wait[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
+			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
+			if !is_idle(&event) {
+				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string(), waitevent_histogram_ms: BTreeMap::new() })
+			}
+		}
+	}
+
+	foreground_wait_events	
+}
+
 fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<ForegroundWaitEvents> {
 	let mut fg: Vec<ForegroundWaitEvents> = Vec::new();
 	for line in foreground_events_section {
@@ -683,55 +713,6 @@ fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<Foreground
 	fg
 }	
 
-
-
-fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
-	let mut foreground_wait_events: Vec<ForegroundWaitEvents> = Vec::new();
-	let row_selector = Selector::parse("tr").unwrap();
-    let column_selector = Selector::parse("td").unwrap();
-
-	for row in table.select(&row_selector) {
-		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
-		if columns.len() == 7 {
-			let event = columns[0].text().collect::<Vec<_>>();
-			let event = event[0].trim();
-
-			let waits = columns[1].text().collect::<Vec<_>>();
-			let waits = u64::from_str(&waits[0].trim().replace(",","")).unwrap_or(0);
-
-			let total_wait_time_s = columns[3].text().collect::<Vec<_>>();
-			let total_wait_time_s = f64::from_str(&total_wait_time_s[0].trim().replace(",","")).unwrap_or(0.0);
-
-			let avg_wait = columns[4].text().collect::<Vec<_>>();
-			let avg_wait = f64::from_str(&avg_wait[0].trim().replace(",","")).unwrap_or(0.0);
-
-			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
-			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
-			if !is_idle(&event) {
-				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string(), waitevent_histogram_ms: BTreeMap::new() })
-			}
-		}
-	}
-
-	foreground_wait_events	
-}
-
-fn time_model_stats_txt(time_model_section: Vec<&str>) -> Vec<TimeModelStats> {
-	let mut time_model_stats: Vec<TimeModelStats> = Vec::new();
-	for line in time_model_section {
-		if line.len() >= 66 {
-			let statname = line[0..35].to_string().trim().to_string();
-			let time_s = f64::from_str(&line[35..56].trim().replace(",",""));
-			let pct_dbtime = f64::from_str(&line[56..66].trim().replace(",",""));
-			if time_s.is_ok() && pct_dbtime.is_ok() {
-				time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s.unwrap(), pct_dbtime: pct_dbtime.unwrap(), begin_snap_time: "".to_string()});
-			}
-		}
-		
-	} 
-	time_model_stats
-}
-
 fn time_model_stats(table: ElementRef) -> Vec<TimeModelStats> {
 	let mut time_model_stats: Vec<TimeModelStats> = Vec::new();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -756,6 +737,21 @@ fn time_model_stats(table: ElementRef) -> Vec<TimeModelStats> {
 	time_model_stats
 }
 
+fn time_model_stats_txt(time_model_section: Vec<&str>) -> Vec<TimeModelStats> {
+	let mut time_model_stats: Vec<TimeModelStats> = Vec::new();
+	for line in time_model_section {
+		if line.len() >= 66 {
+			let statname = line[0..35].to_string().trim().to_string();
+			let time_s = f64::from_str(&line[35..56].trim().replace(",",""));
+			let pct_dbtime = f64::from_str(&line[56..66].trim().replace(",",""));
+			if time_s.is_ok() && pct_dbtime.is_ok() {
+				time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s.unwrap(), pct_dbtime: pct_dbtime.unwrap(), begin_snap_time: "".to_string()});
+			}
+		}
+		
+	} 
+	time_model_stats
+}
 
 fn host_cpu(table: ElementRef) -> HostCPU {
 	let mut host_cpu: HostCPU = HostCPU::default();
@@ -885,19 +881,7 @@ fn redo_log_switches_txt(line: &str) -> RedoLog {
 	redo_switches
 }
  
-fn instance_activity_stats_txt(inst_stats_section: Vec<&str>) -> Vec<KeyInstanceStats> {
-	let mut ias: Vec<KeyInstanceStats> = Vec::new();
-	for line in inst_stats_section {
-		if line.len() >= 52 {
-			let statname = line[0..35].to_string().trim().to_string();
-			let total = i64::from_str(&line[35..52].trim().replace(",","")).unwrap_or(-1);
-			if total >= 0 {
-				ias.push(KeyInstanceStats{statname: statname.clone(), total: total as u64});
-			}
-		}
-	}
-	ias
-}
+
 
 fn instance_activity_stats(table: ElementRef) -> Vec<KeyInstanceStats> {
 	let mut ias: Vec<KeyInstanceStats> = Vec::new();
@@ -915,6 +899,20 @@ fn instance_activity_stats(table: ElementRef) -> Vec<KeyInstanceStats> {
 
 			ias.push(KeyInstanceStats { statname: stat_name.to_string(), total: total });
 
+		}
+	}
+	ias
+}
+
+fn instance_activity_stats_txt(inst_stats_section: Vec<&str>) -> Vec<KeyInstanceStats> {
+	let mut ias: Vec<KeyInstanceStats> = Vec::new();
+	for line in inst_stats_section {
+		if line.len() >= 52 {
+			let statname = line[0..35].to_string().trim().to_string();
+			let total = i64::from_str(&line[35..52].trim().replace(",","")).unwrap_or(-1);
+			if total >= 0 {
+				ias.push(KeyInstanceStats{statname: statname.clone(), total: total as u64});
+			}
 		}
 	}
 	ias
@@ -954,24 +952,6 @@ fn wait_classes(table: ElementRef) -> Vec<WaitClasses> {
 	wait_classes
 }
 
-fn snap_info_txt(snap_section: Vec<&str>) -> SnapInfo {
-	let mut si = SnapInfo::default();
-	let fields_begin = snap_section[2].split_whitespace().collect::<Vec<&str>>();
-	let fields_end = snap_section[3].split_whitespace().collect::<Vec<&str>>();
-	let begin_snap = format!("{} {}", fields_begin[3], fields_begin[4]);
-	let end_snap = format!("{} {}", fields_end[3], fields_end[4]);
-
-	let begin_snap_id = format!("{}", fields_begin[2]);
-	let end_snap_id = format!("{}", fields_end[2]);
-
-	si.begin_snap_id = u64::from_str(&begin_snap_id).unwrap();
-	si.end_snap_id = u64::from_str(&end_snap_id).unwrap();
-	si.begin_snap_time = begin_snap;
-	si.end_snap_time = end_snap;
-
-	si
-}
-
 fn snap_info(table: ElementRef) -> SnapInfo {
 	let mut si = SnapInfo::default();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -1001,106 +981,44 @@ fn snap_info(table: ElementRef) -> SnapInfo {
 	si
 }
 
+fn snap_info_txt(snap_section: Vec<&str>) -> SnapInfo {
+	let mut si = SnapInfo::default();
+	let fields_begin = snap_section[2].split_whitespace().collect::<Vec<&str>>();
+	let fields_end = snap_section[3].split_whitespace().collect::<Vec<&str>>();
+	let begin_snap = format!("{} {}", fields_begin[3], fields_begin[4]);
+	let end_snap = format!("{} {}", fields_end[3], fields_end[4]);
 
-fn parse_instance_info_table(table: ElementRef) -> Option<DBInstance> {
-    let th_selector = Selector::parse("th").unwrap();
-    let tr_selector = Selector::parse("tr").unwrap();
-    let td_selector = Selector::parse("td").unwrap();
+	let begin_snap_id = format!("{}", fields_begin[2]);
+	let end_snap_id = format!("{}", fields_end[2]);
 
-    let headers: Vec<String> = table.select(&th_selector).map(|h| h.text().collect::<String>().trim().to_string()).collect();
+	si.begin_snap_id = u64::from_str(&begin_snap_id).unwrap();
+	si.end_snap_id = u64::from_str(&end_snap_id).unwrap();
+	si.begin_snap_time = begin_snap;
+	si.end_snap_time = end_snap;
 
-    if headers.len() == 8 {
-        if let Some(data_row) = table.select(&tr_selector).nth(1) {
-            let cols: Vec<String> = data_row
-                .select(&td_selector)
-                .map(|td| td.text().collect::<String>().trim().to_string())
-                .collect();
-            if cols.len() >= 7 {
-                let mut dbi = DBInstance::default();
-                dbi.db_id = u64::from_str(&cols[1]).unwrap_or(0);
-                dbi.release = cols[5].clone();
-                dbi.rac = cols[6].clone();
-                return Some(dbi);
-            }
-        }
-    }
-    None
+	si
 }
 
-fn parse_instance_details_table(table: ElementRef) -> Option<DBInstance> { // Expected headers: "Instance", "Inst Num", "Startup Time", "User Name", "System Data Visible".
-    let th_selector = Selector::parse("th").unwrap();
-    let tr_selector = Selector::parse("tr").unwrap();
-    let td_selector = Selector::parse("td").unwrap();
+fn load_profile(table: ElementRef) -> Vec<LoadProfile>{
+    let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+    let mut lp: Vec<LoadProfile> = Vec::new();
+    for row in table.select(&row_selector) {
+		let columns = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() == 5 {
+			let statname = columns[0].text().collect::<Vec<_>>();
+			let statname = statname[0].trim();
+			
+			let per_second = columns[1].text().collect::<Vec<_>>();
+			let per_second = f64::from_str(&per_second[0].trim().replace(",","")).unwrap_or(0.0);
 
-    let headers: Vec<String> = table.select(&th_selector).map(|h| h.text().collect::<String>().trim().to_string()).collect();
+			let per_transaction = columns[2].text().collect::<Vec<_>>();
+			let per_transaction = f64::from_str(&per_transaction[0].trim().replace(",", "")).unwrap_or(0.0);
 
-    if headers.len() == 5 {
-        if let Some(data_row) = table.select(&tr_selector).nth(1) {
-            let cols: Vec<String> = data_row
-                .select(&td_selector)
-                .map(|td| td.text().collect::<String>().trim().to_string())
-                .collect();
-            if cols.len() >= 3 {
-                let mut dbi = DBInstance::default();
-                dbi.instance_num = u8::from_str(&cols[1]).unwrap_or(0);
-                dbi.startup_time = cols[2].clone();
-                return Some(dbi);
-            }
-        }
+			lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction, begin_snap_time: "".to_string()});
+		}
     }
-    None
-}
-
-fn parse_host_info_table(table: ElementRef) -> Option<DBInstance> { //Expected headers: "Host Name", "Platform", "CPUs", "Cores", "Sockets", "Memory (GB)".
-    let th_selector = Selector::parse("th").unwrap();
-    let tr_selector = Selector::parse("tr").unwrap();
-    let td_selector = Selector::parse("td").unwrap();
-
-    let headers: Vec<String> = table.select(&th_selector).map(|h| h.text().collect::<String>().trim().to_string()).collect();
-
-    if headers.len() == 6 {
-        if let Some(data_row) = table.select(&tr_selector).nth(1) {
-            let cols: Vec<String> = data_row
-                .select(&td_selector)
-                .map(|td| td.text().collect::<String>().trim().to_string())
-                .collect();
-            if cols.len() >= 6 {
-                let mut dbi = DBInstance::default();
-                dbi.platform = cols[1].clone();
-                dbi.cpus = u16::from_str(&cols[2]).unwrap_or(0);
-                dbi.cores = u16::from_str(&cols[3]).unwrap_or(0);
-                dbi.sockets = u8::from_str(&cols[4]).unwrap_or(0);
-                let mem: f32 = cols[5].parse().unwrap_or(0.0);
-                dbi.memory = mem.round() as u16;
-                return Some(dbi);
-            }
-        }
-    }
-    None
-}
-
-fn instance_info_txt(info_section: Vec<&str>) -> DBInstance {
-	let mut dbi = DBInstance::default();
-	let mut db_info = info_section.first().unwrap().trim();
-	let mut host_info = info_section.last().unwrap().trim();
-	let db_tokens: Vec<&str> = db_info.split_whitespace().collect();
-    if db_tokens.len() >= 7 {
-        dbi.db_id = db_tokens[0].parse().unwrap_or_default();
-        dbi.instance_num = db_tokens[2].parse().unwrap_or_default();
-        dbi.startup_time = format!("{} {}", db_tokens[3], db_tokens[4]);
-        dbi.release = db_tokens[5].to_string();
-        dbi.rac = db_tokens[6].to_string();
-    }
-	let host_tokens: Vec<&str> = host_info.split_whitespace().collect();
-	if host_tokens.len() >= 8 {
-        dbi.platform = host_tokens[1..4].join(" ");
-        dbi.cpus = host_tokens[4].parse().unwrap_or_default();
-        dbi.cores = host_tokens[5].parse().unwrap_or_default();
-        dbi.sockets = host_tokens[6].parse().unwrap_or_default();
-        let mem: f32 = host_tokens[7].parse().unwrap_or(0.0);
-        dbi.memory = mem.round() as u16;
-    }
-	dbi
+    lp
 }
 
 fn load_profile_txt(load_section: Vec<&str>) -> Vec<LoadProfile> {
@@ -1130,26 +1048,80 @@ fn load_profile_txt(load_section: Vec<&str>) -> Vec<LoadProfile> {
 	lp
 }
 
-fn load_profile(table: ElementRef) -> Vec<LoadProfile>{
-    let row_selector = Selector::parse("tr").unwrap();
-    let column_selector = Selector::parse("td").unwrap();
-    let mut lp: Vec<LoadProfile> = Vec::new();
-    for row in table.select(&row_selector) {
-		let columns = row.select(&column_selector).collect::<Vec<_>>();
-		if columns.len() == 5 {
-			let statname = columns[0].text().collect::<Vec<_>>();
-			let statname = statname[0].trim();
-			
-			let per_second = columns[1].text().collect::<Vec<_>>();
-			let per_second = f64::from_str(&per_second[0].trim().replace(",","")).unwrap_or(0.0);
+fn instance_info(table: ElementRef, table_type: &str) -> Option<DBInstance> {
+    let th_selector = Selector::parse("th").unwrap();
+    let tr_selector = Selector::parse("tr").unwrap();
+    let td_selector = Selector::parse("td").unwrap();
 
-			let per_transaction = columns[2].text().collect::<Vec<_>>();
-			let per_transaction = f64::from_str(&per_transaction[0].trim().replace(",", "")).unwrap_or(0.0);
+    let headers: Vec<String> = table.select(&th_selector).map(|h| h.text().collect::<String>().trim().to_string()).collect();
 
-			lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction, begin_snap_time: "".to_string()});
+    if table_type == "Info" {
+		if headers.len() == 8 {
+			if let Some(data_row) = table.select(&tr_selector).nth(1) {
+				let cols: Vec<String> = data_row.select(&td_selector).map(|td| td.text().collect::<String>().trim().to_string()).collect();
+				if cols.len() >= 7 {
+					let mut dbi = DBInstance::default();
+					dbi.db_id = u64::from_str(&cols[1]).unwrap_or(0);
+					dbi.release = cols[5].clone();
+					dbi.rac = cols[6].clone();
+					return Some(dbi);
+				}
+			}
 		}
+	} else if table_type == "Details" {
+		if headers.len() == 5 {
+			if let Some(data_row) = table.select(&tr_selector).nth(1) {
+				let cols: Vec<String> = data_row.select(&td_selector).map(|td| td.text().collect::<String>().trim().to_string()).collect();
+				if cols.len() >= 3 {
+					let mut dbi = DBInstance::default();
+					dbi.instance_num = u8::from_str(&cols[1]).unwrap_or(0);
+					dbi.startup_time = cols[2].clone();
+					return Some(dbi);
+				}
+			}
+		}
+	} else if table_type == "Host"{
+		if headers.len() == 6 {
+			if let Some(data_row) = table.select(&tr_selector).nth(1) {
+				let cols: Vec<String> = data_row.select(&td_selector).map(|td| td.text().collect::<String>().trim().to_string()).collect();
+				if cols.len() >= 6 {
+					let mut dbi = DBInstance::default();
+					dbi.platform = cols[1].clone();
+					dbi.cpus = u16::from_str(&cols[2]).unwrap_or(0);
+					dbi.cores = u16::from_str(&cols[3]).unwrap_or(0);
+					dbi.sockets = u8::from_str(&cols[4]).unwrap_or(0);
+					let mem: f32 = cols[5].parse().unwrap_or(0.0);
+					dbi.memory = mem.round() as u16;
+					return Some(dbi);
+				}
+			}
+		}
+	}
+    None
+}
+
+fn instance_info_txt(info_section: Vec<&str>) -> DBInstance {
+	let mut dbi = DBInstance::default();
+	let mut db_info = info_section.first().unwrap().trim();
+	let mut host_info = info_section.last().unwrap().trim();
+	let db_tokens: Vec<&str> = db_info.split_whitespace().collect();
+    if db_tokens.len() >= 7 {
+        dbi.db_id = db_tokens[0].parse().unwrap_or_default();
+        dbi.instance_num = db_tokens[2].parse().unwrap_or_default();
+        dbi.startup_time = format!("{} {}", db_tokens[3], db_tokens[4]);
+        dbi.release = db_tokens[5].to_string();
+        dbi.rac = db_tokens[6].to_string();
     }
-    lp
+	let host_tokens: Vec<&str> = host_info.split_whitespace().collect();
+	if host_tokens.len() >= 8 {
+        dbi.platform = host_tokens[1..4].join(" ");
+        dbi.cpus = host_tokens[4].parse().unwrap_or_default();
+        dbi.cores = host_tokens[5].parse().unwrap_or_default();
+        dbi.sockets = host_tokens[6].parse().unwrap_or_default();
+        let mem: f32 = host_tokens[7].parse().unwrap_or(0.0);
+        dbi.memory = mem.round() as u16;
+    }
+	dbi
 }
 
 fn parse_db_instance_information(fname: String) -> DBInstance {
@@ -1163,19 +1135,19 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
         for table in doc.select(&table_selector) {
             if let Some(summary) = table.value().attr("summary") {
                 if summary == "This table displays database instance information" {
-                    if let Some(inst_info) = parse_instance_info_table(table) {
+                    if let Some(inst_info) = instance_info(table,"Info") {
                         // Merge fields from the first table:
                         db_instance_information.db_id = inst_info.db_id;
                         db_instance_information.release = inst_info.release;
                         db_instance_information.rac = inst_info.rac;
                     }
-                    if let Some(inst_details) = parse_instance_details_table(table) {
+                    if let Some(inst_details) = instance_info(table,"Details") {
                         // Merge fields from the second table:
                         db_instance_information.instance_num = inst_details.instance_num;
                         db_instance_information.startup_time = inst_details.startup_time;
                     }
                 } else if summary == "This table displays host information" {
-                    if let Some(host_info) = parse_host_info_table(table) {
+                    if let Some(host_info) = instance_info(table,"Host") {
                         // Merge fields from the host table:
                         db_instance_information.platform = host_info.platform;
                         db_instance_information.cpus = host_info.cpus;
