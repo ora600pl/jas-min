@@ -1,7 +1,7 @@
 use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter};
-use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation};
+use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor};
 use plotly::box_plot::BoxMean;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::{BTreeMap, HashMap};
@@ -203,14 +203,16 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
     
     //Make colors consistent across buckets 
     let bucket_colors: HashMap<String, String> = HashMap::from([
-        ("1: <1ms".to_string(), "#1fb4b4".to_string()), // Ocean Blue
-        ("2: <2ms".to_string(), "#ff7f0e".to_string()), // Orange
-        ("3: <4ms".to_string(), "#2ca02c".to_string()), // Green
-        ("4: <8ms".to_string(), "#f21f5b".to_string()), // Red
-        ("5: <16ms".to_string(), "#ba40f7".to_string()), // Purple
-        ("6: <32ms".to_string(), "#8c564b".to_string()), // Brown
-        ("7: <=1s".to_string(), "#e377c2".to_string()), // Pink
-        ("8: >1s".to_string(), "#a8c204".to_string())  // Dirty Yellow
+        ("0: <512us".to_string(), "#00FF00".to_string()), // Bright Green
+        ("1: <1ms".to_string(), "#BFFF00".to_string()),    // Chartreuse-like (light green-yellow)
+        ("2: <2ms".to_string(), "#FFFF00".to_string()),    // Yellow
+        ("3: <4ms".to_string(), "#FFBF00".to_string()),    // Amber
+        ("4: <8ms".to_string(), "#FF8000".to_string()),    // Orange
+        ("5: <16ms".to_string(), "#FF4000".to_string()),   // Tomato
+        ("6: <32ms".to_string(), "#FF0000".to_string()),    // Red
+        ("7: <=1s".to_string(), "#B22222".to_string()),     // Red
+        ("7: >=32ms".to_string(), "#B22222".to_string()),     // Firebrick (dark red)
+        ("8: >1s".to_string(), "#8B0000".to_string())      // Dark Red
     ]);
 
     // Filter ForegroundWaitEvents based on top_events
@@ -293,12 +295,18 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
                     .columns(1),
                     //.row_order(Grid::TopToBottom),
             )
+            //.legend(
+            //    Legend::new()
+            //        .x(0.0)
+            //        .x_anchor(Anchor::Left),
+            //)
             .x_axis(
                 Axis::new()
                     .title(Title::new("% DBTime"))
                     .domain(&[0.0, 1.0])
                     .anchor("y1")
-                    .range(vec![0.,]),
+                    .range(vec![0.,])
+                    .show_grid(true),
             )
             .y_axis(
                 Axis::new()
@@ -310,14 +318,16 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
                 Axis::new()
                     .domain(&[0.3, 0.35])
                     .anchor("x1")
-                    .range(vec![0.,]),
+                    .range(vec![0.,])
+                    .show_tick_labels(false),
             )
             .x_axis2(
                 Axis::new()
                     .title(Title::new("% Wait Event ms"))
                     .domain(&[0.0, 1.0])
                     .anchor("y3")
-                    .range(vec![0.,]),
+                    .range(vec![0.,])
+                    .show_grid(true),
             )
             .y_axis3(
                 Axis::new()
@@ -329,7 +339,9 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
                 Axis::new()
                     .domain(&[0.83, 1.0])
                     .anchor("x2")
-                    .range(vec![0.,]),
+                    .range(vec![0.,])
+                    .show_tick_labels(false)
+                    .show_grid(true),
             );
             plot.set_layout(layout);
     
