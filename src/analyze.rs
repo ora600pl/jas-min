@@ -9,6 +9,8 @@ use std::fs;
 use std::path::Path;
 use colored::*;
 use open::*;
+use std::str::FromStr;
+
 
 use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
@@ -22,53 +24,59 @@ struct TopStats {
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64) -> TopStats {
+fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
     let mut stat_names: BTreeMap<String, u8> = BTreeMap::new();
     //so we scan the AWR data
     for awr in awrs {
-        let mut dbtime: f64 = 0.0;
-        let mut cputime: f64 = 0.0;
-        //We want to find dbtime and cputime because based on their delta we will base our decisions 
-        for lp in awr.load_profile {
-            if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
-                dbtime = lp.per_second;
-                
-            } else if lp.stat_name.starts_with("DB CPU") {
-                cputime = lp.per_second;
-            }
-        }
-        //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
-        //because it means that Oracle spent some time waiting on wait events and not working on CPU
-        if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
-            println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
-            let mut events = awr.foreground_wait_events;
-            //I'm sorting events by total wait time, to get the longest waits at the end
-            events.sort_by_key(|e| e.total_wait_time_s as i64);
-            let l = events.len();
-            //We are registering only TOP10 from each snap
-            if l > 10 {
-                for i in 1..10 {
-                    event_names.entry(events[l-i].event.clone()).or_insert(1);
+        let snap_filter = snap_range.split("-").collect::<Vec<&str>>();
+        let f_begin_snap = u64::from_str(snap_filter[0]).unwrap();
+        let f_end_snap = u64::from_str(snap_filter[1]).unwrap();
+
+        if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+            let mut dbtime: f64 = 0.0;
+            let mut cputime: f64 = 0.0;
+            //We want to find dbtime and cputime because based on their delta we will base our decisions 
+            for lp in awr.load_profile {
+                if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
+                    dbtime = lp.per_second;
+                    
+                } else if lp.stat_name.starts_with("DB CPU") {
+                    cputime = lp.per_second;
                 }
             }
-            //And the same with SQLs
-            let mut sqls = awr.sql_elapsed_time;
-            sqls.sort_by_key(|s| s.elapsed_time_s as i64);
-            let l = sqls.len();  
-            if l > 5 {
-                for i in 1..5 {
-                    sql_ids.entry(sqls[l-i].sql_id.clone()).or_insert(sqls[l-i].sql_module.clone());
+            //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
+            //because it means that Oracle spent some time waiting on wait events and not working on CPU
+            if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
+                println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
+                let mut events = awr.foreground_wait_events;
+                //I'm sorting events by total wait time, to get the longest waits at the end
+                events.sort_by_key(|e| e.total_wait_time_s as i64);
+                let l = events.len();
+                //We are registering only TOP10 from each snap
+                if l > 10 {
+                    for i in 1..10 {
+                        event_names.entry(events[l-i].event.clone()).or_insert(1);
+                    }
                 }
-            } else if l >= 1 && l <=5 {
-                for i in 0..l {
-                    sql_ids.entry(sqls[i].sql_id.clone()).or_insert(sqls[i].sql_module.clone());
+                //And the same with SQLs
+                let mut sqls = awr.sql_elapsed_time;
+                sqls.sort_by_key(|s| s.elapsed_time_s as i64);
+                let l = sqls.len();  
+                if l > 5 {
+                    for i in 1..5 {
+                        sql_ids.entry(sqls[l-i].sql_id.clone()).or_insert(sqls[l-i].sql_module.clone());
+                    }
+                } else if l >= 1 && l <=5 {
+                    for i in 0..l {
+                        sql_ids.entry(sqls[i].sql_id.clone()).or_insert(sqls[i].sql_module.clone());
+                    }
                 }
             }
-        }
-        for stats in awr.key_instance_stats {
-            stat_names.entry(stats.statname.clone()).or_insert(1);
+            for stats in awr.key_instance_stats {
+                stat_names.entry(stats.statname.clone()).or_insert(1);
+            }
         }
     }
     let top = TopStats {events: event_names, sqls: sql_ids, stat_names: stat_names,};
@@ -195,14 +203,14 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
     
     //Make colors consistent across buckets 
     let bucket_colors: HashMap<String, String> = HashMap::from([
-        ("Bucket 1: <1ms".to_string(), "#1fb4b4".to_string()), // Ocean Blue
-        ("Bucket 2: <2ms".to_string(), "#ff7f0e".to_string()), // Orange
-        ("Bucket 3: <4ms".to_string(), "#2ca02c".to_string()), // Green
-        ("Bucket 4: <8ms".to_string(), "#f21f5b".to_string()), // Red
-        ("Bucket 5: <16ms".to_string(), "#ba40f7".to_string()), // Purple
-        ("Bucket 6: <32ms".to_string(), "#8c564b".to_string()), // Brown
-        ("Bucket 7: <=1s".to_string(), "#e377c2".to_string()), // Pink
-        ("Bucket 8: >1s".to_string(), "#a8c204".to_string())  // Dirty Yellow
+        ("1: <1ms".to_string(), "#1fb4b4".to_string()), // Ocean Blue
+        ("2: <2ms".to_string(), "#ff7f0e".to_string()), // Orange
+        ("3: <4ms".to_string(), "#2ca02c".to_string()), // Green
+        ("4: <8ms".to_string(), "#f21f5b".to_string()), // Red
+        ("5: <16ms".to_string(), "#ba40f7".to_string()), // Purple
+        ("6: <32ms".to_string(), "#8c564b".to_string()), // Brown
+        ("7: <=1s".to_string(), "#e377c2".to_string()), // Pink
+        ("8: >1s".to_string(), "#a8c204".to_string())  // Dirty Yellow
     ]);
 
     // Filter ForegroundWaitEvents based on top_events
@@ -337,7 +345,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
     println!("Saved plots for events to '{}'", dirpath);
 }
 
-pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
+pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
@@ -368,7 +376,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
 
     let mut x_vals: Vec<String> = Vec::new();
 
-    let top_stats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time);
+    let top_stats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone());
     let top_events = top_stats.events;
     let top_sqls = top_stats.sqls;
     let all_stats = top_stats.stat_names;
@@ -393,131 +401,138 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
 
     /* ------ Preparing data ------ */
     for awr in &collection.awrs {
-        let xval = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
-        x_vals.push(xval.clone());
+        let snap_filter = snap_range.split("-").collect::<Vec<&str>>();
+        let f_begin_snap = u64::from_str(snap_filter[0]).unwrap();
+        let f_end_snap = u64::from_str(snap_filter[1]).unwrap();
 
-        //We have to fill the whole data traces for stats, wait events and SQLs with 0 to be sure that chart won't be moved to one side
-        for (sql, _) in &top_sqls {
-            y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
-            y_vals_sqls_exec_t.entry(sql.to_string()).or_insert(Vec::new());
-            y_vals_sqls_exec_n.entry(sql.to_string()).or_insert(Vec::new());
-            let mut v = y_vals_sqls.get_mut(sql).unwrap();
-            v.push(0.0);
-        } 
+        if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
 
-        for (event, _) in &top_events {
-            if event.to_string() == "log file sync"{
-                is_logfilesync_high = true;
-            }
-            y_vals_events.entry(event.to_string()).or_insert(Vec::new());
-            y_vals_events_n.entry(event.to_string()).or_insert(Vec::new());
-            y_vals_events_t.entry(event.to_string()).or_insert(Vec::new());
-            y_vals_events_s.entry(event.to_string()).or_insert(Vec::new());
-            let mut v = y_vals_events.get_mut(event).unwrap();
-            v.push(0.0);
-        }
+                let xval = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
+                x_vals.push(xval.clone());
 
-        for (statname, _) in &all_stats {
-            instance_stats.entry(statname.to_string()).or_insert(Vec::new());
-            let mut v = instance_stats.get_mut(statname).unwrap();
-            v.push(0.0);
-        }
+                //We have to fill the whole data traces for stats, wait events and SQLs with 0 to be sure that chart won't be moved to one side
+                for (sql, _) in &top_sqls {
+                    y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
+                    y_vals_sqls_exec_t.entry(sql.to_string()).or_insert(Vec::new());
+                    y_vals_sqls_exec_n.entry(sql.to_string()).or_insert(Vec::new());
+                    let mut v = y_vals_sqls.get_mut(sql).unwrap();
+                    v.push(0.0);
+                } 
 
-        //Than we can set the current value of the vector to the desired one, if the event is in TOP section in that snap id
-       for event in &awr.foreground_wait_events { 
-            if top_events.contains_key(&event.event) {
-                let mut v = y_vals_events.get_mut(&event.event).unwrap();
-                v[x_vals.len()-1] = event.total_wait_time_s;
-                let mut v = y_vals_events_n.get_mut(&event.event).unwrap();
-                v.push(event.waits as f64);
-                let mut v = y_vals_events_t.get_mut(&event.event).unwrap();
-                v.push(event.pct_dbtime);
-                let mut v = y_vals_events_s.get_mut(&event.event).unwrap();
-                v.push(event.total_wait_time_s);
-            }
-       }
-       //Same with SQLs
-       for sqls in &awr.sql_elapsed_time {
-            if top_sqls.contains_key(&sqls.sql_id) {
-                let mut v = y_vals_sqls.get_mut(&sqls.sql_id).unwrap();
-                v[x_vals.len()-1] = sqls.elapsed_time_s;
-                let mut v = y_vals_sqls_exec_t.get_mut(&sqls.sql_id).unwrap();
-                v.push(sqls.elpased_time_exec_s);
-                let mut v = y_vals_sqls_exec_n.get_mut(&sqls.sql_id).unwrap();
-                v.push(sqls.executions as f64); 
-             }
-       }
-       let mut is_statspack: bool = false;
-        //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
-       for lp in &awr.load_profile {
-            if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
-                y_vals_dbtime.push(lp.per_second);
-                if lp.stat_name.starts_with("DB time") {
-                    is_statspack = true;
+                for (event, _) in &top_events {
+                    if event.to_string() == "log file sync"{
+                        is_logfilesync_high = true;
+                    }
+                    y_vals_events.entry(event.to_string()).or_insert(Vec::new());
+                    y_vals_events_n.entry(event.to_string()).or_insert(Vec::new());
+                    y_vals_events_t.entry(event.to_string()).or_insert(Vec::new());
+                    y_vals_events_s.entry(event.to_string()).or_insert(Vec::new());
+                    let mut v = y_vals_events.get_mut(event).unwrap();
+                    v.push(0.0);
                 }
-            } else if lp.stat_name.starts_with("DB CPU") {
-                y_vals_dbcpu.push(lp.per_second);
-            } else if lp.stat_name.starts_with("User calls") {
-                y_vals_calls.push(lp.per_second);
-            } else if lp.stat_name.starts_with("User logons") || (is_statspack && lp.stat_name.starts_with("Logons")) {
-                y_vals_logons.push(lp.per_second*60.0*60.0);
-            } else if lp.stat_name.starts_with("Executes") {
-                y_vals_execs.push(lp.per_second);
-            } else if lp.stat_name.starts_with("Parses") {
-                y_vals_parses.push(lp.per_second);
-            } else if lp.stat_name.starts_with("Hard parses") {
-                y_vals_hparses.push(lp.per_second);
+
+                for (statname, _) in &all_stats {
+                    instance_stats.entry(statname.to_string()).or_insert(Vec::new());
+                    let mut v = instance_stats.get_mut(statname).unwrap();
+                    v.push(0.0);
+                }
+
+                //Than we can set the current value of the vector to the desired one, if the event is in TOP section in that snap id
+            for event in &awr.foreground_wait_events { 
+                    if top_events.contains_key(&event.event) {
+                        let mut v = y_vals_events.get_mut(&event.event).unwrap();
+                        v[x_vals.len()-1] = event.total_wait_time_s;
+                        let mut v = y_vals_events_n.get_mut(&event.event).unwrap();
+                        v.push(event.waits as f64);
+                        let mut v = y_vals_events_t.get_mut(&event.event).unwrap();
+                        v.push(event.pct_dbtime);
+                        let mut v = y_vals_events_s.get_mut(&event.event).unwrap();
+                        v.push(event.total_wait_time_s);
+                    }
             }
-       }
-        // ----- Host CPU
-        if awr.host_cpu.pct_user < 0.0 {
-             y_vals_cpu_user.push(0.0);
-        } else {
-             y_vals_cpu_user.push(awr.host_cpu.pct_user);
-        }
-        y_vals_cpu_load.push(100.0-awr.host_cpu.pct_idle);
+            //Same with SQLs
+            for sqls in &awr.sql_elapsed_time {
+                    if top_sqls.contains_key(&sqls.sql_id) {
+                        let mut v = y_vals_sqls.get_mut(&sqls.sql_id).unwrap();
+                        v[x_vals.len()-1] = sqls.elapsed_time_s;
+                        let mut v = y_vals_sqls_exec_t.get_mut(&sqls.sql_id).unwrap();
+                        v.push(sqls.elpased_time_exec_s);
+                        let mut v = y_vals_sqls_exec_n.get_mut(&sqls.sql_id).unwrap();
+                        v.push(sqls.executions as f64); 
+                    }
+            }
+            let mut is_statspack: bool = false;
+                //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
+            for lp in &awr.load_profile {
+                    if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
+                        y_vals_dbtime.push(lp.per_second);
+                        if lp.stat_name.starts_with("DB time") {
+                            is_statspack = true;
+                        }
+                    } else if lp.stat_name.starts_with("DB CPU") {
+                        y_vals_dbcpu.push(lp.per_second);
+                    } else if lp.stat_name.starts_with("User calls") {
+                        y_vals_calls.push(lp.per_second);
+                    } else if lp.stat_name.starts_with("User logons") || (is_statspack && lp.stat_name.starts_with("Logons")) {
+                        y_vals_logons.push(lp.per_second*60.0*60.0);
+                    } else if lp.stat_name.starts_with("Executes") {
+                        y_vals_execs.push(lp.per_second);
+                    } else if lp.stat_name.starts_with("Parses") {
+                        y_vals_parses.push(lp.per_second);
+                    } else if lp.stat_name.starts_with("Hard parses") {
+                        y_vals_hparses.push(lp.per_second);
+                    }
+            }
+                // ----- Host CPU
+                if awr.host_cpu.pct_user < 0.0 {
+                    y_vals_cpu_user.push(0.0);
+                } else {
+                    y_vals_cpu_user.push(awr.host_cpu.pct_user);
+                }
+                y_vals_cpu_load.push(100.0-awr.host_cpu.pct_idle);
 
-        // ----- Additionally plot Redo Log Switches
-        y_vals_redo_switches.push(awr.redo_log.per_hour);
+                // ----- Additionally plot Redo Log Switches
+                y_vals_redo_switches.push(awr.redo_log.per_hour);
 
-        let mut calls: u64 = 0;
-        let mut commits: u64 = 0;
-        let mut rollbacks: u64 = 0;
-        let mut cleanout_ktugct: u64 = 0;
-        let mut cleanout_cr: u64 = 0;
-        let mut excessive_commit = 0.0;
+                let mut calls: u64 = 0;
+                let mut commits: u64 = 0;
+                let mut rollbacks: u64 = 0;
+                let mut cleanout_ktugct: u64 = 0;
+                let mut cleanout_cr: u64 = 0;
+                let mut excessive_commit = 0.0;
 
-        for activity in &awr.key_instance_stats {
-            let mut v = instance_stats.get_mut(&activity.statname).unwrap();
-            v[x_vals.len()-1] = activity.total as f64;
+                for activity in &awr.key_instance_stats {
+                    let mut v = instance_stats.get_mut(&activity.statname).unwrap();
+                    v[x_vals.len()-1] = activity.total as f64;
 
-            // Plot additional stats if 'log file sync' is in top events
+                    // Plot additional stats if 'log file sync' is in top events
+                    if is_logfilesync_high {
+                    
+                        if activity.statname == "user calls" {
+                            calls = activity.total;
+                        } else if activity.statname == "user commits" {
+                            commits = activity.total;
+                        } else if activity.statname == "user rollbacks" {
+                            rollbacks = activity.total;
+                        } else if activity.statname.starts_with("cleanout - number of ktugct calls") {
+                            cleanout_ktugct = activity.total;
+                        } else if activity.statname.starts_with("cleanouts only - consistent read") {
+                            cleanout_cr = activity.total;
+                        }
+                        excessive_commit = if commits + rollbacks > 0 {
+                            (calls as f64) / ((commits + rollbacks) as f64)
+                            } else {
+                                0.0
+                        };
+                    }
+            }
             if is_logfilesync_high {
-               
-                if activity.statname == "user calls" {
-                    calls = activity.total;
-                } else if activity.statname == "user commits" {
-                    commits = activity.total;
-                } else if activity.statname == "user rollbacks" {
-                    rollbacks = activity.total;
-                } else if activity.statname.starts_with("cleanout - number of ktugct calls") {
-                    cleanout_ktugct = activity.total;
-                } else if activity.statname.starts_with("cleanouts only - consistent read") {
-                    cleanout_cr = activity.total;
-                }
-                excessive_commit = if commits + rollbacks > 0 {
-                    (calls as f64) / ((commits + rollbacks) as f64)
-                    } else {
-                        0.0
-                };
+                    y_excessive_commits.push(excessive_commit);
+                    /* This is for printing delayed block cleanouts when log file sync is present*/
+                    y_cleanout_ktugct.push(cleanout_ktugct as f64);
+                    y_cleanout_cr.push(cleanout_cr as f64);
             }
-       }
-       if is_logfilesync_high {
-            y_excessive_commits.push(excessive_commit);
-            /* This is for printing delayed block cleanouts when log file sync is present*/
-            y_cleanout_ktugct.push(cleanout_ktugct as f64);
-            y_cleanout_cr.push(cleanout_cr as f64);
-       }
+        }
     }
 
     //I want to stort wait events by most heavy ones across the whole period

@@ -144,10 +144,10 @@ pub struct SQLReads {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SnapInfo {
-	pub begin_snap_id: u32,
-	end_snap_id: u32,
+	pub begin_snap_id: u64,
+	pub end_snap_id: u64,
 	pub begin_snap_time: String,
-	end_snap_time: String,
+	pub end_snap_time: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -576,7 +576,7 @@ fn waitevent_histogram_ms(table: ElementRef) -> HashMap<String, BTreeMap<String,
 				let pct_time = f32::from_str(&pct_time[0].trim().replace(",","")).unwrap_or(0.0);
 				histogram.entry(event.to_string()).or_insert(BTreeMap::new());
 				let mut v = histogram.get_mut(event).unwrap();
-				let bucket = format!("Bucket {}: {}", i-2, buckets[i-2].clone());
+				let bucket = format!("{}: {}", i-2, buckets[i-2].clone());
 				v.entry(bucket).or_insert(pct_time);
 			}
 		} 
@@ -590,14 +590,14 @@ fn waitevent_histogram_ms_txt(events_histogram_section: Vec<&str>, event_names: 
 	for line in events_histogram_section {
 		if line.len() > 26 {
 			let mut hist_values: BTreeMap<String, f32> = BTreeMap::from([
-				("Bucket 1: <1ms".to_string(), 0.0),
-				("Bucket 2: <2ms".to_string(), 0.0),
-				("Bucket 3: <4ms".to_string(), 0.0),
-				("Bucket 4: <8ms".to_string(), 0.0),
-				("Bucket 5: <16ms".to_string(), 0.0),
-				("Bucket 6: <32ms".to_string(), 0.0),
-				("Bucket 7: <=1s".to_string(), 0.0),
-				("Bucket 8: >1s".to_string(), 0.0),
+				("1: <1ms".to_string(), 0.0),
+				("2: <2ms".to_string(), 0.0),
+				("3: <4ms".to_string(), 0.0),
+				("4: <8ms".to_string(), 0.0),
+				("5: <16ms".to_string(), 0.0),
+				("6: <32ms".to_string(), 0.0),
+				("7: <=1s".to_string(), 0.0),
+				("8: >1s".to_string(), 0.0),
 			]);
 
 			let mut event_name = line[0..26].to_string().trim().to_string();
@@ -605,42 +605,42 @@ fn waitevent_histogram_ms_txt(events_histogram_section: Vec<&str>, event_names: 
 				event_name = event_names.get(&event_name).unwrap().clone();
 				if line.len() >= 37 {
 					let pct_val = f32::from_str(&line[33..38].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("Bucket 1: <1ms").unwrap();
+					let x = hist_values.get_mut("1: <1ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 43 {
 					let pct_val = f32::from_str(&line[39..44].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("Bucket 2: <2ms").unwrap();
+					let x = hist_values.get_mut("2: <2ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 49 {
 					let pct_val = f32::from_str(&line[45..50].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("Bucket 3: <4ms").unwrap();
+					let x = hist_values.get_mut("3: <4ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 55 {
 					let pct_val = f32::from_str(&line[51..56].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("Bucket 4: <8ms").unwrap();
+					let x = hist_values.get_mut("4: <8ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 61 {
 					let pct_val = f32::from_str(&line[57..62].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("Bucket 5: <16ms").unwrap();
+					let x = hist_values.get_mut("5: <16ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 67 {
 					let pct_val = f32::from_str(&line[63..68].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("Bucket 6: <32ms").unwrap();
+					let x = hist_values.get_mut("6: <32ms").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 73 {
 					let pct_val = f32::from_str(&line[69..74].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("Bucket 7: <=1s").unwrap();
+					let x = hist_values.get_mut("7: <=1s").unwrap();
 					*x = pct_val;
 				}
 				if line.len() >= 79 {
 					let pct_val = f32::from_str(&line[75..80].trim().replace(",","")).unwrap_or(0.0);
-					let x = hist_values.get_mut("Bucket 8: >1s").unwrap();
+					let x = hist_values.get_mut("8: >1s").unwrap();
 					*x = pct_val;
 				}
 				histogram.insert(event_name.clone(), hist_values.clone());
@@ -964,8 +964,8 @@ fn snap_info_txt(snap_section: Vec<&str>) -> SnapInfo {
 	let begin_snap_id = format!("{}", fields_begin[2]);
 	let end_snap_id = format!("{}", fields_end[2]);
 
-	si.begin_snap_id = u32::from_str(&begin_snap_id).unwrap();
-	si.end_snap_id = u32::from_str(&end_snap_id).unwrap();
+	si.begin_snap_id = u64::from_str(&begin_snap_id).unwrap();
+	si.end_snap_id = u64::from_str(&end_snap_id).unwrap();
 	si.begin_snap_time = begin_snap;
 	si.end_snap_time = end_snap;
 
@@ -984,7 +984,7 @@ fn snap_info(table: ElementRef) -> SnapInfo {
 			let begin_end_snap = begin_end_snap[0].trim();
 			
 			let begin_end_snap_id = columns[1].text().collect::<Vec<_>>();
-			let begin_end_snap_id = u32::from_str(&begin_end_snap_id[0]).unwrap_or(0);
+			let begin_end_snap_id = u64::from_str(&begin_end_snap_id[0]).unwrap_or(0);
 
 			let begin_end_snap_time = columns[2].text().collect::<Vec<_>>();
 			let begin_end_snap_time = begin_end_snap_time[0].trim();
@@ -1370,7 +1370,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 }
 
 
-pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64, filter_db_time: f64) -> Result<String, std::io::Error> {
+pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) -> Result<String, std::io::Error> {
 	
 	let mut awr_vec: Vec<AWR> = Vec::new();
 	let mut is_instance_info: Option<DBInstance> = None; // to grab DBInstance info from the first file
@@ -1395,7 +1395,7 @@ pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64, filter_db_
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
     if plot > 0 {
         let html_fname = format!("{}.html", dirname);
-        plot_to_file(collection, html_fname, db_time_cpu_ratio, filter_db_time);
+        plot_to_file(collection, html_fname, db_time_cpu_ratio, filter_db_time, snap_range);
     }
     Ok(json_str)
 }
@@ -1423,11 +1423,11 @@ pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::
 	Ok(awr_doc)
 }
 
-pub fn prarse_json_file(fname: String, db_time_cpu_ratio: f64, filter_db_time: f64) {
+pub fn prarse_json_file(fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) {
 	let json_file = fs::read_to_string(&fname).expect(&format!("Something wrong with a file {} ", fname));
 	let mut collection: AWRSCollection = serde_json::from_str(&json_file).expect("Wrong JSON format");
 	collection.awrs.sort_by_key(|a| a.snap_info.begin_snap_id);
 	let file_and_ext: Vec<&str> = fname.split('.').collect();
     let html_fname = format!("{}.html", file_and_ext[0]);
-	plot_to_file(collection, html_fname, db_time_cpu_ratio, filter_db_time);
+	plot_to_file(collection, html_fname, db_time_cpu_ratio, filter_db_time, snap_range);
 }

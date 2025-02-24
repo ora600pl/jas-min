@@ -16,10 +16,6 @@ mod idleevents;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    ///Run in server mode - you can parse files via GET/POST methods. HTTP will listen on 6751 port by default
-    #[clap(short, long, default_value="0.0.0.0:6751")]
-    server: String,
-
     ///Parse a single text or html file
     #[clap(long, default_value="NO")]
     file: String,
@@ -47,6 +43,10 @@ struct Args {
 	 ///Analyze provided JSON file
 	 #[clap(short, long, default_value="NO")]
 	 json_file: String,
+
+	 ///Filter snapshots, based on dates in format BEGIN-END
+	 #[clap(short, long, default_value="0-666666666")]
+	 snap_range: String,
 }
 
 
@@ -58,7 +58,7 @@ fn main() {
 		let awr_doc = awr::parse_awr_report(&args.file, false).unwrap();
 		println!("{}", awr_doc);
 	} else if args.directory != "NO" {
-		let awr_doc = awr::parse_awr_dir(&args.directory, args.plot, args.time_cpu_ratio, args.filter_db_time).unwrap();
+		let awr_doc = awr::parse_awr_dir(&args.directory, args.plot, args.time_cpu_ratio, args.filter_db_time, args.snap_range).unwrap();
 		let mut fname = format!("{}.json", &args.directory);
 		if args.outfile != "NO" {
 			fname = args.outfile;
@@ -67,6 +67,6 @@ fn main() {
 		f.write_all(awr_doc.as_bytes()).unwrap();
 		
 	} else if args.json_file != "NO" {
-		awr::prarse_json_file(args.json_file, args.time_cpu_ratio, args.filter_db_time);
+		awr::prarse_json_file(args.json_file, args.time_cpu_ratio, args.filter_db_time, args.snap_range);
 	}
 }

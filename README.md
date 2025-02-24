@@ -44,6 +44,9 @@ OPTIONS:
     -p, --plot <PLOT>
             Draw a plot? [default: 1]
 
+    -s, --snap-range <SNAP_RANGE>
+            Filter snapshots, based on dates in format BEGIN-END [default: 0-666666666]
+
     -t, --time-cpu-ratio <TIME_CPU_RATIO>
             Ratio of DB CPU / DB TIME [default: 0.666]
 
