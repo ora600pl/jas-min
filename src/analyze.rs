@@ -98,18 +98,6 @@ fn pearson_correlation_2v(vec1: &Vec<f64>, vec2: &Vec<f64>) -> f64 {
     crr.row(0)[1]
 }
 
-fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) {
-    
-    let crr = pearson_correlation_2v(&vec1, &vec2);
-    let corr_text = format!("{: >32} | {: <32} : {:.2}", what1, what2, crr);
-    if crr >= 0.4 || crr <= - 0.4 { //Correlation considered high enough to mark it
-        println!("{}",corr_text.red().bold());
-    } else {
-        println!("{}", corr_text);
-    }
-    
-}
-
 fn mean(data: Vec<f64>) -> Option<f64> {
     let sum = data.iter().sum::<f64>() as f64;
     let count = data.len();
@@ -135,7 +123,7 @@ fn std_deviation(data: Vec<f64>) -> Option<f64> {
     }
 }
 
-fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> String {
+fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> HashMap<String, f64> {
     let probe_size = awrs.len() as f64;
 
     let mut sql_io_time = 0.0;
@@ -168,9 +156,15 @@ fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> String {
                                                     .filter(|sql|sql.contains_key(sqlid)).collect();
     let sql_reads_count = sql_reads.len() as f64;
 
-    let mut top_sections = format!("Also found in top sections: SQL CPU [{:.2}%] | SQL I/O [{:.2}%] | SQL GETS [{:.2}%] | SQL READS [{:.2}%]", sql_cpu_count/probe_size*100.0, sql_io_count/probe_size*100.0, sql_gets_count/probe_size*100.0, sql_reads_count/probe_size*100.0);
+    let mut top_sections: HashMap<String, f64> = HashMap::new();
+    top_sections.insert("SQL CPU".to_string(), sql_cpu_count / probe_size * 100.0);
+    top_sections.insert("SQL I/O".to_string(), sql_io_count / probe_size * 100.0);
+    top_sections.insert("SQL GETS".to_string(), sql_gets_count / probe_size * 100.0);
+    top_sections.insert("SQL READS".to_string(), sql_reads_count / probe_size * 100.0);
+    
+    // If Statspack modify top_sections accordingly
     if is_statspack {
-        top_sections = format!("Also found in top sections: SQL CPU [{:.2}%] | SQL GETS [{:.2}%] | SQL READS [{:.2}%]", sql_cpu_count/probe_size*100.0, sql_gets_count/probe_size*100.0, sql_reads_count/probe_size*100.0);
+        top_sections.remove("SQL I/O"); // Remove SQL I/O if Statspack is enabled
     }
 
     top_sections
@@ -789,14 +783,19 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
-        //correlation_of("\n\tCorrelation of DB Time\t".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
         
         let sql_id = key.1.clone();
         /* Correlation calc */
         let corr = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
         let top_sections = report_top_sql_sections(&sql_id, &collection.awrs);
-        println!("\n\t{: >5} \t ({})", &sql_id.bold(), &top_sections.italic());
+        println!(
+            "\n\t{: >5} \t {}",
+            &sql_id.bold(),
+            format!("Other Top Sections: {}",
+                &top_sections.iter().map(|(key, value)| format!("{} [{:.2}%]", key, value)).collect::<Vec<String>>().join(" | ")
+            ).italic(),
+        );
 
         let correlation_info = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
@@ -841,42 +840,54 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             )
         );
         
+        let mut sql_corr_txt: Vec<String> = Vec::new();
         for (key,ev) in &y_vals_events_sorted {
-            correlation_of("+".to_string(), key.1.clone(), yv.clone(), ev.clone());
+            let crr = pearson_correlation_2v(&yv, &ev);
+            let corr_text = format!("{: >32} | {: <32} : {:.2}", "+".to_string(), key.1.clone(), crr);
+            if crr >= 0.4 || crr <= - 0.4 { //Correlation considered high enough to mark it
+                sql_corr_txt.push(format!(r#"<span style="color:red; font-weight:bold;">{}</span>"#, corr_text));
+                println!("{}",corr_text.red().bold());
+            } else {
+                sql_corr_txt.push(corr_text.clone());
+                println!("{}", corr_text);
+            }
         }
 
         let filename = format!("{}/{}.html", html_dir,sql_id);
         // Format the content as HTML
         let html_content = format!(
             r#"<!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>{sql_id}</title>
-                    <style>
-                        body {{ font-family: Arial, sans-serif; }}
-                        .content {{ font-size: 16px; }}
-                        .bold {{ font-weight: bold; }}
-                        .italic {{ font-style: italic; }}
-                    </style>
-                </head>
-                <body>
-                    <div class="content">
-                        <p><span class="bold">{sql_id}</span> (<span class="italic">{top_section}</span>)</p>
-                    </div>
-                </body>
-                </html>
-                "#,
-                sql_id=sql_id,
-                top_section=top_sections
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>{sql_id}</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; }}
+                    .content {{ font-size: 16px; }}
+                    .bold {{ font-weight: bold; }}
+                    .italic {{ font-style: italic; }}
+                </style>
+            </head>
+            <body>
+                <div class="content">
+                    <p><span style="font-size:20px;font-weight:bold">{sql_id}</span></p>
+                    <p><span style="color:blue;font-weight:bold;">Module:<br></span>{module}</p>
+                    <p><span style="color:blue;font-weight:bold;">Other Top Sections:<br></span> {top_section}</p>
+                    <p><span style="color:blue;font-weight:bold;">Correlations:<br></span>{sql_corr_txt}</p>
+                </div>
+            </body>
+            </html>
+            "#,
+            sql_id = sql_id,
+            module=top_sqls.get(&sql_id).unwrap(),
+            top_section=top_sections.iter().map(|(key, value)| format!("<span class=\"bold\">{}:</span> {:.2}%", key, value)).collect::<Vec<String>>().join("<br>"),
+            sql_corr_txt = sql_corr_txt.join("<br>")
         );
 
         // Write to the file
         if let Err(e) = fs::write(&filename, html_content) {
             eprintln!("Error writing file {}: {}", filename, e);
-        } else {
-            println!("SQLid Saved to file: {}", filename);
         }
     }
     let sqls_table_html = format!(
@@ -1026,7 +1037,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             <span> <strong>&nbsp;&nbsp;&nbsp;Cores:</strong> {}</span>
             <span> <strong>&nbsp;&nbsp;&nbsp;Sockets:</strong> {} </span>
             <span> <strong>&nbsp;&nbsp;&nbsp;Memory (G):</strong> {} </span>
-            <span style=\"margin-left: auto;\"> <strong>JAS-MIN &nbsp;&nbsp;&nbsp</strong></span>
+            <span style=\"margin-left: auto;\"> <strong>JAS-MIN</strong> v{}&nbsp;&nbsp;&nbsp</span>
          </div>",
         collection.db_instance_information.db_id,
         collection.db_instance_information.platform,
@@ -1037,7 +1048,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         collection.db_instance_information.cpus,
         collection.db_instance_information.cores,
         collection.db_instance_information.sockets,
-        collection.db_instance_information.memory
+        collection.db_instance_information.memory,
+        env!("CARGO_PKG_VERSION")
     );
     
     plotly_html = plotly_html.replace(
