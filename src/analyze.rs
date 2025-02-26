@@ -1,7 +1,7 @@
 use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter};
-use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor};
+use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker};
 use plotly::box_plot::BoxMean;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
 use std::collections::{BTreeMap, HashMap};
@@ -197,9 +197,9 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
     
     //Make colors consistent across buckets 
     let bucket_colors: HashMap<String, String> = HashMap::from([
-        ("0: <512us".to_string(), "#00FF00".to_string()),  // Bright Green
-        ("1: <1ms".to_string(), "#BFFF00".to_string()),    // Light green-yellow
-        ("2: <2ms".to_string(), "#FFFF00".to_string()),    // Yellow
+        ("0: <512us".to_string(), "#00E399".to_string()),  // Ocean Green
+        ("1: <1ms".to_string(), "#2FD900".to_string()),    // Green
+        ("2: <2ms".to_string(), "#E3E300".to_string()),    // Yellow
         ("3: <4ms".to_string(), "#FFBF00".to_string()),    // Amber
         ("4: <8ms".to_string(), "#FF8000".to_string()),    // Orange
         ("5: <16ms".to_string(), "#FF4000".to_string()),   // Tomato
@@ -248,7 +248,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
             .orientation(Orientation::Horizontal)
             .x_axis("x1")
             .y_axis("y2")
-            .marker(plotly::common::Marker::new().color("#e377c2".to_string()).opacity(0.7))
+            .marker(Marker::new().color("#e377c2".to_string()).opacity(0.7))
             .show_legend(false);
         plot.add_trace(dbt_box_plot);
 
@@ -265,7 +265,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
                 //.n_bins_x(50) // Number of bins
                 .x_axis("x2")
                 .y_axis("y3")
-                .marker(plotly::common::Marker::new().color(color.clone()).opacity(0.7))
+                .marker(Marker::new().color(color.clone()).opacity(0.7))
                 .show_legend(true);
             plot.add_trace(ms_bucket_histogram);
 
@@ -276,7 +276,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
                 .orientation(Orientation::Horizontal)
                 .x_axis("x2")
                 .y_axis("y4")
-                .marker(plotly::common::Marker::new().color(color.clone()).opacity(0.7))
+                .marker(Marker::new().color(color.clone()).opacity(0.7))
                 .show_legend(false);
             plot.add_trace(ms_bucket_box_plot);
         }
@@ -579,6 +579,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                     .name("DB Time (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
+    let aas_box_plot  = BoxPlot::new(y_vals_dbtime.clone())
+                                                    .name("AAS")
+                                                    .x_axis("x3")
+                                                    .y_axis("y7")
+                                                    .box_mean(BoxMean::True)
+                                                    .show_legend(false)
+                                                    .marker(Marker::new().color("#2d9c57".to_string()).opacity(0.7));
 
     let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu)
                                                     .mode(Mode::LinesText)
@@ -598,11 +605,18 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                     .x_axis("x1")
                                                     .y_axis("y2");
 
-    let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs)
+    let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("Executes")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
+    let exec_box_plot  = BoxPlot::new(y_vals_execs)
+                                                    .name("Exec/s")
+                                                    .x_axis("x4")
+                                                    .y_axis("y8")
+                                                    .box_mean(BoxMean::True)
+                                                    .show_legend(false)
+                                                    .marker(Marker::new().color("#2d5d9c".to_string()).opacity(0.7));
     
     let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses)
                                                     .mode(Mode::LinesText)
@@ -622,11 +636,19 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                     .x_axis("x1")
                                                     .y_axis("y4");
     
-    let cpu_load = Scatter::new(x_vals.clone(), y_vals_cpu_load)
+    let cpu_load = Scatter::new(x_vals.clone(), y_vals_cpu_load.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("CPU Load")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
+    let cpu_load_box_plot  = BoxPlot::new(y_vals_cpu_load)
+                                                    //.mode(Mode::LinesText)
+                                                    .name("CPU Load")
+                                                    .x_axis("x2")
+                                                    .y_axis("y6")
+                                                    .box_mean(BoxMean::True)
+                                                    .show_legend(false)
+                                                    .marker(Marker::new().color("#9c2d2d".to_string()).opacity(0.7));
     if is_logfilesync_high{
         let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
                                                         .mode(Mode::LinesText)
@@ -655,14 +677,17 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     }
     
     plot.add_trace(dbtime_trace);
+    plot.add_trace(aas_box_plot);
     plot.add_trace(dbcpu_trace);
     plot.add_trace(calls_trace);
     plot.add_trace(logons_trace);
     plot.add_trace(exec_trace);
+    plot.add_trace(exec_box_plot);
     plot.add_trace(parses_trace);
     plot.add_trace(hparses_trace);
     plot.add_trace(cpu_user);
     plot.add_trace(cpu_load);
+    plot.add_trace(cpu_load_box_plot);
 
     // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut table_events = String::new();
@@ -904,10 +929,66 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     report_instance_stats_cor(instance_stats, y_vals_dbtime);
 
     let layout = Layout::new()
-        .height(1200)
+        .height(1500)
+        .grid(
+            LayoutGrid::new()
+                .rows(6)
+                .columns(1),
+                //.row_order(Grid::TopToBottom),
+        )
+        .legend(Legend::new()
+            //.y_anchor(Anchor::Top)
+            .x(1.02)
+            .y(0.5)
+        )
+        .x_axis4(
+            Axis::new()
+                    .domain(&[0.3, 0.4])
+                    .anchor("y8")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis8(
+            Axis::new()
+                    .domain(&[0.8, 1.0])
+                    .anchor("x4")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis3(
+            Axis::new()
+                    .domain(&[0.15, 0.25])
+                    .anchor("y7")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis7(
+            Axis::new()
+                    .domain(&[0.8, 1.0])
+                    .anchor("x3")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis2(
+            Axis::new()
+                    .domain(&[0.0, 0.1])
+                    .anchor("y6")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis6(
+            Axis::new()
+                    .domain(&[0.8, 1.0])
+                    .anchor("x2")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
         .y_axis5(Axis::new()
             .anchor("x1")
-            .domain(&[0.82, 1.0])
+            .domain(&[0.62, 0.77])
             .title(Title::new("SQL Elapsed Time"))
             .visible(true)
             .zero_line(true)
@@ -915,7 +996,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         )
         .y_axis4(Axis::new()
             .anchor("x1")
-            .domain(&[0.615, 0.815])
+            .domain(&[0.465, 0.615])
             .range(vec![0.,])
             .title(Title::new("CPU Util (%)"))
             .zero_line(true)
@@ -924,7 +1005,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         )
         .y_axis3(Axis::new()
             .anchor("x1")
-            .domain(&[0.41, 0.61])
+            .domain(&[0.31, 0.46])
             .title(Title::new("Wait Events (s)"))
             .zero_line(true)
             .range(vec![0.,])
@@ -932,7 +1013,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         )
         .y_axis2(Axis::new()
             .anchor("x1")
-            .domain(&[0.205, 0.405])
+            .domain(&[0.155, 0.305])
             .range(vec![0.,])
             .title(Title::new("#"))
             .zero_line(true)
@@ -940,10 +1021,17 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         )
         .y_axis(Axis::new()
             .anchor("x1")
-            .domain(&[0., 0.2])
+            .domain(&[0., 0.15])
             .title(Title::new("(s/s)"))
             .zero_line(true)
             .range_mode(RangeMode::ToZero)
+        )
+        .x_axis(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("y1")
+                    .range(vec![0.,])
+                    .show_grid(true),
         )
         .hover_mode(HoverMode::X);
     plot.set_layout(layout);
