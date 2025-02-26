@@ -3,7 +3,7 @@ use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor};
 use plotly::box_plot::BoxMean;
-use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
+use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
@@ -759,39 +759,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             {}
             </tbody>
         </table>
-        <script>
-            const eventsButton = document.getElementById('show-events-button');
-            const eventsTable = document.getElementById('events-table');
-            eventsButton.addEventListener('click', () => {{
-                if (eventsTable.style.display === 'none' || eventsTable.style.display === '') {{
-                    eventsTable.style.display = 'table';
-                    eventsButton.textContent = 'TOP Wait Events';
-                }} else {{
-                    eventsTable.style.display = 'none';
-                    eventsButton.textContent = 'TOP Wait Events';
-                }}
-            }});
-            function sortTable(tableId,columnId) {{
-                var table = document.getElementById(tableId);
-                var tbody = table.getElementsByTagName("tbody")[0];
-                var rows = Array.from(tbody.getElementsByTagName("tr"));
-                var isAscending = table.getAttribute("data-sort-order") !== "asc";
-                table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
-                rows.sort(function(rowA, rowB){{
-                    var cellA = rowA.getElementsByTagName("td")[columnId].innerText.trim();
-                    var cellB = rowB.getElementsByTagName("td")[columnId].innerText.trim();
-                    var numA = parseFloat(cellA);
-                    var numB = parseFloat(cellB);
-                    if (!isNaN(numA) && !isNaN(numB)){{
-                        return isAscending ? numA - numB : numB - numA;
-                    }} else{{
-                        return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
-                    }}
-                }});
-                tbody.innerHTML = "";
-                rows.forEach(row => tbody.appendChild(row));
-            }}
-        </script>
         "#,
         table_events
     );
@@ -929,20 +896,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             {}
             </tbody>
         </table>
-        
-        <script>
-            const sqlsButton = document.getElementById('show-sqls-button');
-            const sqlsTable = document.getElementById('sqls-table');
-            sqlsButton.addEventListener('click', () => {{
-                if (sqlsTable.style.display === 'none' || sqlsTable.style.display === '') {{
-                    sqlsTable.style.display = 'table';
-                    sqlsButton.textContent = 'TOP SQLs';
-                }} else {{
-                    sqlsTable.style.display = 'none';
-                    sqlsButton.textContent = 'TOP SQLs';
-                }}
-            }});
-        </script>
         "#,
         table_sqls
     );
@@ -951,34 +904,46 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     report_instance_stats_cor(instance_stats, y_vals_dbtime);
 
     let layout = Layout::new()
-        .height(1000)
+        .height(1200)
         .y_axis5(Axis::new()
             .anchor("x1")
-            .domain(&[0.8, 1.0])
+            .domain(&[0.82, 1.0])
             .title(Title::new("SQL Elapsed Time"))
             .visible(true)
+            .zero_line(true)
+            .range_mode(RangeMode::ToZero)
         )
         .y_axis4(Axis::new()
             .anchor("x1")
-            .domain(&[0.6, 0.8])
+            .domain(&[0.615, 0.815])
             .range(vec![0.,])
             .title(Title::new("CPU Util (%)"))
+            .zero_line(true)
+            .range(vec![0.,])
+            .range_mode(RangeMode::ToZero)
         )
         .y_axis3(Axis::new()
             .anchor("x1")
-            .domain(&[0.4, 0.6])
+            .domain(&[0.41, 0.61])
             .title(Title::new("Wait Events (s)"))
+            .zero_line(true)
+            .range(vec![0.,])
+            .range_mode(RangeMode::ToZero)
         )
         .y_axis2(Axis::new()
             .anchor("x1")
-            .domain(&[0.2, 0.4])
+            .domain(&[0.205, 0.405])
             .range(vec![0.,])
             .title(Title::new("#"))
+            .zero_line(true)
+            .range_mode(RangeMode::ToZero)
         )
         .y_axis(Axis::new()
             .anchor("x1")
             .domain(&[0., 0.2])
             .title(Title::new("(s/s)"))
+            .zero_line(true)
+            .range_mode(RangeMode::ToZero)
         )
         .hover_mode(HoverMode::X);
     plot.set_layout(layout);
@@ -1077,13 +1042,55 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         env!("CARGO_PKG_VERSION")
     );
     
+    let jasmin_html_scripts = format!(
+        r#"
+        <script>//JAS-MIN scripts
+        function toggleTable(buttonId, tableId, buttonText) {{
+            const button = document.getElementById(buttonId);
+            const table = document.getElementById(tableId);
+        
+            button.addEventListener('click', () => {{
+                if (table.style.display === 'none' || table.style.display === '') {{
+                    table.style.display = 'table';
+                    button.textContent = buttonText;
+                }} else {{
+                    table.style.display = 'none';
+                    button.textContent = buttonText;
+                }}
+            }});
+        }}
+        toggleTable('show-events-button', 'events-table', 'TOP Wait Events');
+        toggleTable('show-sqls-button', 'sqls-table', 'TOP SQLs');
+        function sortTable(tableId,columnId) {{
+            var table = document.getElementById(tableId);
+            var tbody = table.getElementsByTagName("tbody")[0];
+            var rows = Array.from(tbody.getElementsByTagName("tr"));
+            var isAscending = table.getAttribute("data-sort-order") !== "asc";
+            table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
+            rows.sort(function(rowA, rowB){{
+                var cellA = rowA.getElementsByTagName("td")[columnId].innerText.trim();
+                var cellB = rowB.getElementsByTagName("td")[columnId].innerText.trim();
+                var numA = parseFloat(cellA);
+                var numB = parseFloat(cellB);
+                if (!isNaN(numA) && !isNaN(numB)){{
+                    return isAscending ? numA - numB : numB - numA;
+                }} else{{
+                    return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+                }}
+            }});
+            tbody.innerHTML = "";
+            rows.forEach(row => tbody.appendChild(row));
+        }}
+        </script>"#
+    );
+
     plotly_html = plotly_html.replace(
         "<body>",
         &format!("<body>\n\t{}\n\t{}\n\t{}",db_instance_info_html,"<button id=\"show-events-button\">TOP Wait Events</button>","<button id=\"show-sqls-button\">TOP SQLs</button>")
     );
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
-        &format!("{}{}\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", event_table_html,sqls_table_html));
+        &format!("{}{}{}\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", event_table_html,sqls_table_html,jasmin_html_scripts));
 
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
