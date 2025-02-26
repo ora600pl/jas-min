@@ -1,7 +1,7 @@
 use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter};
-use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation};
+use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor};
 use plotly::box_plot::BoxMean;
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode};
 use std::collections::{BTreeMap, HashMap};
@@ -98,18 +98,6 @@ fn pearson_correlation_2v(vec1: &Vec<f64>, vec2: &Vec<f64>) -> f64 {
     crr.row(0)[1]
 }
 
-fn correlation_of(what1: String, what2: String, vec1: Vec<f64>, vec2: Vec<f64>) {
-    
-    let crr = pearson_correlation_2v(&vec1, &vec2);
-    let corr_text = format!("{: >32} | {: <32} : {:.2}", what1, what2, crr);
-    if crr >= 0.4 || crr <= - 0.4 { //Correlation considered high enough to mark it
-        println!("{}",corr_text.red().bold());
-    } else {
-        println!("{}", corr_text);
-    }
-    
-}
-
 fn mean(data: Vec<f64>) -> Option<f64> {
     let sum = data.iter().sum::<f64>() as f64;
     let count = data.len();
@@ -135,7 +123,7 @@ fn std_deviation(data: Vec<f64>) -> Option<f64> {
     }
 }
 
-fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> String {
+fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> HashMap<String, f64> {
     let probe_size = awrs.len() as f64;
 
     let mut sql_io_time = 0.0;
@@ -168,9 +156,15 @@ fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> String {
                                                     .filter(|sql|sql.contains_key(sqlid)).collect();
     let sql_reads_count = sql_reads.len() as f64;
 
-    let mut top_sections = format!("Also found in top sections: SQL CPU [{:.2}%] | SQL I/O [{:.2}%] | SQL GETS [{:.2}%] | SQL READS [{:.2}%]", sql_cpu_count/probe_size*100.0, sql_io_count/probe_size*100.0, sql_gets_count/probe_size*100.0, sql_reads_count/probe_size*100.0);
+    let mut top_sections: HashMap<String, f64> = HashMap::new();
+    top_sections.insert("SQL CPU".to_string(), sql_cpu_count / probe_size * 100.0);
+    top_sections.insert("SQL I/O".to_string(), sql_io_count / probe_size * 100.0);
+    top_sections.insert("SQL GETS".to_string(), sql_gets_count / probe_size * 100.0);
+    top_sections.insert("SQL READS".to_string(), sql_reads_count / probe_size * 100.0);
+    
+    // If Statspack modify top_sections accordingly
     if is_statspack {
-        top_sections = format!("Also found in top sections: SQL CPU [{:.2}%] | SQL GETS [{:.2}%] | SQL READS [{:.2}%]", sql_cpu_count/probe_size*100.0, sql_gets_count/probe_size*100.0, sql_reads_count/probe_size*100.0);
+        top_sections.remove("SQL I/O"); // Remove SQL I/O if Statspack is enabled
     }
 
     top_sections
@@ -203,14 +197,16 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
     
     //Make colors consistent across buckets 
     let bucket_colors: HashMap<String, String> = HashMap::from([
-        ("1: <1ms".to_string(), "#1fb4b4".to_string()), // Ocean Blue
-        ("2: <2ms".to_string(), "#ff7f0e".to_string()), // Orange
-        ("3: <4ms".to_string(), "#2ca02c".to_string()), // Green
-        ("4: <8ms".to_string(), "#f21f5b".to_string()), // Red
-        ("5: <16ms".to_string(), "#ba40f7".to_string()), // Purple
-        ("6: <32ms".to_string(), "#8c564b".to_string()), // Brown
-        ("7: <=1s".to_string(), "#e377c2".to_string()), // Pink
-        ("8: >1s".to_string(), "#a8c204".to_string())  // Dirty Yellow
+        ("0: <512us".to_string(), "#00FF00".to_string()), // Bright Green
+        ("1: <1ms".to_string(), "#BFFF00".to_string()),    // Chartreuse-like (light green-yellow)
+        ("2: <2ms".to_string(), "#FFFF00".to_string()),    // Yellow
+        ("3: <4ms".to_string(), "#FFBF00".to_string()),    // Amber
+        ("4: <8ms".to_string(), "#FF8000".to_string()),    // Orange
+        ("5: <16ms".to_string(), "#FF4000".to_string()),   // Tomato
+        ("6: <32ms".to_string(), "#FF0000".to_string()),    // Red
+        ("7: <=1s".to_string(), "#B22222".to_string()),     // Red
+        ("7: >=32ms".to_string(), "#B22222".to_string()),     // Firebrick (dark red)
+        ("8: >1s".to_string(), "#8B0000".to_string())      // Dark Red
     ]);
 
     // Filter ForegroundWaitEvents based on top_events
@@ -252,6 +248,7 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
             .orientation(Orientation::Horizontal)
             .x_axis("x1")
             .y_axis("y2")
+            .marker(plotly::common::Marker::new().color("#e377c2".to_string()).opacity(0.7))
             .show_legend(false);
         plot.add_trace(dbt_box_plot);
 
@@ -260,10 +257,12 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
             let default_color = "#000000".to_string(); // Store default in a variable
             let color = bucket_colors.get(&bucket).unwrap_or(&default_color);
             let bucket_name = format!("{}", &bucket);
+
             let ms_bucket_histogram = Histogram::new(values.clone())
                 .name(&bucket_name)
                 .legend_group(&bucket_name)
-                //.n_bins_x(100) // Number of bins
+                .auto_bin_x(true)
+                //.n_bins_x(50) // Number of bins
                 .x_axis("x2")
                 .y_axis("y3")
                 .marker(plotly::common::Marker::new().color(color.clone()).opacity(0.7))
@@ -293,12 +292,18 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
                     .columns(1),
                     //.row_order(Grid::TopToBottom),
             )
+            //.legend(
+            //    Legend::new()
+            //        .x(0.0)
+            //        .x_anchor(Anchor::Left),
+            //)
             .x_axis(
                 Axis::new()
                     .title(Title::new("% DBTime"))
                     .domain(&[0.0, 1.0])
                     .anchor("y1")
-                    .range(vec![0.,]),
+                    .range(vec![0.,])
+                    .show_grid(true),
             )
             .y_axis(
                 Axis::new()
@@ -310,14 +315,16 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
                 Axis::new()
                     .domain(&[0.3, 0.35])
                     .anchor("x1")
-                    .range(vec![0.,]),
+                    .range(vec![0.,])
+                    .show_tick_labels(false),
             )
             .x_axis2(
                 Axis::new()
                     .title(Title::new("% Wait Event ms"))
                     .domain(&[0.0, 1.0])
                     .anchor("y3")
-                    .range(vec![0.,]),
+                    .range(vec![0.,])
+                    .show_grid(true),
             )
             .y_axis3(
                 Axis::new()
@@ -329,7 +336,9 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
                 Axis::new()
                     .domain(&[0.83, 1.0])
                     .anchor("x2")
-                    .range(vec![0.,]),
+                    .range(vec![0.,])
+                    .show_tick_labels(false)
+                    .show_grid(true),
             );
             plot.set_layout(layout);
     
@@ -657,6 +666,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
 
     // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut table_events = String::new();
+    let mut table_sqls = String::new();
 
     for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
@@ -699,12 +709,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         println!("{: >40}  {: <16.2} \tSTDDEV exec times:     {:.2}",   "--- AVG exec times:     ", &avg_exec_n, &stddev_exec_n);
         println!("{: >39}  {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
-        /* Generate a row for the HTML table */
+        /* EVENTS - Generate a row for the HTML table */
         let safe_event_name = event_name.replace("/", "_").replace(" ", "_").replace(":","");
         table_events.push_str(&format!(
             r#"
             <tr>
                 <td><a href="{}.html" target="_blank">{}</a></td>
+                <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
@@ -722,12 +733,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             avg_exec_s, stddev_exec_s,  // Wait Time (s)
             avg_exec_n, stddev_exec_n,  // Execution times
             avg_wait_per_exec_ms, stddev_wait_per_exec_ms,  // Wait per exec (ms)
-            corr
+            corr,
+            (x_n.len() as f64 / x_vals.len() as f64 )* 100.0
         ));
     }
-    let table_html = format!(
+    let event_table_html = format!(
         r#"
-        <table id="data-table">
+        <table id="events-table">
             <thead>
                 <tr>
                     <th>Event Name</th>
@@ -740,6 +752,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                     <th>AVG Wait per Exec (ms)</th>
                     <th>STDDEV Wait per Exec (ms)</th>
                     <th>Correlation of DBTime</th>
+                    <th>TOP in % Probes</th>
                 </tr>
             </thead>
             <tbody>
@@ -747,15 +760,15 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             </tbody>
         </table>
         <script>
-            const button = document.getElementById('show-table-button');
-            const table = document.getElementById('data-table');
-            button.addEventListener('click', () => {{
-                if (table.style.display === 'none' || table.style.display === '') {{
-                    table.style.display = 'table'; // Show the table
-                    button.textContent = 'TOP Wait Events'; // Update button text
+            const eventsButton = document.getElementById('show-events-button');
+            const eventsTable = document.getElementById('events-table');
+            eventsButton.addEventListener('click', () => {{
+                if (eventsTable.style.display === 'none' || eventsTable.style.display === '') {{
+                    eventsTable.style.display = 'table';
+                    eventsButton.textContent = 'TOP Wait Events';
                 }} else {{
-                    table.style.display = 'none'; // Hide the table
-                    button.textContent = 'TOP Wait Events'; // Update button text
+                    eventsTable.style.display = 'none';
+                    eventsButton.textContent = 'TOP Wait Events';
                 }}
             }});
         </script>
@@ -770,14 +783,19 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
         plot.add_trace(sql_trace);
-        //correlation_of("\n\tCorrelation of DB Time\t".to_string(), key.1.clone(), y_vals_dbtime.clone(), yv.clone());
         
         let sql_id = key.1.clone();
         /* Correlation calc */
         let corr = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
         let top_sections = report_top_sql_sections(&sql_id, &collection.awrs);
-        println!("\n\t{: >5} \t ({})", &sql_id.bold(), top_sections.italic());
+        println!(
+            "\n\t{: >5} \t {}",
+            &sql_id.bold(),
+            format!("Other Top Sections: {}",
+                &top_sections.iter().map(|(key, value)| format!("{} [{:.2}%]", key, value)).collect::<Vec<String>>().join(" | ")
+            ).italic(),
+        );
 
         let correlation_info = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
@@ -801,12 +819,112 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         println!("{: >34} {: <16.2} \tSTDDEV exec times:  {:.2}", "--- AVG exec times:", avg_exec_n, stddev_exec_n);
         println!("{: >23} {} ", "MODULE: ", top_sqls.get(&sql_id).unwrap().blue());
 
-       
+        /* SQLs - Generate a row for the HTML table */
+        table_sqls.push_str(&format!(
+            r#"
+            <tr>
+                <td><a href="{}.html" target="_blank">{}</a></td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+            </tr>
+            "#,
+                &sql_id, &sql_id,
+                avg_exec_t, stddev_exec_t,  // PCT of DB Time
+                avg_exec_n, stddev_exec_n,  // Execution times
+                corr,
+                (x.len() as f64 / x_vals.len() as f64 )* 100.0
+            )
+        );
         
+        let mut sql_corr_txt: Vec<String> = Vec::new();
         for (key,ev) in &y_vals_events_sorted {
-            correlation_of("+".to_string(), key.1.clone(), yv.clone(), ev.clone());
+            let crr = pearson_correlation_2v(&yv, &ev);
+            let corr_text = format!("{: >32} | {: <32} : {:.2}", "+".to_string(), key.1.clone(), crr);
+            if crr >= 0.4 || crr <= - 0.4 { //Correlation considered high enough to mark it
+                sql_corr_txt.push(format!(r#"<span style="color:red; font-weight:bold;">{}</span>"#, corr_text));
+                println!("{}",corr_text.red().bold());
+            } else {
+                sql_corr_txt.push(corr_text.clone());
+                println!("{}", corr_text);
+            }
+        }
+
+        let filename = format!("{}/{}.html", html_dir,sql_id);
+        // Format the content as HTML
+        let html_content = format!(
+            r#"<!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>{sql_id}</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; }}
+                    .content {{ font-size: 16px; }}
+                    .bold {{ font-weight: bold; }}
+                    .italic {{ font-style: italic; }}
+                </style>
+            </head>
+            <body>
+                <div class="content">
+                    <p><span style="font-size:20px;font-weight:bold">{sql_id}</span></p>
+                    <p><span style="color:blue;font-weight:bold;">Module:<br></span>{module}</p>
+                    <p><span style="color:blue;font-weight:bold;">Other Top Sections:<br></span> {top_section}</p>
+                    <p><span style="color:blue;font-weight:bold;">Correlations:<br></span>{sql_corr_txt}</p>
+                </div>
+            </body>
+            </html>
+            "#,
+            sql_id = sql_id,
+            module=top_sqls.get(&sql_id).unwrap(),
+            top_section=top_sections.iter().map(|(key, value)| format!("<span class=\"bold\">{}:</span> {:.2}%", key, value)).collect::<Vec<String>>().join("<br>"),
+            sql_corr_txt = sql_corr_txt.join("<br>")
+        );
+
+        // Write to the file
+        if let Err(e) = fs::write(&filename, html_content) {
+            eprintln!("Error writing file {}: {}", filename, e);
         }
     }
+    let sqls_table_html = format!(
+        r#"
+        <table id="sqls-table">
+            <thead>
+                <tr>
+                    <th>SQL ID</th>
+                    <th>AVG Ela by Exec</th>
+                    <th>STDDEV Ela by Exec</th>
+                    <th>AVG exec times</th>
+                    <th>STDDEV exec times</th>
+                    <th>Correlation of DBTime</th>
+                    <th>TOP in % Probes</th>
+                </tr>
+            </thead>
+            <tbody>
+            {}
+            </tbody>
+        </table>
+        <script>
+            const sqlsButton = document.getElementById('show-sqls-button');
+            const sqlsTable = document.getElementById('sqls-table');
+            sqlsButton.addEventListener('click', () => {{
+                if (sqlsTable.style.display === 'none' || sqlsTable.style.display === '') {{
+                    sqlsTable.style.display = 'table';
+                    sqlsButton.textContent = 'TOP SQLs';
+                }} else {{
+                    sqlsTable.style.display = 'none';
+                    sqlsButton.textContent = 'TOP SQLs';
+                }}
+            }});
+        </script>
+        "#,
+        table_sqls
+    );
+
     
     report_instance_stats_cor(instance_stats, y_vals_dbtime);
 
@@ -854,7 +972,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     
     plotly_html = plotly_html.replace("<head>", &format!("<head>\n{}", "<title>JAS-MIN</title>
     <style>
-        #data-table {
+        #events-table {
+            display: none;
+        }
+        
+        #sqls-table {
             display: none;
         }
 
@@ -902,6 +1024,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             border-bottom: 2px solid #009876;
         }
     </style>"));
+
     let db_instance_info_html = format!(
         "<div id=\"db-instance-info\" style=\"margin-bottom: 20px;\">
             <span><strong>DB ID:</strong> {}</span>
@@ -914,7 +1037,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             <span> <strong>&nbsp;&nbsp;&nbsp;Cores:</strong> {}</span>
             <span> <strong>&nbsp;&nbsp;&nbsp;Sockets:</strong> {} </span>
             <span> <strong>&nbsp;&nbsp;&nbsp;Memory (G):</strong> {} </span>
-            <span style=\"margin-left: auto;\"> <strong>JAS-MIN &nbsp;&nbsp;&nbsp</strong></span>
+            <span style=\"margin-left: auto;\"> <strong>JAS-MIN</strong> v{}&nbsp;&nbsp;&nbsp</span>
          </div>",
         collection.db_instance_information.db_id,
         collection.db_instance_information.platform,
@@ -925,10 +1048,17 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         collection.db_instance_information.cpus,
         collection.db_instance_information.cores,
         collection.db_instance_information.sockets,
-        collection.db_instance_information.memory
+        collection.db_instance_information.memory,
+        env!("CARGO_PKG_VERSION")
     );
-    plotly_html = plotly_html.replace("<body>",&format!("<body>\n\t{}\n\t{}",db_instance_info_html,"<button id=\"show-table-button\">TOP Wait Events</button>"));
-    plotly_html = plotly_html.replace("<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", &format!("{}\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", table_html));
+    
+    plotly_html = plotly_html.replace(
+        "<body>",
+        &format!("<body>\n\t{}\n\t{}\n\t{}",db_instance_info_html,"<button id=\"show-events-button\">TOP Wait Events</button>","<button id=\"show-sqls-button\">TOP SQLs</button>")
+    );
+    plotly_html = plotly_html.replace(
+        "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
+        &format!("{}{}\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", event_table_html,sqls_table_html));
 
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
