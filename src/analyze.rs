@@ -197,15 +197,15 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
     
     //Make colors consistent across buckets 
     let bucket_colors: HashMap<String, String> = HashMap::from([
-        ("0: <512us".to_string(), "#00FF00".to_string()), // Bright Green
-        ("1: <1ms".to_string(), "#BFFF00".to_string()),    // Chartreuse-like (light green-yellow)
+        ("0: <512us".to_string(), "#00FF00".to_string()),  // Bright Green
+        ("1: <1ms".to_string(), "#BFFF00".to_string()),    // Light green-yellow
         ("2: <2ms".to_string(), "#FFFF00".to_string()),    // Yellow
         ("3: <4ms".to_string(), "#FFBF00".to_string()),    // Amber
         ("4: <8ms".to_string(), "#FF8000".to_string()),    // Orange
         ("5: <16ms".to_string(), "#FF4000".to_string()),   // Tomato
-        ("6: <32ms".to_string(), "#FF0000".to_string()),    // Red
-        ("7: <=1s".to_string(), "#B22222".to_string()),     // Red
-        ("7: >=32ms".to_string(), "#B22222".to_string()),     // Firebrick (dark red)
+        ("6: <32ms".to_string(), "#FF0000".to_string()),   // Red
+        ("7: <=1s".to_string(), "#B22222".to_string()),    // Red
+        ("7: >=32ms".to_string(), "#B22222".to_string()),  // Firebrick
         ("8: >1s".to_string(), "#8B0000".to_string())      // Dark Red
     ]);
 
@@ -742,17 +742,17 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         <table id="events-table">
             <thead>
                 <tr>
-                    <th>Event Name</th>
-                    <th>AVG % of DBTime</th>
-                    <th>STDDEV % of DBTime</th>
-                    <th>AVG Wait Time (s)</th>
-                    <th>STDDEV Wait Time (s)</th>
-                    <th>AVG Exec Times</th>
-                    <th>STDDEV Exec Times</th>
-                    <th>AVG Wait per Exec (ms)</th>
-                    <th>STDDEV Wait per Exec (ms)</th>
-                    <th>Correlation of DBTime</th>
-                    <th>TOP in % Probes</th>
+                    <th onclick="sortTable('events-table',0)" style="cursor: pointer;">Event Name</th>
+                    <th onclick="sortTable('events-table',1)" style="cursor: pointer;">AVG % of DBTime</th>
+                    <th onclick="sortTable('events-table',2)" style="cursor: pointer;">STDDEV % of DBTime</th>
+                    <th onclick="sortTable('events-table',3)" style="cursor: pointer;">AVG Wait Time (s)</th>
+                    <th onclick="sortTable('events-table',4)" style="cursor: pointer;">STDDEV Wait Time (s)</th>
+                    <th onclick="sortTable('events-table',5)" style="cursor: pointer;">AVG Exec Times</th>
+                    <th onclick="sortTable('events-table',6)" style="cursor: pointer;">STDDEV Exec Times</th>
+                    <th onclick="sortTable('events-table',7)" style="cursor: pointer;">AVG Wait per Exec (ms)</th>
+                    <th onclick="sortTable('events-table',8)" style="cursor: pointer;">STDDEV Wait per Exec (ms)</th>
+                    <th onclick="sortTable('events-table',9)" style="cursor: pointer;">Correlation of DBTime</th>
+                    <th onclick="sortTable('events-table',10)" style="cursor: pointer;">TOP in % Probes</th>
                 </tr>
             </thead>
             <tbody>
@@ -771,6 +771,26 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                     eventsButton.textContent = 'TOP Wait Events';
                 }}
             }});
+            function sortTable(tableId,columnId) {{
+                var table = document.getElementById(tableId);
+                var tbody = table.getElementsByTagName("tbody")[0];
+                var rows = Array.from(tbody.getElementsByTagName("tr"));
+                var isAscending = table.getAttribute("data-sort-order") !== "asc";
+                table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
+                rows.sort(function(rowA, rowB){{
+                    var cellA = rowA.getElementsByTagName("td")[columnId].innerText.trim();
+                    var cellB = rowB.getElementsByTagName("td")[columnId].innerText.trim();
+                    var numA = parseFloat(cellA);
+                    var numB = parseFloat(cellB);
+                    if (!isNaN(numA) && !isNaN(numB)){{
+                        return isAscending ? numA - numB : numB - numA;
+                    }} else{{
+                        return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+                    }}
+                }});
+                tbody.innerHTML = "";
+                rows.forEach(row => tbody.appendChild(row));
+            }}
         </script>
         "#,
         table_events
@@ -890,24 +910,26 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             eprintln!("Error writing file {}: {}", filename, e);
         }
     }
+
     let sqls_table_html = format!(
         r#"
-        <table id="sqls-table">
+        <table id="sqls-table"">
             <thead>
                 <tr>
-                    <th>SQL ID</th>
-                    <th>AVG Ela by Exec</th>
-                    <th>STDDEV Ela by Exec</th>
-                    <th>AVG exec times</th>
-                    <th>STDDEV exec times</th>
-                    <th>Correlation of DBTime</th>
-                    <th>TOP in % Probes</th>
+                    <th onclick="sortTable('sqls-table',0)" style="cursor: pointer;">SQL ID</th>
+                    <th onclick="sortTable('sqls-table',1)" style="cursor: pointer;">AVG Ela by Exec</th>
+                    <th onclick="sortTable('sqls-table',2)" style="cursor: pointer;">STDDEV Ela by Exec</th>
+                    <th onclick="sortTable('sqls-table',3)" style="cursor: pointer;">AVG exec times</th>
+                    <th onclick="sortTable('sqls-table',4)" style="cursor: pointer;">STDDEV exec times</th>
+                    <th onclick="sortTable('sqls-table',5)" style="cursor: pointer;">Correlation of DBTime</th>
+                    <th onclick="sortTable('sqls-table',6)" style="cursor: pointer;">TOP in % Probes</th>
                 </tr>
             </thead>
             <tbody>
             {}
             </tbody>
         </table>
+        
         <script>
             const sqlsButton = document.getElementById('show-sqls-button');
             const sqlsTable = document.getElementById('sqls-table');
@@ -974,18 +996,15 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     <style>
         #events-table {
             display: none;
-        }
-        
+        } 
         #sqls-table {
             display: none;
         }
-
         button {
             padding: 10px 20px;
             font-size: 16px;
             cursor: pointer;
         }
-
         table {
             margin-top: 20px;
             border-collapse: collapse;
@@ -1007,6 +1026,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             color: #ffffff;
             text-align: center;
         }
+        #sqls-table thead tr {
+            background-color: #006f98;
+            color: #ffffff;
+            text-align: center;
+        }
         table th,
         table td {
             padding: 12px 15px;
@@ -1015,14 +1039,15 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         table tbody tr {
             border-bottom: 1px solid #dddddd;
         }
-
         table tbody tr:nth-of-type(even) {
             background-color: #f3f3f3;
         }
-
         table tbody tr:last-of-type {
             border-bottom: 2px solid #009876;
         }
+        #sqls-table tbody tr:last-of-type {
+            border-bottom: 2px solid #006f98;
+        }        
     </style>"));
 
     let db_instance_info_html = format!(
