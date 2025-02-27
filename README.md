@@ -1,4 +1,4 @@
-jas-min 0.3.1
+jas-min 0.3.2
 
 Kamil Stawiarski <kamil@ora-600.pl>
 
