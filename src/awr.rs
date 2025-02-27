@@ -39,6 +39,7 @@ pub struct DBInstance {
 	pub cores: u16,
 	pub sockets: u8,
 	pub memory: u16,
+	pub db_block_size: u16,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -73,6 +74,17 @@ pub struct TimeModelStats {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct ForegroundWaitEvents {
+	pub event: String,
+	pub waits: u64,
+	pub total_wait_time_s: f64,
+	pub avg_wait: f64,
+	pub pct_dbtime: f64,
+	begin_snap_time: String,
+	pub waitevent_histogram_ms: BTreeMap<String,f32>,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct BackgroundWaitEvents {
 	pub event: String,
 	pub waits: u64,
 	pub total_wait_time_s: f64,
@@ -1096,6 +1108,20 @@ fn instance_info(table: ElementRef, table_type: &str) -> Option<DBInstance> {
 				}
 			}
 		}
+	} else if table_type == "db_block_size"{
+		if headers.len() == 3 {
+			for row in table.select(&tr_selector).skip(1) { // Skip header row
+				let cols: Vec<String> = row.select(&td_selector)
+					.map(|td| td.text().collect::<String>().trim().to_string())
+					.collect();
+				// Ensure we have at least 2 columns (Parameter Name, Value)
+				if cols[0] == "db_block_size" {
+						let mut dbi = DBInstance::default();
+						dbi.db_block_size = cols[1].parse().unwrap();
+						return Some(dbi);
+				}
+			}
+		}
 	}
     None
 }
@@ -1155,17 +1181,22 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
                         db_instance_information.sockets = host_info.sockets;
                         db_instance_information.memory = host_info.memory;
                     }
-                }
+                } else if summary == "This table displays name and value of the modified initialization parameters" {
+					if let Some(block_size) = instance_info(table,"db_block_size") {
+						db_instance_information.db_block_size = block_size.db_block_size;
+					}
+				}
             }
         }
 	} else if fname.ends_with("txt") {
 		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname));
     	let awr_lines = awr_rep.split("\n").collect::<Vec<&str>>();
- 
+		let block_size = awr_lines.iter().find(|line| line.starts_with("db_block_size")).unwrap().split_whitespace().last().unwrap();
 		let mut instance_info = find_section_boundries(awr_lines.clone(), "Database    DB Id", "Snapshot       Snap Id");
 		let mut instance_info_lines: Vec<&str> = Vec::new();
 		instance_info_lines.extend_from_slice(&awr_lines[instance_info.begin+2..instance_info.end]);
 		db_instance_information = instance_info_txt(instance_info_lines);
+		db_instance_information.db_block_size = block_size.parse().unwrap();
 	}
 	db_instance_information
 }
