@@ -2,7 +2,7 @@ use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTi
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker};
-use plotly::box_plot::BoxMean;
+use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -362,6 +362,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     let mut y_vals_logons: Vec<f64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
+    let mut y_vals_trans: Vec<f64> = Vec::new();
     let mut y_vals_parses: Vec<f64> = Vec::new();
     let mut y_vals_hparses: Vec<f64> = Vec::new();
     let mut y_vals_cpu_user: Vec<f64> = Vec::new();
@@ -486,6 +487,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                         y_vals_logons.push(lp.per_second*60.0*60.0);
                     } else if lp.stat_name.starts_with("Executes") {
                         y_vals_execs.push(lp.per_second);
+                    } else if lp.stat_name.starts_with("Transactions") {
+                            y_vals_trans.push(lp.per_second);
                     } else if lp.stat_name.starts_with("Parses") {
                         y_vals_parses.push(lp.per_second);
                     } else if lp.stat_name.starts_with("Hard parses") {
@@ -572,7 +575,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     // ------ Ploting and reporting starts ----------
     println!("Statistical Computations:\n-------------------------");
 
-    let mut plot = Plot::new();
+    let mut plot_main = Plot::new();
+    let mut plot_highlight = Plot::new();
 
     let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime.clone())
                                                     .mode(Mode::LinesText)
@@ -581,11 +585,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                     .y_axis("y1");
     let aas_box_plot  = BoxPlot::new(y_vals_dbtime.clone())
                                                     .name("AAS")
-                                                    .x_axis("x3")
-                                                    .y_axis("y7")
+                                                    .x_axis("x2")
+                                                    .y_axis("y2")
                                                     .box_mean(BoxMean::True)
                                                     .show_legend(false)
-                                                    .marker(Marker::new().color("#2d9c57".to_string()).opacity(0.7));
+                                                    .box_points(BoxPoints::All)
+                                                    .whisker_width(0.2)
+                                                    .marker(Marker::new().color("#2d9c57".to_string()).opacity(0.7).size(2));
 
     let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu)
                                                     .mode(Mode::LinesText)
@@ -612,12 +618,22 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                     .y_axis("y2");
     let exec_box_plot  = BoxPlot::new(y_vals_execs)
                                                     .name("Exec/s")
-                                                    .x_axis("x4")
-                                                    .y_axis("y8")
+                                                    .x_axis("x3")
+                                                    .y_axis("y3")
                                                     .box_mean(BoxMean::True)
                                                     .show_legend(false)
-                                                    .marker(Marker::new().color("#2d5d9c".to_string()).opacity(0.7));
-    
+                                                    .box_points(BoxPoints::All)
+                                                    .whisker_width(0.2)
+                                                    .marker(Marker::new().color("#2d5d9c".to_string()).opacity(0.7).size(2));
+    let trans_box_plot  = BoxPlot::new(y_vals_trans)
+                                                    .name("Trans/s")
+                                                    .x_axis("x4")
+                                                    .y_axis("y4")
+                                                    .box_mean(BoxMean::True)
+                                                    .show_legend(false)
+                                                    .box_points(BoxPoints::All)
+                                                    .whisker_width(0.2)
+                                                    .marker(Marker::new().color("#6302eb".to_string()).opacity(0.7).size(2));
     let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses)
                                                     .mode(Mode::LinesText)
                                                     .name("Parses")
@@ -644,11 +660,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     let cpu_load_box_plot  = BoxPlot::new(y_vals_cpu_load)
                                                     //.mode(Mode::LinesText)
                                                     .name("CPU Load")
-                                                    .x_axis("x2")
-                                                    .y_axis("y6")
+                                                    .x_axis("x1")
+                                                    .y_axis("y1")
                                                     .box_mean(BoxMean::True)
                                                     .show_legend(false)
-                                                    .marker(Marker::new().color("#9c2d2d".to_string()).opacity(0.7));
+                                                    .box_points(BoxPoints::All)
+                                                    .whisker_width(0.2)
+                                                    .marker(Marker::new().color("#9c2d2d".to_string()).opacity(0.7).size(2));
     if is_logfilesync_high{
         let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
                                                         .mode(Mode::LinesText)
@@ -670,24 +688,25 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                         .name("cleanouts only - consistent read gets")
                                                         .x_axis("x1")
                                                         .y_axis("y2");
-        plot.add_trace(redo_switches);
-        plot.add_trace(excessive_commits);
-        plot.add_trace(cleanout_cr_only);
-        plot.add_trace(cleanout_ktugct_calls);
+        plot_main.add_trace(redo_switches);
+        plot_main.add_trace(excessive_commits);
+        plot_main.add_trace(cleanout_cr_only);
+        plot_main.add_trace(cleanout_ktugct_calls);
     }
     
-    plot.add_trace(dbtime_trace);
-    plot.add_trace(aas_box_plot);
-    plot.add_trace(dbcpu_trace);
-    plot.add_trace(calls_trace);
-    plot.add_trace(logons_trace);
-    plot.add_trace(exec_trace);
-    plot.add_trace(exec_box_plot);
-    plot.add_trace(parses_trace);
-    plot.add_trace(hparses_trace);
-    plot.add_trace(cpu_user);
-    plot.add_trace(cpu_load);
-    plot.add_trace(cpu_load_box_plot);
+    plot_main.add_trace(dbtime_trace);
+    plot_highlight.add_trace(aas_box_plot);
+    plot_main.add_trace(dbcpu_trace);
+    plot_main.add_trace(calls_trace);
+    plot_main.add_trace(logons_trace);
+    plot_main.add_trace(exec_trace);
+    plot_highlight.add_trace(exec_box_plot);
+    plot_highlight.add_trace(trans_box_plot);
+    plot_main.add_trace(parses_trace);
+    plot_main.add_trace(hparses_trace);
+    plot_main.add_trace(cpu_user);
+    plot_main.add_trace(cpu_load);
+    plot_highlight.add_trace(cpu_load_box_plot);
 
     // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut table_events = String::new();
@@ -699,7 +718,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                         .name(key.1.clone())
                                                         .x_axis("x1")
                                                         .y_axis("y3").visible(Visible::LegendOnly);
-        plot.add_trace(event_trace);
+        plot_main.add_trace(event_trace);
         let event_name = key.1.clone();
         /* Correlation calc */
         let corr = pearson_correlation_2v(&y_vals_dbtime, &yv);
@@ -794,7 +813,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                         .name(key.1.clone())
                                                         .x_axis("x1")
                                                         .y_axis("y5").visible(Visible::LegendOnly);
-        plot.add_trace(sql_trace);
+        plot_main.add_trace(sql_trace);
         
         let sql_id = key.1.clone();
         /* Correlation calc */
@@ -928,67 +947,22 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     
     report_instance_stats_cor(instance_stats, y_vals_dbtime);
 
-    let layout = Layout::new()
-        .height(1500)
+    let layout_main = Layout::new()
+        .height(1200)
         .grid(
             LayoutGrid::new()
-                .rows(6)
+                .rows(5)
                 .columns(1),
                 //.row_order(Grid::TopToBottom),
         )
-        .legend(Legend::new()
+        //.legend(Legend::new()
             //.y_anchor(Anchor::Top)
-            .x(1.02)
-            .y(0.5)
-        )
-        .x_axis4(
-            Axis::new()
-                    .domain(&[0.3, 0.4])
-                    .anchor("y8")
-                    .range(vec![0.,])
-                    .show_grid(false)
-        )
-        .y_axis8(
-            Axis::new()
-                    .domain(&[0.8, 1.0])
-                    .anchor("x4")
-                    .range(vec![0.,])
-                    .range_mode(RangeMode::ToZero)
-                    .show_grid(false),
-        )
-        .x_axis3(
-            Axis::new()
-                    .domain(&[0.15, 0.25])
-                    .anchor("y7")
-                    .range(vec![0.,])
-                    .show_grid(false)
-        )
-        .y_axis7(
-            Axis::new()
-                    .domain(&[0.8, 1.0])
-                    .anchor("x3")
-                    .range(vec![0.,])
-                    .range_mode(RangeMode::ToZero)
-                    .show_grid(false),
-        )
-        .x_axis2(
-            Axis::new()
-                    .domain(&[0.0, 0.1])
-                    .anchor("y6")
-                    .range(vec![0.,])
-                    .show_grid(false)
-        )
-        .y_axis6(
-            Axis::new()
-                    .domain(&[0.8, 1.0])
-                    .anchor("x2")
-                    .range(vec![0.,])
-                    .range_mode(RangeMode::ToZero)
-                    .show_grid(false),
-        )
+        //    .x(1.02)
+        //    .y(0.5)
+        //)
         .y_axis5(Axis::new()
             .anchor("x1")
-            .domain(&[0.62, 0.77])
+            .domain(&[0.82, 1.0])
             .title(Title::new("SQL Elapsed Time"))
             .visible(true)
             .zero_line(true)
@@ -996,7 +970,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         )
         .y_axis4(Axis::new()
             .anchor("x1")
-            .domain(&[0.465, 0.615])
+            .domain(&[0.615, 0.815])
             .range(vec![0.,])
             .title(Title::new("CPU Util (%)"))
             .zero_line(true)
@@ -1005,7 +979,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         )
         .y_axis3(Axis::new()
             .anchor("x1")
-            .domain(&[0.31, 0.46])
+            .domain(&[0.41, 0.61])
             .title(Title::new("Wait Events (s)"))
             .zero_line(true)
             .range(vec![0.,])
@@ -1013,7 +987,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         )
         .y_axis2(Axis::new()
             .anchor("x1")
-            .domain(&[0.155, 0.305])
+            .domain(&[0.205, 0.405])
             .range(vec![0.,])
             .title(Title::new("#"))
             .zero_line(true)
@@ -1021,7 +995,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         )
         .y_axis(Axis::new()
             .anchor("x1")
-            .domain(&[0., 0.15])
+            .domain(&[0., 0.2])
             .title(Title::new("(s/s)"))
             .zero_line(true)
             .range_mode(RangeMode::ToZero)
@@ -1034,18 +1008,182 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                     .show_grid(true),
         )
         .hover_mode(HoverMode::X);
-    plot.set_layout(layout);
-    plot.use_local_plotly();
-    plot.write_html(fname.clone());
-    //plot.show();
-    // Modify HTML and inject Additional sections - Buttons, Tables, etc
-    let mut plotly_html = fs::read_to_string(&fname)
-        .expect("Failed to read Plotly HTML file");
 
-    // Inject the table HTML before the closing </body> tag
-
+        let layout_highlight = Layout::new()
+            .height(450)
+            .grid(
+                LayoutGrid::new()
+                    .rows(1)
+                    .columns(1),
+                    //.row_order(Grid::TopToBottom),
+            )
+            .hover_mode(HoverMode::X)
+            .x_axis4(
+                Axis::new()
+                        .domain(&[0.45, 0.55])
+                        .anchor("y4")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis4(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x4")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis3(
+                Axis::new()
+                        .domain(&[0.3, 0.4])
+                        .anchor("y3")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis3(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x3")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis2(
+                Axis::new()
+                        .domain(&[0.15, 0.25])
+                        .anchor("y2")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis2(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x2")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis(
+                Axis::new()
+                        .domain(&[0.0, 0.1])
+                        .anchor("y1")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x1")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+        );
     
-    plotly_html = plotly_html.replace("<head>", &format!("<head>\n{}", "<title>JAS-MIN</title>
+    plot_main.set_layout(layout_main);
+    plot_highlight.set_layout(layout_highlight);
+    plot_main.use_local_plotly();
+    plot_highlight.use_local_plotly();
+    plot_main.write_html(fname.clone());
+    plot_highlight.write_html(format!("{}/jasmin_highlight.html", html_dir));
+    //plot.show();
+
+    let db_instance_info_html = format!(
+        "<div id=\"db-instance-info\" style=\"margin-bottom: 20px;\">
+            <span><strong>DB ID:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Platform:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Release:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Startup Time:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;RAC:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Instance Number:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;CPUs:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Cores:</strong> {}</span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Sockets:</strong> {} </span>
+            <span> <strong>&nbsp;&nbsp;&nbsp;Memory (G):</strong> {} </span>
+            <span style=\"margin-left: auto;\"> <strong>JAS-MIN</strong> v{}&nbsp;&nbsp;&nbsp</span>
+    </div>",
+        collection.db_instance_information.db_id,
+        collection.db_instance_information.platform,
+        collection.db_instance_information.release,
+        collection.db_instance_information.startup_time,
+        collection.db_instance_information.rac,
+        collection.db_instance_information.instance_num,
+        collection.db_instance_information.cpus,
+        collection.db_instance_information.cores,
+        collection.db_instance_information.sockets,
+        collection.db_instance_information.memory,
+        env!("CARGO_PKG_VERSION")
+    );
+    
+    let jasmin_html_scripts = format!(
+        r#"
+        <script>//JAS-MIN scripts
+        function toggleTable(buttonId, tableId, buttonText) {{
+            const button = document.getElementById(buttonId);
+            const table = document.getElementById(tableId);
+        
+            button.addEventListener('click', () => {{
+                if (table.style.display === 'none' || table.style.display === '') {{
+                    table.style.display = 'table';
+                    button.textContent = buttonText;
+                    button.style.backgroundColor = '#272727';
+                    button.style.color = 'white';
+                    button.style.fontWeight = 'bold';
+                    button.style.border = '1px solid #ccc';
+                }} else {{
+                    table.style.display = 'none';
+                    button.textContent = buttonText;
+                    button.style.backgroundColor = '#e0e0e0';
+                    button.style.color = 'black';
+                    button.style.fontWeight = 'normal';
+                    button.style.border = '1px solid #ccc';
+                }}
+            }});
+        }}
+        toggleTable('show-events-button', 'events-table', 'TOP Wait Events');
+        toggleTable('show-sqls-button', 'sqls-table', 'TOP SQLs');
+        function sortTable(tableId,columnId) {{
+            var table = document.getElementById(tableId);
+            var tbody = table.getElementsByTagName("tbody")[0];
+            var rows = Array.from(tbody.getElementsByTagName("tr"));
+            var isAscending = table.getAttribute("data-sort-order") !== "asc";
+            table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
+            rows.sort(function(rowA, rowB){{
+                var cellA = rowA.getElementsByTagName("td")[columnId].innerText.trim();
+                var cellB = rowB.getElementsByTagName("td")[columnId].innerText.trim();
+                var numA = parseFloat(cellA);
+                var numB = parseFloat(cellB);
+                if (!isNaN(numA) && !isNaN(numB)){{
+                    return isAscending ? numA - numB : numB - numA;
+                }} else{{
+                    return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+                }}
+            }});
+            tbody.innerHTML = "";
+            rows.forEach(row => tbody.appendChild(row));
+        }}
+        </script>"#
+    );
+
+    // Open plot_main HTML to inject Additional sections - Buttons, Tables, etc
+    let mut plotly_html = fs::read_to_string(&fname)
+        .expect("Failed to read Main JAS-MIN HTML file");
+    let mut highlight_html = fs::read_to_string(format!("{}/jasmin_highlight.html", html_dir))
+        .expect("Failed to read HighLight JAS-MIN HTML file");
+    
+    //Prepare HighLight Section to be pasted into Main HTML file
+    highlight_html = highlight_html.replace("plotly-html-element","highlight-html-element");
+    fs::write(format!("{}/jasmin_highlight.html", html_dir),&highlight_html);
+    highlight_html = highlight_html
+                    .lines() // Iterate over lines
+                    .skip_while(|line| !line.contains("<div id=\"highlight-html-element\"")) // Skip lines until found
+                    .take_while(|line| !line.contains("</script>")) // Keep only lines before `</script>`
+                    .collect::<Vec<&str>>() // Collect remaining lines into a Vec
+                    .join("\n"); // Convert back into a String
+    // Inject the table HTML before the closing </body> tag
+    plotly_html = plotly_html.replace(
+        "<head>",
+        &format!("<head>\n{}", 
+    "<title>JAS-MIN</title>
     <style>
         #events-table {
             display: none;
@@ -1101,84 +1239,25 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         #sqls-table tbody tr:last-of-type {
             border-bottom: 2px solid #006f98;
         }        
-    </style>"));
-
-    let db_instance_info_html = format!(
-        "<div id=\"db-instance-info\" style=\"margin-bottom: 20px;\">
-            <span><strong>DB ID:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Platform:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Release:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Startup Time:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;RAC:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Instance Number:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;CPUs:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Cores:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Sockets:</strong> {} </span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Memory (G):</strong> {} </span>
-            <span style=\"margin-left: auto;\"> <strong>JAS-MIN</strong> v{}&nbsp;&nbsp;&nbsp</span>
-         </div>",
-        collection.db_instance_information.db_id,
-        collection.db_instance_information.platform,
-        collection.db_instance_information.release,
-        collection.db_instance_information.startup_time,
-        collection.db_instance_information.rac,
-        collection.db_instance_information.instance_num,
-        collection.db_instance_information.cpus,
-        collection.db_instance_information.cores,
-        collection.db_instance_information.sockets,
-        collection.db_instance_information.memory,
-        env!("CARGO_PKG_VERSION")
-    );
-    
-    let jasmin_html_scripts = format!(
-        r#"
-        <script>//JAS-MIN scripts
-        function toggleTable(buttonId, tableId, buttonText) {{
-            const button = document.getElementById(buttonId);
-            const table = document.getElementById(tableId);
-        
-            button.addEventListener('click', () => {{
-                if (table.style.display === 'none' || table.style.display === '') {{
-                    table.style.display = 'table';
-                    button.textContent = buttonText;
-                }} else {{
-                    table.style.display = 'none';
-                    button.textContent = buttonText;
-                }}
-            }});
-        }}
-        toggleTable('show-events-button', 'events-table', 'TOP Wait Events');
-        toggleTable('show-sqls-button', 'sqls-table', 'TOP SQLs');
-        function sortTable(tableId,columnId) {{
-            var table = document.getElementById(tableId);
-            var tbody = table.getElementsByTagName("tbody")[0];
-            var rows = Array.from(tbody.getElementsByTagName("tr"));
-            var isAscending = table.getAttribute("data-sort-order") !== "asc";
-            table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
-            rows.sort(function(rowA, rowB){{
-                var cellA = rowA.getElementsByTagName("td")[columnId].innerText.trim();
-                var cellB = rowB.getElementsByTagName("td")[columnId].innerText.trim();
-                var numA = parseFloat(cellA);
-                var numB = parseFloat(cellB);
-                if (!isNaN(numA) && !isNaN(numB)){{
-                    return isAscending ? numA - numB : numB - numA;
-                }} else{{
-                    return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
-                }}
-            }});
-            tbody.innerHTML = "";
-            rows.forEach(row => tbody.appendChild(row));
-        }}
-        </script>"#
+    </style>"
+                )
     );
 
     plotly_html = plotly_html.replace(
         "<body>",
-        &format!("<body>\n\t{}\n\t{}\n\t{}",db_instance_info_html,"<button id=\"show-events-button\">TOP Wait Events</button>","<button id=\"show-sqls-button\">TOP SQLs</button>")
+        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
+            db_instance_info_html,
+            "<button id=\"show-events-button\">TOP Wait Events</button>",
+            "<button id=\"show-sqls-button\">TOP SQLs</button>",
+            event_table_html,
+            sqls_table_html,
+            jasmin_html_scripts)
     );
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
-        &format!("{}{}{}\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", event_table_html,sqls_table_html,jasmin_html_scripts));
+        &format!("{}\n\t\t\t\t</script>\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
+                highlight_html)
+    );
 
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
@@ -1186,3 +1265,5 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
 
     open::that(fname);
 }
+
+//<div id="highlight-html-element" class="plotly-graph-div" style="height:100%; width:100%;"></div>
