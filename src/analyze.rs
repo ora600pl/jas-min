@@ -371,6 +371,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     let mut y_excessive_commits: Vec<f64> = Vec::new();
     let mut y_cleanout_ktugct: Vec<f64> = Vec::new();
     let mut y_cleanout_cr: Vec<f64> = Vec::new();
+    let mut y_read_mb: Vec<f64> = Vec::new();
+    let mut y_write_mb: Vec<f64> = Vec::new();
 
     /*Variables used for statistics computations*/
     let mut y_vals_events_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
@@ -493,6 +495,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                         y_vals_parses.push(lp.per_second);
                     } else if lp.stat_name.starts_with("Hard parses") {
                         y_vals_hparses.push(lp.per_second);
+                    } else if lp.stat_name.starts_with("Physical read") {
+                        y_read_mb.push(lp.per_second*collection.db_instance_information.db_block_size as f64/1024.0/1024.0);
+                    } else if lp.stat_name.starts_with("Physical write") {
+                        y_write_mb.push(lp.per_second*collection.db_instance_information.db_block_size as f64/1024.0/1024.0);
                     }
             }
                 // ----- Host CPU
@@ -583,6 +589,56 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                     .name("DB Time (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
+    let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu)
+                                                    .mode(Mode::LinesText)
+                                                    .name("DB CPU (s/s)")
+                                                    .x_axis("x1")
+                                                    .y_axis("y1");
+    let calls_trace = Scatter::new(x_vals.clone(), y_vals_calls)
+                                                    .mode(Mode::LinesText)
+                                                    .name("User Calls")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let logons_trace = Scatter::new(x_vals.clone(), y_vals_logons)
+                                                    .mode(Mode::LinesText)
+                                                    .name("Logons")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("Executes")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses)
+                                                    .mode(Mode::LinesText)
+                                                    .name("Parses")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses)
+                                                    .mode(Mode::LinesText)
+                                                    .name("Hard Parses")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");                                                 
+    let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
+                                                    .mode(Mode::LinesText)
+                                                    .name("CPU User")
+                                                    .x_axis("x1")
+                                                    .y_axis("y4");
+    let cpu_load = Scatter::new(x_vals.clone(), y_vals_cpu_load.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("CPU Load")
+                                                    .x_axis("x1")
+                                                    .y_axis("y4");
+    let cpu_load_box_plot  = BoxPlot::new(y_vals_cpu_load)
+                                                    //.mode(Mode::LinesText)
+                                                    .name("CPU Load")
+                                                    .x_axis("x1")
+                                                    .y_axis("y1")
+                                                    .box_mean(BoxMean::True)
+                                                    .show_legend(false)
+                                                    .box_points(BoxPoints::All)
+                                                    .whisker_width(0.2)
+                                                    .marker(Marker::new().color("#9c2d2d".to_string()).opacity(0.7).size(2));
     let aas_box_plot  = BoxPlot::new(y_vals_dbtime.clone())
                                                     .name("AAS")
                                                     .x_axis("x2")
@@ -592,30 +648,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                     .box_points(BoxPoints::All)
                                                     .whisker_width(0.2)
                                                     .marker(Marker::new().color("#2d9c57".to_string()).opacity(0.7).size(2));
-
-    let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu)
-                                                    .mode(Mode::LinesText)
-                                                    .name("DB CPU (s/s)")
-                                                    .x_axis("x1")
-                                                    .y_axis("y1");
-
-    let calls_trace = Scatter::new(x_vals.clone(), y_vals_calls)
-                                                    .mode(Mode::LinesText)
-                                                    .name("User Calls")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-
-    let logons_trace = Scatter::new(x_vals.clone(), y_vals_logons)
-                                                    .mode(Mode::LinesText)
-                                                    .name("Logons")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-
-    let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Executes")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
     let exec_box_plot  = BoxPlot::new(y_vals_execs)
                                                     .name("Exec/s")
                                                     .x_axis("x3")
@@ -633,40 +665,27 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                                                     .show_legend(false)
                                                     .box_points(BoxPoints::All)
                                                     .whisker_width(0.2)
-                                                    .marker(Marker::new().color("#6302eb".to_string()).opacity(0.7).size(2));
-    let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses)
-                                                    .mode(Mode::LinesText)
-                                                    .name("Parses")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-
-    let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses)
-                                                    .mode(Mode::LinesText)
-                                                    .name("Hard Parses")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-                                                    
-    let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
-                                                    .mode(Mode::LinesText)
-                                                    .name("CPU User")
-                                                    .x_axis("x1")
-                                                    .y_axis("y4");
-    
-    let cpu_load = Scatter::new(x_vals.clone(), y_vals_cpu_load.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("CPU Load")
-                                                    .x_axis("x1")
-                                                    .y_axis("y4");
-    let cpu_load_box_plot  = BoxPlot::new(y_vals_cpu_load)
+                                                    .marker(Marker::new().color("#904fc2".to_string()).opacity(0.7).size(2));
+    let read_mb_box_plot  = BoxPlot::new(y_read_mb)
                                                     //.mode(Mode::LinesText)
-                                                    .name("CPU Load")
-                                                    .x_axis("x1")
-                                                    .y_axis("y1")
+                                                    .name("Read MB/s")
+                                                    .x_axis("x5")
+                                                    .y_axis("y5")
                                                     .box_mean(BoxMean::True)
                                                     .show_legend(false)
                                                     .box_points(BoxPoints::All)
                                                     .whisker_width(0.2)
-                                                    .marker(Marker::new().color("#9c2d2d".to_string()).opacity(0.7).size(2));
+                                                    .marker(Marker::new().color("#c2be4f".to_string()).opacity(0.7).size(2));
+    let write_mb_box_plot  = BoxPlot::new(y_write_mb)
+                                                    //.mode(Mode::LinesText)
+                                                    .name("Write MB/s")
+                                                    .x_axis("x6")
+                                                    .y_axis("y6")
+                                                    .box_mean(BoxMean::True)
+                                                    .show_legend(false)
+                                                    .box_points(BoxPoints::All)
+                                                    .whisker_width(0.2)
+                                                    .marker(Marker::new().color("#c2904f".to_string()).opacity(0.7).size(2));
     if is_logfilesync_high{
         let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
                                                         .mode(Mode::LinesText)
@@ -707,6 +726,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     plot_main.add_trace(cpu_user);
     plot_main.add_trace(cpu_load);
     plot_highlight.add_trace(cpu_load_box_plot);
+    plot_highlight.add_trace(read_mb_box_plot);
+    plot_highlight.add_trace(write_mb_box_plot);
 
     // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut table_events = String::new();
@@ -1009,75 +1030,105 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         )
         .hover_mode(HoverMode::X);
 
-        let layout_highlight = Layout::new()
-            .height(450)
-            .grid(
-                LayoutGrid::new()
-                    .rows(1)
-                    .columns(1),
-                    //.row_order(Grid::TopToBottom),
-            )
-            .hover_mode(HoverMode::X)
-            .x_axis4(
-                Axis::new()
-                        .domain(&[0.45, 0.55])
-                        .anchor("y4")
-                        .range(vec![0.,])
-                        .show_grid(false)
-            )
-            .y_axis4(
-                Axis::new()
-                        .domain(&[0.0, 1.0])
-                        .anchor("x4")
-                        .range(vec![0.,])
-                        .range_mode(RangeMode::ToZero)
-                        .show_grid(false),
-            )
-            .x_axis3(
-                Axis::new()
-                        .domain(&[0.3, 0.4])
-                        .anchor("y3")
-                        .range(vec![0.,])
-                        .show_grid(false)
-            )
-            .y_axis3(
-                Axis::new()
-                        .domain(&[0.0, 1.0])
-                        .anchor("x3")
-                        .range(vec![0.,])
-                        .range_mode(RangeMode::ToZero)
-                        .show_grid(false),
-            )
-            .x_axis2(
-                Axis::new()
-                        .domain(&[0.15, 0.25])
-                        .anchor("y2")
-                        .range(vec![0.,])
-                        .show_grid(false)
-            )
-            .y_axis2(
-                Axis::new()
-                        .domain(&[0.0, 1.0])
-                        .anchor("x2")
-                        .range(vec![0.,])
-                        .range_mode(RangeMode::ToZero)
-                        .show_grid(false),
-            )
-            .x_axis(
-                Axis::new()
-                        .domain(&[0.0, 0.1])
-                        .anchor("y1")
-                        .range(vec![0.,])
-                        .show_grid(false)
-            )
-            .y_axis(
-                Axis::new()
-                        .domain(&[0.0, 1.0])
-                        .anchor("x1")
-                        .range(vec![0.,])
-                        .range_mode(RangeMode::ToZero)
-                        .show_grid(false),
-        );
+    let layout_highlight = Layout::new()
+        .height(450)
+        .grid(
+            LayoutGrid::new()
+                .rows(1)
+                .columns(1),
+                //.row_order(Grid::TopToBottom),
+        )
+        .hover_mode(HoverMode::X)
+        .x_axis6(
+            Axis::new()
+                    .domain(&[0.75, 0.85])
+                    .anchor("y6")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis6(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x6")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis5(
+            Axis::new()
+                    .domain(&[0.6, 0.7])
+                    .anchor("y5")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis5(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x5")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis4(
+            Axis::new()
+                    .domain(&[0.45, 0.55])
+                    .anchor("y4")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis4(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x4")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis3(
+            Axis::new()
+                    .domain(&[0.3, 0.4])
+                    .anchor("y3")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis3(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x3")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis2(
+            Axis::new()
+                    .domain(&[0.15, 0.25])
+                    .anchor("y2")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis2(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x2")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis(
+            Axis::new()
+                    .domain(&[0.0, 0.1])
+                    .anchor("y1")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+    );
     
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
