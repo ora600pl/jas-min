@@ -1138,6 +1138,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     plot_highlight.write_html(format!("{}/jasmin_highlight.html", html_dir));
     //plot.show();
 
+    let first_snap_time = collection.awrs.first().unwrap().snap_info.begin_snap_time.clone();
+    let last_snap_time = collection.awrs.last().unwrap().snap_info.end_snap_time.clone();
+
     let db_instance_info_html = format!(
         "<div id=\"db-instance-info\" style=\"margin-bottom: 20px;\">
             <span><strong>DB ID:</strong> {}</span>
@@ -1151,7 +1154,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             <span> <strong>&nbsp;&nbsp;&nbsp;Sockets:</strong> {} </span>
             <span> <strong>&nbsp;&nbsp;&nbsp;Memory (G):</strong> {} </span>
             <span style=\"margin-left: auto;\"> <strong>JAS-MIN</strong> v{}&nbsp;&nbsp;&nbsp</span>
-    </div>",
+    </div>
+    <center><strong>&nbsp;&nbsp;&nbsp;Snap range:</strong> {} - {}<br /><br /></center>",
         collection.db_instance_information.db_id,
         collection.db_instance_information.platform,
         collection.db_instance_information.release,
@@ -1162,7 +1166,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         collection.db_instance_information.cores,
         collection.db_instance_information.sockets,
         collection.db_instance_information.memory,
-        env!("CARGO_PKG_VERSION")
+        env!("CARGO_PKG_VERSION"),
+        first_snap_time, 
+        last_snap_time
     );
     
     let jasmin_html_scripts = format!(
