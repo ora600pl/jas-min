@@ -17,6 +17,7 @@
             font-size: 0.9em;
             background-color: #ffd9d9;
             display: flex;
+            flex-wrap: wrap;
         }
         table thead tr {
             background-color: #009876;
