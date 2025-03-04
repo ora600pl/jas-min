@@ -1,4 +1,4 @@
-use crate::awr::{ForegroundWaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
+use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker};
@@ -18,6 +18,7 @@ use ndarray_stats::histogram::Grid;
 
 struct TopStats {
     events: BTreeMap<String, u8>,
+    bgevents: BTreeMap<String, u8>,
     sqls:   BTreeMap<String, String>,
     stat_names: BTreeMap<String, u8>,
 }
@@ -26,6 +27,7 @@ struct TopStats {
 //we need to find only essential wait events and SQLIDs 
 fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
+    let mut bgevent_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
     let mut stat_names: BTreeMap<String, u8> = BTreeMap::new();
     //so we scan the AWR data
@@ -50,14 +52,22 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
             //because it means that Oracle spent some time waiting on wait events and not working on CPU
             if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
                 println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
-                let mut events = awr.foreground_wait_events;
+                let mut events: Vec<WaitEvents> = awr.foreground_wait_events;
+                let mut bgevents: Vec<WaitEvents> = awr.background_wait_events;
                 //I'm sorting events by total wait time, to get the longest waits at the end
                 events.sort_by_key(|e| e.total_wait_time_s as i64);
-                let l: usize = events.len();
+                bgevents.sort_by_key(|e| e.total_wait_time_s as i64);
+                let fg_length: usize = events.len();
+                let bg_length: usize = bgevents.len();
                 //We are registering only TOP10 from each snap
-                if l > 10 {
+                if fg_length > 10 {
                     for i in 1..10 {
-                        event_names.entry(events[l-i].event.clone()).or_insert(1);
+                        event_names.entry(events[fg_length-i].event.clone()).or_insert(1);
+                    }
+                }
+                if bg_length > 10 {
+                    for i in 1..10 {
+                        bgevent_names.entry(bgevents[bg_length-i].event.clone()).or_insert(1);
                     }
                 }
                 //And the same with SQLs
@@ -79,7 +89,7 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
             }
         }
     }
-    let top: TopStats = TopStats {events: event_names, sqls: sql_ids, stat_names: stat_names,};
+    let top: TopStats = TopStats {events: event_names, bgevents: bgevent_names, sqls: sql_ids, stat_names: stat_names,};
     top
 }
 
@@ -193,7 +203,7 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
 }
 
 // Filter and generate histogram for top events
-fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, dirpath: &str) {
+fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, dirpath: &str) {
     
     //Make colors consistent across buckets 
     let bucket_colors: HashMap<String, String> = HashMap::from([
@@ -208,13 +218,21 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
         ("7: >=32ms".to_string(), "#B22222".to_string()),  // Firebrick
         ("8: >1s".to_string(), "#8B0000".to_string())      // Dark Red
     ]);
-
-    // Filter ForegroundWaitEvents based on top_events
-    let filtered_events: Vec<&ForegroundWaitEvents> = awrs
-        .iter()
-        .flat_map(|awr| &awr.foreground_wait_events)
-        .filter(|event| top_events.contains_key(&event.event))
-        .collect();
+    
+    let mut filtered_events: Vec<&WaitEvents> = Vec::<&WaitEvents>::new();
+    if is_fg {
+        filtered_events = awrs // Filter Foreground WaitEvents based on top_events
+            .iter()
+            .flat_map(|awr| &awr.foreground_wait_events)
+            .filter(|event| top_events.contains_key(&event.event))
+            .collect();
+    } else {
+        filtered_events = awrs // Filter Background WaitEvents based on top_events
+            .iter()
+            .flat_map(|awr| &awr.background_wait_events)
+            .filter(|event| top_events.contains_key(&event.event))
+            .collect();
+    }
 
     // Group data by event
     let mut data_by_event: HashMap<String, (Vec<f64>, BTreeMap<String, Vec<f32>>)> = HashMap::new();
@@ -344,20 +362,30 @@ fn generate_fgevents_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8
     
         // Replace invalid characters for filenames (e.g., slashes or spaces)
         let safe_event_name: String = event.replace("/", "_").replace(" ", "_").replace(":","");
-        let file_name: String = format!("{}/{}.html", dirpath, safe_event_name);
+        let mut file_name: String = String::new();
+        if is_fg {
+            file_name = format!("{}/fg_{}.html", dirpath, safe_event_name);
+        } else {
+            file_name = format!("{}/bg_{}.html", dirpath, safe_event_name);
+        }
 
         // Save the plot as an HTML file
         let path: &Path = Path::new(&file_name);
         //plot.save(path).expect("Failed to save plot to file");
         plot.write_html(path);
     }
-    println!("Saved plots for events to '{}'", dirpath);
+    if is_fg {
+        println!("Saved plots for Foreground events to '{}/fg_*'", dirpath);
+    } else {
+        println!("Saved plots for Background events to '{}/bg_*'", dirpath);
+    }
 }
 
 pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) {
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut y_vals_bgevents: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_logons: Vec<f64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
@@ -378,6 +406,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     let mut y_vals_events_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
     let mut y_vals_events_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_events_s: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut y_vals_bgevents_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
+    let mut y_vals_bgevents_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut y_vals_bgevents_s: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_exec_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_exec_n: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     /********************************************/
@@ -389,9 +420,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     let mut x_vals: Vec<String> = Vec::new();
 
     let top_stats: TopStats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone());
-    let top_events: BTreeMap<String, u8> = top_stats.events;
-    let top_sqls: BTreeMap<String, String> = top_stats.sqls;
-    let all_stats: BTreeMap<String, u8> = top_stats.stat_names;
+    //let top_events: BTreeMap<String, u8> = top_stats.events;
+    //let top_bgevents: BTreeMap<String, u8> = top_stats.bgevents;
+    //let top_sqls: BTreeMap<String, String> = top_stats.sqls;
+    //let all_stats: BTreeMap<String, u8> = top_stats.stat_names;
     let mut is_logfilesync_high: bool = false;
     
     // Extract the parent directory and generate FG Events html plots
@@ -408,7 +440,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     }
     
     fs::create_dir(&html_dir).unwrap_or_default();
-    generate_fgevents_plotfiles(&collection.awrs, &top_events,&html_dir);
+    generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &html_dir);
+    generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false,&html_dir);
     let fname: String = format!("{}/{}", html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
@@ -419,39 +452,48 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
 
         if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
 
-                let xval: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
-                x_vals.push(xval.clone());
+            let xval: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
+            x_vals.push(xval.clone());
 
-                //We have to fill the whole data traces for stats, wait events and SQLs with 0 to be sure that chart won't be moved to one side
-                for (sql, _) in &top_sqls {
-                    y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
-                    y_vals_sqls_exec_t.entry(sql.to_string()).or_insert(Vec::new());
-                    y_vals_sqls_exec_n.entry(sql.to_string()).or_insert(Vec::new());
-                    let mut v = y_vals_sqls.get_mut(sql).unwrap();
-                    v.push(0.0);
-                } 
+            //We have to fill the whole data traces for stats, wait events and SQLs with 0 to be sure that chart won't be moved to one side
+            for (sql, _) in &top_stats.sqls {
+                y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
+                y_vals_sqls_exec_t.entry(sql.to_string()).or_insert(Vec::new());
+                y_vals_sqls_exec_n.entry(sql.to_string()).or_insert(Vec::new());
+                let mut v = y_vals_sqls.get_mut(sql).unwrap();
+                v.push(0.0);
+            } 
 
-                for (event, _) in &top_events {
-                    if event.to_string() == "log file sync"{
-                        is_logfilesync_high = true;
-                    }
-                    y_vals_events.entry(event.to_string()).or_insert(Vec::new());
-                    y_vals_events_n.entry(event.to_string()).or_insert(Vec::new());
-                    y_vals_events_t.entry(event.to_string()).or_insert(Vec::new());
-                    y_vals_events_s.entry(event.to_string()).or_insert(Vec::new());
-                    let mut v = y_vals_events.get_mut(event).unwrap();
-                    v.push(0.0);
+            for (event, _) in &top_stats.events {
+                if event.to_string() == "log file sync"{
+                    is_logfilesync_high = true;
                 }
+                y_vals_events.entry(event.to_string()).or_insert(Vec::new());
+                y_vals_events_n.entry(event.to_string()).or_insert(Vec::new());
+                y_vals_events_t.entry(event.to_string()).or_insert(Vec::new());
+                y_vals_events_s.entry(event.to_string()).or_insert(Vec::new());
+                let mut v = y_vals_events.get_mut(event).unwrap();
+                v.push(0.0);
+            }
 
-                for (statname, _) in &all_stats {
-                    instance_stats.entry(statname.to_string()).or_insert(Vec::new());
-                    let mut v = instance_stats.get_mut(statname).unwrap();
-                    v.push(0.0);
-                }
+            for (event, _) in &top_stats.bgevents {
+                y_vals_bgevents.entry(event.to_string()).or_insert(Vec::new());
+                y_vals_bgevents_n.entry(event.to_string()).or_insert(Vec::new());
+                y_vals_bgevents_t.entry(event.to_string()).or_insert(Vec::new());
+                y_vals_bgevents_s.entry(event.to_string()).or_insert(Vec::new());
+                let mut v = y_vals_bgevents.get_mut(event).unwrap();
+                v.push(0.0);
+            }
 
-                //Than we can set the current value of the vector to the desired one, if the event is in TOP section in that snap id
+            for (statname, _) in &top_stats.stat_names {
+                instance_stats.entry(statname.to_string()).or_insert(Vec::new());
+                let mut v = instance_stats.get_mut(statname).unwrap();
+                v.push(0.0);
+            }
+
+            //Than we can set the current value of the vector to the desired one, if the event is in TOP section in that snap id
             for event in &awr.foreground_wait_events { 
-                    if top_events.contains_key(&event.event) {
+                    if top_stats.events.contains_key(&event.event) {
                         let mut v = y_vals_events.get_mut(&event.event).unwrap();
                         v[x_vals.len()-1] = event.total_wait_time_s;
                         let mut v = y_vals_events_n.get_mut(&event.event).unwrap();
@@ -462,9 +504,21 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                         v.push(event.total_wait_time_s);
                     }
             }
+            for event in &awr.background_wait_events { 
+                if top_stats.bgevents.contains_key(&event.event) {
+                    let mut v = y_vals_bgevents.get_mut(&event.event).unwrap();
+                    v[x_vals.len()-1] = event.total_wait_time_s;
+                    let mut v = y_vals_bgevents_n.get_mut(&event.event).unwrap();
+                    v.push(event.waits as f64);
+                    let mut v = y_vals_bgevents_t.get_mut(&event.event).unwrap();
+                    v.push(event.pct_dbtime);
+                    let mut v = y_vals_bgevents_s.get_mut(&event.event).unwrap();
+                    v.push(event.total_wait_time_s);
+                }
+            }
             //Same with SQLs
             for sqls in &awr.sql_elapsed_time {
-                    if top_sqls.contains_key(&sqls.sql_id) {
+                    if top_stats.sqls.contains_key(&sqls.sql_id) {
                         let mut v = y_vals_sqls.get_mut(&sqls.sql_id).unwrap();
                         v[x_vals.len()-1] = sqls.elapsed_time_s;
                         let mut v = y_vals_sqls_exec_t.get_mut(&sqls.sql_id).unwrap();
@@ -474,7 +528,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
                     }
             }
             let mut is_statspack: bool = false;
-                //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
+            //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
             for lp in &awr.load_profile {
                     if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
                         y_vals_dbtime.push(lp.per_second);
@@ -563,6 +617,17 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             }
         }
         y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
+    }
+    //I want to stort wait events by most heavy ones across the whole period
+    let mut y_vals_bgevents_sorted = BTreeMap::new();
+    for (evname, ev) in y_vals_bgevents {
+        let mut wait_time = 0;
+        for v in &ev {
+            if *v > 0.0 {
+                wait_time -= *v as i64;
+            }
+        }
+        y_vals_bgevents_sorted.insert((wait_time, evname.clone()), ev.clone());
     }
 
     //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
@@ -731,6 +796,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
 
     // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut table_events: String = String::new();
+    let mut table_bgevents: String = String::new();
     let mut table_sqls: String = String::new();
 
     for (key, yv) in &y_vals_events_sorted {
@@ -774,12 +840,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         println!("{: >40}  {: <16.2} \tSTDDEV exec times:     {:.2}",   "--- AVG exec times:     ", &avg_exec_n, &stddev_exec_n);
         println!("{: >39}  {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
-        /* EVENTS - Generate a row for the HTML table */
+        /* FGEVENTS - Generate a row for the HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","");
         table_events.push_str(&format!(
             r#"
             <tr>
-                <td><a href="{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
+                <td><a href="fg_{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
@@ -802,6 +868,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             (x_n.len() as f64 / x_vals.len() as f64 )* 100.0
         ));
     }
+    
     let event_table_html: String = format!(
         r#"
         <table id="events-table">
@@ -826,6 +893,81 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         </table>
         "#,
         table_events
+    );
+
+    for (key, yv) in &y_vals_bgevents_sorted {
+        let event_name: String = key.1.clone();
+        /* Correlation calc */
+        let corr: f64 = pearson_correlation_2v(&y_vals_dbtime, &yv);
+
+        /* STDDEV/AVG Calculations */
+        let x_n: Vec<f64> = y_vals_bgevents_n.get(&event_name).unwrap().clone();
+        let avg_exec_n: f64 = mean(x_n.clone()).unwrap();
+        let stddev_exec_n: f64 = std_deviation(x_n.clone()).unwrap();
+
+        let x_t: Vec<f64> = y_vals_bgevents_t.get(&event_name).unwrap().clone();
+        let avg_exec_t: f64 = mean(x_t.clone()).unwrap();
+        let stddev_exec_t: f64 = std_deviation(x_t).unwrap();
+
+        let x_s: Vec<f64> = y_vals_bgevents_s.get(&event_name).unwrap().clone();
+        let avg_exec_s: f64 = mean(x_s.clone()).unwrap();
+        let stddev_exec_s: f64 = std_deviation(x_s).unwrap();
+
+        let avg_wait_per_exec_ms: f64 = (avg_exec_s / avg_exec_n) * 1000.0;
+        let stddev_wait_per_exec_ms: f64 = (stddev_exec_s / stddev_exec_n) * 1000.0;
+        
+        /* BGEVENTS - Generate a row for the HTML table */
+        let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","");
+        table_bgevents.push_str(&format!(
+            r#"
+            <tr>
+                <td><a href="bg_{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+            </tr>
+            "#,
+            safe_event_name,
+            event_name,
+            avg_exec_t, stddev_exec_t,  // PCT of DB Time
+            avg_exec_s, stddev_exec_s,  // Wait Time (s)
+            avg_exec_n, stddev_exec_n,  // Execution times
+            avg_wait_per_exec_ms, stddev_wait_per_exec_ms,  // Wait per exec (ms)
+            corr,
+            (x_n.len() as f64 / x_vals.len() as f64 )* 100.0
+        ));
+    }
+    let bgevent_table_html: String = format!(
+        r#"
+        <table id="bgevents-table">
+            <thead>
+                <tr>
+                    <th onclick="sortTable('bgevents-table',0)" style="cursor: pointer;">Event Name</th>
+                    <th onclick="sortTable('bgevents-table',1)" style="cursor: pointer;">AVG % of DBTime</th>
+                    <th onclick="sortTable('bgevents-table',2)" style="cursor: pointer;">STDDEV % of DBTime</th>
+                    <th onclick="sortTable('bgevents-table',3)" style="cursor: pointer;">AVG Wait Time (s)</th>
+                    <th onclick="sortTable('bgevents-table',4)" style="cursor: pointer;">STDDEV Wait Time (s)</th>
+                    <th onclick="sortTable('bgevents-table',5)" style="cursor: pointer;">AVG Exec Times</th>
+                    <th onclick="sortTable('bgevents-table',6)" style="cursor: pointer;">STDDEV Exec Times</th>
+                    <th onclick="sortTable('bgevents-table',7)" style="cursor: pointer;">AVG Wait per Exec (ms)</th>
+                    <th onclick="sortTable('bgevents-table',8)" style="cursor: pointer;">STDDEV Wait per Exec (ms)</th>
+                    <th onclick="sortTable('bgevents-table',9)" style="cursor: pointer;">Correlation of DBTime</th>
+                    <th onclick="sortTable('bgevents-table',10)" style="cursor: pointer;">TOP in % Probes</th>
+                </tr>
+            </thead>
+            <tbody>
+            {}
+            </tbody>
+        </table>
+        "#,
+        table_bgevents
     );
 
     for (key,yv) in y_vals_sqls_sorted {
@@ -869,7 +1011,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         println!("{: >24}{:.2}% of probes", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         println!("{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
         println!("{: >34} {: <16.2} \tSTDDEV exec times:  {:.2}", "--- AVG exec times:", avg_exec_n, stddev_exec_n);
-        println!("{: >23} {} ", "MODULE: ", top_sqls.get(&sql_id).unwrap().blue());
+        println!("{: >23} {} ", "MODULE: ", top_stats.sqls.get(&sql_id).unwrap().blue());
 
         /* SQLs - Generate a row for the HTML table */
         table_sqls.push_str(&format!(
@@ -932,7 +1074,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
             </html>
             "#,
             sql_id = sql_id,
-            module=top_sqls.get(&sql_id).unwrap(),
+            module=top_stats.sqls.get(&sql_id).unwrap(),
             top_section=top_sections.iter().map(|(key, value)| format!("<span class=\"bold\">{}:</span> {:.2}%", key, value)).collect::<Vec<String>>().join("<br>"),
             sql_corr_txt = sql_corr_txt.join("<br>")
         );
@@ -1189,6 +1331,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
         }}
         toggleTable('show-events-button', 'events-table');
         toggleTable('show-sqls-button', 'sqls-table');
+        toggleTable('show-bgevents-button', 'bgevents-table');
         function sortTable(tableId,columnId) {{
             var table = document.getElementById(tableId);
             var tbody = table.getElementsByTagName("tbody")[0];
@@ -1236,11 +1379,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio
     // Inject Buttons and Tables into Main HTML
     plotly_html = plotly_html.replace(
         "<body>",
-        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
+        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
             db_instance_info_html,
             "<button id=\"show-events-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait Events</span><span>TOP Wait Events</span></button>",
             "<button id=\"show-sqls-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait SQLs</span><span>TOP Wait SQLs</span></button>",
+            "<button id=\"show-bgevents-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Backgrd Events</span><span>TOP Backgrd Events</span></button>",
             event_table_html,
+            bgevent_table_html,
             sqls_table_html,
             jasmin_html_scripts)
     );

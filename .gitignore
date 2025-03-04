@@ -402,3 +402,6 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+#JAS-MIN
+Cargo.lock
