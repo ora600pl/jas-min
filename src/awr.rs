@@ -73,18 +73,7 @@ pub struct TimeModelStats {
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
-pub struct ForegroundWaitEvents {
-	pub event: String,
-	pub waits: u64,
-	pub total_wait_time_s: f64,
-	pub avg_wait: f64,
-	pub pct_dbtime: f64,
-	begin_snap_time: String,
-	pub waitevent_histogram_ms: BTreeMap<String,f32>,
-}
-
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
-pub struct BackgroundWaitEvents {
+pub struct WaitEvents {
 	pub event: String,
 	pub waits: u64,
 	pub total_wait_time_s: f64,
@@ -177,7 +166,8 @@ pub struct AWR {
 	wait_classes: Vec<WaitClasses>,
 	pub host_cpu: HostCPU,
 	time_model_stats: Vec<TimeModelStats>,
-	pub foreground_wait_events: Vec<ForegroundWaitEvents>,
+	pub foreground_wait_events: Vec<WaitEvents>,
+	pub background_wait_events: Vec<WaitEvents>,
 	pub sql_elapsed_time: Vec<SQLElapsedTime>,
 	pub sql_cpu_time: HashMap<String, SQLCPUTime>,
 	pub sql_io_time: HashMap<String, SQLIOTime>,
@@ -661,8 +651,8 @@ fn waitevent_histogram_ms_txt(events_histogram_section: Vec<&str>, event_names: 
 	histogram
 }
 
-fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
-	let mut foreground_wait_events: Vec<ForegroundWaitEvents> = Vec::new();
+fn wait_events(table: ElementRef) -> Vec<WaitEvents> {
+	let mut wait_events: Vec<WaitEvents> = Vec::new();
 	let row_selector = Selector::parse("tr").unwrap();
     let column_selector = Selector::parse("td").unwrap();
 
@@ -684,45 +674,46 @@ fn foreground_wait_events(table: ElementRef) -> Vec<ForegroundWaitEvents> {
 			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
 			if !is_idle(&event) {
-				foreground_wait_events.push(ForegroundWaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string(), waitevent_histogram_ms: BTreeMap::new() })
+				wait_events.push(WaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string(), waitevent_histogram_ms: BTreeMap::new() })
 			}
 		}
 	}
 
-	foreground_wait_events	
+	wait_events	
 }
 
-fn foreground_events_txt(foreground_events_section: Vec<&str>) -> Vec<ForegroundWaitEvents> {
-	let mut fg: Vec<ForegroundWaitEvents> = Vec::new();
-	for line in foreground_events_section {
-		//println!("{}", line);
+fn wait_events_txt(events_section: Vec<&str>) -> Vec<WaitEvents> {
+	let mut wait_events: Vec<WaitEvents> = Vec::new();
+	
+	for line in events_section {
 		if line.len() >= 73 {
+			//println!("{}", line);
 			let statname = line[0..28].to_string().trim().to_string();
 			let waits = u64::from_str(&line[29..41].trim().replace(",",""));
 
 			if waits.is_ok() {
-
 				let waits: u64 = waits.unwrap_or(0);
 				let mut total_wait_time = f64::from_str(&line[46..57].trim().replace(",","")).unwrap_or(0.0);
-				if total_wait_time == 0.0 {
-					total_wait_time = f64::from_str(&line[38..54].trim().replace(",","")).unwrap_or(0.0);
-				}
+				//if total_wait_time == 0.0 {
+				//	total_wait_time = f64::from_str(&line[38..54].trim().replace(",","")).unwrap_or(0.0);
+				//}
 				let avg_wait = f64::from_str(&line[57..64].trim().replace(",","")).unwrap_or(0.0);
 				let mut pct_dbtime = 0.0;
 				if line.len() > 73 {
-					let mut pct_dbtime_end: usize = 80;
-					if line.len() < pct_dbtime_end {
-						pct_dbtime_end = line.len();
-					}
-					pct_dbtime = f64::from_str(&line[73..pct_dbtime_end].trim().replace(",","")).unwrap();
+					//let mut pct_dbtime_end: usize = 80;
+					//if line.len() < pct_dbtime_end {
+					//	pct_dbtime_end = line.len();
+					//}
+					//pct_dbtime = f64::from_str(&line[73..pct_dbtime_end].trim().replace(",","")).unwrap();
+					pct_dbtime = f64::from_str(&line[73..80].trim().replace(",","")).unwrap_or(0.0);
 				}
 				if !is_idle(&statname) {
-					fg.push(ForegroundWaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() , waitevent_histogram_ms: BTreeMap::new()})
+					wait_events.push(WaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() , waitevent_histogram_ms: BTreeMap::new()})
 				}
 			}
 		}
 	}
-	fg
+	wait_events
 }	
 
 fn time_model_stats(table: ElementRef) -> Vec<TimeModelStats> {
@@ -1225,7 +1216,9 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 			} else if element.value().attr("summary").unwrap() == "This table displays different time model statistics. For each statistic, time and % of DB time are displayed" {
 				awr.time_model_stats = time_model_stats(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays Foreground Wait Events and their wait statistics" {
-				awr.foreground_wait_events = foreground_wait_events(element);
+				awr.foreground_wait_events = wait_events(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays background wait events statistics" {
+				awr.background_wait_events = wait_events(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays top SQL by elapsed time" {
 				awr.sql_elapsed_time = sql_elapsed_time(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays top SQL by CPU time" {
@@ -1246,6 +1239,12 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 				let event_histogram = waitevent_histogram_ms(element);
 				if event_histogram.len() > 0 {
 					for ev in awr.foreground_wait_events.iter_mut() {
+						if event_histogram.contains_key(&ev.event) {
+							let histogram = event_histogram.get(&ev.event).unwrap().clone();
+							ev.waitevent_histogram_ms = histogram;
+						}
+					}
+					for ev in awr.background_wait_events.iter_mut() {
 						if event_histogram.contains_key(&ev.event) {
 							let histogram = event_histogram.get(&ev.event).unwrap().clone();
 							ev.waitevent_histogram_ms = histogram;
@@ -1291,8 +1290,14 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		let foreground_even_section_start = format!("{}{}", 12u8 as char, "Foreground Wait Events");
 		let foreground_event_index = find_section_boundries(awr_lines.clone(), &foreground_even_section_start, "Background Wait Events");
 		let mut foreground_events: Vec<&str> = Vec::new();
-		foreground_events.extend_from_slice(&awr_lines[foreground_event_index.begin+8..foreground_event_index.end-3]);
-		awr.foreground_wait_events = foreground_events_txt(foreground_events);
+		foreground_events.extend_from_slice(&awr_lines[foreground_event_index.begin+8..foreground_event_index.end-1]);
+		awr.foreground_wait_events = wait_events_txt(foreground_events);
+
+		let background_even_section_start = format!("{}{}", 12u8 as char, "Background Wait Events");
+		let background_event_index = find_section_boundries(awr_lines.clone(), &background_even_section_start, "Wait Events (fg and bg)");
+		let mut background_events: Vec<&str> = Vec::new();
+		background_events.extend_from_slice(&awr_lines[background_event_index.begin+8..background_event_index.end-1]);
+		awr.background_wait_events = wait_events_txt(background_events);
 
 		let sql_cpu_section_start = format!("{}{}", 12u8 as char, "SQL ordered by CPU");
 		let sql_cpu_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed time");
@@ -1344,16 +1349,33 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 				event_names.insert(ev.event.to_string(), ev.event.clone());
 			}
 		}
+		let mut bgevent_names: HashMap<String, String> = HashMap::new();
+		for ev in &awr.background_wait_events {
+			if ev.event.len() >= 26 {
+				bgevent_names.insert(ev.event[0..26].to_string(), ev.event.clone());
+			} else {
+				bgevent_names.insert(ev.event.to_string(), ev.event.clone());
+			}
+		}
 		let event_histogram_start = format!("{}{}", 12u8 as char, "Wait Event Histogram");
 		let event_histogram_end = format!("{}{}", 12u8 as char, "SQL ordered by");
 		let event_histogram_index = find_section_boundries(awr_lines.clone(), &event_histogram_start, &event_histogram_end);
 		let mut event_hist: Vec<&str> = Vec::new();
-		event_hist.extend_from_slice(&awr_lines[event_histogram_index.begin..event_histogram_index.end+2]);
-		let event_histogram = waitevent_histogram_ms_txt(event_hist, event_names);
+		event_hist.extend_from_slice(&awr_lines[event_histogram_index.begin..event_histogram_index.end]);
+		let event_histogram = waitevent_histogram_ms_txt(event_hist.clone(), event_names);
+		let bgevent_histogram = waitevent_histogram_ms_txt(event_hist, bgevent_names);
 		if event_histogram.len() > 0 {
 			for ev in awr.foreground_wait_events.iter_mut() {
 				if event_histogram.contains_key(&ev.event) {
 					let histogram = event_histogram.get(&ev.event).unwrap().clone();
+					ev.waitevent_histogram_ms = histogram;
+				}
+			}
+		}
+		if bgevent_histogram.len() > 0 {
+			for ev in awr.background_wait_events.iter_mut() {
+				if bgevent_histogram.contains_key(&ev.event) {
+					let histogram = bgevent_histogram.get(&ev.event).unwrap().clone();
 					ev.waitevent_histogram_ms = histogram;
 				}
 			}
