@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::char;
 use crate::analyze::plot_to_file;
 use crate::idleevents::is_idle;
+use crate::Args;
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct LoadProfile {
@@ -1395,11 +1396,10 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 }
 
 
-pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) -> Result<String, std::io::Error> {
-	
-	let mut awr_vec: Vec<AWR> = Vec::new();
+pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
+		let mut awr_vec: Vec<AWR> = Vec::new();
 	let mut is_instance_info: Option<DBInstance> = None; // to grab DBInstance info from the first file
-	for file in fs::read_dir(dirname).unwrap() {
+	for file in fs::read_dir(&args.directory).unwrap() {
 		let fname = &file.unwrap().path().display().to_string();
 		if ((fname.contains("awr") || fname.contains("sp_")) && (fname.ends_with("txt") || fname.ends_with("html"))) {
 			let file_name = fname.split("/").collect::<Vec<&str>>();
@@ -1418,9 +1418,9 @@ pub fn parse_awr_dir(dirname: &str, plot: u8, db_time_cpu_ratio: f64, filter_db_
         awrs: awr_vec,
     };
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
-    if plot > 0 {
-        let html_fname = format!("{}.html", dirname);
-        plot_to_file(collection, html_fname, db_time_cpu_ratio, filter_db_time, snap_range);
+    if args.plot > 0 {
+        let html_fname = format!("{}.html", &args.directory);
+        plot_to_file(collection, html_fname, args.clone());
     }
     Ok(json_str)
 }
@@ -1448,11 +1448,12 @@ pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::
 	Ok(awr_doc)
 }
 
-pub fn prarse_json_file(fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) {
-	let json_file = fs::read_to_string(&fname).expect(&format!("Something wrong with a file {} ", fname));
+pub fn prarse_json_file(args: Args) {
+	//fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String
+	let json_file = fs::read_to_string(&args.json_file).expect(&format!("Something wrong with a file {} ", &args.json_file));
 	let mut collection: AWRSCollection = serde_json::from_str(&json_file).expect("Wrong JSON format");
 	collection.awrs.sort_by_key(|a| a.snap_info.begin_snap_id);
-	let file_and_ext: Vec<&str> = fname.split('.').collect();
+	let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
     let html_fname = format!("{}.html", file_and_ext[0]);
-	plot_to_file(collection, html_fname, db_time_cpu_ratio, filter_db_time, snap_range);
+	plot_to_file(collection, html_fname, args.clone());
 }

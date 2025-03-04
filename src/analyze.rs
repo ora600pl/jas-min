@@ -16,6 +16,8 @@ use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
 use ndarray_stats::histogram::Grid;
 
+use crate::Args;
+
 struct TopStats {
     events: BTreeMap<String, u8>,
     bgevents: BTreeMap<String, u8>,
@@ -381,7 +383,11 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
     }
 }
 
-pub fn plot_to_file(collection: AWRSCollection, fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) {
+pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
+    let db_time_cpu_ratio: f64 = args.time_cpu_ratio;
+    let filter_db_time: f64 = args.filter_db_time;
+    let snap_range: String = args.snap_range.clone();
+
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();

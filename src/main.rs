@@ -13,7 +13,7 @@ mod idleevents;
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
 /// It was tested only against 19c reports
 /// The tool is under development and it has a lot of bugs, so please test it and don't hasitate to suggest some code changes :)
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
     ///Parse a single text or html file
@@ -58,7 +58,7 @@ fn main() {
 		let awr_doc = awr::parse_awr_report(&args.file, false).unwrap();
 		println!("{}", awr_doc);
 	} else if args.directory != "NO" {
-		let awr_doc = awr::parse_awr_dir(&args.directory, args.plot, args.time_cpu_ratio, args.filter_db_time, args.snap_range).unwrap();
+		let awr_doc = awr::parse_awr_dir(args.clone()).unwrap();
 		let mut fname = format!("{}.json", &args.directory);
 		if args.outfile != "NO" {
 			fname = args.outfile;
@@ -67,6 +67,6 @@ fn main() {
 		f.write_all(awr_doc.as_bytes()).unwrap();
 		
 	} else if args.json_file != "NO" {
-		awr::prarse_json_file(args.json_file, args.time_cpu_ratio, args.filter_db_time, args.snap_range);
+		awr::prarse_json_file(args.clone());
 	}
 }
