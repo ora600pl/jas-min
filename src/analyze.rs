@@ -434,8 +434,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let file_len = fname.len();
     let logfile_name: String = format!("{}.txt", &fname[0..file_len-5]); //cut .html from file name and add .txt
     let logfile_path = Path::new(&logfile_name);
+    println!("Starting output capture to: {}", logfile_path.display() );
     if logfile_path.exists() { //remove logfile if it exists - the notes made by JAS-MIN has to be created each time
-        fs::remove_file(logfile_path).unwrap();
+        fs::remove_file(&logfile_path).unwrap();
     }
 
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
@@ -474,7 +475,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     /****************************************************/
 
     let mut x_vals: Vec<String> = Vec::new();
-
+    
+    // === ANALYZING ===
+    println!("\n==== ANALYZING ===");
     let top_stats: TopStats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone());
     
     let mut is_logfilesync_high: bool = false;
@@ -492,12 +495,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         html_dir = format!("{}/{}_reports", &dir_path, &stripped_fname);
     }
     
+    println!("\n==== CREATING PLOTS ===");
     fs::create_dir(&html_dir).unwrap_or_default();
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &html_dir);
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false,&html_dir);
-    let fname: String = format!("{}/{}", html_dir, &stripped_fname); //new file name path for main report
+    let fname: String = format!("{}/jasmin_{}", html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
+    println!("\n==== PREPARING RESULTS ===");
     for awr in &collection.awrs {
         let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
         let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
@@ -698,7 +703,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
     // ------ Ploting and reporting starts ----------
     //println!("Statistical Computations:\n-------------------------");
-    make_notes!(&logfile_name, args.quiet, "Statistical Computations:\n-------------------------\n");
+    make_notes!(&logfile_name, args.quiet, "==== REPORTING RESULTS ===\n\nStatistical Computations:\n-------------------------\n");
 
     let mut plot_main: Plot = Plot::new();
     let mut plot_highlight: Plot = Plot::new();
@@ -1480,6 +1485,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
         .expect("Failed to write updated Plotly HTML file");
+    println!("\n==== FINISH ===");
+    println!("JAS-MIN Report saved to: {}\n",&fname);
 
     open::that(fname);
 }
