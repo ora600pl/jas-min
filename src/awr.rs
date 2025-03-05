@@ -1397,7 +1397,8 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 
 
 pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
-		let mut awr_vec: Vec<AWR> = Vec::new();
+	println!("\n==== PARSING DIRECTORY DATA ===");
+	let mut awr_vec: Vec<AWR> = Vec::new();
 	let mut is_instance_info: Option<DBInstance> = None; // to grab DBInstance info from the first file
 	for file in fs::read_dir(&args.directory).unwrap() {
 		let fname = &file.unwrap().path().display().to_string();
@@ -1415,8 +1416,9 @@ pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
 	awr_vec.sort_by_key(|a| a.snap_info.begin_snap_id);
     let collection = AWRSCollection {
         db_instance_information: is_instance_info.unwrap_or_default(),
-        awrs: awr_vec,
+        awrs: awr_vec.clone(),
     };
+	println!("{} sample files found",awr_vec.len());
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
     if args.plot > 0 {
         let html_fname = format!("{}.html", &args.directory);
@@ -1449,10 +1451,12 @@ pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::
 }
 
 pub fn prarse_json_file(args: Args) {
+	println!("\n==== PARSING JSON DATA ===");
 	//fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String
 	let json_file = fs::read_to_string(&args.json_file).expect(&format!("Something wrong with a file {} ", &args.json_file));
 	let mut collection: AWRSCollection = serde_json::from_str(&json_file).expect("Wrong JSON format");
-	collection.awrs.sort_by_key(|a| a.snap_info.begin_snap_id);
+	collection.awrs.clone().sort_by_key(|a| a.snap_info.begin_snap_id);
+	println!("{} samples found",collection.awrs.len());
 	let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
     let html_fname = format!("{}.html", file_and_ext[0]);
 	plot_to_file(collection, html_fname, args.clone());
