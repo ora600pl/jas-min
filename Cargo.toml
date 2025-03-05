@@ -1,6 +1,6 @@
 [package]
 name = "jas-min"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radosław Kut <radek@ora-600.pl>"]
 
@@ -8,16 +8,16 @@ authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radosław Kut <radek@ora-600.
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-scraper = "0.14.0"
+scraper = "0.23.1"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 execute = "0.2.11"
 linked-hash-map = { version = "0.5.6", features = ["serde_impl"] }
 base64 = "0.21.0"
-clap = { version = "3.0", features = ["derive"] }
-plotly = "0.8.4"
-regex = "1.7.1"
+clap = { version = "4.5.31", features = ["derive"] }
+plotly = "0.12.1"
+regex = "1.11.1"
 ndarray = "0.16"
 ndarray-stats = "0.6.0"
-colored = "2.1.0"
+colored = "3.0.0"
 open = "5"

@@ -345,7 +345,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         }
 
         let layout: Layout = Layout::new()
-            .title(Title::new(&format!("'{}'", event)))
+            .title(&format!("'{}'", event))
             .height(900)
             .bar_gap(0.0)
             .bar_mode(plotly::layout::BarMode::Overlay)
@@ -362,7 +362,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             //)
             .x_axis(
                 Axis::new()
-                    .title(Title::new("% DBTime"))
+                    .title("% DBTime")
                     .domain(&[0.0, 1.0])
                     .anchor("y1")
                     .range(vec![0.,])
@@ -383,7 +383,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             )
             .x_axis2(
                 Axis::new()
-                    .title(Title::new("% Wait Event ms"))
+                    .title("% Wait Event ms")
                     .domain(&[0.0, 1.0])
                     .anchor("y3")
                     .range(vec![0.,])
@@ -1213,7 +1213,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         .y_axis5(Axis::new()
             .anchor("x1")
             .domain(&[0.82, 1.0])
-            .title(Title::new("SQL Elapsed Time"))
+            .title("SQL Elapsed Time")
             .visible(true)
             .zero_line(true)
             .range_mode(RangeMode::ToZero)
@@ -1222,7 +1222,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             .anchor("x1")
             .domain(&[0.615, 0.815])
             .range(vec![0.,])
-            .title(Title::new("CPU Util (%)"))
+            .title("CPU Util (%)")
             .zero_line(true)
             .range(vec![0.,])
             .range_mode(RangeMode::ToZero)
@@ -1230,7 +1230,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         .y_axis3(Axis::new()
             .anchor("x1")
             .domain(&[0.41, 0.61])
-            .title(Title::new("Wait Events (s)"))
+            .title("Wait Events (s)")
             .zero_line(true)
             .range(vec![0.,])
             .range_mode(RangeMode::ToZero)
@@ -1239,14 +1239,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             .anchor("x1")
             .domain(&[0.205, 0.405])
             .range(vec![0.,])
-            .title(Title::new("#"))
+            .title("#")
             .zero_line(true)
             .range_mode(RangeMode::ToZero)
         )
         .y_axis(Axis::new()
             .anchor("x1")
             .domain(&[0., 0.2])
-            .title(Title::new("(s/s)"))
+            .title("(s/s)")
             .zero_line(true)
             .range_mode(RangeMode::ToZero)
         )
@@ -1361,8 +1361,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
-    plot_main.use_local_plotly();
-    plot_highlight.use_local_plotly();
+    // plot_main.use_local_plotly();
+    // plot_highlight.use_local_plotly();
     plot_main.write_html(fname.clone());
     plot_highlight.write_html(format!("{}/jasmin_highlight.html", html_dir));
     
