@@ -57,7 +57,7 @@ struct Args {
 fn main() {
 
 	let args = Args::parse(); 
-
+	println!("JAS-MIN v{}",env!("CARGO_PKG_VERSION"));
 	if args.file != "NO" {
 		let awr_doc = awr::parse_awr_report(&args.file, false).unwrap();
 		println!("{}", awr_doc);
