@@ -47,6 +47,10 @@ struct Args {
 	 ///Filter snapshots, based on dates in format BEGIN-END
 	 #[clap(short, long, default_value="0-666666666")]
 	 snap_range: String,
+
+	 ///Should I be quiet? This mode suppresses terminal output but still writes to log file
+	 #[clap(short, long)]
+     quiet: bool,
 }
 
 
