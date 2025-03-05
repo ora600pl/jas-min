@@ -50,6 +50,9 @@ OPTIONS:
     -t, --time-cpu-ratio <TIME_CPU_RATIO>
             Ratio of DB CPU / DB TIME [default: 0.666]
 
+    -q, --quiet
+          Should I be quiet? This mode suppresses terminal output but still writes to log file
+
     -V, --version
             Print version information
     
