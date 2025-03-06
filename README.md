@@ -1,4 +1,4 @@
-jas-min 4.0.0
+jas-min 0.4.0
 
 Kamil Stawiarski <kamil@ora-600.pl>
 
