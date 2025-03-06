@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 use colored::*;
 
@@ -439,6 +439,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
     let mut y_vals_trans: Vec<f64> = Vec::new();
+    let mut y_vals_redosize: Vec<f64> = Vec::new();
     let mut y_vals_parses: Vec<f64> = Vec::new();
     let mut y_vals_hparses: Vec<f64> = Vec::new();
     let mut y_vals_cpu_user: Vec<f64> = Vec::new();
@@ -594,6 +595,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                         y_vals_execs.push(lp.per_second);
                     } else if lp.stat_name.starts_with("Transactions") {
                             y_vals_trans.push(lp.per_second);
+                    } else if lp.stat_name.starts_with("Redo size") {
+                        y_vals_redosize.push(lp.per_second as f64/1024.0/1024.0);
                     } else if lp.stat_name.starts_with("Parses") {
                         y_vals_parses.push(lp.per_second);
                     } else if lp.stat_name.starts_with("Hard parses") {
@@ -656,7 +659,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         }
     }
 
-    //I want to stort wait events by most heavy ones across the whole period
+    println!("{}","Load Profile and Top Stats");
+    //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
     for (evname, ev) in y_vals_events {
         let mut wait_time = 0;
@@ -667,7 +671,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         }
         y_vals_events_sorted.insert((wait_time, evname.clone()), ev.clone());
     }
-    //I want to stort wait events by most heavy ones across the whole period
+    //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_bgevents_sorted = BTreeMap::new();
     for (evname, ev) in y_vals_bgevents {
         let mut wait_time = 0;
@@ -801,6 +805,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                     .box_points(BoxPoints::All)
                                                     .whisker_width(0.2)
                                                     .marker(Marker::new().color("#c2904f".to_string()).opacity(0.7).size(2));
+    let redo_mb_box_plot  = BoxPlot::new(y_vals_redosize)
+                                                //.mode(Mode::LinesText)
+                                                .name("Redo MB/s")
+                                                .x_axis("x7")
+                                                .y_axis("y7")
+                                                .box_mean(BoxMean::True)
+                                                .show_legend(false)
+                                                .box_points(BoxPoints::All)
+                                                .whisker_width(0.2)
+                                                .marker(Marker::new().color("#ad247a".to_string()).opacity(0.7).size(2));
     if is_logfilesync_high{
         let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
                                                         .mode(Mode::LinesText)
@@ -843,6 +857,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     plot_highlight.add_trace(cpu_load_box_plot);
     plot_highlight.add_trace(read_mb_box_plot);
     plot_highlight.add_trace(write_mb_box_plot);
+    plot_highlight.add_trace(redo_mb_box_plot);
 
     // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut table_events: String = String::new();
@@ -850,6 +865,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut table_sqls: String = String::new();
     let mut table_stat_corr: String = String::new();
 
+    println!("{}","Foreground Wait Events");
     for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
@@ -958,6 +974,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_events
     );
 
+    println!("{}","Background Wait Events");
     for (key, yv) in &y_vals_bgevents_sorted {
         let event_name: String = key.1.clone();
         /* Correlation calc */
@@ -1033,6 +1050,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_bgevents
     );
 
+    println!("{}","SQLs");
     for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
@@ -1190,6 +1208,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     //println!("\n");
     // println!("-----------------------------------------------------------------------------------");
     // println!("Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n");
+    println!("{}","Statistics");
     make_notes!(&logfile_name, args.quiet, "\n\n");
     make_notes!(&logfile_name, args.quiet, "-----------------------------------------------------------------------------------\n");
     make_notes!(&logfile_name, args.quiet, "Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n\n");
@@ -1359,6 +1378,21 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 //.row_order(Grid::TopToBottom),
         )
         .hover_mode(HoverMode::X)
+        .x_axis7(
+            Axis::new()
+                    .domain(&[0.9, 1.0])
+                    .anchor("y7")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis7(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x7")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
         .x_axis6(
             Axis::new()
                     .domain(&[0.75, 0.85])
@@ -1449,7 +1483,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     .range_mode(RangeMode::ToZero)
                     .show_grid(false),
     );
-    
+    println!("{}","Generating Plots");
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
     // plot_main.use_local_plotly();
