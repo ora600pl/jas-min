@@ -26,6 +26,8 @@ use regex::*;
 
 use crate::Args;
 
+use crate::reasonings::chat_gpt;
+
 struct TopStats {
     events: BTreeMap<String, u8>,
     bgevents: BTreeMap<String, u8>,
@@ -905,10 +907,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         // println!("{: >39}  {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
         make_notes!(&logfile_name, args.quiet, "\t\tMarked as TOP in {:.2}% of probes\n",  (x_n.len() as f64 / x_vals.len() as f64 )* 100.0);
-        make_notes!(&logfile_name, args.quiet, "{: >39}  {: <16.2} \tSTDDEV PCT of DB Time: {:.2}\n",   "--- AVG PCT of DB Time:", &avg_exec_t, &stddev_exec_t);
+        make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV PCT of DB Time: {:.2}\n",   "--- AVG PCT of DB Time:", &avg_exec_t, &stddev_exec_t);
         make_notes!(&logfile_name, args.quiet, "{: >38}  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}\n",   "--- AVG Wait Time (s):",  &avg_exec_s, &stddev_exec_s);
-        make_notes!(&logfile_name, args.quiet, "{: >40}  {: <16.2} \tSTDDEV exec times:     {:.2}\n",   "--- AVG exec times:     ", &avg_exec_n, &stddev_exec_n);
-        make_notes!(&logfile_name, args.quiet, "{: >39}  {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
+        make_notes!(&logfile_name, args.quiet, "{: >40}{: <8.2}  \t\tSTDDEV No. executions: {:.2}\n",   "--- AVG No. executions: ", &avg_exec_n, &stddev_exec_n);
+        make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
 
         /* FGEVENTS - Generate a row for the HTML table */
@@ -950,8 +952,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     <th onclick="sortTable('events-table',2)" style="cursor: pointer;">STDDEV % of DBTime</th>
                     <th onclick="sortTable('events-table',3)" style="cursor: pointer;">AVG Wait Time (s)</th>
                     <th onclick="sortTable('events-table',4)" style="cursor: pointer;">STDDEV Wait Time (s)</th>
-                    <th onclick="sortTable('events-table',5)" style="cursor: pointer;">AVG Exec Times</th>
-                    <th onclick="sortTable('events-table',6)" style="cursor: pointer;">STDDEV Exec Times</th>
+                    <th onclick="sortTable('events-table',5)" style="cursor: pointer;">AVG No. Executions</th>
+                    <th onclick="sortTable('events-table',6)" style="cursor: pointer;">STDDEV No. Executions</th>
                     <th onclick="sortTable('events-table',7)" style="cursor: pointer;">AVG Wait per Exec (ms)</th>
                     <th onclick="sortTable('events-table',8)" style="cursor: pointer;">STDDEV Wait per Exec (ms)</th>
                     <th onclick="sortTable('events-table',9)" style="cursor: pointer;">Correlation of DBTime</th>
@@ -1095,7 +1097,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
         make_notes!(&logfile_name, args.quiet, "{: >24}{:.2}% of probes\n", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         make_notes!(&logfile_name, args.quiet, "{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}\n", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
-        make_notes!(&logfile_name, args.quiet, "{: >34} {: <16.2} \tSTDDEV exec times:  {:.2}\n", "--- AVG exec times:", avg_exec_n, stddev_exec_n);
+        make_notes!(&logfile_name, args.quiet, "{: >38} {: <14.2} \tSTDDEV No. executions:  {:.2}\n", "--- AVG No. executions:", avg_exec_n, stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >23} {} \n", "MODULE: ", top_stats.sqls.get(&sql_id).unwrap().blue());
 
         /* SQLs - Generate a row for the HTML table */
@@ -1180,8 +1182,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     <th onclick="sortTable('sqls-table',0)" style="cursor: pointer;">SQL ID</th>
                     <th onclick="sortTable('sqls-table',1)" style="cursor: pointer;">AVG Ela by Exec</th>
                     <th onclick="sortTable('sqls-table',2)" style="cursor: pointer;">STDDEV Ela by Exec</th>
-                    <th onclick="sortTable('sqls-table',3)" style="cursor: pointer;">AVG exec times</th>
-                    <th onclick="sortTable('sqls-table',4)" style="cursor: pointer;">STDDEV exec times</th>
+                    <th onclick="sortTable('sqls-table',3)" style="cursor: pointer;">AVG No. executions</th>
+                    <th onclick="sortTable('sqls-table',4)" style="cursor: pointer;">STDDEV No. executions</th>
                     <th onclick="sortTable('sqls-table',5)" style="cursor: pointer;">Correlation of DBTime</th>
                     <th onclick="sortTable('sqls-table',6)" style="cursor: pointer;">TOP in % Probes</th>
                 </tr>
@@ -1489,4 +1491,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     println!("JAS-MIN Report saved to: {}\n",&fname);
 
     open::that(fname);
+
+    if args.ai != "NO" {
+        chat_gpt(&logfile_name, args.ai);
+    }
+
 }

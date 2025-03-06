@@ -8,6 +8,7 @@ use clap::Parser;
 mod awr;
 mod analyze;
 mod idleevents;
+mod reasonings;
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
@@ -51,6 +52,12 @@ struct Args {
 	 ///Should I be quiet? This mode suppresses terminal output but still writes to log file
 	 #[clap(short, long)]
      quiet: bool,
+
+	 ///Use AI model to interpret collected statistics and describe them. 
+	 ///Environment variable OPENAI_API_KEY should be set to your personal API key 
+	 ///The parameter should be set to the value in format: MODEL_NAME:LANGUAGE_CODE (for example gpt-4-turbo:PL)
+	 #[clap(short, long, default_value="NO")]
+	 ai: String,
 }
 
 
