@@ -1,4 +1,4 @@
-jas-min 0.3.3
+jas-min 4.0.0
 
 Kamil Stawiarski <kamil@ora-600.pl>
 
@@ -52,6 +52,9 @@ OPTIONS:
 
     -q, --quiet
           Should I be quiet? This mode suppresses terminal output but still writes to log file
+
+    -a, --ai <AI>
+          Use AI model to interpret collected statistics and describe them. Environment variable OPENAI_API_KEY should be set to your personal API key The parameter should be set to the value in format: MODEL_NAME:LANGUAGE_CODE (for example gpt-4-turbo:PL) [default: NO]
 
     -V, --version
             Print version information
