@@ -3,6 +3,7 @@ use std::io::Read;
 use std::io::Write;
 use std::str;
 use std::fs;
+use colored::*;
 use clap::Parser;
 
 mod awr;
@@ -64,7 +65,7 @@ struct Args {
 fn main() {
 
 	let args = Args::parse(); 
-	println!("JAS-MIN v{}",env!("CARGO_PKG_VERSION"));
+	println!("{}{}","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow());
 	if args.file != "NO" {
 		let awr_doc = awr::parse_awr_report(&args.file, false).unwrap();
 		println!("{}", awr_doc);
