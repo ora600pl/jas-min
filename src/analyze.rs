@@ -222,15 +222,7 @@ fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> HashMap<String, f64>
     top_sections
 }
 
-fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_vec: Vec<f64>, logfile_name: &str, quiet: bool) {
-    // println!("\n");
-    // println!("-----------------------------------------------------------------------------------");
-    // println!("Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n");
-
-    make_notes!(logfile_name, quiet, "\n\n");
-    make_notes!(logfile_name, quiet, "-----------------------------------------------------------------------------------\n");
-    make_notes!(logfile_name, quiet, "Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n\n");
-
+fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_vec: Vec<f64>) -> BTreeMap<(i64, String), f64> {
     let mut sorted_correlation: BTreeMap<(i64, String), f64> = BTreeMap::new();
 
     for (k,v) in instance_stats {
@@ -243,10 +235,7 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
             println!("Can't calculate correlation for {} - diff was {}", &k, dbtime_vec.len() - v.len());
         }
     }
-    for (k,v) in sorted_correlation {
-        //println!("\t{: >64} : {:.2}", &k.1, v);
-        make_notes!(logfile_name, quiet, "\t{: >64} : {:.2}\n", &k.1, v);
-    }
+    sorted_correlation
 }
 
 // Filter and generate histogram for top events
@@ -479,7 +468,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut x_vals: Vec<String> = Vec::new();
     
     // === ANALYZING ===
-    println!("\n==== ANALYZING ===");
+    println!("{}","\n==== ANALYZING ===".bright_cyan());
     let top_stats: TopStats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone());
     
     let mut is_logfilesync_high: bool = false;
@@ -497,14 +486,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         html_dir = format!("{}/{}_reports", &dir_path, &stripped_fname);
     }
     
-    println!("\n==== CREATING PLOTS ===");
+    println!("{}","\n==== CREATING PLOTS ===".bright_cyan());
     fs::create_dir(&html_dir).unwrap_or_default();
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &html_dir);
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false,&html_dir);
     let fname: String = format!("{}/jasmin_{}", html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
-    println!("\n==== PREPARING RESULTS ===");
+    println!("{}","\n==== PREPARING RESULTS ===".bright_cyan());
     for awr in &collection.awrs {
         let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
         let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
@@ -705,7 +694,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
     // ------ Ploting and reporting starts ----------
     //println!("Statistical Computations:\n-------------------------");
-    make_notes!(&logfile_name, args.quiet, "==== REPORTING RESULTS ===\n\nStatistical Computations:\n-------------------------\n");
+    make_notes!(&logfile_name, args.quiet, "{}\n\nStatistical Computations:\n-------------------------\n","==== REPORTING RESULTS ===".bright_cyan());
 
     let mut plot_main: Plot = Plot::new();
     let mut plot_highlight: Plot = Plot::new();
@@ -859,6 +848,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut table_events: String = String::new();
     let mut table_bgevents: String = String::new();
     let mut table_sqls: String = String::new();
+    let mut table_stat_corr: String = String::new();
 
     for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
@@ -1138,7 +1128,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
         let filename: String = format!("{}/{}.html", html_dir,sql_id);
         // Format the content as HTML
-        let html_content: String = format!(
+        let sqlid_html_content: String = format!(
             r#"<!DOCTYPE html>
             <html lang="en">
             <head>
@@ -1169,14 +1159,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         );
 
         // Write to the file
-        if let Err(e) = fs::write(&filename, html_content) {
+        if let Err(e) = fs::write(&filename, sqlid_html_content) {
             eprintln!("Error writing file {}: {}", filename, e);
         }
     }
 
     let sqls_table_html: String = format!(
         r#"
-        <table id="sqls-table"">
+        <table id="sqls-table">
             <thead>
                 <tr>
                     <th onclick="sortTable('sqls-table',0)" style="cursor: pointer;">SQL ID</th>
@@ -1196,8 +1186,107 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_sqls
     );
 
-    
-    report_instance_stats_cor(instance_stats, y_vals_dbtime, &logfile_name,args.quiet);
+    // STATISTICS Correltation to DBTime
+    //println!("\n");
+    // println!("-----------------------------------------------------------------------------------");
+    // println!("Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n");
+    make_notes!(&logfile_name, args.quiet, "\n\n");
+    make_notes!(&logfile_name, args.quiet, "-----------------------------------------------------------------------------------\n");
+    make_notes!(&logfile_name, args.quiet, "Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n\n");
+    let mut sorted_correlation = report_instance_stats_cor(instance_stats, y_vals_dbtime);
+    let mut stats_table_rows = String::new();
+    for ((score, key), value) in sorted_correlation.iter().rev() { // Sort in descending order
+        stats_table_rows.push_str(&format!(
+            r#"<tr><td>{}</td><td>{:.3}</td></tr>"#,
+            key,
+            value
+        ));
+    }
+    table_stat_corr = format!(
+        r#"<!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Correlation of Instance Statistics with DB Time</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; }}
+                .content {{ font-size: 14px; }}
+                table {{
+                    width: 30%;
+                    border-collapse: collapse;
+                    margin-top: 20px;
+                }}
+                th, td {{
+                    border: 1px solid black;
+                    padding: 8px;
+                    text-align: center;
+                }}
+                th {{
+                    background-color: #632e4f;
+                    color: white;
+                }}
+                tr:nth-child(even) {{
+                    background-color: #f2f2f2;
+                }}
+                td:first-child {{
+                    text-align: right;
+                    font-weight: bold;
+                }}
+            </style>
+            <script>//JAS-MIN scripts
+                function sortTable(tableId,columnId) {{
+                    var table = document.getElementById(tableId);
+                    var tbody = table.getElementsByTagName("tbody")[0];
+                    var rows = Array.from(tbody.getElementsByTagName("tr"));
+                    var isAscending = table.getAttribute("data-sort-order") !== "asc";
+                    table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
+                    rows.sort(function(rowA, rowB){{
+                        var cellA = rowA.getElementsByTagName("td")[columnId].innerText.trim();
+                        var cellB = rowB.getElementsByTagName("td")[columnId].innerText.trim();
+                        var numA = parseFloat(cellA);
+                        var numB = parseFloat(cellB);
+                        if (!isNaN(numA) && !isNaN(numB)){{
+                            return isAscending ? numA - numB : numB - numA;
+                        }} else{{
+                            return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+                        }}
+                    }});
+                    tbody.innerHTML = "";
+                    rows.forEach(row => tbody.appendChild(row));
+                }}
+        </script>
+        </head>
+        <body>
+            <div class="content">
+                <p><span>JAS-MIN<br></span><span style="font-size:20px;font-weight:bold;">Correlation of Instance Statistics with DB Time for Values >= 0.5 and <= -0.5</span></p>
+                <table id="stats_corr_table" >
+                    <thead>
+                        <tr>
+                            <th onclick="sortTable('stats_corr_table',0)" style="cursor: pointer;">Instance Statistic</th>
+                            <th onclick="sortTable('stats_corr_table',1)" style="cursor: pointer;">Correlation</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {}
+                    </tbody>
+                </table>
+            </div>
+        </body>
+        </html>
+        "#,
+        stats_table_rows
+    );
+
+    // Write to the file
+    let stats_corr_filename: String = format!("{}/statistics_corr.html", html_dir);
+    if let Err(e) = fs::write(&stats_corr_filename, table_stat_corr) {
+        eprintln!("Error writing file {}: {}", stats_corr_filename, e);
+    }
+    for (k,v) in sorted_correlation {
+        //println!("\t{: >64} : {:.2}", &k.1, v);
+        make_notes!(&logfile_name, args.quiet, "\t{: >64} : {:.2}\n", &k.1, v);
+    }
 
     let layout_main: Layout = Layout::new()
         .height(1200)
@@ -1468,11 +1557,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // Inject Buttons and Tables into Main HTML
     plotly_html = plotly_html.replace(
         "<body>",
-        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
+        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
             db_instance_info_html,
             "<button id=\"show-events-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait Events</span><span>TOP Wait Events</span></button>",
             "<button id=\"show-sqls-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait SQLs</span><span>TOP Wait SQLs</span></button>",
             "<button id=\"show-bgevents-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Backgrd Events</span><span>TOP Backgrd Events</span></button>",
+            format!(
+                "<a href=\"{}\" target=\"_blank\">
+                    <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">STATS Correlation</span><span>STATS Correlation</span></button>
+                </a>", stats_corr_filename
+            ),
             event_table_html,
             bgevent_table_html,
             sqls_table_html,
@@ -1487,8 +1581,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
         .expect("Failed to write updated Plotly HTML file");
-    println!("\n==== FINISH ===");
-    println!("JAS-MIN Report saved to: {}\n",&fname);
+    println!("{}","\n==== DONE ===".bright_cyan());
+    println!("{}{}\n","JAS-MIN Report saved to: ",&fname);
 
     open::that(fname);
 

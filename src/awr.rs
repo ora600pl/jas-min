@@ -3,11 +3,13 @@ use std::env;
 use std::fs;
 use std::str;
 use std::result;
+use colored::Colorize;
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::collections::{BTreeMap, HashMap};
 use std::char;
+use std::io::{self, Write};
 use crate::analyze::plot_to_file;
 use crate::idleevents::is_idle;
 use crate::Args;
@@ -1397,7 +1399,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 
 
 pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
-	println!("\n==== PARSING DIRECTORY DATA ===");
+	println!("{}","\n==== PARSING DIRECTORY DATA ===".bright_cyan());
 	let mut awr_vec: Vec<AWR> = Vec::new();
 	let mut is_instance_info: Option<DBInstance> = None; // to grab DBInstance info from the first file
 	for file in fs::read_dir(&args.directory).unwrap() {
@@ -1411,14 +1413,16 @@ pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
 			let mut awr_doc = parse_awr_report_internal(fname.to_string());
 			awr_doc.file_name = file_name;
 			awr_vec.push(awr_doc);
+			print!("\rNumber of reports parsed: {}", awr_vec.len().clone());
+            io::stdout().flush().unwrap();
 		}
     }
+	println!("");
 	awr_vec.sort_by_key(|a| a.snap_info.begin_snap_id);
     let collection = AWRSCollection {
         db_instance_information: is_instance_info.unwrap_or_default(),
-        awrs: awr_vec.clone(),
+        awrs: awr_vec,
     };
-	println!("{} sample files found",awr_vec.len());
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
     if args.plot > 0 {
         let html_fname = format!("{}.html", &args.directory);
@@ -1451,7 +1455,7 @@ pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::
 }
 
 pub fn prarse_json_file(args: Args) {
-	println!("\n==== PARSING JSON DATA ===");
+	println!("{}","\n==== PARSING JSON DATA ===".bright_cyan());
 	//fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String
 	let json_file = fs::read_to_string(&args.json_file).expect(&format!("Something wrong with a file {} ", &args.json_file));
 	let mut collection: AWRSCollection = serde_json::from_str(&json_file).expect("Wrong JSON format");
