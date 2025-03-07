@@ -1,3 +1,4 @@
+use colored::Colorize;
 use reqwest::Client;
 use serde_json::json;
 use std::{env, fs};
@@ -6,7 +7,7 @@ use std::{env, fs};
 pub async fn chat_gpt(logfile_name: &str, model_language: String) -> Result<(), Box<dyn std::error::Error>> {
 
     let model_lang = model_language.split(":").collect::<Vec<&str>>();
-    println!("\n\n==== Consulting ChatGPT model: {} ===", model_lang[0]);
+    println!("{}{}{}","=== Consulting ChatGPT model: ".bright_cyan(), model_lang[0]," ===".bright_cyan());
     let api_key = env::var("OPENAI_API_KEY").expect("You have to set OPENAI_API_KEY env variable");
 
     let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
