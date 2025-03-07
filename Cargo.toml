@@ -1,8 +1,8 @@
 [package]
 name = "jas-min"
-version = "4.0.0"
+version = "0.4.0"
 edition = "2021"
-authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radosław Kut <radek@ora-600.pl>"]
+authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radoslaw Kut <radek@ora-600.pl>"]
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
