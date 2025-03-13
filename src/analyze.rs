@@ -397,7 +397,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             plot.set_layout(layout);
     
         // Replace invalid characters for filenames (e.g., slashes or spaces)
-        let safe_event_name: String = event.replace("/", "_").replace(" ", "_").replace(":","");
+        let safe_event_name: String = event.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         let mut file_name: String = String::new();
         if is_fg {
             file_name = format!("{}/fg_{}.html", dirpath, safe_event_name);
@@ -920,7 +920,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         
 
         /* FGEVENTS - Generate a row for the HTML table */
-        let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","");
+        let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         table_events.push_str(&format!(
             r#"
             <tr>
@@ -997,7 +997,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let stddev_wait_per_exec_ms: f64 = (stddev_exec_s / stddev_exec_n) * 1000.0;
         
         /* BGEVENTS - Generate a row for the HTML table */
-        let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","");
+        let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         table_bgevents.push_str(&format!(
             r#"
             <tr>
