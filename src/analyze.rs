@@ -26,7 +26,7 @@ use regex::*;
 
 use crate::Args;
 
-use crate::reasonings::chat_gpt;
+use crate::reasonings::{chat_gpt, gemini};
 
 struct TopStats {
     events: BTreeMap<String, u8>,
@@ -659,7 +659,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         }
     }
 
-    println!("{}","Load Profile and Top Stats");
+    //println!("{}","Load Profile and Top Stats");
+    make_notes!(&logfile_name, args.quiet, "{}\n","Load Profile and Top Stats");
     //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
     for (evname, ev) in y_vals_events {
@@ -865,7 +866,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut table_sqls: String = String::new();
     let mut table_stat_corr: String = String::new();
 
-    println!("{}","Foreground Wait Events");
+    //println!("{}","Foreground Wait Events");
+    make_notes!(&logfile_name, args.quiet,"{}\n","Foreground Wait Events");
     for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
@@ -918,7 +920,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "{: >40}{: <8.2}  \t\tSTDDEV No. executions: {:.2}\n",   "--- AVG No. executions: ", &avg_exec_n, &stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
-
         /* FGEVENTS - Generate a row for the HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         table_events.push_str(&format!(
@@ -974,7 +975,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_events
     );
 
-    println!("{}","Background Wait Events");
+    //println!("{}","Background Wait Events");
+    make_notes!(&logfile_name, args.quiet, "{}\n","Background Wait Events");
     for (key, yv) in &y_vals_bgevents_sorted {
         let event_name: String = key.1.clone();
         /* Correlation calc */
@@ -995,6 +997,24 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
         let avg_wait_per_exec_ms: f64 = (avg_exec_s / avg_exec_n) * 1000.0;
         let stddev_wait_per_exec_ms: f64 = (stddev_exec_s / stddev_exec_n) * 1000.0;
+
+        //Print calculations
+        make_notes!(&logfile_name, args.quiet, "\t{: >5}\n", &event_name);
+
+        let correlation_info: String = format!("--- Correlation with DB Time: {:.2}", &corr);
+        if corr >= 0.4 || corr <= -0.4 { 
+            //print!("{: >50}", correlation_info.red().bold());
+            make_notes!(&logfile_name, args.quiet, "{: >50}", correlation_info.red().bold());
+        } else {
+            //print!("{: >50}", correlation_info);
+            make_notes!(&logfile_name, args.quiet, "{: >50}", correlation_info);
+        }
+        make_notes!(&logfile_name, args.quiet, "\t\tMarked as TOP in {:.2}% of probes\n",  (x_n.len() as f64 / x_vals.len() as f64 )* 100.0);
+        make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV PCT of DB Time: {:.2}\n",   "--- AVG PCT of DB Time:", &avg_exec_t, &stddev_exec_t);
+        make_notes!(&logfile_name, args.quiet, "{: >38}  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}\n",   "--- AVG Wait Time (s):",  &avg_exec_s, &stddev_exec_s);
+        make_notes!(&logfile_name, args.quiet, "{: >40}{: <8.2}  \t\tSTDDEV No. executions: {:.2}\n",   "--- AVG No. executions: ", &avg_exec_n, &stddev_exec_n);
+        make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
+        
         
         /* BGEVENTS - Generate a row for the HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
@@ -1050,7 +1070,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_bgevents
     );
 
-    println!("{}","SQLs");
+    //println!("{}","SQLs");
+    make_notes!(&logfile_name, args.quiet, "{}\n","SQLs");
+
     for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
@@ -1621,7 +1643,15 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     open::that(fname);
 
     if args.ai != "NO" {
-        chat_gpt(&logfile_name, args.ai);
+        let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
+        if vendor_model_lang[0] == "openai" {
+            chat_gpt(&logfile_name, vendor_model_lang);
+        } else if vendor_model_lang[0] == "google" {
+            gemini(&logfile_name, vendor_model_lang);
+        } else {
+            println!("Unrecognized vendor. Supported vendors: openai, google");
+        }
+        
     }
 
 }
