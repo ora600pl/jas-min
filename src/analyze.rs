@@ -491,7 +491,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     fs::create_dir(&html_dir).unwrap_or_default();
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &html_dir);
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false,&html_dir);
-    let fname: String = format!("{}/jasmin_{}", html_dir, &stripped_fname); //new file name path for main report
+    let fname: String = format!("{}/jasmin_{}", &html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
     println!("{}","\n==== PREPARING RESULTS ===".bright_cyan());
@@ -1144,7 +1144,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             }
         }
 
-        let filename: String = format!("{}/{}.html", html_dir,sql_id);
+        let filename: String = format!("{}/{}.html", &html_dir,sql_id);
         // Format the content as HTML
         let sqlid_html_content: String = format!(
             r#"<!DOCTYPE html>
@@ -1298,7 +1298,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     );
 
     // Write to the file
-    let stats_corr_filename: String = format!("{}/statistics_corr.html", html_dir);
+    let stats_corr_filename: String = format!("{}/statistics_corr.html", &html_dir);
     if let Err(e) = fs::write(&stats_corr_filename, table_stat_corr) {
         eprintln!("Error writing file {}: {}", stats_corr_filename, e);
     }
@@ -1316,7 +1316,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 //.row_order(Grid::TopToBottom),
         )
         //.legend(Legend::new()
-            //.y_anchor(Anchor::Top)
+        //    .y_anchor(Anchor::Top)
         //    .x(1.02)
         //    .y(0.5)
         //)
@@ -1489,7 +1489,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // plot_main.use_local_plotly();
     // plot_highlight.use_local_plotly();
     plot_main.write_html(fname.clone());
-    plot_highlight.write_html(format!("{}/jasmin_highlight.html", html_dir));
+    plot_highlight.write_html(format!("{}/jasmin_highlight.html", &html_dir));
     
     let first_snap_time: String = collection.awrs.first().unwrap().snap_info.begin_snap_time.clone();
     let last_snap_time: String = collection.awrs.last().unwrap().snap_info.end_snap_time.clone();
@@ -1570,12 +1570,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // Open plot_main HTML to inject Additional sections - Buttons, Tables, etc
     let mut plotly_html: String = fs::read_to_string(&fname)
         .expect("Failed to read Main JAS-MIN HTML file");
-    let mut highlight_html: String = fs::read_to_string(format!("{}/jasmin_highlight.html", html_dir))
+    let mut highlight_html: String = fs::read_to_string(format!("{}/jasmin_highlight.html", &html_dir))
         .expect("Failed to read HighLight JAS-MIN HTML file");
     
     //Prepare HighLight Section to be pasted into Main HTML file
     highlight_html = highlight_html.replace("plotly-html-element","highlight-html-element");
-    fs::write(format!("{}/jasmin_highlight.html", html_dir),&highlight_html);
+    fs::write(format!("{}/jasmin_highlight.html", &html_dir),&highlight_html);
     highlight_html = highlight_html
                     .lines() // Iterate over lines
                     .skip_while(|line| !line.contains("<div id=\"highlight-html-element\"")) // Skip lines until found
@@ -1599,7 +1599,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             format!(
                 "<a href=\"{}\" target=\"_blank\">
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">STATS Correlation</span><span>STATS Correlation</span></button>
-                </a>", stats_corr_filename
+                </a>", "statistics_corr.html"
             ),
             event_table_html,
             bgevent_table_html,
