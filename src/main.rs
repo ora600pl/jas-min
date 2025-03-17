@@ -55,8 +55,8 @@ struct Args {
      quiet: bool,
 
 	 ///Use AI model to interpret collected statistics and describe them. 
-	 ///Environment variable OPENAI_API_KEY should be set to your personal API key 
-	 ///The parameter should be set to the value in format: MODEL_NAME:LANGUAGE_CODE (for example gpt-4-turbo:PL)
+	 ///Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key 
+	 ///The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL)
 	 #[clap(short, long, default_value="NO")]
 	 ai: String,
 }
