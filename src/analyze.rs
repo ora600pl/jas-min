@@ -66,7 +66,7 @@ macro_rules! make_notes {
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String) -> TopStats {
+fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String, logfile_name: &str) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut bgevent_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
@@ -92,8 +92,8 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
             //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
             //because it means that Oracle spent some time waiting on wait events and not working on CPU
             if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
-                println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
-                
+                //println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
+                make_notes!(logfile_name, false, "Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}\n", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
                 let mut events: Vec<WaitEvents> = awr.foreground_wait_events;
                 let mut bgevents: Vec<WaitEvents> = awr.background_wait_events;
                 //I'm sorting events by total wait time, to get the longest waits at the end
@@ -470,7 +470,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     // === ANALYZING ===
     println!("{}","\n==== ANALYZING ===".bright_cyan());
-    let top_stats: TopStats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone());
+    let top_stats: TopStats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone(), &logfile_name);
     
     let mut is_logfilesync_high: bool = false;
     
@@ -659,7 +659,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         }
     }
 
-    //println!("{}","Load Profile and Top Stats");
     make_notes!(&logfile_name, args.quiet, "{}\n","Load Profile and Top Stats");
     //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
@@ -698,7 +697,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     }
 
     // ------ Ploting and reporting starts ----------
-    //println!("Statistical Computations:\n-------------------------");
     make_notes!(&logfile_name, args.quiet, "{}\n\nStatistical Computations:\n-------------------------\n","==== REPORTING RESULTS ===".bright_cyan());
 
     let mut plot_main: Plot = Plot::new();
@@ -866,7 +864,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut table_sqls: String = String::new();
     let mut table_stat_corr: String = String::new();
 
-    //println!("{}","Foreground Wait Events");
     make_notes!(&logfile_name, args.quiet,"{}\n","Foreground Wait Events");
     for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
@@ -879,15 +876,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         /* Correlation calc */
         let corr: f64 = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
-        //println!("\t{: >5}", &event_name);
         make_notes!(&logfile_name, args.quiet, "\t{: >5}\n", &event_name);
 
         let correlation_info: String = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
-            //print!("{: >50}", correlation_info.red().bold());
             make_notes!(&logfile_name, args.quiet, "{: >50}", correlation_info.red().bold());
         } else {
-            //print!("{: >50}", correlation_info);
             make_notes!(&logfile_name, args.quiet, "{: >50}", correlation_info);
         }
 
@@ -907,12 +901,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let avg_wait_per_exec_ms: f64 = (avg_exec_s / avg_exec_n) * 1000.0;
         let stddev_wait_per_exec_ms: f64 = (stddev_exec_s / stddev_exec_n) * 1000.0;
         // Print calculations:
-        
-        // println!("\t\tMarked as TOP in {:.2}% of probes",  (x_n.len() as f64 / x_vals.len() as f64 )* 100.0);
-        // println!("{: >39}  {: <16.2} \tSTDDEV PCT of DB Time: {:.2}",   "--- AVG PCT of DB Time:", &avg_exec_t, &stddev_exec_t);
-        // println!("{: >38}  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}",   "--- AVG Wait Time (s):",  &avg_exec_s, &stddev_exec_s);
-        // println!("{: >40}  {: <16.2} \tSTDDEV exec times:     {:.2}",   "--- AVG exec times:     ", &avg_exec_n, &stddev_exec_n);
-        // println!("{: >39}  {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
         make_notes!(&logfile_name, args.quiet, "\t\tMarked as TOP in {:.2}% of probes\n",  (x_n.len() as f64 / x_vals.len() as f64 )* 100.0);
         make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV PCT of DB Time: {:.2}\n",   "--- AVG PCT of DB Time:", &avg_exec_t, &stddev_exec_t);
@@ -975,7 +963,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_events
     );
 
-    //println!("{}","Background Wait Events");
     make_notes!(&logfile_name, args.quiet, "{}\n","Background Wait Events");
     for (key, yv) in &y_vals_bgevents_sorted {
         let event_name: String = key.1.clone();
@@ -1003,10 +990,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
         let correlation_info: String = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
-            //print!("{: >50}", correlation_info.red().bold());
             make_notes!(&logfile_name, args.quiet, "{: >50}", correlation_info.red().bold());
         } else {
-            //print!("{: >50}", correlation_info);
             make_notes!(&logfile_name, args.quiet, "{: >50}", correlation_info);
         }
         make_notes!(&logfile_name, args.quiet, "\t\tMarked as TOP in {:.2}% of probes\n",  (x_n.len() as f64 / x_vals.len() as f64 )* 100.0);
@@ -1070,7 +1055,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_bgevents
     );
 
-    //println!("{}","SQLs");
     make_notes!(&logfile_name, args.quiet, "{}\n","SQLs");
 
     for (key,yv) in y_vals_sqls_sorted {
@@ -1086,13 +1070,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let corr: f64 = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
         let top_sections: HashMap<String, f64> = report_top_sql_sections(&sql_id, &collection.awrs);
-        // println!(
-        //     "\n\t{: >5} \t {}",
-        //     &sql_id.bold(),
-        //     format!("Other Top Sections: {}",
-        //         &top_sections.iter().map(|(key, value)| format!("{} [{:.2}%]", key, value)).collect::<Vec<String>>().join(" | ")
-        //     ).italic(),
-        // );
         make_notes!(&logfile_name, args.quiet,
             "\n\t{: >5} \t {}\n",
             &sql_id.bold(),
@@ -1119,11 +1096,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let x: Vec<f64> = y_vals_sqls_exec_t.get(&key.1.clone()).unwrap().clone();
         let avg_exec_t: f64 = mean(x.clone()).unwrap();
         let stddev_exec_t: f64 = std_deviation(x.clone()).unwrap();
-        
-        // println!("{: >24}{:.2}% of probes", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
-        // println!("{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
-        // println!("{: >34} {: <16.2} \tSTDDEV exec times:  {:.2}", "--- AVG exec times:", avg_exec_n, stddev_exec_n);
-        // println!("{: >23} {} ", "MODULE: ", top_stats.sqls.get(&sql_id).unwrap().blue());
 
         make_notes!(&logfile_name, args.quiet, "{: >24}{:.2}% of probes\n", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         make_notes!(&logfile_name, args.quiet, "{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}\n", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
@@ -1157,11 +1129,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             let corr_text = format!("{: >32} | {: <32} : {:.2}", "+".to_string(), key.1.clone(), crr);
             if crr >= 0.4 || crr <= - 0.4 { //Correlation considered high enough to mark it
                 sql_corr_txt.push(format!(r#"<span style="color:red; font-weight:bold;">{}</span>"#, corr_text));
-                //println!("{}",corr_text.red().bold());
                 make_notes!(&logfile_name, args.quiet, "{}\n", corr_text.red().bold());
             } else {
                 sql_corr_txt.push(corr_text.clone());
-                //println!("{}", corr_text);
                 make_notes!(&logfile_name, args.quiet, "{}\n", corr_text);
             }
         }
@@ -1227,9 +1197,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     );
 
     // STATISTICS Correltation to DBTime
-    //println!("\n");
-    // println!("-----------------------------------------------------------------------------------");
-    // println!("Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n");
+
     println!("{}","Statistics");
     make_notes!(&logfile_name, args.quiet, "\n\n");
     make_notes!(&logfile_name, args.quiet, "-----------------------------------------------------------------------------------\n");
@@ -1325,7 +1293,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         eprintln!("Error writing file {}: {}", stats_corr_filename, e);
     }
     for (k,v) in sorted_correlation {
-        //println!("\t{: >64} : {:.2}", &k.1, v);
         make_notes!(&logfile_name, args.quiet, "\t{: >64} : {:.2}\n", &k.1, v);
     }
 
