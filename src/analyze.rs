@@ -7,25 +7,21 @@ use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
 
 use std::collections::{BTreeMap, HashMap};
-
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
-use colored::*;
-
-use open::*;
-
 use std::str::FromStr;
+
+use colored::*;
+use dotenv::dotenv;
+use open::*;
 
 use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
 use ndarray_stats::histogram::Grid;
-
 use regex::*;
-
 use crate::Args;
-
 use crate::reasonings::{chat_gpt, gemini};
 
 struct TopStats {
@@ -92,8 +88,8 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
             //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
             //because it means that Oracle spent some time waiting on wait events and not working on CPU
             if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
-                //println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
-                make_notes!(logfile_name, false, "Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}\n", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
+                println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
+                //make_notes!(logfile_name, false, "Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}\n", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
                 let mut events: Vec<WaitEvents> = awr.foreground_wait_events;
                 let mut bgevents: Vec<WaitEvents> = awr.background_wait_events;
                 //I'm sorting events by total wait time, to get the longest waits at the end
@@ -491,7 +487,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     fs::create_dir(&html_dir).unwrap_or_default();
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &html_dir);
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false,&html_dir);
-    let fname: String = format!("{}/jasmin_{}", html_dir, &stripped_fname); //new file name path for main report
+    let fname: String = format!("{}/jasmin_{}", &html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
     println!("{}","\n==== PREPARING RESULTS ===".bright_cyan());
@@ -659,7 +655,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         }
     }
 
-    make_notes!(&logfile_name, args.quiet, "{}\n","Load Profile and Top Stats");
+    //make_notes!(&logfile_name, args.quiet, "{}\n","Load Profile and Top Stats");
+    println!("{}","Load Profile and Top Stats");
     //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
     for (evname, ev) in y_vals_events {
@@ -864,7 +861,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut table_sqls: String = String::new();
     let mut table_stat_corr: String = String::new();
 
-    make_notes!(&logfile_name, args.quiet,"{}\n","Foreground Wait Events");
+    println!("{}","Foreground Wait Events");
     for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
@@ -963,7 +960,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_events
     );
 
-    make_notes!(&logfile_name, args.quiet, "{}\n","Background Wait Events");
+    println!("{}","Background Wait Events");
     for (key, yv) in &y_vals_bgevents_sorted {
         let event_name: String = key.1.clone();
         /* Correlation calc */
@@ -1055,7 +1052,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_bgevents
     );
 
-    make_notes!(&logfile_name, args.quiet, "{}\n","SQLs");
+    println!("{}","SQLs");
 
     for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
@@ -1136,7 +1133,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             }
         }
 
-        let filename: String = format!("{}/{}.html", html_dir,sql_id);
+        let filename: String = format!("{}/{}.html", &html_dir,sql_id);
         // Format the content as HTML
         let sqlid_html_content: String = format!(
             r#"<!DOCTYPE html>
@@ -1288,7 +1285,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     );
 
     // Write to the file
-    let stats_corr_filename: String = format!("{}/statistics_corr.html", html_dir);
+    let stats_corr_filename: String = format!("{}/statistics_corr.html", &html_dir);
     if let Err(e) = fs::write(&stats_corr_filename, table_stat_corr) {
         eprintln!("Error writing file {}: {}", stats_corr_filename, e);
     }
@@ -1305,7 +1302,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 //.row_order(Grid::TopToBottom),
         )
         //.legend(Legend::new()
-            //.y_anchor(Anchor::Top)
+        //    .y_anchor(Anchor::Top)
         //    .x(1.02)
         //    .y(0.5)
         //)
@@ -1478,7 +1475,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // plot_main.use_local_plotly();
     // plot_highlight.use_local_plotly();
     plot_main.write_html(fname.clone());
-    plot_highlight.write_html(format!("{}/jasmin_highlight.html", html_dir));
+    plot_highlight.write_html(format!("{}/jasmin_highlight.html", &html_dir));
     
     let first_snap_time: String = collection.awrs.first().unwrap().snap_info.begin_snap_time.clone();
     let last_snap_time: String = collection.awrs.last().unwrap().snap_info.end_snap_time.clone();
@@ -1513,8 +1510,42 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         last_snap_time
     );
     
+    dotenv().ok();
+    let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
     let jasmin_html_scripts: String = format!(
         r#"
+        <script>
+        const messages = document.getElementById('messages');
+        const input = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Rreport<br>What is the most important Wait Event</div>`;
+        async function sendMessage() {{
+            const userMsg = input.value.trim();
+            if (userMsg === '') return;
+            messages.innerHTML += `<div class="message user-msg">${{userMsg}}</div>`;
+            messages.scrollTop = messages.scrollHeight;
+            input.value = '';
+            try {{
+                const response = await fetch('http://localhost:{}/api/chat', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ message: userMsg }})
+                }});
+                const data = await response.json();
+                messages.innerHTML += `<div class="message ai-msg">${{data.reply.replace(/\n/g, "<br>")}}</div>`;
+                messages.scrollTop = messages.scrollHeight;
+            }} catch (error) {{
+                messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
+                messages.scrollTop = messages.scrollHeight;
+            }}
+        }}
+        input.addEventListener('keydown', function(event) {{
+            if (event.key === 'Enter') {{
+                sendMessage();
+            }}
+        }});
+        sendBtn.addEventListener('click', sendMessage);
+        </script>
         <script>//JAS-MIN scripts
         function toggleTable(buttonId, tableId) {{
             const button = document.getElementById(buttonId);
@@ -1533,6 +1564,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         toggleTable('show-events-button', 'events-table');
         toggleTable('show-sqls-button', 'sqls-table');
         toggleTable('show-bgevents-button', 'bgevents-table');
+        toggleTable('show-JASMINAI-button', 'chat-container');
         function sortTable(tableId,columnId) {{
             var table = document.getElementById(tableId);
             var tbody = table.getElementsByTagName("tbody")[0];
@@ -1553,18 +1585,28 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             tbody.innerHTML = "";
             rows.forEach(row => tbody.appendChild(row));
         }}
-        </script>"#
+        </script>"#,bckend_port
     );
-
+    let jasmin_assistant: String = format!(
+        r#"
+        <div> <br> </div>
+        <div id="chat-container" style="display: none;">
+            <div id="messages"></div>
+            <div id="input-area">
+                <input type="text" id="user-input" placeholder="message to JAS-MIN..." autofocus/>
+                <button id="send-btn">Send</button>
+            </div>
+        </div>"#
+    );
     // Open plot_main HTML to inject Additional sections - Buttons, Tables, etc
     let mut plotly_html: String = fs::read_to_string(&fname)
         .expect("Failed to read Main JAS-MIN HTML file");
-    let mut highlight_html: String = fs::read_to_string(format!("{}/jasmin_highlight.html", html_dir))
+    let mut highlight_html: String = fs::read_to_string(format!("{}/jasmin_highlight.html", &html_dir))
         .expect("Failed to read HighLight JAS-MIN HTML file");
     
     //Prepare HighLight Section to be pasted into Main HTML file
     highlight_html = highlight_html.replace("plotly-html-element","highlight-html-element");
-    fs::write(format!("{}/jasmin_highlight.html", html_dir),&highlight_html);
+    fs::write(format!("{}/jasmin_highlight.html", &html_dir),&highlight_html);
     highlight_html = highlight_html
                     .lines() // Iterate over lines
                     .skip_while(|line| !line.contains("<div id=\"highlight-html-element\"")) // Skip lines until found
@@ -1580,16 +1622,18 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // Inject Buttons and Tables into Main HTML
     plotly_html = plotly_html.replace(
         "<body>",
-        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
+        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
             db_instance_info_html,
             "<button id=\"show-events-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait Events</span><span>TOP Wait Events</span></button>",
             "<button id=\"show-sqls-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait SQLs</span><span>TOP Wait SQLs</span></button>",
             "<button id=\"show-bgevents-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Backgrd Events</span><span>TOP Backgrd Events</span></button>",
             format!(
-                "<a href=\"{}\" target=\"_blank\">
+                "<a href=\"{}\" target=\"_blank\" style=\"text-decoration: none;\">
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">STATS Correlation</span><span>STATS Correlation</span></button>
                 </a>", "statistics_corr.html"
             ),
+            "<button id=\"show-JASMINAI-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">JAS-MIN Assistant</span><span>JAS-MIN Assistant</span></button>",
+            jasmin_assistant,
             event_table_html,
             bgevent_table_html,
             sqls_table_html,
@@ -1619,6 +1663,5 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             println!("Unrecognized vendor. Supported vendors: openai, google");
         }
         
-    }
-
+    };
 }

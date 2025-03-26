@@ -3,6 +3,7 @@ use std::io::Read;
 use std::io::Write;
 use std::str;
 use std::fs;
+use dotenv::dotenv;
 use colored::*;
 use clap::Parser;
 
@@ -10,6 +11,7 @@ mod awr;
 mod analyze;
 mod idleevents;
 mod reasonings;
+use crate::reasonings::{backend_ai};
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
@@ -59,11 +61,15 @@ struct Args {
 	 ///The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL)
 	 #[clap(short, long, default_value="NO")]
 	 ai: String,
+
+	///Run backend agent for JASMIN Assistant 
+	 #[clap(short, long)]
+	 backend_assistant: bool,
 }
 
-
 fn main() {
-
+	let mut 
+	reportfile: String = "".to_string();
 	let args = Args::parse(); 
 	println!("{}{}","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow());
 	if args.file != "NO" {
@@ -72,6 +78,7 @@ fn main() {
 	} else if args.directory != "NO" {
 		let awr_doc = awr::parse_awr_dir(args.clone()).unwrap();
 		let mut fname = format!("{}.json", &args.directory);
+		reportfile = format!("{}.txt", &args.directory);
 		if args.outfile != "NO" {
 			fname = args.outfile;
 		}
@@ -80,5 +87,17 @@ fn main() {
 		
 	} else if args.json_file != "NO" {
 		awr::prarse_json_file(args.clone());
+		let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
+    	reportfile = format!("{}.txt", file_and_ext[0]);
 	}
+	if args.backend_assistant {
+		dotenv().ok();
+    	let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
+        println!("{}",r#"==== STARTING ASISTANT BACKEND ==="#.bright_cyan());
+		println!("🤖 Starting JAS-MIN Assistant Backend on http://loclahost:{}",bckend_port);
+		println!("📁 Report File: {}",reportfile.clone());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(backend_ai(reportfile));
+    }
+	
 }
