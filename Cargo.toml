@@ -1,6 +1,6 @@
 [package]
 name = "jas-min"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radoslaw Kut <radek@ora-600.pl>"]
 
@@ -21,5 +21,9 @@ ndarray = "0.16"
 ndarray-stats = "0.6.0"
 colored = "3.0.0"
 open = "5"
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.11", features = ["json","multipart"] }
 tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+dotenv = "0.15"
+tower-http = { version = "0.5", features = ["cors"] }
+anyhow = "1"
