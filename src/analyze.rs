@@ -69,11 +69,7 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
     let mut stat_names: BTreeMap<String, u8> = BTreeMap::new();
     //so we scan the AWR data
     make_notes!(&logfile_name, false, 
-        "Peaks are being analyzed based on specified ratio (default 0.666). 
-         The ratio is beaing calculated as DB CPU / DB Time.
-         The lower the ratio the more sessions are waiting for resources other than CPU.
-         If DB CPU = 2 and DB Time = 8 it means that on AVG 8 actice sessions are working but only 2 of them are actively working on CPU
-        Current ratio used to find peak periods is {}\n\n", db_time_cpu_ratio);
+        "==== DBCPU/DBTime ratio analysis ====\nPeaks are being analyzed based on specified ratio (default 0.666).\nThe ratio is beaing calculated as DB CPU / DB Time.\nThe lower the ratio the more sessions are waiting for resources other than CPU.\nIf DB CPU = 2 and DB Time = 8 it means that on AVG 8 actice sessions are working but only 2 of them are actively working on CPU.\nCurrent ratio used to find peak periods is {}\n\n", db_time_cpu_ratio);
         
     for awr in awrs {
         let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
@@ -97,7 +93,6 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
 
             if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
                 //println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
-
                 make_notes!(&logfile_name, false, "Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}\n", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
                 let mut events: Vec<WaitEvents> = awr.foreground_wait_events;
                 let mut bgevents: Vec<WaitEvents> = awr.background_wait_events;
@@ -499,7 +494,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let fname: String = format!("{}/jasmin_{}", &html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
-    println!("{}","\n==== PREPARING RESULTS ===".bright_cyan());
+    println!("\n{}","==== PREPARING RESULTS ===".bright_cyan());
     for awr in &collection.awrs {
         let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
         let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
@@ -664,7 +659,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         }
     }
 
-    make_notes!(&logfile_name, false, "{}\n","Load Profile and Top Stats");
+    //make_notes!(&logfile_name, false, "{}\n","Load Profile and Top Stats");
     //println!("{}","Load Profile and Top Stats");
     //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
@@ -703,7 +698,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     }
 
     // ------ Ploting and reporting starts ----------
-    make_notes!(&logfile_name, args.quiet, "{}\n\nStatistical Computations:\n-------------------------\n","==== REPORTING RESULTS ===".bright_cyan());
+    make_notes!(&logfile_name, args.quiet, "\n{}\n\n","==== Statistical Computation RESULTS ===".bright_cyan());
 
     let mut plot_main: Plot = Plot::new();
     let mut plot_highlight: Plot = Plot::new();
@@ -971,7 +966,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     );
 
     //println!("{}","Background Wait Events");
-    make_notes!(&logfile_name, false, "{}","Background Wait Events");
+    make_notes!(&logfile_name, false, "{}\n","Background Wait Events");
     for (key, yv) in &y_vals_bgevents_sorted {
         let event_name: String = key.1.clone();
         /* Correlation calc */
@@ -1207,7 +1202,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
     // STATISTICS Correltation to DBTime
 
-    println!("{}","Statistics");
+    println!("\n{}","Statistics");
     make_notes!(&logfile_name, args.quiet, "\n\n");
     make_notes!(&logfile_name, args.quiet, "-----------------------------------------------------------------------------------\n");
     make_notes!(&logfile_name, args.quiet, "Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n\n");
@@ -1526,6 +1521,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
     let jasmin_html_scripts: String = format!(
         r#"
+        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         <script>
         const messages = document.getElementById('messages');
         const input = document.getElementById('user-input');
@@ -1544,7 +1540,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     body: JSON.stringify({{ message: userMsg }})
                 }});
                 const data = await response.json();
-                messages.innerHTML += `<div class="message ai-msg">${{data.reply.replace(/\n/g, "<br>")}}</div>`;
+                messages.innerHTML += `<div class="message ai-msg">${{marked.parse(data.reply)}}</div>`;
                 messages.scrollTop = messages.scrollHeight;
             }} catch (error) {{
                 messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
