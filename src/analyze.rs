@@ -68,6 +68,13 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
     let mut stat_names: BTreeMap<String, u8> = BTreeMap::new();
     //so we scan the AWR data
+    make_notes!(&logfile_name, false, 
+        "Peaks are being analyzed based on specified ratio (default 0.666). 
+         The ratio is beaing calculated as DB CPU / DB Time.
+         The lower the ratio the more sessions are waiting for resources other than CPU.
+         If DB CPU = 2 and DB Time = 8 it means that on AVG 8 actice sessions are working but only 2 of them are actively working on CPU
+        Current ratio used to find peak periods is {}\n\n", db_time_cpu_ratio);
+        
     for awr in awrs {
         let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
         let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
@@ -87,9 +94,11 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
             }
             //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
             //because it means that Oracle spent some time waiting on wait events and not working on CPU
+
             if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
-                println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
-                //make_notes!(logfile_name, false, "Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}\n", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
+                //println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
+
+                make_notes!(&logfile_name, false, "Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}\n", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
                 let mut events: Vec<WaitEvents> = awr.foreground_wait_events;
                 let mut bgevents: Vec<WaitEvents> = awr.background_wait_events;
                 //I'm sorting events by total wait time, to get the longest waits at the end
@@ -655,8 +664,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         }
     }
 
-    //make_notes!(&logfile_name, args.quiet, "{}\n","Load Profile and Top Stats");
-    println!("{}","Load Profile and Top Stats");
+    make_notes!(&logfile_name, false, "{}\n","Load Profile and Top Stats");
+    //println!("{}","Load Profile and Top Stats");
     //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
     for (evname, ev) in y_vals_events {
@@ -861,7 +870,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut table_sqls: String = String::new();
     let mut table_stat_corr: String = String::new();
 
-    println!("{}","Foreground Wait Events");
+    //println!("{}","Foreground Wait Events");
+    make_notes!(&logfile_name, false, "{}\n","Foreground Wait Events");
     for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
@@ -960,7 +970,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_events
     );
 
-    println!("{}","Background Wait Events");
+    //println!("{}","Background Wait Events");
+    make_notes!(&logfile_name, false, "{}","Background Wait Events");
     for (key, yv) in &y_vals_bgevents_sorted {
         let event_name: String = key.1.clone();
         /* Correlation calc */
@@ -1052,7 +1063,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_bgevents
     );
 
-    println!("{}","SQLs");
+    //println!("{}","SQLs");
+    make_notes!(&logfile_name, false, "TOP SQLs by Elapsed time (SQL_ID or OLD_HASH_VALUE presented)");
 
     for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
