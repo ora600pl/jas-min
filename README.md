@@ -54,10 +54,14 @@ OPTIONS:
           Should I be quiet? This mode suppresses terminal output but still writes to log file
 
     -a, --ai <AI>
-          Use AI model to interpret collected statistics and describe them. Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL) [default: NO]
+          Use AI model to interpret collected statistics and describe them. 
+          Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key.
+          The parameter should be set to the value in format VENDOR:MODEL_NAME:LANGUAGE_CODE 
+          (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL) [default: NO]
     
     -b --backend-assistant
-          Launches the backend agent used by the JASMIN Assistant. Configuration details such as API keys and the selected PORT number are loaded from the .env file
+          Launches the backend agent used by the JASMIN Assistant. 
+          Configuration details such as API keys and the selected PORT number are loaded from the .env file
 
     -V, --version
             Print version information
