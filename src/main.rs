@@ -62,7 +62,7 @@ struct Args {
 	 #[clap(short, long, default_value="NO")]
 	 ai: String,
 
-	///Run backend agent for JASMIN Assistant 
+	/// Launches the backend agent used by the JASMIN Assistant. Configuration details such as API keys and the selected PORT number are loaded from the .env file
 	 #[clap(short, long)]
 	 backend_assistant: bool,
 }
