@@ -1518,7 +1518,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     );
     
     dotenv().ok();
-    let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
+    let mut bckend_port: String = String::new();
+    if args.backend_assistant {
+        bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
+    }
+    
     let jasmin_html_scripts: String = format!(
         r#"
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
