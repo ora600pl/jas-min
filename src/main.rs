@@ -92,8 +92,8 @@ fn main() {
 	}
 	if args.backend_assistant {
 		dotenv().ok();
-    	let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
-        println!("{}",r#"==== STARTING ASISTANT BACKEND ==="#.bright_cyan());
+		let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
+		println!("{}",r#"==== STARTING ASISTANT BACKEND ==="#.bright_cyan());
 		println!("🤖 Starting JAS-MIN Assistant Backend on http://loclahost:{}",bckend_port);
 		println!("📁 Report File: {}",reportfile.clone());
         let rt = tokio::runtime::Runtime::new().unwrap();
