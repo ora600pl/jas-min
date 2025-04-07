@@ -1404,7 +1404,7 @@ pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
 	let mut is_instance_info: Option<DBInstance> = None; // to grab DBInstance info from the first file
 	for file in fs::read_dir(&args.directory).unwrap() {
 		let fname = &file.unwrap().path().display().to_string();
-		if ((fname.contains("awr") || fname.contains("sp_")) && (fname.ends_with("txt") || fname.ends_with("html"))) {
+		if fname.ends_with(".txt") || fname.ends_with(".html") {
 			let file_name = fname.split("/").collect::<Vec<&str>>();
 			let file_name = file_name.last().unwrap().to_string();
 			if is_instance_info.is_none() {
