@@ -1516,86 +1516,51 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         first_snap_time,
         last_snap_time
     );
-    
-    dotenv().ok();
-    let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
-    let jasmin_html_scripts: String = format!(
-        r#"
-        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-        <script>
-        const messages = document.getElementById('messages');
-        const input = document.getElementById('user-input');
-        const sendBtn = document.getElementById('send-btn');
-        messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Rreport<br>What is the most important Wait Event</div>`;
-        async function sendMessage() {{
-            const userMsg = input.value.trim();
-            if (userMsg === '') return;
-            messages.innerHTML += `<div class="message user-msg">${{userMsg}}</div>`;
-            messages.scrollTop = messages.scrollHeight;
-            input.value = '';
-            try {{
-                const response = await fetch('http://localhost:{}/api/chat', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ message: userMsg }})
+
+    let mut jasmin_html_scripts: String = format!(
+            r#"
+            <script>//JAS-MIN scripts
+            function toggleTable(buttonId, tableId) {{
+                const button = document.getElementById(buttonId);
+                const table = document.getElementById(tableId);
+            
+                button.addEventListener('click', () => {{
+                    if (table.style.display === 'none' || table.style.display === '') {{
+                        table.style.display = 'table';
+                        button.classList.add("button-active");
+                    }} else {{
+                        table.style.display = 'none';
+                        button.classList.remove("button-active");
+                    }}
                 }});
-                const data = await response.json();
-                messages.innerHTML += `<div class="message ai-msg">${{marked.parse(data.reply)}}</div>`;
-                messages.scrollTop = messages.scrollHeight;
-            }} catch (error) {{
-                messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
-                messages.scrollTop = messages.scrollHeight;
             }}
-        }}
-        input.addEventListener('keydown', function(event) {{
-            if (event.key === 'Enter') {{
-                sendMessage();
+            toggleTable('show-events-button', 'events-table');
+            toggleTable('show-sqls-button', 'sqls-table');
+            toggleTable('show-bgevents-button', 'bgevents-table');
+            toggleTable('show-JASMINAI-button', 'chat-container');
+            function sortTable(tableId,columnId) {{
+                var table = document.getElementById(tableId);
+                var tbody = table.getElementsByTagName("tbody")[0];
+                var rows = Array.from(tbody.getElementsByTagName("tr"));
+                var isAscending = table.getAttribute("data-sort-order") !== "asc";
+                table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
+                rows.sort(function(rowA, rowB){{
+                    var cellA = rowA.getElementsByTagName("td")[columnId].innerText.trim();
+                    var cellB = rowB.getElementsByTagName("td")[columnId].innerText.trim();
+                    var numA = parseFloat(cellA);
+                    var numB = parseFloat(cellB);
+                    if (!isNaN(numA) && !isNaN(numB)){{
+                        return isAscending ? numA - numB : numB - numA;
+                    }} else{{
+                        return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+                    }}
+                }});
+                tbody.innerHTML = "";
+                rows.forEach(row => tbody.appendChild(row));
             }}
-        }});
-        sendBtn.addEventListener('click', sendMessage);
-        </script>
-        <script>//JAS-MIN scripts
-        function toggleTable(buttonId, tableId) {{
-            const button = document.getElementById(buttonId);
-            const table = document.getElementById(tableId);
-        
-            button.addEventListener('click', () => {{
-                if (table.style.display === 'none' || table.style.display === '') {{
-                    table.style.display = 'table';
-                    button.classList.add("button-active");
-                }} else {{
-                    table.style.display = 'none';
-                    button.classList.remove("button-active");
-                }}
-            }});
-        }}
-        toggleTable('show-events-button', 'events-table');
-        toggleTable('show-sqls-button', 'sqls-table');
-        toggleTable('show-bgevents-button', 'bgevents-table');
-        toggleTable('show-JASMINAI-button', 'chat-container');
-        function sortTable(tableId,columnId) {{
-            var table = document.getElementById(tableId);
-            var tbody = table.getElementsByTagName("tbody")[0];
-            var rows = Array.from(tbody.getElementsByTagName("tr"));
-            var isAscending = table.getAttribute("data-sort-order") !== "asc";
-            table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
-            rows.sort(function(rowA, rowB){{
-                var cellA = rowA.getElementsByTagName("td")[columnId].innerText.trim();
-                var cellB = rowB.getElementsByTagName("td")[columnId].innerText.trim();
-                var numA = parseFloat(cellA);
-                var numB = parseFloat(cellB);
-                if (!isNaN(numA) && !isNaN(numB)){{
-                    return isAscending ? numA - numB : numB - numA;
-                }} else{{
-                    return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
-                }}
-            }});
-            tbody.innerHTML = "";
-            rows.forEach(row => tbody.appendChild(row));
-        }}
-        </script>"#,bckend_port
-    );
-    let jasmin_assistant: String = format!(
+            </script>"#
+        );
+    let jasmin_assistant = format!(
         r#"
         <div> <br> </div>
         <div id="chat-container" style="display: none;">
@@ -1606,6 +1571,86 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             </div>
         </div>"#
     );
+    if args.backend_assistant {
+        dotenv().ok();
+        let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
+        jasmin_html_scripts = format!(
+            r#"
+            <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+            <script>
+            const messages = document.getElementById('messages');
+            const input = document.getElementById('user-input');
+            const sendBtn = document.getElementById('send-btn');
+            messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Rreport<br>What is the most important Wait Event</div>`;
+            async function sendMessage() {{
+                const userMsg = input.value.trim();
+                if (userMsg === '') return;
+                messages.innerHTML += `<div class="message user-msg">${{userMsg}}</div>`;
+                messages.scrollTop = messages.scrollHeight;
+                input.value = '';
+                try {{
+                    const response = await fetch('http://localhost:{}/api/chat', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ message: userMsg }})
+                    }});
+                    const data = await response.json();
+                    messages.innerHTML += `<div class="message ai-msg">${{marked.parse(data.reply)}}</div>`;
+                    messages.scrollTop = messages.scrollHeight;
+                }} catch (error) {{
+                    messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
+                    messages.scrollTop = messages.scrollHeight;
+                }}
+            }}
+            input.addEventListener('keydown', function(event) {{
+                if (event.key === 'Enter') {{
+                    sendMessage();
+                }}
+            }});
+            sendBtn.addEventListener('click', sendMessage);
+            </script>
+            <script>//JAS-MIN scripts
+            function toggleTable(buttonId, tableId) {{
+                const button = document.getElementById(buttonId);
+                const table = document.getElementById(tableId);
+            
+                button.addEventListener('click', () => {{
+                    if (table.style.display === 'none' || table.style.display === '') {{
+                        table.style.display = 'table';
+                        button.classList.add("button-active");
+                    }} else {{
+                        table.style.display = 'none';
+                        button.classList.remove("button-active");
+                    }}
+                }});
+            }}
+            toggleTable('show-events-button', 'events-table');
+            toggleTable('show-sqls-button', 'sqls-table');
+            toggleTable('show-bgevents-button', 'bgevents-table');
+            toggleTable('show-JASMINAI-button', 'chat-container');
+            function sortTable(tableId,columnId) {{
+                var table = document.getElementById(tableId);
+                var tbody = table.getElementsByTagName("tbody")[0];
+                var rows = Array.from(tbody.getElementsByTagName("tr"));
+                var isAscending = table.getAttribute("data-sort-order") !== "asc";
+                table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
+                rows.sort(function(rowA, rowB){{
+                    var cellA = rowA.getElementsByTagName("td")[columnId].innerText.trim();
+                    var cellB = rowB.getElementsByTagName("td")[columnId].innerText.trim();
+                    var numA = parseFloat(cellA);
+                    var numB = parseFloat(cellB);
+                    if (!isNaN(numA) && !isNaN(numB)){{
+                        return isAscending ? numA - numB : numB - numA;
+                    }} else{{
+                        return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+                    }}
+                }});
+                tbody.innerHTML = "";
+                rows.forEach(row => tbody.appendChild(row));
+            }}
+            </script>"#,bckend_port
+        );
+    }
     // Open plot_main HTML to inject Additional sections - Buttons, Tables, etc
     let mut plotly_html: String = fs::read_to_string(&fname)
         .expect("Failed to read Main JAS-MIN HTML file");
