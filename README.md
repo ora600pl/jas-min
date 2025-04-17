@@ -1,44 +1,50 @@
+ ```
      ██╗ █████╗ ███████╗      ███╗   ███╗██╗███╗   ██╗
      ██║██╔══██╗██╔════╝      ████╗ ████║██║████╗  ██║
      ██║███████║███████╗█████╗██╔████╔██║██║██╔██╗ ██║
 ██   ██║██╔══██║╚════██║╚════╝██║╚██╔╝██║██║██║╚██╗██║
 ╚█████╔╝██║  ██║███████║      ██║ ╚═╝ ██║██║██║ ╚████║
  ╚════╝ ╚═╝  ╚═╝╚══════╝      ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝
+```
 
-###JAS-MIN v0.4.2
+### **JAS-MIN v0.4.2**
 
 Kamil Stawiarski <kamil@ora-600.pl>
 Rdosław Kut <radek@ora-600.pl>
 
-###JAS-MIN — JSON AWR/STATSPACK Mining Tool
+### JAS-MIN — JSON AWR/STATSPACK Mining Tool
 
-JAS-MIN is a performance analysis tool that parses Oracle AWR or STATSPACK reports into structured JSON, and generates an interactive HTML report using Plotly.
+**JAS-MIN** is a performance analysis tool that parses Oracle AWR or STATSPACK reports into structured JSON, and generates an interactive HTML report using Plotly.
 It aims to help DBAs, SREs, and performance engineers understand sampled DB time, wait events, SQL activity, and system statistics in a deeply visual and explorable way. 
+JAS-MIN loves geeks who love digging into performance numbers.
 
-##Features:
-	- Parses raw AWR (.html) and STATSPACK (.txt) reports
-        - Generates an interactive, standalone HTML dashboard (Plotly-based)
-	- Correlates wait events and instance statistics with DB time
-	- Identifies top SQLs and background/foreground wait events
-	- Includes AI Assistant — chat with your report!
-	- CLI-based, friendly to scripting or pipeline integration
-	- Clean JSON output for further automation or logging
+## Features:
+- Parses raw AWR (.html) and STATSPACK (.txt) reports
+- Generates an interactive, standalone HTML dashboard (Plotly-based)
+- Correlates wait events and instance statistics with DB time
+- Identifies top SQLs and background/foreground wait events
+- Includes AI Assistant — chat with your report!
+- CLI-based, friendly to scripting or pipeline integration
+- Clean JSON output for further automation or logging
 
 
-##State of Development
-        This tool is in active development and evolving fast.
-        It’s already usable for real-world workloads — but expect bugs, edge cases, and weirdness.
-        Feedback, PRs, and testing are very welcome.
+## State of Development
+> **This tool is in active development and evolving fast.**
+> It’s already usable for real-world workloads — but expect bugs, edge cases, and weirdness.
+> Feedback, PRs, and testing are very welcome.
 
-##Assumptions
-	- `.txt` file is assumed to be a STATSPACK report
-	- `.html` file is assumed to be an AWR report
-	- You should provide a directory path with one or more such reports
+## Assumptions
+- `.txt` file is assumed to be a STATSPACK report
+- `.html` file is assumed to be an AWR report
+- You should provide a directory path with one or more such reports
 
+## USAGE
 USAGE:
+
     jas-min [OPTIONS]
 
 OPTIONS:
+
     -d, --directory <DIRECTORY>
             Parse whole directory of files [default: NO]
 
