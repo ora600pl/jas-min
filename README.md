@@ -9,14 +9,12 @@
 
 ### JSON AWR/STATSPACK Mining Tool
 
-**JAS-MIN** is a performance analysis tool that parses Oracle AWR or STATSPACK reports into structured JSON, and generates an interactive HTML report using Plotly.
-It aims to help DBAs, SREs, and performance engineers understand sampled DB time, wait events, SQL activity, and system statistics in a deeply visual and explorable way. 
+**JAS-MIN** is a performance analysis tool that parses Oracle AWR or STATSPACK reports into structured JSON, and generates an interactive HTML report using Plotly.  
+It aims to help DBAs, SREs, and performance engineers understand sampled DB time, wait events, SQL activity, and system statistics in a deeply visual and explorable way.  
 JAS-MIN loves geeks who love digging into performance numbers.
 
-**Created and maintained**:
-
-Kamil Stawiarski <kamil@ora-600.pl>
-
+**Created and maintained by**:
+Kamil Stawiarski <kamil@ora-600.pl>  
 Rdosław Kut <radek@ora-600.pl>
 
 
