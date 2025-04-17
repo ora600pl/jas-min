@@ -13,7 +13,7 @@
 It aims to help DBAs, SREs, and performance engineers understand sampled DB time, wait events, SQL activity, and system statistics in a deeply visual and explorable way.  
 JAS-MIN loves geeks who love digging into performance numbers.
 
-**Created and maintained by**:
+**Created and maintained by**:  
 Kamil Stawiarski <kamil@ora-600.pl>  
 Rdosław Kut <radek@ora-600.pl>
 
