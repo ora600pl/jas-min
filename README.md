@@ -4,19 +4,20 @@
       ██║███████║███████╗█████╗██╔████╔██║██║██╔██╗ ██║
 ██   ██║██╔══██║╚════██║╚════╝██║╚██╔╝██║██║██║╚██╗██║
 ╚█████╔╝██║  ██║███████║      ██║ ╚═╝ ██║██║██║ ╚████║
- ╚════╝ ╚═╝  ╚═╝╚══════╝      ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝
+  ╚════╝ ╚═╝  ╚═╝╚══════╝      ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝
 ```
 
-### **JAS-MIN v0.4.2**
-
-Kamil Stawiarski <kamil@ora-600.pl>
-Rdosław Kut <radek@ora-600.pl>
-
-### JAS-MIN — JSON AWR/STATSPACK Mining Tool
+### JSON AWR/STATSPACK Mining Tool
 
 **JAS-MIN** is a performance analysis tool that parses Oracle AWR or STATSPACK reports into structured JSON, and generates an interactive HTML report using Plotly.
 It aims to help DBAs, SREs, and performance engineers understand sampled DB time, wait events, SQL activity, and system statistics in a deeply visual and explorable way. 
 JAS-MIN loves geeks who love digging into performance numbers.
+
+**Created and maintained**:
+Kamil Stawiarski <kamil@ora-600.pl>
+
+Rdosław Kut <radek@ora-600.pl>
+
 
 ## Features:
 - Parses raw AWR (.html) and STATSPACK (.txt) reports
@@ -28,17 +29,17 @@ JAS-MIN loves geeks who love digging into performance numbers.
 - Clean JSON output for further automation or logging
 
 
-## State of Development
-> **This tool is in active development and evolving fast.**
-> It’s already usable for real-world workloads — but expect bugs, edge cases, and weirdness.
-> Feedback, PRs, and testing are very welcome.
+## State of Development:
+- **This tool is in active development and evolving fast.**
+- It’s already usable for real-world workloads — but expect bugs, edge cases, and weirdness.
+- Feedback, PRs, and testing are very welcome.
 
-## Assumptions
+## Assumptions:
 - `.txt` file is assumed to be a STATSPACK report
 - `.html` file is assumed to be an AWR report
 - You should provide a directory path with one or more such reports
 
-## USAGE
+## HOW TO:
 USAGE:
 
     jas-min [OPTIONS]
