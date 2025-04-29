@@ -8,6 +8,9 @@ use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{CorsLayer, Any};
 use tokio::sync::Mutex;
+use qdrant_client::qdrant::{Condition, Filter, SearchParamsBuilder, SearchPointsBuilder, SearchPoints};
+use qdrant_client::Qdrant;
+
 
 static SPELL: &str =   "Assuming that correlation in the log is Pearson correlation, suggest which wait events are the heaviest for database performance, 
                         which SQL IDs would require further performance analyze and which statistics are crucial for performance problems. 
@@ -21,6 +24,20 @@ static SPELL: &str =   "Assuming that correlation in the log is Pearson correlat
                         Format answear pretty to read it easly in terminal.
                         Write answear in language:";
 
+static SPELL_RAG: &str = "Udziel odpowiedzi **tylko na podstawie poniższych dokumentów**.
+                          Nie używaj własnej wiedzy. Zacytuj źródła. 
+                          Jeśli brakuje danych, powiedz to wprost.:\n\n";
+
+
+#[derive(Deserialize)]
+struct QueryRequest {
+    query: String,
+}
+
+#[derive(Serialize)]
+struct RAGResponse {
+    answer: String,
+}
 
 fn private_reasoninings() -> Option<String> {
     let r_content = fs::read_to_string("reasonings.txt");
@@ -29,6 +46,62 @@ fn private_reasoninings() -> Option<String> {
     }
     let r_content = r_content.unwrap();
     Some(r_content)
+}
+
+/* Embeddings based on OpenAI model - later it will have to be based on choosen model provided as argument */
+async fn embed_text(text: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    let api_key = env::var("OPENAI_API_KEY").unwrap();
+    let client = Client::new();
+    let res = client
+        .post("https://api.openai.com/v1/embeddings")
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": "text-embedding-3-small",
+            "input": text
+        }))
+        .send()
+        .await.unwrap();
+
+    let json: serde_json::Value = res.json().await?;
+    let vector = json["data"][0]["embedding"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap() as f32)
+        .collect();
+    Ok(vector)
+}
+
+/* Function for retrievieng context from QDRANT database */
+async fn retrieve_context(query_embedding: &[f32]) -> Result<String, Box<dyn std::error::Error>> {
+    /* Setting QDRANT client based on QDRANT_URL variable */
+    let client = Qdrant::from_url(&env::var("QDRANT_URL")
+                         .expect("No QDRANT_URL in .env"))
+                         .skip_compatibility_check().build().unwrap(); 
+
+    /* determining collection anme */
+    let collection = env::var("COLLECTION_NAME").expect("No COLLECTION_NAME in .env");
+
+    /* search result based on vector search */
+    let search_result = client.search_points(SearchPointsBuilder::new(collection.clone(), 
+                                          query_embedding.to_vec(), 
+                                          1).with_payload(true).build()).await.unwrap();
+
+    /* Result points */
+    let points = search_result.result;
+
+    /* building context based on returned points */
+    let mut context = String::new();
+    for point in points {
+        let payload = point.payload;
+        if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
+            context.push_str("- ");
+            context.push_str(text);
+            context.push('\n');
+        }
+    }
+
+    Ok(context)
 }
 
 #[tokio::main]
@@ -46,7 +119,25 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Resul
     if pr.is_some() {
         spell = format!("{}\n{}", spell, pr.unwrap());
     }
+    /* Code for future RAG -> RAG */
+
+    // if let Ok(qdrant_url) = env::var("QDRANT_URL") {
+    //     let embedding = match embed_text(&spell).await {
+    //         Ok(e) => e,
+    //         Err(err) => return Err(err),
+    //     };
+    //     let context = match retrieve_context(&embedding).await {
+    //         Ok(c) => c,
+    //         Err(err) => return Err(err),           
+    //     };
+    //     spell = format!("{}DOKUMENTY:\n{}\n\nPytanie: {}", SPELL_RAG, context, spell);
+    // }
     
+    // println!("Your final prompt is: \n {}", spell);
+    // println!(" <=============== RESPONSE ===============> \n\n");
+
+    /* **************************** */
+
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
@@ -57,7 +148,7 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Resul
                 {"role": "system", "content": "You are an Oracle Database performance tuning expert."},
                 {"role": "user", "content": format!("{} \n {}", spell, log_content)}
             ],
-            "max_tokens": 30000
+            "max_tokens": 4096
         }))
         .send()
         .await.unwrap();
@@ -86,8 +177,25 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
     let pr = private_reasoninings();
     if pr.is_some() {
-        spell = format!("{}\n{}", spell, pr.unwrap());
+        spell = format!("{}DOKUMENTY:\n{}\n\nPytanie: {}", SPELL_RAG, spell, pr.unwrap());
     }
+    
+    /* Code for future RAG -> RAG */
+    // if let Ok(qdrant_url) = env::var("QDRANT_URL") {
+    //     let embedding = match embed_text(&spell).await {
+    //         Ok(e) => e,
+    //         Err(err) => return Err(err),
+    //     };
+    //     let context = match retrieve_context(&embedding).await {
+    //         Ok(c) => c,
+    //         Err(err) => return Err(err),           
+    //     };
+    //     spell = format!("{}{}{}", SPELL_RAG, context, spell);
+    // }
+    
+    // println!("Your final prompt is: \n {}", spell);
+    // println!(" <=============== RESPONSE ===============> \n\n");
+    /* ****************************** */
     
     let response = client
         .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
@@ -210,9 +318,23 @@ async fn chat_handler(State(state): State<Arc<AppState>>, Json(payload): Json<Us
 async fn create_message(state: &AppState, thread_id: &str, content: &str) -> anyhow::Result<()> {
     let url = format!("https://api.openai.com/v1/threads/{}/messages", thread_id);
 
+    let spell = content.to_string();
+
+    /* Code for future RAG -> RAG */
+    // println!("BEFORE: {}", spell);
+    // if let Ok(qdrant_url) = env::var("QDRANT_URL") {
+    //     let embedding = embed_text(&content).await.unwrap();
+    //     let context =  retrieve_context(&embedding).await.unwrap();
+    //     if content.len() >= 10 {
+    //         spell = format!("{}DOKUMENTY:\n{}\n\nPytanie: {}", SPELL_RAG, context, spell);
+    //     }
+    // }
+    // println!("AFTER: {}", spell);
+    /* ************************* */
+
     let mut body = HashMap::new();
     body.insert("role", "user");
-    body.insert("content", content);
+    body.insert("content", &spell);
 
     state.client.post(&url)
         .bearer_auth(&state.api_key)
@@ -322,7 +444,7 @@ pub async fn create_thread_with_file(state: &AppState, file_path: String) -> any
             "messages": [
                 {
                     "role": "user",
-                    "content": "Uploading file woth performance report"
+                    "content": "Uploading file with performance report"
                 }
             ]
         }))

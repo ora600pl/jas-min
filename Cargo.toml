@@ -27,3 +27,4 @@ axum = "0.7"
 dotenv = "0.15"
 tower-http = { version = "0.5", features = ["cors"] }
 anyhow = "1"
+qdrant-client = "1.14.0"
