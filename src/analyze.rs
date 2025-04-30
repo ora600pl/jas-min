@@ -21,8 +21,9 @@ use ndarray::Array2;
 use ndarray_stats::CorrelationExt;
 use ndarray_stats::histogram::Grid;
 use regex::*;
-use crate::Args;
+use crate::{anomalies, Args};
 use crate::reasonings::{chat_gpt, gemini};
+use crate::anomalies::*;
 
 use crate::make_notes;
 
@@ -46,7 +47,7 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
     make_notes!(&logfile_name, false, 
         "==== DBCPU/DBTime ratio analysis ====\nPeaks are being analyzed based on specified ratio (default 0.666).\nThe ratio is beaing calculated as DB CPU / DB Time.\nThe lower the ratio the more sessions are waiting for resources other than CPU.\nIf DB CPU = 2 and DB Time = 8 it means that on AVG 8 actice sessions are working but only 2 of them are actively working on CPU.\nCurrent ratio used to find peak periods is {}\n\n", db_time_cpu_ratio);
         
-    for awr in awrs {
+    for awr in &awrs {
         let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
         let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
         let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
@@ -55,7 +56,7 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
             let mut dbtime: f64 = 0.0;
             let mut cputime: f64 = 0.0;
             //We want to find dbtime and cputime because based on their delta we will base our decisions 
-            for lp in awr.load_profile {
+            for lp in awr.load_profile.clone() {
                 if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
                     dbtime = lp.per_second;
                     
@@ -69,8 +70,8 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
             if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
                 //println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
                 make_notes!(&logfile_name, false, "Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}\n", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
-                let mut events: Vec<WaitEvents> = awr.foreground_wait_events;
-                let mut bgevents: Vec<WaitEvents> = awr.background_wait_events;
+                let mut events: Vec<WaitEvents> = awr.foreground_wait_events.clone();
+                let mut bgevents: Vec<WaitEvents> = awr.background_wait_events.clone();
                 //I'm sorting events by total wait time, to get the longest waits at the end
                 events.sort_by_key(|e| e.total_wait_time_s as i64);
                 bgevents.sort_by_key(|e| e.total_wait_time_s as i64);
@@ -88,7 +89,7 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
                     }
                 }
                 //And the same with SQLs
-                let mut sqls: Vec<crate::awr::SQLElapsedTime> = awr.sql_elapsed_time;
+                let mut sqls: Vec<crate::awr::SQLElapsedTime> = awr.sql_elapsed_time.clone();
                 sqls.sort_by_key(|s| s.elapsed_time_s as i64);
                 let l: usize = sqls.len();  
                 if l > 5 {
@@ -101,9 +102,21 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
                     }
                 }
             }
-            for stats in awr.key_instance_stats {
+            for stats in &awr.key_instance_stats {
                 stat_names.entry(stats.statname.clone()).or_insert(1);
             }
+        }
+    }
+    make_notes!(&logfile_name, false, "\n==========================================\n");
+    make_notes!(&logfile_name, false, "Checking for anomalies with MAD alghorithm\n\n");
+    let anomalies = detect_event_anomalies_mad(&awrs);
+    for a in anomalies {
+        make_notes!(&logfile_name, false, "\t {}\n", awrs[a.0].snap_info.begin_snap_time);
+        let mut events_sorted = a.1.clone();
+        events_sorted.sort_by_key(|k| (k.0*1000.0) as u64);
+        for event in events_sorted { 
+            make_notes!(&logfile_name, false, "\t\t => {:.3} \t {}\n", event.0, event.1);
+            event_names.entry(event.1).or_insert(1);
         }
     }
     let top: TopStats = TopStats {events: event_names, bgevents: bgevent_names, sqls: sql_ids, stat_names: stat_names,};
