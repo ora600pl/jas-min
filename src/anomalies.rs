@@ -46,12 +46,22 @@ fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> HashMap<String, Vec
 
     //we are iterating over AWR
     for (i, awr) in awrs.iter().enumerate() {
+        let mut snapshot_map: HashMap<&String, f64> = HashMap::new();
+
+        if bg_or_fg == "FOREGROUND" {
         //Let's create a HashMap from all foreground and background events
-        let snapshot_map: HashMap<&String, f64> = awr
-                                                .foreground_wait_events
-                                                .iter()
-                                                .map(|e| (&e.event, e.total_wait_time_s))
-                                                .collect();
+            snapshot_map = awr
+                            .foreground_wait_events
+                            .iter()
+                            .map(|e| (&e.event, e.total_wait_time_s))
+                            .collect();
+        } else if bg_or_fg == "BACKGROUND" {
+            snapshot_map = awr
+                            .background_wait_events
+                            .iter()
+                            .map(|e| (&e.event, e.total_wait_time_s))
+                            .collect();
+        }
 
         //Let's go through all of the event names
         for event in &all_events {
