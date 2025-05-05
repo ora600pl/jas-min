@@ -85,6 +85,9 @@ OPTIONS:
           Launches the backend agent used by the JASMIN Assistant. 
           Configuration details such as API keys and the selected PORT number are loaded from the .env file
 
+    -m, --mad-threshold <MAD_THRESHOLD>
+          Threshold for detecting anomalies using MAD [default: 7]
+
     -V, --version
             Print version information
     
