@@ -64,9 +64,13 @@ struct Args {
 	 #[clap(short, long, default_value="NO")]
 	 ai: String,
 
-	/// Launches the backend agent used by the JASMIN Assistant. Configuration details such as API keys and the selected PORT number are loaded from the .env file
+	///Launches the backend agent used by the JASMIN Assistant. Configuration details such as API keys and the selected PORT number are loaded from the .env file
 	 #[clap(short, long)]
 	 backend_assistant: bool,
+
+	 ///Threshold for detecting anomalies using MAD
+	 #[clap(short, long, default_value_t=7.0)]
+	 mad_threshold: f64,
 }
 
 fn main() {

@@ -32,13 +32,15 @@ struct TopStats {
     bgevents: BTreeMap<String, u8>,
     sqls:   BTreeMap<String, String>,
     stat_names: BTreeMap<String, u8>,
+    event_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
+    bgevent_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
 }
 
 
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String, logfile_name: &str) -> TopStats {
+fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String, logfile_name: &str, args: &Args) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut bgevent_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
@@ -107,19 +109,22 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
             }
         }
     }
-    make_notes!(&logfile_name, false, "\n==========================================\n");
-    make_notes!(&logfile_name, false, "Checking for anomalies with MAD alghorithm\n\n");
-    let anomalies = detect_event_anomalies_mad(&awrs);
-    for a in anomalies {
-        make_notes!(&logfile_name, false, "\t {}\n", awrs[a.0].snap_info.begin_snap_time);
-        let mut events_sorted = a.1.clone();
-        events_sorted.sort_by_key(|k| (k.0*1000.0) as u64);
-        for event in events_sorted { 
-            make_notes!(&logfile_name, false, "\t\t => {:.3} \t {}\n", event.0, event.1);
-            event_names.entry(event.1).or_insert(1);
-        }
+    
+    let event_anomalies = detect_event_anomalies_mad(&awrs, &args, "FOREGROUND");
+    for a in &event_anomalies {
+        event_names.entry(a.0.to_string()).or_insert(1);
     }
-    let top: TopStats = TopStats {events: event_names, bgevents: bgevent_names, sqls: sql_ids, stat_names: stat_names,};
+    let bgevent_anomalies = detect_event_anomalies_mad(&awrs, &args, "BACKGROUND");
+    for a in &bgevent_anomalies {
+        bgevent_names.entry(a.0.to_string()).or_insert(1);
+    }
+
+    let top: TopStats = TopStats {events: event_names, 
+                                  bgevents: bgevent_names, 
+                                  sqls: sql_ids, 
+                                  stat_names: stat_names, 
+                                  event_anomalies_mad: event_anomalies,
+                                  bgevent_anomalies_mad: bgevent_anomalies,};
     top
 }
 
@@ -458,7 +463,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     // === ANALYZING ===
     println!("{}","\n==== ANALYZING ===".bright_cyan());
-    let top_stats: TopStats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone(), &logfile_name);
+    let top_stats: TopStats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone(), &logfile_name, &args);
     
     let mut is_logfilesync_high: bool = false;
     
@@ -898,6 +903,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "{: >40}{: <8.2}  \t\tSTDDEV No. executions: {:.2}\n",   "--- AVG No. executions: ", &avg_exec_n, &stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
+        if let Some(anomalies) = top_stats.event_anomalies_mad.get(&key.1) {
+            let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
+            make_notes!(&logfile_name, args.quiet, "\t\t\t{}\n",  anomalies_detection_msg);
+            for (i,a) in anomalies.iter().enumerate() {
+                make_notes!(&logfile_name, args.quiet, "\t\t\t\t+ {} ({:.3})\n", a.0, a.1);
+            }
+        }
+
         /* FGEVENTS - Generate a row for the HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         table_events.push_str(&format!(
@@ -991,6 +1004,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "{: >40}{: <8.2}  \t\tSTDDEV No. executions: {:.2}\n",   "--- AVG No. executions: ", &avg_exec_n, &stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
+        if let Some(anomalies) = top_stats.bgevent_anomalies_mad.get(&key.1) {
+            let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
+            make_notes!(&logfile_name, args.quiet, "\t\t\t{}\n",  anomalies_detection_msg);
+            for (i,a) in anomalies.iter().enumerate() {
+                make_notes!(&logfile_name, args.quiet, "\t\t\t\t+ {} ({:.3})\n", a.0, a.1);
+            }
+        }
         
         /* BGEVENTS - Generate a row for the HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");

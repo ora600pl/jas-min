@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, BTreeMap};
 use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
-
+use crate::Args;
 
 fn median(data: &[f64]) -> f64 {
     let mut sorted = data.to_vec();
@@ -21,13 +21,22 @@ fn mad(data: &[f64], med: f64) -> f64 {
     median(&deviations)
 }
 
-fn get_event_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
+fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> HashMap<String, Vec<f64>> {
     //Create list of all events
-    let all_events: HashSet<String> = awrs
-                                    .iter()
-                                    .flat_map(|awr| awr.foreground_wait_events.iter())
-                                    .map(|e| e.event.clone())
-                                    .collect();
+    let mut all_events: HashSet<String> = HashSet::new();
+    if bg_or_fg == "FOREGROUND" {
+        all_events = awrs
+                    .iter()
+                    .flat_map(|awr| awr.foreground_wait_events.iter())
+                    .map(|e| e.event.clone())
+                    .collect();
+    } else if bg_or_fg == "BACKGROUND" {
+        all_events = awrs
+                    .iter()
+                    .flat_map(|awr| awr.background_wait_events.iter())
+                    .map(|e| e.event.clone())
+                    .collect();
+    }
 
     //This will hold event name and vector of values filled with 0.0 as default value
     let mut event_map: HashMap<String, Vec<f64>> = all_events
@@ -56,11 +65,13 @@ fn get_event_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
 }
 
 //Median Absolute Deviation for anomalies detection in wait events
-pub fn detect_event_anomalies_mad(awrs: &Vec<AWR>) -> BTreeMap<usize, Vec<(f64,String)>> {
-    let mut anomalies: BTreeMap<usize, Vec<(f64,String)>> = BTreeMap::new();
-    let event_map_vectors = get_event_map_vectors(awrs);
+pub fn detect_event_anomalies_mad(awrs: &Vec<AWR>, args: &Args, bg_or_fg: &str) -> HashMap<String, Vec<(String,f64)>> {
+    //let mut anomalies: BTreeMap<usize, Vec<(f64,String)>> = BTreeMap::new();
+    let mut anomalies: HashMap<String, Vec<(String,f64)>> = HashMap::new();
+    //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
+    let event_map_vectors = get_event_map_vectors(awrs, bg_or_fg);
     
-    let threshold = 7.0; //Default threshold for MAD
+    let threshold = args.mad_threshold; //Default threshold for MAD 
 
     for (event, values) in &event_map_vectors {
         let med = median(values);
@@ -74,8 +85,14 @@ pub fn detect_event_anomalies_mad(awrs: &Vec<AWR>) -> BTreeMap<usize, Vec<(f64,S
             //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
             let val_mad_check = ((val - med).abs()) / mad_val ;
             if val_mad_check > threshold { 
-                anomalies.entry(i).or_default().push((val_mad_check, event.clone()));
-            }
+                //anomalies.entry(i).or_default().push((val_mad_check, event.clone()));
+                let snap_date = awrs[i].snap_info.begin_snap_time.clone();
+                if let Some(a) = anomalies.get_mut(event) {
+                    a.push((snap_date, val_mad_check));
+                } else {
+                    anomalies.insert(event.to_string(), vec![(snap_date, val_mad_check)]);
+                }
+            } 
         }
     }
 

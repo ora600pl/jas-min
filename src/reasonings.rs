@@ -251,7 +251,7 @@ pub async fn backend_ai(reportfile: String) -> anyhow::Result<()> {
     dotenv().ok();
     let api_key = env::var("OPENAI_API_KEY").expect("You have to set OPENAI_API_KEY variable in .env");
     let assistant_id = env::var("OPENAI_ASST_ID").expect("You have to set OPENAI_ASST_ID variable in .env");
-    let bckend_port = env::var("PORT").expect("You have to set backend PORT value in .env");
+    let bckend_port = env::var("PORT").unwrap_or("3000".to_string());
 
     let state = Arc::new(AppState {
         client: reqwest::Client::new(),
