@@ -1194,6 +1194,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         );
         
         let mut sql_corr_txt: Vec<String> = Vec::new();
+        let sql_corr_txt_header = "\t\t\tCorrelations of SQL with wait events\n".to_string();
+        make_notes!(&logfile_name, args.quiet, "{}", sql_corr_txt_header.bold().blue());
         for (key,ev) in &y_vals_events_sorted {
             let crr = pearson_correlation_2v(&yv, &ev);
             let corr_text = format!("{: >32} | {: <32} : {:.2}", "+".to_string(), key.1.clone(), crr);
