@@ -939,6 +939,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
+            println!("\n");
         }
 
         /* FGEVENTS - Generate a row for the HTML table */
@@ -1068,6 +1069,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
+            println!("\n");
         }
         
         /* BGEVENTS - Generate a row for the HTML table */
