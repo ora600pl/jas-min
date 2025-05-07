@@ -26,6 +26,8 @@ use crate::reasonings::{chat_gpt, gemini};
 use crate::anomalies::*;
 
 use crate::make_notes;
+use prettytable::{Table, Row, Cell, format, Attr};
+
 
 struct TopStats {
     events: BTreeMap<String, u8>,
@@ -903,11 +905,39 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "{: >40}{: <8.2}  \t\tSTDDEV No. executions: {:.2}\n",   "--- AVG No. executions: ", &avg_exec_n, &stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
+        /* Print table of detected anomalies for given event_name (key.1)*/
         if let Some(anomalies) = top_stats.event_anomalies_mad.get(&key.1) {
             let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
-            make_notes!(&logfile_name, args.quiet, "\t\t\t{}\n",  anomalies_detection_msg);
+            make_notes!(&logfile_name, args.quiet, "\t\t{}\n",  anomalies_detection_msg);
+
+            let mut table = Table::new();
+            table.set_titles(Row::new(vec![
+                Cell::new("Date"),
+                Cell::new("MAD Score"),
+                Cell::new("Total Wait (s)"),
+                Cell::new("Waits"),
+                Cell::new("AVG Wait (ms)")
+            ]));
+
             for (i,a) in anomalies.iter().enumerate() {
-                make_notes!(&logfile_name, args.quiet, "\t\t\t\t+ {} ({:.3})\n", a.0, a.1);
+                let c_event = Cell::new(&a.0);
+                
+                let c_mad_score: Cell = Cell::new(&format!("{:.3}", a.1));
+                
+                let wait_event = collection.awrs
+                                                    .iter()
+                                                    .filter(|awr| awr.snap_info.begin_snap_time == a.0)
+                                                    .flat_map(|awr| awr.foreground_wait_events.iter())
+                                                    .find(|w| w.event == key.1).unwrap();
+                
+                let c_total_wait_s = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s));
+                let c_waits = Cell::new(&format!("{:.3}", wait_event.waits));
+                let c_avg_wait_ms = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s/(wait_event.waits as f64)*1000.0));
+
+                table.add_row(Row::new(vec![c_event,c_mad_score,c_total_wait_s,c_waits, c_avg_wait_ms]));
+            }
+            for table_line in table.to_string().lines() {
+                make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
         }
 
@@ -1004,11 +1034,39 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "{: >40}{: <8.2}  \t\tSTDDEV No. executions: {:.2}\n",   "--- AVG No. executions: ", &avg_exec_n, &stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
-        if let Some(anomalies) = top_stats.bgevent_anomalies_mad.get(&key.1) {
+         /* Print table of detected anomalies for given event_name (key.1)*/
+         if let Some(anomalies) = top_stats.event_anomalies_mad.get(&key.1) {
             let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
-            make_notes!(&logfile_name, args.quiet, "\t\t\t{}\n",  anomalies_detection_msg);
+            make_notes!(&logfile_name, args.quiet, "\t\t{}\n",  anomalies_detection_msg);
+
+            let mut table = Table::new();
+            table.set_titles(Row::new(vec![
+                Cell::new("Date"),
+                Cell::new("MAD Score"),
+                Cell::new("Total Wait (s)"),
+                Cell::new("Waits"),
+                Cell::new("AVG Wait (ms)")
+            ]));
+
             for (i,a) in anomalies.iter().enumerate() {
-                make_notes!(&logfile_name, args.quiet, "\t\t\t\t+ {} ({:.3})\n", a.0, a.1);
+                let c_event = Cell::new(&a.0);
+                
+                let c_mad_score: Cell = Cell::new(&format!("{:.3}", a.1));
+                
+                let wait_event = collection.awrs
+                                                    .iter()
+                                                    .filter(|awr| awr.snap_info.begin_snap_time == a.0)
+                                                    .flat_map(|awr| awr.background_wait_events.iter())
+                                                    .find(|w| w.event == key.1).unwrap();
+                
+                let c_total_wait_s = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s));
+                let c_waits = Cell::new(&format!("{:.3}", wait_event.waits));
+                let c_avg_wait_ms = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s/(wait_event.waits as f64)*1000.0));
+
+                table.add_row(Row::new(vec![c_event,c_mad_score,c_total_wait_s,c_waits, c_avg_wait_ms]));
+            }
+            for table_line in table.to_string().lines() {
+                make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
         }
         

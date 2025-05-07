@@ -28,3 +28,4 @@ dotenv = "0.15"
 tower-http = { version = "0.5", features = ["cors"] }
 anyhow = "1"
 qdrant-client = "1.14.0"
+prettytable = "0.10.0"
