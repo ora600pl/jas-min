@@ -41,7 +41,7 @@ fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> HashMap<String, Vec
     //This will hold event name and vector of values filled with 0.0 as default value
     let mut event_map: HashMap<String, Vec<f64>> = all_events
                                                     .iter()
-                                                    .map(|e| (e.clone(), vec![0.0; awrs.len()]))
+                                                    .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
                                                     .collect();
 
     //we are iterating over AWR
@@ -94,8 +94,7 @@ pub fn detect_event_anomalies_mad(awrs: &Vec<AWR>, args: &Args, bg_or_fg: &str) 
         for (i, &val) in values.iter().enumerate() {
             //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
             let val_mad_check = ((val - med).abs()) / mad_val ;
-            if val_mad_check > threshold { 
-                //anomalies.entry(i).or_default().push((val_mad_check, event.clone()));
+            if val_mad_check > threshold && val >= 0.0 { //Don't take into considaration negative values that are placeholders
                 let snap_date = awrs[i].snap_info.begin_snap_time.clone();
                 if let Some(a) = anomalies.get_mut(event) {
                     a.push((snap_date, val_mad_check));
