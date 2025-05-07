@@ -1035,7 +1035,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
          /* Print table of detected anomalies for given event_name (key.1)*/
-         if let Some(anomalies) = top_stats.event_anomalies_mad.get(&key.1) {
+         if let Some(anomalies) = top_stats.bgevent_anomalies_mad.get(&key.1) {
             let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
             make_notes!(&logfile_name, args.quiet, "\t\t{}\n",  anomalies_detection_msg);
 
