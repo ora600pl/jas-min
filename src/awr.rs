@@ -192,15 +192,33 @@ struct SectionIdx {
 	end: usize,
 }
 
-fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: &str) -> SectionIdx {
+fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: &str, fname: &str) -> SectionIdx {
 	let mut awr_iter: std::vec::IntoIter<&str> = awr_doc.into_iter();
-	let section_start2 = &section_start[1..section_start.len()-1];
-	let section_end2: &str = &section_end[1..section_end.len()-1];
-	let section_start = awr_iter.position(|x| x.starts_with(section_start) || x.starts_with(section_start2)).unwrap_or(0);
-	let section_end = awr_iter.position(|x: &str| x.starts_with(section_end) || x.starts_with(section_end2)).unwrap_or(0);
-	
-	let si = SectionIdx{begin: section_start, end: section_start+section_end}; 
-	si
+	let section_start_trim = &section_start[1..section_start.len()-1];
+	let section_end_trim: &str = &section_end[1..section_end.len()-1];
+	let section_start = awr_iter.position(|x| x.starts_with(section_start) || x.starts_with(section_start_trim));
+	match section_start {
+        Some(start) => {
+            // Find end position relative to start
+            let section_end = awr_iter.position(|x: &str| x.starts_with(section_end) || x.starts_with(section_end_trim));
+
+            match section_end {
+                Some(rel_end) => {
+                    let end = start + rel_end;  // Adding relative position to start
+                    SectionIdx { begin: start, end }
+                }
+                None => {
+                    eprintln!("\n{}: {} End section '{}' not found after start '{}'", "Error".bright_red(),fname.bright_magenta(), section_end_trim, section_start_trim);
+                    eprintln!("Debug: {} Start idx: {:?}, End idx: {:?}", fname, start, section_end);
+                    panic!("JAS-MIN is quitting");
+                }
+            }
+        }
+        None => {
+            eprintln!("\n{}: {} Start section '{}' not found","Error".bright_red(), fname.bright_magenta(), section_start_trim);
+            panic!("JAS-MIN is quitting");
+        }
+    }
 }
 
 fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
@@ -702,7 +720,7 @@ fn wait_events_txt(events_section: Vec<&str>) -> Vec<WaitEvents> {
 				//}
 				let avg_wait = f64::from_str(&line[57..64].trim().replace(",","")).unwrap_or(0.0);
 				let mut pct_dbtime = 0.0;
-				if line.len() > 79 {
+				if line.len() > 73 {
 					//let mut pct_dbtime_end: usize = 80;
 					//if line.len() < pct_dbtime_end {
 					//	pct_dbtime_end = line.len();
@@ -1186,7 +1204,7 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
 		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname));
     	let awr_lines = awr_rep.split("\n").collect::<Vec<&str>>();
 		let block_size = awr_lines.iter().find(|line| line.starts_with("db_block_size")).unwrap().split_whitespace().last().unwrap();
-		let mut instance_info = find_section_boundries(awr_lines.clone(), "Database    DB Id", "Snapshot       Snap Id");
+		let mut instance_info = find_section_boundries(awr_lines.clone(), "Database    DB Id", "Snapshot       Snap Id",&fname);
 		let mut instance_info_lines: Vec<&str> = Vec::new();
 		instance_info_lines.extend_from_slice(&awr_lines[instance_info.begin+2..instance_info.end]);
 		db_instance_information = instance_info_txt(instance_info_lines);
@@ -1257,19 +1275,19 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 			}
 		}
 	} else if fname.ends_with("txt") {
-		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname));
+		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname.clone()));
     	let awr_lines = awr_rep.split("\n").collect::<Vec<&str>>();
 
-		let mut snapshot_index = find_section_boundries(awr_lines.clone(), "Snapshot       Snap Id", "Cache Sizes");
+		let mut snapshot_index = find_section_boundries(awr_lines.clone(), "Snapshot       Snap Id", "Cache Sizes",&fname);
 		if snapshot_index.begin == 0 && snapshot_index.end == 0 {
-			snapshot_index = find_section_boundries(awr_lines.clone(), "              Snap Id", "Top ADDM Findings");
+			snapshot_index = find_section_boundries(awr_lines.clone(), "              Snap Id", "Top ADDM Findings",&fname);
 		}
 		let mut snap_info_lines: Vec<&str> = Vec::new();
 		snap_info_lines.extend_from_slice(&awr_lines[snapshot_index.begin..snapshot_index.end]);
 		awr.snap_info = snap_info_txt(snap_info_lines); 
 
 		let host_cpu_section_start = format!("{}{}", 12u8 as char, "Host CPU");
-		let host_cpu_index = find_section_boundries(awr_lines.clone(), &host_cpu_section_start, "Instance CPU");
+		let host_cpu_index = find_section_boundries(awr_lines.clone(), &host_cpu_section_start, "Instance CPU",&fname);
 		if host_cpu_index.begin != 0 && host_cpu_index.end != 0 {
     		let host_cpu_lines: Vec<&str> = awr_lines[host_cpu_index.begin..host_cpu_index.end+2].to_vec();
     		awr.host_cpu = host_cpu_txt(host_cpu_lines);
@@ -1280,57 +1298,57 @@ fn parse_awr_report_internal(fname: String) -> AWR {
             awr.redo_log = redo_log_switches_txt(line);
         }
 		
-		let load_profile_index = find_section_boundries(awr_lines.clone(), "Load Profile", "Instance Efficiency");
+		let load_profile_index = find_section_boundries(awr_lines.clone(), "Load Profile", "Instance Efficiency",&fname);
 		let mut load_profile_lines: Vec<&str> = Vec::new();
 		load_profile_lines.extend_from_slice(&awr_lines[load_profile_index.begin+2..load_profile_index.end]);
 		awr.load_profile = load_profile_txt(load_profile_lines);
 
-		let time_model_index = find_section_boundries(awr_lines.clone(), "Time Model", "DB time");
+		let time_model_index = find_section_boundries(awr_lines.clone(), "Time Model", "DB time",&fname);
 		let mut db_time_lines: Vec<&str> = Vec::new();
 		db_time_lines.extend_from_slice(&awr_lines[time_model_index.begin+5..time_model_index.end]);
 		awr.time_model_stats = time_model_stats_txt(db_time_lines);
 
 		let foreground_even_section_start = format!("{}{}", 12u8 as char, "Foreground Wait Events");
-		let foreground_event_index = find_section_boundries(awr_lines.clone(), &foreground_even_section_start, "Background Wait Events");
+		let foreground_event_index = find_section_boundries(awr_lines.clone(), &foreground_even_section_start, "Background Wait Events",&fname);
 		let mut foreground_events: Vec<&str> = Vec::new();
 		foreground_events.extend_from_slice(&awr_lines[foreground_event_index.begin+8..foreground_event_index.end-1]);
 		awr.foreground_wait_events = wait_events_txt(foreground_events);
 
 		let background_even_section_start = format!("{}{}", 12u8 as char, "Background Wait Events");
-		let background_event_index = find_section_boundries(awr_lines.clone(), &background_even_section_start, "Wait Events (fg and bg)");
+		let background_event_index = find_section_boundries(awr_lines.clone(), &background_even_section_start, "Wait Events (fg and bg)",&fname);
 		let mut background_events: Vec<&str> = Vec::new();
 		background_events.extend_from_slice(&awr_lines[background_event_index.begin+8..background_event_index.end-1]);
 		awr.background_wait_events = wait_events_txt(background_events);
 
 		let sql_cpu_section_start = format!("{}{}", 12u8 as char, "SQL ordered by CPU");
 		let sql_cpu_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed time");
-		let sql_cpu_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end);
+		let sql_cpu_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end,&fname);
 		let mut sql_cpu: Vec<&str> = Vec::new();
 		sql_cpu.extend_from_slice(&awr_lines[sql_cpu_index.begin..sql_cpu_index.end]);
 		awr.sql_cpu_time = sql_cpu_time_txt(sql_cpu);
 
 		let sql_gets_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
 		let sql_gets_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
-		let sql_gets_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end);
+		let sql_gets_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end,&fname);
 		let mut sql_gets: Vec<&str> = Vec::new();
 		sql_gets.extend_from_slice(&awr_lines[sql_gets_index.begin..sql_gets_index.end]);
 		awr.sql_gets = sql_gets_txt(sql_gets);
 
 		let sql_reads_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
 		let sql_reads_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Executions");
-		let sql_reads_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end);
+		let sql_reads_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end,&fname);
 		let mut sql_reads: Vec<&str> = Vec::new();
 		sql_reads.extend_from_slice(&awr_lines[sql_reads_index.begin..sql_reads_index.end]);
 		awr.sql_reads = sql_reads_txt(sql_reads);
 
 		let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed time");
 		let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
-		let mut sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end);
+		let mut sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end,&fname);
 
 		if sql_ela_index.begin == 0 || sql_ela_index.end == 0 {
 			let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed Time");
 			let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by CPU Time");
-			sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end);
+			sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end,&fname);
 		}
 
 		let mut sql_ela: Vec<&str> = Vec::new();
@@ -1339,7 +1357,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 
 		let instance_activity_start = format!("{}{}", 12u8 as char, "Instance Activity Stats");
 		let instance_activity_end = format!("{}{}", 12u8 as char, "workarea executions - optimal");
-		let instance_act_index = find_section_boundries(awr_lines.clone(), &instance_activity_start, &instance_activity_end);
+		let instance_act_index = find_section_boundries(awr_lines.clone(), &instance_activity_start, &instance_activity_end,&fname);
 		let mut inst_stats: Vec<&str> = Vec::new();
 		inst_stats.extend_from_slice(&awr_lines[instance_act_index.begin..instance_act_index.end+2]);
 		awr.key_instance_stats = instance_activity_stats_txt(inst_stats);
@@ -1362,7 +1380,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		}
 		let event_histogram_start = format!("{}{}", 12u8 as char, "Wait Event Histogram");
 		let event_histogram_end = format!("{}{}", 12u8 as char, "SQL ordered by");
-		let event_histogram_index = find_section_boundries(awr_lines.clone(), &event_histogram_start, &event_histogram_end);
+		let event_histogram_index = find_section_boundries(awr_lines.clone(), &event_histogram_start, &event_histogram_end,&fname);
 		let mut event_hist: Vec<&str> = Vec::new();
 		event_hist.extend_from_slice(&awr_lines[event_histogram_index.begin..event_histogram_index.end]);
 		let event_histogram = waitevent_histogram_ms_txt(event_hist.clone(), event_names);
