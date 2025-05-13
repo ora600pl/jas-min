@@ -1121,7 +1121,6 @@ fn instance_info(table: ElementRef, table_type: &str) -> Option<DBInstance> {
 			}
 		}
 	} else if table_type == "db_block_size"{
-		eprintln!("Detected headers: {:?}", headers);
 		if headers.len() >= 3 {
 			for row in table.select(&tr_selector).skip(1) { // Skip header row
 				let cols: Vec<String> = row.select(&td_selector)
@@ -1199,7 +1198,6 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
 						db_instance_information.db_block_size = block_size.db_block_size;
 					}
 				} else if summary == "This table displays name and value of the initialization parametersmodified by the current container" {
-					eprintln!("Found initialization parameters table");
 					if let Some(block_size) = instance_info(table,"db_block_size") {
 						db_instance_information.db_block_size = block_size.db_block_size;
 					}
