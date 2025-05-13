@@ -900,10 +900,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         // Print calculations:
         
         make_notes!(&logfile_name, args.quiet, "\t\tMarked as TOP in {:.2}% of probes\n",  (x_n.len() as f64 / x_vals.len() as f64 )* 100.0);
-        make_notes!(&logfile_name, args.quiet, "{: >43}%  {: <16.2} \tSTDDEV PCT of DB Time: {:.2}%\n",   "--- AVG PCT of DB Time (%):", &avg_exec_t, &stddev_exec_t);
-        make_notes!(&logfile_name, args.quiet, "{: >38}  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}\n",   "--- AVG Wait Time (s):",  &avg_exec_s, &stddev_exec_s);
-        make_notes!(&logfile_name, args.quiet, "{: >40}{: <8.2}  \t\tSTDDEV No. executions: {:.2}\n",   "--- AVG No. executions: ", &avg_exec_n, &stddev_exec_n);
-        make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
+        make_notes!(&logfile_name, args.quiet, "\t\t--- AVG PCT of DB Time: {:>15.2}% \tSTDDEV PCT of DB Time: {:>15.2}%\n", &avg_exec_t, &stddev_exec_t);
+        make_notes!(&logfile_name, args.quiet, "\t\t--- AVG Wait Time (s): {:>16.2} \tSTDDEV Wait Time (s): {:>16.2}\n", &avg_exec_s, &stddev_exec_s);
+        make_notes!(&logfile_name, args.quiet, "\t\t--- AVG No. executions: {:>15.2} \tSTDDEV No. executions: {:>15.2}\n", &avg_exec_n, &stddev_exec_n);
+        make_notes!(&logfile_name, args.quiet, "\t\t--- AVG wait/exec (ms): {:>15.2} \tSTDDEV wait/exec (ms): {:>15.2}\n\n", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
         /* Print table of detected anomalies for given event_name (key.1)*/
         if let Some(anomalies) = top_stats.event_anomalies_mad.get(&key.1) {
@@ -1030,11 +1030,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             make_notes!(&logfile_name, args.quiet, "{: >50}", correlation_info);
         }
         make_notes!(&logfile_name, args.quiet, "\t\tMarked as TOP in {:.2}% of probes\n",  (x_n.len() as f64 / x_vals.len() as f64 )* 100.0);
-        make_notes!(&logfile_name, args.quiet, "{: >43}  {: <16.2} \tSTDDEV PCT of DB Time: {:.2}%\n",   "--- AVG PCT of DB Time (%):", &avg_exec_t, &stddev_exec_t);
-        make_notes!(&logfile_name, args.quiet, "{: >38}  {: <16.2} \tSTDDEV Wait Time (s):  {:.2}\n",   "--- AVG Wait Time (s):",  &avg_exec_s, &stddev_exec_s);
-        make_notes!(&logfile_name, args.quiet, "{: >40}{: <8.2}  \t\tSTDDEV No. executions: {:.2}\n",   "--- AVG No. executions: ", &avg_exec_n, &stddev_exec_n);
-        make_notes!(&logfile_name, args.quiet, "{: >39} {: <16.2} \tSTDDEV wait/exec (ms): {:.2}\n\n", "--- AVG wait/exec (ms):", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
-        
+        make_notes!(&logfile_name, args.quiet, "\t\t--- AVG PCT of DB Time: {:>15.2}% \tSTDDEV PCT of DB Time: {:>15.2}%\n", &avg_exec_t, &stddev_exec_t);
+        make_notes!(&logfile_name, args.quiet, "\t\t--- AVG Wait Time (s): {:>16.2} \tSTDDEV Wait Time (s): {:>16.2}\n", &avg_exec_s, &stddev_exec_s);
+        make_notes!(&logfile_name, args.quiet, "\t\t--- AVG No. executions: {:>15.2} \tSTDDEV No. executions: {:>15.2}\n", &avg_exec_n, &stddev_exec_n);
+        make_notes!(&logfile_name, args.quiet, "\t\t--- AVG wait/exec (ms): {:>15.2} \tSTDDEV wait/exec (ms): {:>15.2}\n\n", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
          /* Print table of detected anomalies for given event_name (key.1)*/
          if let Some(anomalies) = top_stats.bgevent_anomalies_mad.get(&key.1) {
             let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
