@@ -36,6 +36,7 @@ struct TopStats {
     stat_names: BTreeMap<String, u8>,
     event_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
     bgevent_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
+    sql_elapsed_time_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
 }
 
 
@@ -121,12 +122,18 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
         bgevent_names.entry(a.0.to_string()).or_insert(1);
     }
 
+    let sql_anomalies = detect_sql_anomalies_mad(&awrs, &args, "ELAPSED_TIME");
+    for a in &sql_anomalies {
+        sql_ids.entry(a.0.to_string()).or_insert(String::new());
+    }
+
     let top: TopStats = TopStats {events: event_names, 
                                   bgevents: bgevent_names, 
                                   sqls: sql_ids, 
                                   stat_names: stat_names, 
                                   event_anomalies_mad: event_anomalies,
-                                  bgevent_anomalies_mad: bgevent_anomalies,};
+                                  bgevent_anomalies_mad: bgevent_anomalies,
+                                  sql_elapsed_time_anomalies_mad: sql_anomalies,};
     top
 }
 
@@ -1173,6 +1180,44 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "{: >38} {: <14.2} \tSTDDEV No. executions:  {:.2}\n", "--- AVG No. executions:", avg_exec_n, stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >23} {} \n", "MODULE: ", top_stats.sqls.get(&sql_id).unwrap().blue());
 
+        
+        /* Print table of detected anomalies for given SQL_ID (key.1)*/
+        if let Some(anomalies) = top_stats.sql_elapsed_time_anomalies_mad.get(&key.1) {
+            let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
+            make_notes!(&logfile_name, args.quiet, "\t\t{}\n",  anomalies_detection_msg);
+
+            let mut table = Table::new();
+            table.set_titles(Row::new(vec![
+                Cell::new("Date"),
+                Cell::new("MAD Score"),
+                Cell::new("Elapsed Time (s)"),
+                Cell::new("Executions"),
+                Cell::new("Elapsed time / exec (s)")
+            ]));
+
+            for (i,a) in anomalies.iter().enumerate() {
+                let c_event = Cell::new(&a.0);
+                
+                let c_mad_score: Cell = Cell::new(&format!("{:.3}", a.1));
+                
+                let sql_id = collection.awrs
+                                                    .iter()
+                                                    .filter(|awr| awr.snap_info.begin_snap_time == a.0)
+                                                    .flat_map(|awr| awr.sql_elapsed_time.iter())
+                                                    .find(|s| s.sql_id == key.1).unwrap();
+                
+                let c_elapsed_time = Cell::new(&format!("{:.3}", sql_id.elapsed_time_s));
+                let c_executions = Cell::new(&format!("{:.3}", sql_id.executions));
+                let c_elapsed_time_exec = Cell::new(&format!("{:.3}", sql_id.elpased_time_exec_s));
+
+                table.add_row(Row::new(vec![c_event,c_mad_score,c_elapsed_time, c_executions, c_elapsed_time_exec]));
+            }
+            for table_line in table.to_string().lines() {
+                make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
+            }
+            println!("\n");
+        }
+        
         /* SQLs - Generate a row for the HTML table */
         table_sqls.push_str(&format!(
             r#"
