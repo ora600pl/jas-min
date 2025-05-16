@@ -720,7 +720,7 @@ fn wait_events_txt(events_section: Vec<&str>) -> Vec<WaitEvents> {
 				//}
 				let avg_wait = f64::from_str(&line[57..64].trim().replace(",","")).unwrap_or(0.0);
 				let mut pct_dbtime = 0.0;
-				if line.len() > 73 {
+				if line.len() > 79 {
 					//let mut pct_dbtime_end: usize = 80;
 					//if line.len() < pct_dbtime_end {
 					//	pct_dbtime_end = line.len();

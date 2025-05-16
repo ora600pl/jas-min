@@ -462,6 +462,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut y_vals_bgevents_s: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_exec_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_exec_n: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut y_vals_sqls_exec_s: BTreeMap<String, Vec<f64>> = BTreeMap::new(); //For Elapsed Time AVG STDDEV calculations
     /********************************************/
 
     /*HashMap for calculating instance stats correlation*/
@@ -512,6 +513,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
                 y_vals_sqls_exec_t.entry(sql.to_string()).or_insert(Vec::new());
                 y_vals_sqls_exec_n.entry(sql.to_string()).or_insert(Vec::new());
+                y_vals_sqls_exec_s.entry(sql.to_string()).or_insert(Vec::new());
                 let mut v = y_vals_sqls.get_mut(sql).unwrap();
                 v.push(0.0);
             } 
@@ -577,6 +579,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                         v.push(sqls.elpased_time_exec_s);
                         let mut v = y_vals_sqls_exec_n.get_mut(&sqls.sql_id).unwrap();
                         v.push(sqls.executions as f64); 
+                        let mut v = y_vals_sqls_exec_s.get_mut(&sqls.sql_id).unwrap();
+                        v.push(sqls.elapsed_time_s as f64); 
                     }
             }
             let mut is_statspack: bool = false;
@@ -946,9 +950,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
-            println!("\n");
+        } else {
+            let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}", args.mad_threshold);
+            make_notes!(&logfile_name, args.quiet, "{}", no_anomalies_txt.green().italic());
         }
-
+        println!("\n");
         /* FGEVENTS - Generate a row for the HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         table_events.push_str(&format!(
@@ -1075,8 +1081,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
-            println!("\n");
+        } else {
+            let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}", args.mad_threshold);
+            make_notes!(&logfile_name, args.quiet, "{}", no_anomalies_txt.green().italic());
         }
+        println!("\n");
         
         /* BGEVENTS - Generate a row for the HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
@@ -1175,8 +1184,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let avg_exec_t: f64 = mean(x.clone()).unwrap();
         let stddev_exec_t: f64 = std_deviation(x.clone()).unwrap();
 
+        /* Calculate STDDEV and AVG for sqls time */
+        let x_s: Vec<f64> = y_vals_sqls_exec_s.get(&key.1.clone()).unwrap().clone();
+        let avg_exec_s: f64 = mean(x_s.clone()).unwrap();
+        let stddev_exec_s: f64 = std_deviation(x_s).unwrap();
+
         make_notes!(&logfile_name, args.quiet, "{: >24}{:.2}% of probes\n", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         make_notes!(&logfile_name, args.quiet, "{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}\n", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
+        make_notes!(&logfile_name, args.quiet, "{: >36} {: <16.2} \tSTDDEV Ela Time   : {:.2}\n", "--- AVG Ela Time (s):", avg_exec_s, stddev_exec_s);
         make_notes!(&logfile_name, args.quiet, "{: >38} {: <14.2} \tSTDDEV No. executions:  {:.2}\n", "--- AVG No. executions:", avg_exec_n, stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >23} {} \n", "MODULE: ", top_stats.sqls.get(&sql_id).unwrap().blue());
 
@@ -1192,7 +1207,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 Cell::new("MAD Score"),
                 Cell::new("Elapsed Time (s)"),
                 Cell::new("Executions"),
-                Cell::new("Elapsed time / exec (s)")
+                Cell::new("Ela time / exec (s)")
             ]));
 
             for (i,a) in anomalies.iter().enumerate() {
@@ -1215,8 +1230,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
-            println!("\n");
+        } else {
+            let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}", args.mad_threshold);
+            make_notes!(&logfile_name, args.quiet, "{}", no_anomalies_txt.green().italic());
         }
+        println!("\n");
         
         /* SQLs - Generate a row for the HTML table */
         table_sqls.push_str(&format!(
