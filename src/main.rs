@@ -6,6 +6,8 @@ use std::fs;
 use dotenv::dotenv;
 use colored::*;
 use clap::Parser;
+use rayon::ThreadPoolBuilder;
+
 
 mod awr;
 mod analyze;
@@ -68,16 +70,25 @@ struct Args {
 	 #[clap(short, long)]
 	 backend_assistant: bool,
 
-	 ///Threshold for detecting anomalies using MAD
+	///Threshold for detecting anomalies using MAD
 	 #[clap(short, long, default_value_t=7.0)]
 	 mad_threshold: f64,
+
+	///Parallelism level
+	#[clap(short = 'P', long, default_value_t=4)]
+    parallel: usize,
 }
 
 fn main() {
-	let mut 
-	reportfile: String = "".to_string();
+	let mut reportfile: String = "".to_string();
 	let args = Args::parse(); 
-	println!("{}{}","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow());
+	println!("{}{} (Running with parallel degree: {})","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow(), args.parallel);
+
+	ThreadPoolBuilder::new()
+        .num_threads(args.parallel)
+        .build_global()
+        .expect("Can't create rayon pool");
+
 	if args.file != "NO" {
 		let awr_doc = awr::parse_awr_report(&args.file, false).unwrap();
 		println!("{}", awr_doc);
