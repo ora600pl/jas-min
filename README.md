@@ -88,6 +88,9 @@ OPTIONS:
     -m, --mad-threshold <MAD_THRESHOLD>
           Threshold for detecting anomalies using MAD [default: 7]
 
+    -P, --parallel <PARALLEL>
+          Parallelism level [default: 4]
+
     -V, --version
             Print version information
     
