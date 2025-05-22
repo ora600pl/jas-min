@@ -1465,7 +1465,7 @@ pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
         )
         .collect();
 
-    pb.finish_with_message("Parsowanie zakończone 🎉");
+    pb.finish_with_message("Finished parsing! 🎉");
 
 	println!("");
 	awr_vec.sort_by_key(|a| a.snap_info.begin_snap_id);
