@@ -6,7 +6,7 @@ use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, 
 use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -1331,6 +1331,71 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         "#,
         table_sqls
     );
+
+
+    /* Load Profile Anomalies detection and report */
+    make_notes!(&logfile_name, args.quiet, "\nLoad Profile Anomalies detection using Median Absolute Deviation threshold: {}\n", args.mad_threshold);
+    make_notes!(&logfile_name, args.quiet, "-----------------------------------------------------------------------------------\n");
+    
+    let all_loadprofile: HashSet<String> = collection.awrs
+                                                .iter()
+                                                .flat_map(|awr| &awr.load_profile)
+                                                .map(|l| l.stat_name.clone())
+                                                .collect();
+    let profile_anomalies = detect_loadprofile_anomalies_mad(&collection.awrs, &args);
+    for l in all_loadprofile {
+        let stat_name = l.bold();
+        let per_second_v: Vec<f64>      = collection.awrs
+                                                .iter()
+                                                .flat_map(|awr| &awr.load_profile)
+                                                .filter(|lp| lp.stat_name == l)
+                                                .map(|flp| flp.per_second)
+                                                .collect();
+        let mean_per_s = mean(per_second_v).unwrap_or(0.0);
+
+        if let Some(anomalies) = profile_anomalies.get(&l) {
+            let mut table = Table::new();
+            table.set_titles(Row::new(vec![
+                Cell::new("Date"),
+                Cell::new("MAD Score"),
+                Cell::new("MAD Threshold"),
+                Cell::new("Per Second"),
+                Cell::new("AVG Per Second"),
+            ]));
+            
+            let anomalies_str = format!("\tAnomalies detected for \"{}\", AVG per second value was: {:.2}", stat_name, mean_per_s).red();
+            make_notes!(&logfile_name, args.quiet, "\n\n{}\n", anomalies_str);
+            for a in anomalies {
+                
+                let per_second_this_date = collection.awrs
+                                                            .iter()
+                                                            .find(|awr| awr.snap_info.begin_snap_time == a.0)
+                                                            .unwrap()
+                                                            .load_profile
+                                                            .iter()
+                                                            .find(|lp| lp.stat_name == l)
+                                                            .map(|lpf| lpf.per_second)
+                                                            .unwrap_or(0.0);
+
+                let c_date = Cell::new(&a.0);
+                let c_mad = Cell::new(&format!("{:.2}", a.1));
+                let c_per_second = Cell::new(&format!("{}",per_second_this_date));
+                let c_avg_per_second = Cell::new(&format!("{:.2}", mean_per_s));
+                let c_mad_threshold = Cell::new(&format!("{}", args.mad_threshold));
+                table.add_row(Row::new(vec![c_date, c_mad, c_mad_threshold, c_per_second, c_avg_per_second]));
+            }
+            for table_line in table.to_string().lines() {
+                make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
+            }
+        } else {
+            let no_anomalies_str = format!("\tNo anomalies detected for {}, AVG per second value was: {:.2}", stat_name, mean_per_s).green();
+            make_notes!(&logfile_name, args.quiet, "\n\n{}\n", no_anomalies_str);
+        }
+    }
+    /***********************************************/
+
+
+
 
     // STATISTICS Correltation to DBTime
 

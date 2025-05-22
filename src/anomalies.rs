@@ -115,6 +115,44 @@ fn get_sql_map_vectors(awrs: &Vec<AWR>, sql_type: &str) -> HashMap<String, Vec<f
     sql_map
 }
 
+fn get_loadprofile_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
+    //Create list of all SQLs
+    let all_loadprofile: HashSet<String> = awrs
+                    .iter()
+                    .flat_map(|awr| awr.load_profile.iter())
+                    .map(|l| l.stat_name.clone())
+                    .collect();
+    
+
+    //This will hold load profile stat name and vector of values filled with -1.0 as default value
+    let mut profile_map: HashMap<String, Vec<f64>> = all_loadprofile
+                                                    .iter()
+                                                    .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+                                                    .collect();
+
+    //we are iterating over AWR
+    for (i, awr) in awrs.iter().enumerate() {
+        let mut snapshot_map: HashMap<&String, f64> = HashMap::new();
+
+        
+        snapshot_map = awr
+                        .load_profile
+                        .iter()
+                        .map(|l| (&l.stat_name, l.per_second))
+                        .collect();
+        
+
+        //Let's go through all of the load profile stats
+        for l in &all_loadprofile {
+            //If some event name exists in this snapshot, set actual value in the map, instead of -1.0
+            if let Some(&val) = snapshot_map.get(l) {
+                profile_map.get_mut(l).unwrap()[i] = val;
+            }
+        }
+    }
+    profile_map
+}
+
 //Median Absolute Deviation for anomalies detection in wait events
 pub fn detect_event_anomalies_mad(awrs: &Vec<AWR>, args: &Args, bg_or_fg: &str) -> HashMap<String, Vec<(String,f64)>> {
     //let mut anomalies: BTreeMap<usize, Vec<(f64,String)>> = BTreeMap::new();
@@ -176,6 +214,42 @@ pub fn detect_sql_anomalies_mad(awrs: &Vec<AWR>, args: &Args, sql_type: &str) ->
                     a.push((snap_date, val_mad_check));
                 } else {
                     anomalies.insert(sql.to_string(), vec![(snap_date, val_mad_check)]);
+                }
+            } 
+        }
+    }
+
+    anomalies
+}
+
+
+
+//Median Absolute Deviation for anomalies detection in Load Profile
+pub fn detect_loadprofile_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap<String, Vec<(String,f64)>> {
+    //let mut anomalies: BTreeMap<usize, Vec<(f64,String)>> = BTreeMap::new();
+    let mut anomalies: HashMap<String, Vec<(String,f64)>> = HashMap::new();
+    //                          stat_name    date   mad => for each Load Profile Stat it will collect date of anomaly and value of MAD
+    let loadprofile_map_vectors = get_loadprofile_map_vectors(awrs);
+    
+    let threshold = args.mad_threshold; //Default threshold for MAD 
+
+    for (l, values) in &loadprofile_map_vectors {
+        let med = median(values);
+        let mad_val = mad(values, med);
+
+        if mad_val == 0.0 {
+            continue; // no nomalies - just move on
+        }
+
+        for (i, &val) in values.iter().enumerate() {
+            //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
+            let val_mad_check = ((val - med).abs()) / mad_val ;
+            if val_mad_check > threshold && val >= 0.0 { //Don't take into considaration negative values that are placeholders
+                let snap_date = awrs[i].snap_info.begin_snap_time.clone();
+                if let Some(a) = anomalies.get_mut(l) {
+                    a.push((snap_date, val_mad_check));
+                } else {
+                    anomalies.insert(l.to_string(), vec![(snap_date, val_mad_check)]);
                 }
             } 
         }
