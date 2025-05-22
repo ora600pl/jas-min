@@ -10,6 +10,12 @@ use std::str::FromStr;
 use std::collections::{BTreeMap, HashMap};
 use std::char;
 use std::io::{self, Write};
+use rayon::prelude::*;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+
 use crate::analyze::plot_to_file;
 use crate::idleevents::is_idle;
 use crate::Args;
@@ -1416,29 +1422,51 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		awr.foreground_wait_events[fwi].begin_snap_time = awr.snap_info.begin_snap_time.clone();
 	}
 	awr.status = "OK".to_string();
+	awr.file_name = fname.clone();
 	awr
 }
 
 
 pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
 	println!("{}","\n==== PARSING DIRECTORY DATA ===".bright_cyan());
-	let mut awr_vec: Vec<AWR> = Vec::new();
+	//let mut awr_vec: Vec<AWR> = Vec::new();
+	let mut file_collection: Vec<String> = Vec::new();
 	let mut is_instance_info: Option<DBInstance> = None; // to grab DBInstance info from the first file
 	for file in fs::read_dir(&args.directory).unwrap() {
-		let fname = &file.unwrap().path().display().to_string();
-		if fname.ends_with(".txt") || fname.ends_with(".html") {
-			let file_name = fname.split("/").collect::<Vec<&str>>();
-			let file_name = file_name.last().unwrap().to_string();
+		let fname: &String = &file.unwrap().path().display().to_string();
+		let file_name = fname.split("/").collect::<Vec<&str>>();
+		let file_name = file_name.last().unwrap().to_string();
+		if !file_name.starts_with(".") && (file_name.ends_with(".txt") || file_name.ends_with(".html")) {
 			if is_instance_info.is_none() {
                 is_instance_info = Some(parse_db_instance_information(fname.to_string()));
             }
-			let mut awr_doc = parse_awr_report_internal(fname.to_string());
-			awr_doc.file_name = file_name;
-			awr_vec.push(awr_doc);
-			print!("\rNumber of reports parsed: {}", awr_vec.len().clone());
-            io::stdout().flush().unwrap();
+			file_collection.push(fname.clone()); 
 		}
     }
+
+	let pb = ProgressBar::new(file_collection.len() as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%)")
+        .unwrap()
+        .progress_chars("##-"));
+
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut awr_vec: Vec<AWR> = file_collection
+        .par_iter()
+        .map_init(
+            || Arc::clone(&counter),
+            |counter, f| {
+                let result = parse_awr_report_internal(f.to_string());
+                let prev = counter.fetch_add(1, Ordering::Relaxed);
+                pb.set_position((prev + 1) as u64);
+                result
+            },
+        )
+        .collect();
+
+    pb.finish_with_message("Parsowanie zakończone 🎉");
+
 	println!("");
 	awr_vec.sort_by_key(|a| a.snap_info.begin_snap_id);
     let collection = AWRSCollection {
