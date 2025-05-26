@@ -7,6 +7,7 @@ use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::format;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -871,6 +872,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut table_sqls: String = String::new();
     let mut table_stat_corr: String = String::new();
 
+    //This will hold anomalies summary join table indexed by (begin_snap_id, begin_snap_time) with anomalies value
+    // like (42,12-Mar-2025 13:00:00) WAIT:db file sequential read (MAD,AVG,etc...)
+    let mut anomalies_summary: BTreeMap<(u64, String), Vec<String>> = BTreeMap::new();
+
     //println!("{}","Foreground Wait Events");
     make_notes!(&logfile_name, false, "{}\n","Foreground Wait Events");
     for (key, yv) in &y_vals_events_sorted {
@@ -943,9 +948,19 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 
                 let c_total_wait_s = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s));
                 let c_waits = Cell::new(&format!("{:.3}", wait_event.waits));
-                let c_avg_wait_ms = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s/(wait_event.waits as f64)*1000.0));
+                let avg_wait_ms = wait_event.total_wait_time_s/(wait_event.waits as f64)*1000.0;
+                let c_avg_wait_ms = Cell::new(&format!("{:.3}", avg_wait_ms));
 
                 table.add_row(Row::new(vec![c_event,c_mad_score,c_total_wait_s,c_waits, c_avg_wait_ms]));
+
+                let begin_snap_id = collection.awrs
+                                                    .iter()
+                                                    .find_map(|awr| {
+                                                        (awr.snap_info.begin_snap_time == a.0)
+                                                            .then(|| awr.snap_info.begin_snap_id)
+                                                    }).unwrap();
+
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("EVENT:    {}", key.1));
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
@@ -1077,6 +1092,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let c_avg_wait_ms = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s/(wait_event.waits as f64)*1000.0));
 
                 table.add_row(Row::new(vec![c_event,c_mad_score,c_total_wait_s,c_waits, c_avg_wait_ms]));
+
+                let begin_snap_id = collection.awrs
+                                                    .iter()
+                                                    .find_map(|awr| {
+                                                        (awr.snap_info.begin_snap_time == a.0)
+                                                            .then(|| awr.snap_info.begin_snap_id)
+                                                    }).unwrap();
+
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("BGEVENT:  {}", key.1));
+
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
@@ -1226,6 +1251,15 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let c_elapsed_time_exec = Cell::new(&format!("{:.3}", sql_id.elpased_time_exec_s));
 
                 table.add_row(Row::new(vec![c_event,c_mad_score,c_elapsed_time, c_executions, c_elapsed_time_exec]));
+
+                let begin_snap_id = collection.awrs
+                                                    .iter()
+                                                    .find_map(|awr| {
+                                                        (awr.snap_info.begin_snap_time == a.0)
+                                                            .then(|| awr.snap_info.begin_snap_id)
+                                                    }).unwrap();
+
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("SQL:      {}", key.1));
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
@@ -1383,6 +1417,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let c_avg_per_second = Cell::new(&format!("{:.2}", mean_per_s));
                 let c_mad_threshold = Cell::new(&format!("{}", args.mad_threshold));
                 table.add_row(Row::new(vec![c_date, c_mad, c_mad_threshold, c_per_second, c_avg_per_second]));
+
+                let begin_snap_id = collection.awrs
+                                                    .iter()
+                                                    .find_map(|awr| {
+                                                        (awr.snap_info.begin_snap_time == a.0)
+                                                            .then(|| awr.snap_info.begin_snap_id)
+                                                    }).unwrap();
+
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("LP:       {}", l.clone()));
+
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
@@ -1393,8 +1437,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         }
     }
     /***********************************************/
-
-
 
 
     // STATISTICS Correltation to DBTime
@@ -1673,6 +1715,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     .range_mode(RangeMode::ToZero)
                     .show_grid(false),
     );
+
+    /*Report anomalies summary*/
+    report_anomalies_summary(anomalies_summary, &args, &logfile_name);
+    /*************************/
+
     println!("{}","Generating Plots");
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);

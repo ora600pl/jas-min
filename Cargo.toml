@@ -12,7 +12,6 @@ scraper = "0.23.1"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 execute = "0.2.11"
-linked-hash-map = { version = "0.5.6", features = ["serde_impl"] }
 base64 = "0.21.0"
 clap = { version = "4.5.31", features = ["derive"] }
 plotly = "0.12.1"
