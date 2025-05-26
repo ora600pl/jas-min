@@ -866,7 +866,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     plot_highlight.add_trace(redo_mb_box_plot);
 
     // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
+    let mut anomalies_html = String::new();
     let mut table_events: String = String::new();
+    let mut table_anomalies: String = String::new();
     let mut table_bgevents: String = String::new();
     let mut table_sqls: String = String::new();
     let mut table_stat_corr: String = String::new();
@@ -917,19 +919,24 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "\t\t--- AVG wait/exec (ms): {:>15.2} \tSTDDEV wait/exec (ms): {:>15.2}\n\n", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
         /* Print table of detected anomalies for given event_name (key.1)*/
+
+        let anomaly_id = format!("mad_{}", &event_name);
+        let mut anomalies_flag: bool = false;
+
         if let Some(anomalies) = top_stats.event_anomalies_mad.get(&key.1) {
             let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
+            anomalies_flag = true;
             make_notes!(&logfile_name, args.quiet, "\t\t{}\n",  anomalies_detection_msg);
-
+            
             let mut table = Table::new();
             table.set_titles(Row::new(vec![
-                Cell::new("Date"),
-                Cell::new("MAD Score"),
-                Cell::new("Total Wait (s)"),
-                Cell::new("Waits"),
-                Cell::new("AVG Wait (ms)")
-            ]));
-
+                    Cell::new("Date"),
+                    Cell::new("MAD Score"),
+                    Cell::new("Total Wait (s)"),
+                    Cell::new("Waits"),
+                    Cell::new("AVG Wait (ms)")
+                ]));
+            
             for (i,a) in anomalies.iter().enumerate() {
                 let c_event = Cell::new(&a.0);
                 
@@ -945,17 +952,29 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let c_waits = Cell::new(&format!("{:.3}", wait_event.waits));
                 let c_avg_wait_ms = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s/(wait_event.waits as f64)*1000.0));
 
-                table.add_row(Row::new(vec![c_event,c_mad_score,c_total_wait_s,c_waits, c_avg_wait_ms]));
+                table.add_row(Row::new(vec![c_event.clone(),c_mad_score.clone(),c_total_wait_s.clone(),c_waits.clone(), c_avg_wait_ms.clone()]));
+                table_anomalies.push_str(&format!(
+                    r#"<tr>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                    </tr>"#,
+                    c_event.to_string(),c_mad_score.to_string(),c_total_wait_s.to_string(),c_waits.to_string(), c_avg_wait_ms.to_string()
+                ));
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
         } else {
             let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}\n", args.mad_threshold);
+            anomalies_flag = false;
             make_notes!(&logfile_name, args.quiet, "{}", no_anomalies_txt.green().italic());
         }
         make_notes!(&logfile_name, args.quiet,"\n");
-        /* FGEVENTS - Generate a row for the HTML table */
+        
+        /* FGEVENTS - Generate a row for the Main HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         table_events.push_str(&format!(
             r#"
@@ -971,6 +990,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
+                <td>{}</td>
             </tr>
             "#,
             safe_event_name,
@@ -980,10 +1000,41 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             avg_exec_n, stddev_exec_n,  // Execution times
             avg_wait_per_exec_ms, stddev_wait_per_exec_ms,  // Wait per exec (ms)
             corr,
-            (x_n.len() as f64 / x_vals.len() as f64 )* 100.0
+            (x_n.len() as f64 / x_vals.len() as f64 )* 100.0,
+            if anomalies_flag {
+                format!(r#"<a href="javascript:void(0);" onclick="toggleRow('{}')" class="nav-link" style="font-weight: bold">Yes</a>"#, anomaly_id)
+            } else {
+                "No".to_string()
+            }
         ));
+        // Include: the collapsible anomaly table row
+        if anomalies_flag {
+            table_events.push_str(&format!(
+                r#"<tr id="{0}" style="display: none;">
+                    <td colspan="13">
+                        <table class="inner-anomalies-table">
+                            <thead>
+                                <tr>
+                                    <th onclick="sortTable('{0}',0)" style="cursor: pointer;">Date</th>
+                                    <th onclick="sortTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
+                                    <th onclick="sortTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
+                                    <th onclick="sortTable('{0}',3)" style="cursor: pointer;">Waits</th>
+                                    <th onclick="sortTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {1}
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>"#,
+                anomaly_id,
+                table_anomalies
+        ))};
+        table_anomalies = "".to_string();
+        anomalies_flag = false;
     }
-    
+      /* FGEVENTS Anomalies Sub Tables  */
     let event_table_html: String = format!(
         r#"
         <table id="events-table">
@@ -1000,6 +1051,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     <th onclick="sortTable('events-table',8)" style="cursor: pointer;">STDDEV Wait per Exec (ms)</th>
                     <th onclick="sortTable('events-table',9)" style="cursor: pointer;">Correlation of DBTime</th>
                     <th onclick="sortTable('events-table',10)" style="cursor: pointer;">TOP in % Probes</th>
+                    <th onclick="sortTable('events-table',11)" style="cursor: pointer;">Anomalies</th>
                 </tr>
             </thead>
             <tbody>
@@ -1048,8 +1100,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "\t\t--- AVG No. executions: {:>15.2} \tSTDDEV No. executions: {:>15.2}\n", &avg_exec_n, &stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "\t\t--- AVG wait/exec (ms): {:>15.2} \tSTDDEV wait/exec (ms): {:>15.2}\n\n", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
          /* Print table of detected anomalies for given event_name (key.1)*/
-         if let Some(anomalies) = top_stats.bgevent_anomalies_mad.get(&key.1) {
+        let anomaly_id = format!("mad_{}", &event_name);
+        let mut anomalies_flag: bool = false;
+
+        if let Some(anomalies) = top_stats.bgevent_anomalies_mad.get(&key.1) {
             let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
+            anomalies_flag = true;
             make_notes!(&logfile_name, args.quiet, "\t\t{}\n",  anomalies_detection_msg);
 
             let mut table = Table::new();
@@ -1076,13 +1132,24 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let c_waits = Cell::new(&format!("{:.3}", wait_event.waits));
                 let c_avg_wait_ms = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s/(wait_event.waits as f64)*1000.0));
 
-                table.add_row(Row::new(vec![c_event,c_mad_score,c_total_wait_s,c_waits, c_avg_wait_ms]));
+                table.add_row(Row::new(vec![c_event.clone(),c_mad_score.clone(),c_total_wait_s.clone(),c_waits.clone(), c_avg_wait_ms.clone()]));
+                table_anomalies.push_str(&format!(
+                    r#"<tr>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                    </tr>"#,
+                    c_event.to_string(),c_mad_score.to_string(),c_total_wait_s.to_string(),c_waits.to_string(), c_avg_wait_ms.to_string()
+                ));
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
         } else {
             let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}\n", args.mad_threshold);
+            anomalies_flag = false;
             make_notes!(&logfile_name, args.quiet, "{}", no_anomalies_txt.green().italic());
         }
         make_notes!(&logfile_name, args.quiet,"\n");
@@ -1103,6 +1170,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
+                <td>{}</td>
             </tr>
             "#,
             safe_event_name,
@@ -1112,8 +1180,39 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             avg_exec_n, stddev_exec_n,  // Execution times
             avg_wait_per_exec_ms, stddev_wait_per_exec_ms,  // Wait per exec (ms)
             corr,
-            (x_n.len() as f64 / x_vals.len() as f64 )* 100.0
+            (x_n.len() as f64 / x_vals.len() as f64 )* 100.0,
+            if anomalies_flag {
+                format!(r#"<a href="javascript:void(0);" onclick="toggleRow('{}')" class="nav-link" style="font-weight: bold">Yes</a>"#, anomaly_id)
+            } else {
+                "No".to_string()
+            }
         ));
+        // Include: the collapsible anomaly table row
+        if anomalies_flag {
+            table_bgevents.push_str(&format!(
+                r#"<tr id="{0}" style="display: none;">
+                    <td colspan="13">
+                        <table class="inner-anomalies-table">
+                            <thead>
+                                <tr>
+                                    <th onclick="sortTable('{0}',0)" style="cursor: pointer;">Date</th>
+                                    <th onclick="sortTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
+                                    <th onclick="sortTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
+                                    <th onclick="sortTable('{0}',3)" style="cursor: pointer;">Waits</th>
+                                    <th onclick="sortTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {1}
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>"#,
+                anomaly_id,
+                table_anomalies
+        ))};
+        table_anomalies = "".to_string();
+        anomalies_flag = false;
     }
     let bgevent_table_html: String = format!(
         r#"
@@ -1131,6 +1230,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     <th onclick="sortTable('bgevents-table',8)" style="cursor: pointer;">STDDEV Wait per Exec (ms)</th>
                     <th onclick="sortTable('bgevents-table',9)" style="cursor: pointer;">Correlation of DBTime</th>
                     <th onclick="sortTable('bgevents-table',10)" style="cursor: pointer;">TOP in % Probes</th>
+                    <th onclick="sortTable('bgevents-table',11)" style="cursor: pointer;">Anomalies</th>
                 </tr>
             </thead>
             <tbody>
@@ -1197,8 +1297,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
         
         /* Print table of detected anomalies for given SQL_ID (key.1)*/
+        let anomaly_id = format!("mad_{}", &sql_id);
+        let mut anomalies_flag: bool = false;
+
         if let Some(anomalies) = top_stats.sql_elapsed_time_anomalies_mad.get(&key.1) {
             let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
+            anomalies_flag = true;
             make_notes!(&logfile_name, args.quiet, "\t\t{}\n",  anomalies_detection_msg);
 
             let mut table = Table::new();
@@ -1225,13 +1329,24 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let c_executions = Cell::new(&format!("{:.3}", sql_id.executions));
                 let c_elapsed_time_exec = Cell::new(&format!("{:.3}", sql_id.elpased_time_exec_s));
 
-                table.add_row(Row::new(vec![c_event,c_mad_score,c_elapsed_time, c_executions, c_elapsed_time_exec]));
+                table.add_row(Row::new(vec![c_event.clone(),c_mad_score.clone(),c_elapsed_time.clone(), c_executions.clone(), c_elapsed_time_exec.clone()]));
+                table_anomalies.push_str(&format!(
+                    r#"<tr>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                    </tr>"#,
+                    c_event.to_string(),c_mad_score.to_string(),c_elapsed_time.to_string(), c_executions.to_string(), c_elapsed_time_exec.to_string()
+                ));
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
         } else {
             let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}\n", args.mad_threshold);
+            anomalies_flag = false;
             make_notes!(&logfile_name, args.quiet, "{}", no_anomalies_txt.green().italic());
         }
         make_notes!(&logfile_name, args.quiet,"\n");
@@ -1247,15 +1362,47 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
+                <td>{}</td>
             </tr>
             "#,
                 &sql_id, &sql_id,
                 avg_exec_t, stddev_exec_t,  // PCT of DB Time
                 avg_exec_n, stddev_exec_n,  // Execution times
                 corr,
-                (x.len() as f64 / x_vals.len() as f64 )* 100.0
+                (x.len() as f64 / x_vals.len() as f64 )* 100.0,
+                if anomalies_flag {
+                    format!(r#"<a href="javascript:void(0);" onclick="toggleRow('{}')" class="nav-link" style="font-weight: bold">Yes</a>"#, anomaly_id)
+                } else {
+                    "No".to_string()
+                }
             )
         );
+        // Include: the collapsible anomaly table row
+        if anomalies_flag {
+            table_sqls.push_str(&format!(
+                r#"<tr id="{0}" style="display: none;">
+                    <td colspan="13">
+                        <table class="inner-anomalies-table">
+                            <thead>
+                                <tr>
+                                    <th onclick="sortTable('{0}',0)" style="cursor: pointer;">Date</th>
+                                    <th onclick="sortTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
+                                    <th onclick="sortTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
+                                    <th onclick="sortTable('{0}',3)" style="cursor: pointer;">Waits</th>
+                                    <th onclick="sortTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {1}
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>"#,
+                anomaly_id,
+                table_anomalies
+        ))};
+        table_anomalies = "".to_string();
+        anomalies_flag = false;
         
         let mut sql_corr_txt: Vec<String> = Vec::new();
         let sql_corr_txt_header = "\t\t\tCorrelations of SQL with wait events\n".to_string();
@@ -1322,6 +1469,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     <th onclick="sortTable('sqls-table',4)" style="cursor: pointer;">STDDEV No. executions</th>
                     <th onclick="sortTable('sqls-table',5)" style="cursor: pointer;">Correlation of DBTime</th>
                     <th onclick="sortTable('sqls-table',6)" style="cursor: pointer;">TOP in % Probes</th>
+                    <th onclick="sortTable('sqls-table',7)" style="cursor: pointer;">Anomalies</th>
                 </tr>
             </thead>
             <tbody>
@@ -1465,7 +1613,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     tbody.innerHTML = "";
                     rows.forEach(row => tbody.appendChild(row));
                 }}
-        </script>
+            </script>
         </head>
         <body>
             <div class="content">
@@ -1785,6 +1933,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             }});
             tbody.innerHTML = "";
             rows.forEach(row => tbody.appendChild(row));
+        }}
+        function toggleRow(id) {{
+            const row = document.getElementById(id);
+            if (row.style.display === 'none') {{
+                row.style.display = 'table-row';
+            }} else {{
+                row.style.display = 'none';
+            }}
         }}
         </script>"#,bckend_port
     );
