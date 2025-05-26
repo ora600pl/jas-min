@@ -1685,20 +1685,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let last_snap_time: String = collection.awrs.last().unwrap().snap_info.end_snap_time.clone();
     let db_instance_info_html: String = format!(
         "<div id=\"db-instance-info\" style=\"margin-bottom: 20px;\">
-            <span><strong>DB ID:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Platform:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Release:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Startup Time:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;RAC:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Instance Number:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;CPUs:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Cores:</strong> {}</span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Sockets:</strong> {} </span>
-            <span> <strong>&nbsp;&nbsp;&nbsp;Memory (G):</strong> {} </span>
             <span style=\"margin-left: auto;\"> <strong>JAS-MIN</strong> v{}&nbsp;&nbsp;&nbsp</span>
+            <br>
+            <span style=\"width: 100%; text-align: center;\"><strong>DB ID:</strong> {}&nbsp;&nbsp;&nbsp<strong>Platform:</strong> {}&nbsp;&nbsp;&nbsp<strong>Release:</strong> {}&nbsp;&nbsp;&nbsp<strong>Startup Time:</strong> {}&nbsp;&nbsp;&nbsp<strong>RAC:</strong> {}&nbsp;&nbsp;&nbsp<strong>Instance Number:</strong> {}&nbsp;&nbsp;&nbsp<strong>CPUs:</strong> {}&nbsp;&nbsp;&nbsp<strong>Cores:</strong> {}&nbsp;&nbsp;&nbsp<strong>Sockets:</strong> {}&nbsp;&nbsp;&nbsp<strong>Memory (G):</strong> {}</span>
             <br>
             <span style=\"width: 100%; text-align: center;\"><strong>Snap range:</strong> {} - {}</span>
     </div>",
+        env!("CARGO_PKG_VERSION"),
         collection.db_instance_information.db_id,
         collection.db_instance_information.platform,
         collection.db_instance_information.release,
@@ -1709,7 +1702,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         collection.db_instance_information.cores,
         collection.db_instance_information.sockets,
         collection.db_instance_information.memory,
-        env!("CARGO_PKG_VERSION"),
         first_snap_time,
         last_snap_time
     );
