@@ -951,10 +951,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
         } else {
-            let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}", args.mad_threshold);
+            let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}\n", args.mad_threshold);
             make_notes!(&logfile_name, args.quiet, "{}", no_anomalies_txt.green().italic());
         }
-        println!("\n");
+        make_notes!(&logfile_name, args.quiet,"\n");
         /* FGEVENTS - Generate a row for the HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         table_events.push_str(&format!(
@@ -1082,10 +1082,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
         } else {
-            let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}", args.mad_threshold);
+            let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}\n", args.mad_threshold);
             make_notes!(&logfile_name, args.quiet, "{}", no_anomalies_txt.green().italic());
         }
-        println!("\n");
+        make_notes!(&logfile_name, args.quiet,"\n");
         
         /* BGEVENTS - Generate a row for the HTML table */
         let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
@@ -1231,10 +1231,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
         } else {
-            let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}", args.mad_threshold);
+            let no_anomalies_txt = format!("\t\tNo anomalies detected based on MAD threshold: {}\n", args.mad_threshold);
             make_notes!(&logfile_name, args.quiet, "{}", no_anomalies_txt.green().italic());
         }
-        println!("\n");
+        make_notes!(&logfile_name, args.quiet,"\n");
         
         /* SQLs - Generate a row for the HTML table */
         table_sqls.push_str(&format!(
@@ -1363,7 +1363,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 Cell::new("AVG Per Second"),
             ]));
             
-            let anomalies_str = format!("\tAnomalies detected for \"{}\", AVG per second value was: {:.2}", stat_name, mean_per_s).red();
+            let anomalies_str = format!("\tAnomalies detected for \"{}\", AVG value per second is: {:.2}", stat_name, mean_per_s).red();
             make_notes!(&logfile_name, args.quiet, "\n\n{}\n", anomalies_str);
             for a in anomalies {
                 
@@ -1388,7 +1388,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
             }
         } else {
-            let no_anomalies_str = format!("\tNo anomalies detected for {}, AVG per second value was: {:.2}", stat_name, mean_per_s).green();
+            let no_anomalies_str = format!("\tNo anomalies detected for \"{}\", AVG value per second iss: {:.2}", stat_name, mean_per_s).green();
             make_notes!(&logfile_name, args.quiet, "\n\n{}\n", no_anomalies_str);
         }
     }
