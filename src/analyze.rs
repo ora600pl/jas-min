@@ -1,8 +1,8 @@
 use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 
 use plotly::color::NamedColor;
-use plotly::{Plot, Histogram, BoxPlot, Scatter};
-use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker};
+use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap};
+use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale};
 use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
 
@@ -275,11 +275,36 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
 
     // Group data by event
     let mut data_by_event: HashMap<String, (Vec<f64>, BTreeMap<String, Vec<f32>>)> = HashMap::new();
-    for event in filtered_events {
-        let entry = data_by_event.entry(event.event.clone()).or_insert_with(|| (Vec::new(), BTreeMap::new()));
-        entry.0.push(event.pct_dbtime); // Add pct_dbtime
-        for (bucket, value) in &event.waitevent_histogram_ms { // Add waitevent_histogram_ms
-            entry.1.entry(bucket.clone()).or_insert_with(Vec::new).push(*value);
+    let mut heatmap_data: HashMap<String, Vec<(String, HashMap<String, f32>)>> = HashMap::new();
+
+    for awr in awrs {
+        let snap_time = awr.snap_info.begin_snap_time.clone();
+        let events = if is_fg {
+            &awr.foreground_wait_events
+        } else {
+            &awr.background_wait_events
+        };
+
+        for event in events {
+            if !top_events.contains_key(&event.event) {
+                continue;
+            }
+            // Fill heatmap_data
+            let mut histogram: HashMap<String, f32> = HashMap::new();
+            for (bucket, value) in &event.waitevent_histogram_ms {
+                histogram.insert(bucket.clone(), *value);
+            }
+            heatmap_data
+                .entry(event.event.clone())
+                .or_insert_with(Vec::new)
+                .push((snap_time.clone(), histogram.clone()));
+
+            // Fill data_by_event
+            let entry = data_by_event.entry(event.event.clone()).or_insert_with(|| (Vec::new(), BTreeMap::new()));
+            entry.0.push(event.pct_dbtime); // Add pct_dbtime
+            for (bucket, value) in &event.waitevent_histogram_ms {
+                entry.1.entry(bucket.clone()).or_insert_with(Vec::new).push(*value);
+            }
         }
     }
 
@@ -287,24 +312,60 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
     for (event, (pct_dbtime_values, histogram_data)) in data_by_event {
         let mut plot: Plot = Plot::new();
         let event_name: String = format!("{}",&event);
+        
+        // Add HeatMap plot
+        if let Some(records) = heatmap_data.get(&event) {
+            let x_labels: Vec<String> = records.iter().map(|(ts, _)| ts.clone()).collect();
+        
+            let all_buckets: Vec<&str> = vec![
+                "0: <512us",
+                "1: <1ms",
+                "2: <2ms",
+                "3: <4ms",
+                "4: <8ms",
+                "5: <16ms",
+                "6: <32ms",
+                "7: >=32ms",
+                "8: >1s",
+            ];
+        
+            let mut z_matrix: Vec<Vec<f32>> = Vec::new();
+            for bucket in &all_buckets {
+                let row: Vec<f32> = records
+                    .iter()
+                    .map(|(_, histogram)| *histogram.get(*bucket).unwrap_or(&0.0))
+                    .collect();
+                z_matrix.push(row);
+            }
+        
+            let heatmap = HeatMap::new(x_labels.clone(), all_buckets.clone(), z_matrix)
+                .x_axis("x1")
+                .y_axis("y1")
+                .hover_on_gaps(true)
+                .show_legend(false)
+                .show_scale(false);
+        
+            plot.add_trace(heatmap);
+        }
+        
         //Add Histogram for DBTime
         let dbt_histogram = Histogram::new(pct_dbtime_values.clone())
            .name(&event_name)
            .legend_group(&event_name)
             //.n_bins_x(100) // Number of bins
-            .x_axis("x1")
-            .y_axis("y1")
+            .x_axis("x2")
+            .y_axis("y2")
             .show_legend(true);
         plot.add_trace(dbt_histogram);
-
+        
         // Add Box Plot for DBTime
         let dbt_box_plot = BoxPlot::new_xy(pct_dbtime_values.clone(),vec![event.clone();pct_dbtime_values.clone().len()])
             .name("")
             .legend_group(&event_name)
             .box_mean(BoxMean::True)
             .orientation(Orientation::Horizontal)
-            .x_axis("x1")
-            .y_axis("y2")
+            .x_axis("x2")
+            .y_axis("y3")
             .marker(Marker::new().color("#e377c2".to_string()).opacity(0.7))
             .show_legend(false);
         plot.add_trace(dbt_box_plot);
@@ -320,8 +381,8 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
                 .legend_group(&bucket_name)
                 .auto_bin_x(true)
                 //.n_bins_x(50) // Number of bins
-                .x_axis("x2")
-                .y_axis("y3")
+                .x_axis("x3")
+                .y_axis("y4")
                 .marker(Marker::new().color(color.clone()).opacity(0.7))
                 .show_legend(true);
             plot.add_trace(ms_bucket_histogram);
@@ -331,21 +392,21 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
                 .legend_group(&bucket_name)
                 .box_mean(BoxMean::True)
                 .orientation(Orientation::Horizontal)
-                .x_axis("x2")
-                .y_axis("y4")
+                .x_axis("x3")
+                .y_axis("y5")
                 .marker(Marker::new().color(color.clone()).opacity(0.7))
                 .show_legend(false);
             plot.add_trace(ms_bucket_box_plot);
         }
-
+        
         let layout: Layout = Layout::new()
             .title(&format!("'{}'", event))
-            .height(900)
+            .height(1500)
             .bar_gap(0.0)
             .bar_mode(plotly::layout::BarMode::Overlay)
             .grid(
                 LayoutGrid::new()
-                    .rows(4)
+                    .rows(5)
                     .columns(1),
                     //.row_order(Grid::TopToBottom),
             )
@@ -356,7 +417,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             //)
             .x_axis(
                 Axis::new()
-                    .title("% DBTime")
+                    .title("% ms HeatMap")
                     .domain(&[0.0, 1.0])
                     .anchor("y1")
                     .range(vec![0.,])
@@ -364,41 +425,55 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             )
             .y_axis(
                 Axis::new()
-                    .domain(&[0.0, 0.3])
+                    .domain(&[0.0, 0.35])
                     .anchor("x1")
                     .range(vec![0.,]),
-            )
-            .y_axis2(
-                Axis::new()
-                    .domain(&[0.3, 0.35])
-                    .anchor("x1")
-                    .range(vec![0.,])
-                    .show_tick_labels(false),
             )
             .x_axis2(
                 Axis::new()
-                    .title("% Wait Event ms")
+                    .title("% DBTime")
                     .domain(&[0.0, 1.0])
-                    .anchor("y3")
+                    .anchor("y2")
                     .range(vec![0.,])
                     .show_grid(true),
             )
-            .y_axis3(
+            .y_axis2(
                 Axis::new()
-                    .domain(&[0.45, 0.8])
+                    .domain(&[0.4, 0.55])
                     .anchor("x2")
                     .range(vec![0.,]),
             )
+            .y_axis3(
+                Axis::new()
+                    .domain(&[0.58, 0.6])
+                    .anchor("x2")
+                    .range(vec![0.,])
+                    .show_tick_labels(false),
+            )
+            .x_axis3(
+                Axis::new()
+                    .title("% Wait Event ms")
+                    .domain(&[0.0, 1.0])
+                    .anchor("y4")
+                    .range(vec![0.,])
+                    .show_grid(true),
+            )
             .y_axis4(
                 Axis::new()
-                    .domain(&[0.83, 1.0])
-                    .anchor("x2")
+                    .domain(&[0.65, 0.87])
+                    .anchor("x3")
+                    .range(vec![0.,]),
+            )
+            .y_axis5(
+                Axis::new()
+                    .domain(&[0.9, 1.0])
+                    .anchor("x3")
                     .range(vec![0.,])
                     .show_tick_labels(false)
                     .show_grid(true),
             );
             plot.set_layout(layout);
-    
+        
         // Replace invalid characters for filenames (e.g., slashes or spaces)
         let safe_event_name: String = event.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         let mut file_name: String = String::new();
