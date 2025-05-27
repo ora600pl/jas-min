@@ -939,7 +939,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     Cell::new("MAD Score"),
                     Cell::new("Total Wait (s)"),
                     Cell::new("Waits"),
-                    Cell::new("AVG Wait (ms)")
+                    Cell::new("AVG Wait (ms)"),
+                    Cell::new("DBTime (%)")
                 ]));
             
             for (i,a) in anomalies.iter().enumerate() {
@@ -957,8 +958,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let c_waits = Cell::new(&format!("{:.3}", wait_event.waits));
                 let avg_wait_ms = wait_event.total_wait_time_s/(wait_event.waits as f64)*1000.0;
                 let c_avg_wait_ms = Cell::new(&format!("{:.3}", avg_wait_ms));
+                let c_dbtime_pct = Cell::new(&format!("{:.2}", wait_event.pct_dbtime));
 
-                table.add_row(Row::new(vec![c_event.clone(),c_mad_score.clone(),c_total_wait_s.clone(),c_waits.clone(), c_avg_wait_ms.clone()]));
+                table.add_row(Row::new(vec![c_event.clone(),c_mad_score.clone(),c_total_wait_s.clone(),c_waits.clone(), c_avg_wait_ms.clone(),c_dbtime_pct.clone()]));
                 table_anomalies.push_str(&format!(
                     r#"<tr>
                         <td>{}</td>
@@ -966,8 +968,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                         <td>{}</td>
                         <td>{}</td>
                         <td>{}</td>
+                        <td>{}</td>
                     </tr>"#,
-                    c_event.to_string(),c_mad_score.to_string(),c_total_wait_s.to_string(),c_waits.to_string(), c_avg_wait_ms.to_string()
+                    c_event.to_string(),c_mad_score.to_string(),c_total_wait_s.to_string(),c_waits.to_string(), c_avg_wait_ms.to_string(), c_dbtime_pct.to_string()
                 ));
     
                 let begin_snap_id = collection.awrs
@@ -1034,6 +1037,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                     <th onclick="sortInnerTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
                                     <th onclick="sortInnerTable('{0}',3)" style="cursor: pointer;">Waits</th>
                                     <th onclick="sortInnerTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
+                                    <th onclick="sortInnerTable('{0}',5)" style="cursor: pointer;">DBTime (%)</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1129,7 +1133,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 Cell::new("MAD Score"),
                 Cell::new("Total Wait (s)"),
                 Cell::new("Waits"),
-                Cell::new("AVG Wait (ms)")
+                Cell::new("AVG Wait (ms)"),
+                Cell::new("DBTime (%)")
             ]));
 
             for (i,a) in anomalies.iter().enumerate() {
@@ -1146,8 +1151,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let c_total_wait_s = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s));
                 let c_waits = Cell::new(&format!("{:.3}", wait_event.waits));
                 let c_avg_wait_ms = Cell::new(&format!("{:.3}", wait_event.total_wait_time_s/(wait_event.waits as f64)*1000.0));
+                let c_dbtime_pct = Cell::new(&format!("{:.2}", wait_event.pct_dbtime));
 
-                table.add_row(Row::new(vec![c_event.clone(),c_mad_score.clone(),c_total_wait_s.clone(),c_waits.clone(), c_avg_wait_ms.clone()]));
+                table.add_row(Row::new(vec![c_event.clone(),c_mad_score.clone(),c_total_wait_s.clone(),c_waits.clone(), c_avg_wait_ms.clone(), c_dbtime_pct.clone()]));
                 table_anomalies.push_str(&format!(
                     r#"<tr>
                         <td>{}</td>
@@ -1155,8 +1161,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                         <td>{}</td>
                         <td>{}</td>
                         <td>{}</td>
+                        <td>{}</td>
                     </tr>"#,
-                    c_event.to_string(),c_mad_score.to_string(),c_total_wait_s.to_string(),c_waits.to_string(), c_avg_wait_ms.to_string()
+                    c_event.to_string(),c_mad_score.to_string(),c_total_wait_s.to_string(),c_waits.to_string(), c_avg_wait_ms.to_string(), c_dbtime_pct.to_string()
                 ));
 
                 let begin_snap_id = collection.awrs
@@ -1224,6 +1231,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                     <th onclick="sortInnerTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
                                     <th onclick="sortInnerTable('{0}',3)" style="cursor: pointer;">Waits</th>
                                     <th onclick="sortInnerTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
+                                    <th onclick="sortInnerTable('{0}',5)" style="cursor: pointer;">DBTime (%)</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1992,12 +2000,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 }}
             }});
             tbody.innerHTML = "";
+            let visibleIndex = 0;
             rowPairs.forEach(pair => {{
+                pair.main.classList.remove("even", "odd");
+                pair.main.classList.add(visibleIndex % 2 === 0 ? "even" : "odd");
                 tbody.appendChild(pair.main);
                 if (pair.anomaly) {{
                     pair.anomaly.style.display = "none";
                     tbody.appendChild(pair.anomaly);
                 }}
+                visibleIndex++;
             }});
         }}
         function sortInnerTable(tableId,columnId) {{
