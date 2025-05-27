@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet, BTreeMap};
 use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 use crate::Args;
+use prettytable::{Table, Row, Cell, format, Attr};
+use crate::make_notes;
+use colored::*;
 
 fn median(data: &[f64]) -> f64 {
     let mut sorted = data.to_vec();
@@ -256,4 +259,40 @@ pub fn detect_loadprofile_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap
     }
 
     anomalies
+}
+
+pub fn anomalies_join(anomalies_summary: &mut BTreeMap<(u64, String), Vec<String>>, key: (u64, String), anomalie: String) {
+
+    if let Some(a) = anomalies_summary.get_mut(&key) {
+        a.push(anomalie);
+    } else {
+        anomalies_summary.insert(key.clone(), vec![anomalie.clone()]);
+    }
+
+}
+
+pub fn report_anomalies_summary(anomalies_summary: BTreeMap<(u64, String), Vec<String>>, args: &Args, logfile_name: &str) {
+    
+    let mut table = Table::new();
+            table.set_titles(Row::new(vec![
+                Cell::new("BEGIN SNAP ID"),
+                Cell::new("BEGIN SNAP DATE"),
+                Cell::new("Anomalie summary"),
+                Cell::new("Count")
+            ]));
+
+    anomalies_summary.iter().for_each(|a| {
+        let c_begin_snap_id = Cell::new(&format!("{}", a.0.0));
+        let c_begin_snap_date = Cell::new(&format!("{}", a.0.1));
+        let anomalie_details: String = a.1.join("\n");
+        let c_anomalie_details = Cell::new(&anomalie_details);
+        let c_anomalie_count = Cell::new(&format!("{}", a.1.iter().count()));
+        table.add_row(Row::new(vec![c_begin_snap_id, c_begin_snap_date, c_anomalie_details, c_anomalie_count]));
+    });
+
+    let anomalies_txt = format!("Anomalies summary for each date from all secions where anomalie was detected").blue().underline();
+    make_notes!(logfile_name, args.quiet, "\n\n{}\n", anomalies_txt);
+    for table_line in table.to_string().lines() {
+        make_notes!(logfile_name, args.quiet, "{}\n", table_line);
+    }
 }
