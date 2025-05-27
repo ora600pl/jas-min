@@ -46,15 +46,20 @@
         table tbody tr {
             border-bottom: 1px solid #dddddd;
         }
-        table tbody tr:nth-of-type(even) {
+        .inner-anomalies-table tbody tr:nth-of-type(even) {
             background-color: #f3f3f3;
         }
+        tr.even { background-color: #ffffff; }
+        tr.odd  { background-color: #f3f3f3; }
         table tbody tr:last-of-type {
             border-bottom: 2px solid #009876;
         }
         #sqls-table tbody tr:last-of-type {
             border-bottom: 2px solid #006f98;
-        }    
+        } 
+        #bgevents-table tbody tr:last-of-type {
+            border-bottom: 2px solid #4c0098;
+        } 
         .button-JASMIN {
             position: relative;
             overflow: hidden;
