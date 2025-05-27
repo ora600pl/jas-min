@@ -1992,12 +1992,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 }}
             }});
             tbody.innerHTML = "";
+            let visibleIndex = 0;
             rowPairs.forEach(pair => {{
+                pair.main.classList.remove("even", "odd");
+                pair.main.classList.add(visibleIndex % 2 === 0 ? "even" : "odd");
                 tbody.appendChild(pair.main);
                 if (pair.anomaly) {{
                     pair.anomaly.style.display = "none";
                     tbody.appendChild(pair.anomaly);
                 }}
+                visibleIndex++;
             }});
         }}
         function sortInnerTable(tableId,columnId) {{
