@@ -924,8 +924,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "\t\t--- AVG wait/exec (ms): {:>15.2} \tSTDDEV wait/exec (ms): {:>15.2}\n\n", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
         
         /* Print table of detected anomalies for given event_name (key.1)*/
-
-        let anomaly_id = format!("mad_{}", &event_name);
+        let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
+        let anomaly_id = format!("mad_fg_{}", &safe_event_name);
         let mut anomalies_flag: bool = false;
 
         if let Some(anomalies) = top_stats.event_anomalies_mad.get(&key.1) {
@@ -990,7 +990,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet,"\n");
         
         /* FGEVENTS - Generate a row for the Main HTML table */
-        let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         table_events.push_str(&format!(
             r#"
             <tr>
@@ -1025,16 +1024,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         // Include: the collapsible anomaly table row
         if anomalies_flag {
             table_events.push_str(&format!(
-                r#"<tr id="{0}" style="display: none;">
-                    <td colspan="13">
+                r#"<tr id="{0}" class="anomaly-row" style="display: none;">
+                    <td colspan="12">
                         <table class="inner-anomalies-table">
                             <thead>
                                 <tr>
-                                    <th onclick="sortTable('{0}',0)" style="cursor: pointer;">Date</th>
-                                    <th onclick="sortTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
-                                    <th onclick="sortTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
-                                    <th onclick="sortTable('{0}',3)" style="cursor: pointer;">Waits</th>
-                                    <th onclick="sortTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
+                                    <th onclick="sortInnerTable('{0}',0)" style="cursor: pointer;">Date</th>
+                                    <th onclick="sortInnerTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
+                                    <th onclick="sortInnerTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
+                                    <th onclick="sortInnerTable('{0}',3)" style="cursor: pointer;">Waits</th>
+                                    <th onclick="sortInnerTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1115,7 +1114,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "\t\t--- AVG No. executions: {:>15.2} \tSTDDEV No. executions: {:>15.2}\n", &avg_exec_n, &stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "\t\t--- AVG wait/exec (ms): {:>15.2} \tSTDDEV wait/exec (ms): {:>15.2}\n\n", &avg_wait_per_exec_ms, &stddev_wait_per_exec_ms);
          /* Print table of detected anomalies for given event_name (key.1)*/
-        let anomaly_id = format!("mad_{}", &event_name);
+        let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
+        let anomaly_id = format!("mad_bg_{}", &safe_event_name);
         let mut anomalies_flag: bool = false;
 
         if let Some(anomalies) = top_stats.bgevent_anomalies_mad.get(&key.1) {
@@ -1180,7 +1180,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet,"\n");
         
         /* BGEVENTS - Generate a row for the HTML table */
-        let safe_event_name: String = event_name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
         table_bgevents.push_str(&format!(
             r#"
             <tr>
@@ -1215,16 +1214,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         // Include: the collapsible anomaly table row
         if anomalies_flag {
             table_bgevents.push_str(&format!(
-                r#"<tr id="{0}" style="display: none;">
-                    <td colspan="13">
+                r#"<tr id="{0}" class="anomaly-row" style="display: none;">
+                    <td colspan="12">
                         <table class="inner-anomalies-table">
                             <thead>
                                 <tr>
-                                    <th onclick="sortTable('{0}',0)" style="cursor: pointer;">Date</th>
-                                    <th onclick="sortTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
-                                    <th onclick="sortTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
-                                    <th onclick="sortTable('{0}',3)" style="cursor: pointer;">Waits</th>
-                                    <th onclick="sortTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
+                                    <th onclick="sortInnerTable('{0}',0)" style="cursor: pointer;">Date</th>
+                                    <th onclick="sortInnerTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
+                                    <th onclick="sortInnerTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
+                                    <th onclick="sortInnerTable('{0}',3)" style="cursor: pointer;">Waits</th>
+                                    <th onclick="sortInnerTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1414,16 +1413,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         // Include: the collapsible anomaly table row
         if anomalies_flag {
             table_sqls.push_str(&format!(
-                r#"<tr id="{0}" style="display: none;">
-                    <td colspan="13">
+                r#"<tr id="{0}" class="anomaly-row" style="display: none;">
+                    <td colspan="8">
                         <table class="inner-anomalies-table">
                             <thead>
                                 <tr>
-                                    <th onclick="sortTable('{0}',0)" style="cursor: pointer;">Date</th>
-                                    <th onclick="sortTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
-                                    <th onclick="sortTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
-                                    <th onclick="sortTable('{0}',3)" style="cursor: pointer;">Waits</th>
-                                    <th onclick="sortTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
+                                    <th onclick="sortInnerTable('{0}',0)" style="cursor: pointer;">Date</th>
+                                    <th onclick="sortInnerTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
+                                    <th onclick="sortInnerTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
+                                    <th onclick="sortInnerTable('{0}',3)" style="cursor: pointer;">Waits</th>
+                                    <th onclick="sortInnerTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1961,7 +1960,47 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         toggleTable('show-sqls-button', 'sqls-table');
         toggleTable('show-bgevents-button', 'bgevents-table');
         toggleTable('show-JASMINAI-button', 'chat-container');
-        function sortTable(tableId,columnId) {{
+        function sortTable(tableId, columnId) {{
+            const table = document.getElementById(tableId);
+            if (!table) return;
+            const tbody = table.tBodies[0];
+            if (!tbody) return;
+            const allRows = Array.from(tbody.rows);
+            const rowPairs = [];
+            for (let i = 0; i < allRows.length; i++) {{
+                const mainRow = allRows[i];
+                if (mainRow.classList.contains("anomaly-row")) continue;
+                const nextRow = allRows[i + 1];
+                let anomalyRow = null;
+                if (nextRow && nextRow.classList.contains("anomaly-row")) {{
+                    anomalyRow = nextRow;
+                    i++;
+                }}
+                rowPairs.push({{ main: mainRow, anomaly: anomalyRow }});
+            }}
+            const isAscending = table.getAttribute("data-sort-order") !== "asc";
+            table.setAttribute("data-sort-order", isAscending ? "asc" : "desc");
+            rowPairs.sort((a, b) => {{
+                const cellA = a.main.cells[columnId]?.innerText.trim() || "";
+                const cellB = b.main.cells[columnId]?.innerText.trim() || "";
+                const numA = parseFloat(cellA);
+                const numB = parseFloat(cellB);
+                if (!isNaN(numA) && !isNaN(numB)) {{
+                    return isAscending ? numA - numB : numB - numA;
+                }} else {{
+                    return isAscending ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+                }}
+            }});
+            tbody.innerHTML = "";
+            rowPairs.forEach(pair => {{
+                tbody.appendChild(pair.main);
+                if (pair.anomaly) {{
+                    pair.anomaly.style.display = "none";
+                    tbody.appendChild(pair.anomaly);
+                }}
+            }});
+        }}
+        function sortInnerTable(tableId,columnId) {{
             var table = document.getElementById(tableId);
             var tbody = table.getElementsByTagName("tbody")[0];
             var rows = Array.from(tbody.getElementsByTagName("tr"));
