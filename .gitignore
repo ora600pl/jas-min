@@ -406,3 +406,4 @@ FodyWeavers.xsd
 #JAS-MIN
 Cargo.lock
 .env
+.DS_Store
