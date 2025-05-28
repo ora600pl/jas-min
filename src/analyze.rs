@@ -243,21 +243,36 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
 
 // Filter and generate histogram for top events
 fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, dirpath: &str) {
-    
-    //Make colors consistent across buckets 
-    let bucket_colors: HashMap<String, String> = HashMap::from([
-        ("0: <512us".to_string(), "#00E399".to_string()),  // Ocean Green
-        ("1: <1ms".to_string(), "#2FD900".to_string()),    // Green
-        ("2: <2ms".to_string(), "#E3E300".to_string()),    // Yellow
-        ("3: <4ms".to_string(), "#FFBF00".to_string()),    // Amber
-        ("4: <8ms".to_string(), "#FF8000".to_string()),    // Orange
-        ("5: <16ms".to_string(), "#FF4000".to_string()),   // Tomato
-        ("6: <32ms".to_string(), "#FF0000".to_string()),   // Red
-        ("7: <=1s".to_string(), "#B22222".to_string()),    // Red
-        ("7: >=32ms".to_string(), "#B22222".to_string()),  // Firebrick
-        ("8: >1s".to_string(), "#8B0000".to_string())      // Dark Red
-    ]);
-    
+    // Detect number and type of buckets
+    // Ensure that there is at least one AWR with fg or bg event and they are explicitly checked
+    assert!(!awrs.is_empty(),"generate_events_plotfiles: No AWR data available.");
+
+    let first_wait_events = if is_fg {
+        &awrs[0].foreground_wait_events
+    } else {
+        &awrs[0].background_wait_events
+    };
+
+    assert!(!first_wait_events.is_empty(),
+        "generate_events_plotfiles: No {} wait events in first AWR snapshot.", if is_fg { "foreground" } else { "background" }
+    );
+
+    // Extract bucket names from the first event's histogram_ms 
+    let hist_buckets: Vec<String> = first_wait_events[0].waitevent_histogram_ms.keys().cloned().collect();
+
+    // Make colors consistent across buckets 
+    let color_palette = vec![
+        "#00E399", "#2FD900", "#E3E300", "#FFBF00", "#FF8000",
+        "#FF4000", "#FF0000", "#B22222", "#8B0000", "#4B0082",
+        "#8A2BE2", "#1E90FF"
+    ];
+    // Assign colors from the palette
+    let mut bucket_colors: HashMap<String, String> = HashMap::new();
+    for (i, bucket) in hist_buckets.iter().enumerate() {
+        let color = color_palette.get(i % color_palette.len()).unwrap();
+        bucket_colors.insert(bucket.clone(), color.to_string());
+    }
+
     let mut filtered_events: Vec<&WaitEvents> = Vec::<&WaitEvents>::new();
     if is_fg {
         filtered_events = awrs // Filter Foreground WaitEvents based on top_events
@@ -308,7 +323,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         }
     }
 
-    // Create the histogram for each event and save it as separate file
+    // Create plots for each event and save it as separate file
     for (event, (pct_dbtime_values, histogram_data)) in data_by_event {
         let mut plot: Plot = Plot::new();
         let event_name: String = format!("{}",&event);
@@ -317,28 +332,16 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         if let Some(records) = heatmap_data.get(&event) {
             let x_labels: Vec<String> = records.iter().map(|(ts, _)| ts.clone()).collect();
         
-            let all_buckets: Vec<&str> = vec![
-                "0: <512us",
-                "1: <1ms",
-                "2: <2ms",
-                "3: <4ms",
-                "4: <8ms",
-                "5: <16ms",
-                "6: <32ms",
-                "7: >=32ms",
-                "8: >1s",
-            ];
-        
             let mut z_matrix: Vec<Vec<f32>> = Vec::new();
-            for bucket in &all_buckets {
+            for bucket in &hist_buckets {
                 let row: Vec<f32> = records
                     .iter()
-                    .map(|(_, histogram)| *histogram.get(*bucket).unwrap_or(&0.0))
+                    .map(|(_, histogram)| *histogram.get(bucket).unwrap_or(&0.0))
                     .collect();
                 z_matrix.push(row);
             }
         
-            let heatmap = HeatMap::new(x_labels.clone(), all_buckets.clone(), z_matrix)
+            let heatmap = HeatMap::new(x_labels.clone(), hist_buckets.clone(), z_matrix)
                 .x_axis("x1")
                 .y_axis("y1")
                 .hover_on_gaps(true)
@@ -400,7 +403,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         }
         
         let layout: Layout = Layout::new()
-            .title(&format!("'{}'", event))
+            .title(&format!("'<b>{}</b>'", event))
             .height(1500)
             .bar_gap(0.0)
             .bar_mode(plotly::layout::BarMode::Overlay)
@@ -417,7 +420,6 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             //)
             .x_axis(
                 Axis::new()
-                    .title("% ms HeatMap")
                     .domain(&[0.0, 1.0])
                     .anchor("y1")
                     .range(vec![0.,])
