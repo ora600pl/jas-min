@@ -1946,6 +1946,26 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     .show_grid(false),
     );
 
+    /* Add information about stats anomalies to the summary */
+    let stat_anomalies = detect_stats_anomalies_mad(&collection.awrs, &args);
+    let all_stats = top_stats.stat_names;
+    for s in all_stats {
+        if let Some(anomalies) = stat_anomalies.get(&s.0) {
+            for a in anomalies {
+                let begin_snap_id = collection.awrs
+                                                    .iter()
+                                                    .find_map(|awr| {
+                                                        (awr.snap_info.begin_snap_time == a.0)
+                                                            .then(|| awr.snap_info.begin_snap_id)
+                                                    }).unwrap();
+
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("STAT:     {}", s.0.clone()));
+
+            }
+        }
+    } 
+    /********************************************************/
+
     /*Report anomalies summary*/
     report_anomalies_summary(anomalies_summary, &args, &logfile_name);
     /*************************/
