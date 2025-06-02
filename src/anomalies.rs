@@ -332,39 +332,76 @@ pub fn detect_stats_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap<Strin
     anomalies
 }
 
-pub fn anomalies_join(anomalies_summary: &mut BTreeMap<(u64, String), Vec<String>>, key: (u64, String), anomalie: String) {
-    if let Some(a) = anomalies_summary.get_mut(&key) {
-        a.push(anomalie);
-    } else {
-        if !anomalie.starts_with("STAT:") {
-            anomalies_summary.insert(key.clone(), vec![anomalie.clone()]);
-        }
-    }
-
+pub fn anomalies_join(
+    anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>,
+    key: (u64, String),
+    anomaly_type: &str,
+    anomaly_detail: impl Into<String>,
+    ){
+    let inner_map = anomalies_summary.entry(key).or_insert_with(BTreeMap::new);
+    inner_map
+        .entry(anomaly_type.to_string())
+        .or_insert_with(Vec::new)
+        .push(anomaly_detail.into());
 }
 
-pub fn report_anomalies_summary(anomalies_summary: BTreeMap<(u64, String), Vec<String>>, args: &Args, logfile_name: &str) {
+pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>, args: &Args, logfile_name: &str) -> String {
     
     let mut table = Table::new();
-            table.set_titles(Row::new(vec![
-                Cell::new("BEGIN SNAP ID"),
-                Cell::new("BEGIN SNAP DATE"),
-                Cell::new("Anomalie summary"),
-                Cell::new("Count")
-            ]));
+    table.set_titles(Row::new(vec![
+        Cell::new("BEGIN SNAP ID"),
+        Cell::new("BEGIN SNAP DATE"),
+        Cell::new("Anomaly Summary"),
+        Cell::new("Count"),
+    ]));
 
-    anomalies_summary.iter().for_each(|a| {
-        let c_begin_snap_id = Cell::new(&format!("{}", a.0.0));
-        let c_begin_snap_date = Cell::new(&format!("{}", a.0.1));
-        let anomalie_details: String = a.1.join("\n");
-        let c_anomalie_details = Cell::new(&anomalie_details);
-        let c_anomalie_count = Cell::new(&format!("{}", a.1.iter().count()));
-        table.add_row(Row::new(vec![c_begin_snap_id, c_begin_snap_date, c_anomalie_details, c_anomalie_count]));
+    let mut html_table: String = String::new();
+
+    anomalies_summary.iter().for_each(|((snap_id, snap_date), anomalies_map)| {
+        let mut all_lines: Vec<String> = Vec::new();
+
+        for (anomaly_type, details) in anomalies_map {
+            for detail in details {
+                all_lines.push(format!("{}: {}", anomaly_type, detail));
+            }
+        }
+
+        let c_begin_snap_id = Cell::new(&snap_id.to_string());
+        let c_begin_snap_date = Cell::new(snap_date);
+        let c_anomalie_details = Cell::new(&all_lines.join("\n"));
+        let c_anomalie_count = Cell::new(&all_lines.len().to_string());
+
+        table.add_row(Row::new(vec![
+            c_begin_snap_id,
+            c_begin_snap_date,
+            c_anomalie_details,
+            c_anomalie_count,
+        ]));
+
+        html_table.push_str(&format!(
+            r#"<tr>
+                <td>{}</td>
+                <td>{}</td>
+                <td style="text-align: left;">{}</td>
+                <td>{}</td>
+            </tr>"#,
+            snap_id,
+            snap_date,
+            all_lines.join("<br>"),
+            all_lines.len()
+        ));
     });
 
-    let anomalies_txt = format!("Anomalies summary for each date from all secions where anomalie was detected").blue().underline();
+    let anomalies_txt = format!(
+        "Anomalies summary for each date from all sections where anomaly was detected"
+    )
+    .blue()
+    .underline();
+
     make_notes!(logfile_name, args.quiet, "\n\n{}\n", anomalies_txt);
     for table_line in table.to_string().lines() {
         make_notes!(logfile_name, args.quiet, "{}\n", table_line);
     }
+
+    html_table
 }
