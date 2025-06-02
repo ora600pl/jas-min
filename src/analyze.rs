@@ -348,6 +348,8 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
                 .hover_on_gaps(true)
                 .show_legend(false)
                 .show_scale(false)
+                .color_scale(ColorScale::Palette(ColorScalePalette::Electric))
+                .reverse_scale(true)
                 .name("%");
     
             plot.add_trace(heatmap);
