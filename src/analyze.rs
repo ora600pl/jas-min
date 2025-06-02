@@ -2,7 +2,7 @@ use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGet
 
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap};
-use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale};
+use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette};
 use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
 
@@ -348,6 +348,8 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
                 .hover_on_gaps(true)
                 .show_legend(false)
                 .show_scale(false)
+                .color_scale(ColorScale::Palette(ColorScalePalette::Electric))
+                .reverse_scale(true)
                 .name("%");
     
             plot.add_trace(heatmap);
@@ -988,7 +990,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
     //This will hold anomalies summary join table indexed by (begin_snap_id, begin_snap_time) with anomalies value
     // like (42,12-Mar-2025 13:00:00) WAIT:db file sequential read (MAD,AVG,etc...)
-    let mut anomalies_summary: BTreeMap<(u64, String), Vec<String>> = BTreeMap::new();
+    let mut anomalies_summary: BTreeMap<(u64, String), BTreeMap<String, Vec<String>>> = BTreeMap::new();
 
     //println!("{}","Foreground Wait Events");
     make_notes!(&logfile_name, false, "{}\n","Foreground Wait Events");
@@ -1092,7 +1094,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("EVENT:    {}", key.1));
+                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("EVENT:    {}", key.1));
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"EVENT", &key.1);
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
@@ -1285,7 +1288,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("BGEVENT:  {}", key.1));
+                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("BGEVENT:  {}", key.1));
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"BGEVENT", &key.1);
 
             }
             for table_line in table.to_string().lines() {
@@ -1492,7 +1496,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("SQL:      {}", key.1));
+                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("SQL:      {}", key.1));
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"SQL", &key.1);
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
@@ -1692,7 +1697,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("LP:       {}", l.clone()));
+                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("LP:       {}", l.clone()));
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"LP", l.clone());
 
             }
             for table_line in table.to_string().lines() {
@@ -1805,9 +1811,92 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     for (k,v) in sorted_correlation {
         make_notes!(&logfile_name, args.quiet, "\t{: >64} : {:.2}\n", &k.1, v);
     }
+    /* Add information about stats anomalies to the summary */
+    let stat_anomalies = detect_stats_anomalies_mad(&collection.awrs, &args);
+    let all_stats = top_stats.stat_names;
+    for s in all_stats {
+        if let Some(anomalies) = stat_anomalies.get(&s.0) {
+            for a in anomalies {
+                let begin_snap_id = collection.awrs
+                                                    .iter()
+                                                    .find_map(|awr| {
+                                                        (awr.snap_info.begin_snap_time == a.0)
+                                                            .then(|| awr.snap_info.begin_snap_id)
+                                                    }).unwrap();
 
+                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("STAT:     {}", s.0.clone()));
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"STAT", s.0.clone());
+
+            }
+        }
+    } 
+    /********************************************************/
+
+    /****************   Report anomalies summary ************/
+    println!("\n{}","Anomalies Summary");
+    let anomalies_summary_html: String = format!(
+        r#"
+        <table id="anomalies-sum-table">
+            <thead>
+                <tr>
+                    <th onclick="sortTable('anomalies-sum-table',0)" style="cursor: pointer;">BEGIN SNAP ID</th>
+                    <th onclick="sortTable('anomalies-sum-table',1)" style="cursor: pointer;">BEGIN SNAP DATE</th>
+                    <th onclick="sortTable('anomalies-sum-table',2)" style="cursor: pointer;">Anomalies summary</th>
+                    <th onclick="sortTable('anomalies-sum-table',3)" style="cursor: pointer;">Anomalies count</th>
+                </tr>
+            </thead>
+            <tbody>
+            {}
+            </tbody>
+        </table>
+        "#,
+        report_anomalies_summary(&mut anomalies_summary, &args, &logfile_name)
+    );
+    let mut snap_dates: Vec<String> = Vec::new();
+    let mut anomaly_types: BTreeMap<String, usize> = BTreeMap::new();
+    let mut heat_data: HashMap<(String, String), usize> = HashMap::new();
+
+    for ((_snap_id, snap_date), anomaly_map) in &anomalies_summary {
+        // Find the actual formatted snap_date in x_vals (e.g., with "(25)" suffix)
+        let matching_xval = x_vals.iter().find(|x| x.starts_with(snap_date));
+        if let Some(xval_key) = matching_xval {
+            for (atype, values) in anomaly_map {
+                anomaly_types.entry(atype.clone()).or_insert(0);
+                let count = values.len();
+                *heat_data.entry((xval_key.clone(), atype.clone())).or_insert(0) += count;
+            }
+        }
+    }
+
+    let anomaly_labels: Vec<String> = anomaly_types.keys().cloned().collect();
+    // Build the z matrix
+    let z_data: Vec<Vec<usize>> = anomaly_labels
+        .iter()
+        .map(|atype| {
+            x_vals
+                .iter()
+                .map(|date| *heat_data.get(&(date.clone(), atype.clone())).unwrap_or(&0))
+                .collect()
+        })
+        .collect();
+
+    let anomalies_heatmap = HeatMap::new(x_vals.clone(), anomaly_labels.clone(), z_data)
+        .x_axis("x1")
+        .y_axis("y6")
+        .hover_on_gaps(true)
+        .show_legend(false)
+        .show_scale(false)
+        .color_scale(ColorScale::Palette(ColorScalePalette::Electric))
+        .reverse_scale(true)
+        .zauto(true)
+        .name("#");
+    
+    plot_main.add_trace(anomalies_heatmap);
+    /*************************/
+        
+    // Prepare Plots LAYOUTS
     let layout_main: Layout = Layout::new()
-        .height(1200)
+        .height(1500)
         .grid(
             LayoutGrid::new()
                 .rows(5)
@@ -1819,17 +1908,25 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         //    .x(1.02)
         //    .y(0.5)
         //)
-        .y_axis5(Axis::new()
+        .y_axis6(Axis::new()
             .anchor("x1")
-            .domain(&[0.82, 1.0])
-            .title("SQL Elapsed Time")
+            .domain(&[0.785, 1.0])
+            .title("Anomalies")
             .visible(true)
             .zero_line(true)
             .range_mode(RangeMode::ToZero)
         )
+        .y_axis5(Axis::new()
+            .anchor("x1")
+            .domain(&[0.63, 0.78])
+            .title("SQL Elapsed Time")
+            .visible(true)
+            .zero_line(true)
+            //.range_mode(RangeMode::ToZero)
+        )
         .y_axis4(Axis::new()
             .anchor("x1")
-            .domain(&[0.615, 0.815])
+            .domain(&[0.47, 0.625])
             .range(vec![0.,])
             .title("CPU Util (%)")
             .zero_line(true)
@@ -1838,7 +1935,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         )
         .y_axis3(Axis::new()
             .anchor("x1")
-            .domain(&[0.41, 0.61])
+            .domain(&[0.31, 0.465])
             .title("Wait Events (s)")
             .zero_line(true)
             .range(vec![0.,])
@@ -1846,7 +1943,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         )
         .y_axis2(Axis::new()
             .anchor("x1")
-            .domain(&[0.205, 0.405])
+            .domain(&[0.155, 0.305])
             .range(vec![0.,])
             .title("#")
             .zero_line(true)
@@ -1854,17 +1951,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         )
         .y_axis(Axis::new()
             .anchor("x1")
-            .domain(&[0., 0.2])
+            .domain(&[0., 0.15])
             .title("(s/s)")
             .zero_line(true)
             .range_mode(RangeMode::ToZero)
         )
-        .x_axis(
-            Axis::new()
-                    .domain(&[0.0, 1.0])
-                    .anchor("y1")
-                    .range(vec![0.,])
-                    .show_grid(true),
+        .x_axis(Axis::new()
+            .domain(&[0.0, 1.0])
+            .anchor("y1")
+            .range(vec![0.,])
+            .show_grid(true),
         )
         .hover_mode(HoverMode::X);
 
@@ -1983,30 +2079,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     .show_grid(false),
     );
 
-    /* Add information about stats anomalies to the summary */
-    let stat_anomalies = detect_stats_anomalies_mad(&collection.awrs, &args);
-    let all_stats = top_stats.stat_names;
-    for s in all_stats {
-        if let Some(anomalies) = stat_anomalies.get(&s.0) {
-            for a in anomalies {
-                let begin_snap_id = collection.awrs
-                                                    .iter()
-                                                    .find_map(|awr| {
-                                                        (awr.snap_info.begin_snap_time == a.0)
-                                                            .then(|| awr.snap_info.begin_snap_id)
-                                                    }).unwrap();
-
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("STAT:     {}", s.0.clone()));
-
-            }
-        }
-    } 
-    /********************************************************/
-
-    /*Report anomalies summary*/
-    report_anomalies_summary(anomalies_summary, &args, &logfile_name);
-    /*************************/
-
     println!("{}","Generating Plots");
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
@@ -2099,6 +2171,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         toggleTable('show-events-button', 'events-table');
         toggleTable('show-sqls-button', 'sqls-table');
         toggleTable('show-bgevents-button', 'bgevents-table');
+        toggleTable('show-anomalies-button', 'anomalies-sum-table');
         toggleTable('show-JASMINAI-button', 'chat-container');
         function sortTable(tableId, columnId) {{
             const table = document.getElementById(tableId);
@@ -2209,11 +2282,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // Inject Buttons and Tables into Main HTML
     plotly_html = plotly_html.replace(
         "<body>",
-        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
+        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
             db_instance_info_html,
             "<button id=\"show-events-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait Events</span><span>TOP Wait Events</span></button>",
             "<button id=\"show-sqls-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait SQLs</span><span>TOP Wait SQLs</span></button>",
             "<button id=\"show-bgevents-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Backgrd Events</span><span>TOP Backgrd Events</span></button>",
+            "<button id=\"show-anomalies-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">Anomalies Summary</span><span>Anomalies Summary</span></button>",
             format!(
                 "<a href=\"{}\" target=\"_blank\" style=\"text-decoration: none;\">
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">STATS Correlation</span><span>STATS Correlation</span></button>
@@ -2223,6 +2297,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             jasmin_assistant,
             event_table_html,
             bgevent_table_html,
+            anomalies_summary_html,
             sqls_table_html,
             jasmin_html_scripts)
     );

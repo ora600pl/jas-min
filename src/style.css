@@ -1,5 +1,5 @@
     <style>
-        #events-table, #sqls-table, #bgevents-table {
+        #events-table, #sqls-table, #bgevents-table, #anomalies-sum-table {
             display: none;
         }
         body{
@@ -38,6 +38,11 @@
             color: #ffffff;
             text-align: center;
         }
+        #anomalies-sum-table thead tr {
+            background-color: #d4a302;
+            color: #ffffff;
+            text-align: center;
+        }
         table th,
         table td {
             padding: 12px 15px;
@@ -59,7 +64,10 @@
         } 
         #bgevents-table tbody tr:last-of-type {
             border-bottom: 2px solid #4c0098;
-        } 
+        }
+        #anomalies-sum-table tbody tr:last-of-type {
+            border-bottom: 2px solid #d4a302;
+        }
         .button-JASMIN {
             position: relative;
             overflow: hidden;
