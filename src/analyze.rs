@@ -2243,7 +2243,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     if args.ai != "NO" {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
         if vendor_model_lang[0] == "openai" {
-            chat_gpt(&logfile_name, vendor_model_lang).unwrap();
+            println!("Sorry but report file got too big - we are working on it. Create an openai agent and use jas-min with -b option");
+            //chat_gpt(&logfile_name, vendor_model_lang).unwrap();
         } else if vendor_model_lang[0] == "google" {
             gemini(&logfile_name, vendor_model_lang).unwrap();
         } else {
