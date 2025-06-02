@@ -1,5 +1,5 @@
 use colored::Colorize;
-use reqwest::{Client};
+use reqwest::{Client, multipart};
 use reqwest::multipart::{Form, Part};
 use serde_json::json;
 use std::{env, fs, collections::HashMap, sync::Arc, path::Path};
@@ -12,16 +12,11 @@ use qdrant_client::qdrant::{Condition, Filter, SearchParamsBuilder, SearchPoints
 use qdrant_client::Qdrant;
 
 
-static SPELL: &str =   "Assuming that correlation in the log is Pearson correlation, suggest which wait events are the heaviest for database performance, 
-                        which SQL IDs would require further performance analyze and which statistics are crucial for performance problems. 
-                        Explain the meaning of wait events and statistics that are problematic for performance in your opinion.
-                        Divide wait events to foreground and background wait event sections.
-                        Summerize information about each wait event, SQL_ID and statistic you point out.
-                        For SQL_ID you have to summerize information about other top sections and point out correlated wait events. 
-                        Compare AVG and STDDEV values for SQLs and wait events and interpret it. 
-                        For SQL_ID point out SQLs that have small execution time for single execution but are executed many times, causing performance issues. 
-                        Print different sections for SQLs that are causing perfromance problems because of number of executions and diffent section for SQLs that are just executing slowly. 
-                        Format answear pretty to read it easly in terminal.
+static SPELL: &str =   "You are a sarcastic as shit Oracle Database performance tuning expert and assistant.
+                        You are analyzing report file containing summarized statistics from parsed AWR reports from long period of time. 
+                        Based on received input (like AWR, STATSPACK reports), you can describe the current database performance profile, 
+                        spot potential bottlenecks, suggest the heaviest wait events impacting database performance, and identify SQL IDs that require further performance analysis. 
+                        Highlight which statistics are crucial to understanding the current performance situation.
                         Write answear in language:";
 
 static SPELL_RAG: &str = "Udziel odpowiedzi **tylko na podstawie poniższych dokumentów**.
@@ -38,6 +33,25 @@ struct QueryRequest {
 struct RAGResponse {
     answer: String,
 }
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct GeminiFile {
+    name: String,
+    display_name: Option<String>,
+    uri: String,
+    mime_type: String,
+    size_bytes: String,
+    create_time: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct GeminiFileUploadResponse {
+    file: GeminiFile,
+}
+
+
 
 fn private_reasoninings() -> Option<String> {
     let r_content = fs::read_to_string("reasonings.txt");
@@ -164,6 +178,44 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Resul
     Ok(())
 }
 
+async fn upload_log_file_gemini(api_key: &str, log_content: String) -> Result<String, Box<dyn std::error::Error>> {
+    // prepart multipart form
+    let part = multipart::Part::bytes(log_content.into_bytes())
+        .file_name("performance_report.txt") 
+        .mime_str("text/plain").unwrap(); //  MIME type as text
+
+    // Create multipart form
+    let form = multipart::Form::new().part("file", part);
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("https://generativelanguage.googleapis.com/upload/v1beta/files?key={}", api_key))
+        .multipart(form)
+        .send()
+        .await.unwrap();
+
+    if response.status().is_success() {
+        let response_text = response.text().await?;
+
+        match serde_json::from_str::<GeminiFileUploadResponse>(&response_text) {
+            Ok(file_upload_response) => {
+                println!("✅ File uploaded! URI: {}", file_upload_response.file.uri);
+                Ok(file_upload_response.file.uri)
+            },
+            Err(e) => {
+                eprintln!("Error while paring JSON: {}", e);
+                Err(format!("Parsing error: {}. TEXT: '{}'", e, response_text).into())
+            }
+        }
+    } else {
+        let status = response.status();
+        let error_text = response.text().await?;
+        eprintln!("Error while parsing reponse {} - {}", status, error_text);
+        Err(format!("HTTP Error: {}", status).into())
+    }
+}
+
+
 #[tokio::main]
 pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<(), Box<dyn std::error::Error>> {
 
@@ -177,7 +229,7 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
     let pr = private_reasoninings();
     if pr.is_some() {
-        spell = format!("{}DOKUMENTY:\n{}\n\nPytanie: {}", SPELL_RAG, spell, pr.unwrap());
+        spell = format!("{}\n\n# Additional insights: {}", spell, pr.unwrap());
     }
     
     /* Code for future RAG -> RAG */
@@ -196,32 +248,43 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<
     // println!("Your final prompt is: \n {}", spell);
     // println!(" <=============== RESPONSE ===============> \n\n");
     /* ****************************** */
-    
-    let response = client
-        .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
-        .header("Content-Type", "application/json")
-        .json(&json!({
+
+    let file_uri = upload_log_file_gemini(&api_key, log_content).await.unwrap();
+
+    let payload = json!({
             "contents": [{
-                "parts": [{
-                    "text": format!("{} \n {}", spell, log_content)
-                }]
+                "parts": [
+                    { "text": spell }, // Twój prompt/polecenie
+                    {
+                        "fileData": {
+                            "mimeType": "text/plain",
+                            "fileUri": file_uri
+                        }
+                    }
+                ]
             }],
             "generationConfig": {
-                    "maxOutputTokens": 1000000
+                "maxOutputTokens": 8192*2 
             }
-        }))
-        .send()
-        .await.unwrap();
+            });
 
-        if response.status().is_success() {
-            let json: serde_json::Value = response.json().await.unwrap();
-            let response = json["candidates"][0]["content"]["parts"][0]["text"].as_str().unwrap();
-            println!("{}", response);
-            //println!("Parts: {}", json["candidates"][0]["content"]["parts"].as_array().iter().len());
-            //fs::write("response.html", response.as_bytes());
-        } else {
-            println!("Błąd: {}", response.status());
-        }
+    let response = client
+            .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await.unwrap();
+
+    if response.status().is_success() {
+        let json: serde_json::Value = response.json().await.unwrap();
+        let response = json["candidates"][0]["content"]["parts"][0]["text"].as_str().unwrap();
+        println!("{}", response);
+        //println!("Parts: {}", json["candidates"][0]["content"]["parts"].as_array().iter().len());
+        //fs::write("response.html", response.as_bytes());
+    } else {
+        eprintln!("Error: {}", response.status());
+        eprintln!("{}", response.text().await.unwrap());
+    }
 
     Ok(())
 }
