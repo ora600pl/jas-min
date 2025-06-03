@@ -2,6 +2,7 @@ use colored::Colorize;
 use reqwest::{Client, multipart};
 use reqwest::multipart::{Form, Part};
 use serde_json::json;
+use std::fmt::format;
 use std::{env, fs, collections::HashMap, sync::Arc, path::Path};
 use axum::{routing::post, Router, Json, extract::State, http::StatusCode, response::IntoResponse};
 use dotenv::dotenv;
@@ -224,6 +225,8 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<
 
     let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
 
+    let response_file = format!("{}_gemini.md", logfile_name);
+
     let client = Client::new();
 
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
@@ -278,9 +281,10 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<
     if response.status().is_success() {
         let json: serde_json::Value = response.json().await.unwrap();
         let response = json["candidates"][0]["content"]["parts"][0]["text"].as_str().unwrap();
-        println!("{}", response);
+        //println!("{}", response);
         //println!("Parts: {}", json["candidates"][0]["content"]["parts"].as_array().iter().len());
-        //fs::write("response.html", response.as_bytes());
+        fs::write(&response_file, response.as_bytes());
+        println!("🍻 Gemini response written to file: {}", response_file);
     } else {
         eprintln!("Error: {}", response.status());
         eprintln!("{}", response.text().await.unwrap());
