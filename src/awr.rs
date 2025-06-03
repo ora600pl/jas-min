@@ -25,7 +25,7 @@ pub struct LoadProfile {
 	pub stat_name: String,
 	pub per_second: f64,
 	per_transaction: f64,
-	pub begin_snap_time: String,
+	//pub begin_snap_time: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -78,7 +78,7 @@ pub struct TimeModelStats {
 	stat_name: String,
 	time_s: f64,
 	pct_dbtime: f64,
-	begin_snap_time: String,
+	//begin_snap_time: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -88,7 +88,7 @@ pub struct WaitEvents {
 	pub total_wait_time_s: f64,
 	pub avg_wait: f64,
 	pub pct_dbtime: f64,
-	begin_snap_time: String,
+	//begin_snap_time: String,
 	pub waitevent_histogram_ms: BTreeMap<String,f32>,
 }
 
@@ -169,6 +169,7 @@ pub struct KeyInstanceStats {
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct AWR {
 	pub file_name: String,
+	pub snap_info: SnapInfo,
 	status: String,
 	pub load_profile: Vec<LoadProfile>,
 	pub redo_log: RedoLog,
@@ -183,7 +184,6 @@ pub struct AWR {
 	pub sql_gets: HashMap<String, SQLGets>,
 	pub sql_reads: HashMap<String, SQLReads>,
 	pub key_instance_stats: Vec<KeyInstanceStats>,
-	pub snap_info: SnapInfo,
 } 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -701,7 +701,7 @@ fn wait_events(table: ElementRef) -> Vec<WaitEvents> {
 			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
 			if !is_idle(&event) {
-				wait_events.push(WaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string(), waitevent_histogram_ms: BTreeMap::new() })
+				wait_events.push(WaitEvents { event: event.to_string(), waits: waits, total_wait_time_s: total_wait_time_s, avg_wait: avg_wait, pct_dbtime: pct_dbtime, waitevent_histogram_ms: BTreeMap::new() })
 			}
 		}
 	}
@@ -735,7 +735,7 @@ fn wait_events_txt(events_section: Vec<&str>) -> Vec<WaitEvents> {
 					pct_dbtime = f64::from_str(&line[73..80].trim().replace(",","")).unwrap_or(0.0);
 				}
 				if !is_idle(&statname) {
-					wait_events.push(WaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string() , waitevent_histogram_ms: BTreeMap::new()})
+					wait_events.push(WaitEvents { event: statname, waits: waits, total_wait_time_s: total_wait_time, avg_wait: avg_wait, pct_dbtime: pct_dbtime, waitevent_histogram_ms: BTreeMap::new()})
 				}
 			}
 		}
@@ -760,7 +760,7 @@ fn time_model_stats(table: ElementRef) -> Vec<TimeModelStats> {
 			let pct_dbtime = columns[2].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
 
-			time_model_stats.push(TimeModelStats {stat_name: stat_name.to_string(), time_s: time_s, pct_dbtime: pct_dbtime, begin_snap_time: "".to_string()});
+			time_model_stats.push(TimeModelStats {stat_name: stat_name.to_string(), time_s: time_s, pct_dbtime: pct_dbtime});
 		}
 	}
 
@@ -775,7 +775,7 @@ fn time_model_stats_txt(time_model_section: Vec<&str>) -> Vec<TimeModelStats> {
 			let time_s = f64::from_str(&line[35..56].trim().replace(",",""));
 			let pct_dbtime = f64::from_str(&line[56..66].trim().replace(",",""));
 			if time_s.is_ok() && pct_dbtime.is_ok() {
-				time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s.unwrap(), pct_dbtime: pct_dbtime.unwrap(), begin_snap_time: "".to_string()});
+				time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s.unwrap(), pct_dbtime: pct_dbtime.unwrap()});
 			}
 		}
 		
@@ -1045,7 +1045,7 @@ fn load_profile(table: ElementRef) -> Vec<LoadProfile>{
 			let per_transaction = columns[2].text().collect::<Vec<_>>();
 			let per_transaction = f64::from_str(&per_transaction[0].trim().replace(",", "")).unwrap_or(0.0);
 
-			lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction, begin_snap_time: "".to_string()});
+			lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction});
 		}
     }
     lp
@@ -1071,7 +1071,7 @@ fn load_profile_txt(load_section: Vec<&str>) -> Vec<LoadProfile> {
 				}
 				per_transaction = f64::from_str(&line[statname_end+19..transaction_end].trim().replace(",","")).unwrap();
 			} 
-			lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction, begin_snap_time: "".to_string()});
+			lp.push(LoadProfile{stat_name: statname.to_string(), per_second: per_second, per_transaction: per_transaction});
 		}
 		
 	}
@@ -1411,15 +1411,6 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 				}
 			}
 		}
-	}
-	for lpi in 0..awr.load_profile.len() {
-		awr.load_profile[lpi].begin_snap_time = awr.snap_info.begin_snap_time.clone();
-	}
-	for tmi in 0..awr.time_model_stats.len() {
-		awr.time_model_stats[tmi].begin_snap_time = awr.snap_info.begin_snap_time.clone();
-	}
-	for fwi in 0..awr.foreground_wait_events.len() {
-		awr.foreground_wait_events[fwi].begin_snap_time = awr.snap_info.begin_snap_time.clone();
 	}
 	awr.status = "OK".to_string();
 	awr.file_name = fname.clone();
