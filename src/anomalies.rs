@@ -193,72 +193,78 @@ fn get_statistics_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
     stats_map
 }
 
+fn detect_anomalies_mad_sliding(awrs: &Vec<AWR>, stats_vector: &HashMap<String, Vec<f64>>,  args: &Args) -> HashMap<String, Vec<(String,f64)>> {
+    let mut anomalies: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+    //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
+    let threshold = args.mad_threshold;
+    let len = awrs.len();
+    let mut full_window_size = ((args.mad_window_size as f32 / 100.0 ) * len as f32) as usize; // Default is 20% of probes
+    if full_window_size % 2 == 1 {
+        full_window_size = full_window_size + 1;
+    }
+    let half_window_size = full_window_size / 2;
+    
+    for (stat_name, values) in stats_vector {
+
+        for i in 0..len {
+            
+            let start = if i >= half_window_size {
+                                    i - half_window_size
+                                } else {
+                                        0
+                                };
+
+            let end = if start + full_window_size <= len {
+                                    start + full_window_size
+                            } else {
+                                len
+                            };
+
+            let window = &values[start..end];
+
+            let local_median = median(window);
+            let local_mad = mad(window, local_median);
+
+            if local_mad == 0.0 {
+                continue; // no scatter - ignore
+            }
+
+            let val = values[i];
+            if val < 0.0 {
+                continue; // ignore placeholders
+            }
+
+            let val_mad_check = ((val - local_median).abs()) / local_mad;
+
+            if val_mad_check > threshold {
+                let snap_date = awrs[i].snap_info.begin_snap_time.clone();
+                anomalies
+                    .entry(stat_name.to_string())
+                    .or_insert_with(Vec::new)
+                    .push((snap_date, val_mad_check));
+            }
+        }
+    } 
+
+    anomalies
+}
+
 //Median Absolute Deviation for anomalies detection in wait events
 pub fn detect_event_anomalies_mad(awrs: &Vec<AWR>, args: &Args, bg_or_fg: &str) -> HashMap<String, Vec<(String,f64)>> {
-    //let mut anomalies: BTreeMap<usize, Vec<(f64,String)>> = BTreeMap::new();
-    let mut anomalies: HashMap<String, Vec<(String,f64)>> = HashMap::new();
-    //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
     let event_map_vectors = get_event_map_vectors(awrs, bg_or_fg);
-    
-    let threshold = args.mad_threshold; //Default threshold for MAD 
-
-    for (event, values) in &event_map_vectors {
-        let med = median(values);
-        let mad_val = mad(values, med);
-
-        if mad_val == 0.0 {
-            continue; // no nomalies - just move on
-        }
-
-        for (i, &val) in values.iter().enumerate() {
-            //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
-            let val_mad_check = ((val - med).abs()) / mad_val ;
-            if val_mad_check > threshold && val >= 0.0 { //Don't take into considaration negative values that are placeholders
-                let snap_date = awrs[i].snap_info.begin_snap_time.clone();
-                if let Some(a) = anomalies.get_mut(event) {
-                    a.push((snap_date, val_mad_check));
-                } else {
-                    anomalies.insert(event.to_string(), vec![(snap_date, val_mad_check)]);
-                }
-            } 
-        }
-    }
-
+    //println!("Detecting event anomalies");
+    let anomalies = detect_anomalies_mad_sliding(awrs, &event_map_vectors, args);
+    //println!("Detected event anomalies");
     anomalies
 }
 
 
 //Median Absolute Deviation for anomalies detection in SQLs
 pub fn detect_sql_anomalies_mad(awrs: &Vec<AWR>, args: &Args, sql_type: &str) -> HashMap<String, Vec<(String,f64)>> {
-    //let mut anomalies: BTreeMap<usize, Vec<(f64,String)>> = BTreeMap::new();
-    let mut anomalies: HashMap<String, Vec<(String,f64)>> = HashMap::new();
-    //                          sql_id        date   mad => for each SQL it will collect date of anomaly and value of MAD
-    let sql_map_vectors = get_sql_map_vectors(awrs, sql_type);
     
-    let threshold = args.mad_threshold; //Default threshold for MAD 
-
-    for (sql, values) in &sql_map_vectors {
-        let med = median(values);
-        let mad_val = mad(values, med);
-
-        if mad_val == 0.0 {
-            continue; // no nomalies - just move on
-        }
-
-        for (i, &val) in values.iter().enumerate() {
-            //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
-            let val_mad_check = ((val - med).abs()) / mad_val ;
-            if val_mad_check > threshold && val >= 0.0 { //Don't take into considaration negative values that are placeholders
-                let snap_date = awrs[i].snap_info.begin_snap_time.clone();
-                if let Some(a) = anomalies.get_mut(sql) {
-                    a.push((snap_date, val_mad_check));
-                } else {
-                    anomalies.insert(sql.to_string(), vec![(snap_date, val_mad_check)]);
-                }
-            } 
-        }
-    }
-
+    let sql_map_vectors = get_sql_map_vectors(awrs, sql_type);
+    let anomalies = detect_anomalies_mad_sliding(awrs, &sql_map_vectors, args);
+    
     anomalies
 }
 
@@ -266,68 +272,16 @@ pub fn detect_sql_anomalies_mad(awrs: &Vec<AWR>, args: &Args, sql_type: &str) ->
 
 //Median Absolute Deviation for anomalies detection in Load Profile
 pub fn detect_loadprofile_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap<String, Vec<(String,f64)>> {
-    //let mut anomalies: BTreeMap<usize, Vec<(f64,String)>> = BTreeMap::new();
-    let mut anomalies: HashMap<String, Vec<(String,f64)>> = HashMap::new();
-    //                          stat_name    date   mad => for each Load Profile Stat it will collect date of anomaly and value of MAD
     let loadprofile_map_vectors = get_loadprofile_map_vectors(awrs);
+    let anomalies = detect_anomalies_mad_sliding(awrs, &loadprofile_map_vectors, args);
     
-    let threshold = args.mad_threshold; //Default threshold for MAD 
-
-    for (l, values) in &loadprofile_map_vectors {
-        let med = median(values);
-        let mad_val = mad(values, med);
-
-        if mad_val == 0.0 {
-            continue; // no nomalies - just move on
-        }
-
-        for (i, &val) in values.iter().enumerate() {
-            //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
-            let val_mad_check = ((val - med).abs()) / mad_val ;
-            if val_mad_check > threshold && val >= 0.0 { //Don't take into considaration negative values that are placeholders
-                let snap_date = awrs[i].snap_info.begin_snap_time.clone();
-                if let Some(a) = anomalies.get_mut(l) {
-                    a.push((snap_date, val_mad_check));
-                } else {
-                    anomalies.insert(l.to_string(), vec![(snap_date, val_mad_check)]);
-                }
-            } 
-        }
-    }
-
     anomalies
 }
 
 //Median Absolute Deviation for anomalies detection in Load Profile
 pub fn detect_stats_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap<String, Vec<(String,f64)>> {
-    //let mut anomalies: BTreeMap<usize, Vec<(f64,String)>> = BTreeMap::new();
-    let mut anomalies: HashMap<String, Vec<(String,f64)>> = HashMap::new();
-    //                          stat_name    date   mad => for each Stat it will collect date of anomaly and value of MAD
-    let stats_map_vectors = get_statistics_map_vectors(awrs);
-    
-    let threshold = args.mad_threshold * 2.0; //Default threshold for MAD - For statistics I'm doubling the threshold to focus only on realy big anomalies.
-
-    for (l, values) in &stats_map_vectors {
-        let med = median(values);
-        let mad_val = mad(values, med);
-
-        if mad_val == 0.0 {
-            continue; // no nomalies - just move on
-        }
-
-        for (i, &val) in values.iter().enumerate() {
-            //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
-            let val_mad_check = ((val - med).abs()) / mad_val ;
-            if val_mad_check > threshold && val >= 0.0 { //Don't take into considaration negative values that are placeholders
-                let snap_date = awrs[i].snap_info.begin_snap_time.clone();
-                if let Some(a) = anomalies.get_mut(l) {
-                    a.push((snap_date, val_mad_check));
-                } else {
-                    anomalies.insert(l.to_string(), vec![(snap_date, val_mad_check)]);
-                }
-            } 
-        }
-    }
+    let stats_map_vectors = get_statistics_map_vectors(awrs);    
+    let anomalies = detect_anomalies_mad_sliding(awrs, &stats_map_vectors, args);
 
     anomalies
 }

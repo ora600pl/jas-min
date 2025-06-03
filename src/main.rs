@@ -74,6 +74,10 @@ struct Args {
 	 #[clap(short, long, default_value_t=7.0)]
 	 mad_threshold: f64,
 
+	///Window size for detecting anomalies using MAD for local sliding window specified as % of probes
+	#[clap(short = 'W', long, default_value_t = 20)]
+    mad_window_size: usize,
+
 	///Parallelism level
 	#[clap(short = 'P', long, default_value_t=4)]
     parallel: usize,

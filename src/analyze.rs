@@ -53,6 +53,14 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
     make_notes!(&logfile_name, false, 
         "==== DBCPU/DBTime ratio analysis ====\nPeaks are being analyzed based on specified ratio (default 0.666).\nThe ratio is beaing calculated as DB CPU / DB Time.\nThe lower the ratio the more sessions are waiting for resources other than CPU.\nIf DB CPU = 2 and DB Time = 8 it means that on AVG 8 actice sessions are working but only 2 of them are actively working on CPU.\nCurrent ratio used to find peak periods is {}\n\n", db_time_cpu_ratio);
         
+    
+    let mut full_window_size = ((args.mad_window_size as f32 / 100.0 ) * awrs.len() as f32) as usize; // Default is 20% of probes
+    if full_window_size % 2 == 1 {
+        full_window_size = full_window_size + 1;
+    }
+    make_notes!(&logfile_name, false, 
+                "==== Median Absolute Deviation ====\n\tMAD threshold = {}\n\tMAD window size={}% ({} of probes out of {})\n\n", args.mad_threshold, args.mad_window_size, full_window_size, awrs.len());
+    
     for awr in &awrs {
         let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
         let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
@@ -102,8 +110,8 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
                     for i in 1..6 {
                         sql_ids.entry(sqls[l-i].sql_id.clone()).or_insert(sqls[l-i].sql_module.clone());
                     }
-                } else if l >= 1 && l <=5 {
-                    for i in 0..=l {
+                } else if l > 1 && l <=5 {
+                    for i in 0..=l-1 {
                         sql_ids.entry(sqls[i].sql_id.clone()).or_insert(sqls[i].sql_module.clone());
                     }
                 }
@@ -114,6 +122,7 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
         }
     }
     
+    println!("\n****Detecting anamalies using MAD sliding window****\n");
     let event_anomalies = detect_event_anomalies_mad(&awrs, &args, "FOREGROUND");
     for a in &event_anomalies {
         event_names.entry(a.0.to_string()).or_insert(1);
