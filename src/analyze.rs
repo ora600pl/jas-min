@@ -1833,7 +1833,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     /********************************************************/
 
     /****************   Report anomalies summary ************/
-    println!("\n{}","Anomalies Summary");
+    println!("{}","Anomalies Summary");
     let anomalies_summary_html: String = format!(
         r#"
         <table id="anomalies-sum-table">
