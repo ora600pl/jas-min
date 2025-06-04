@@ -44,7 +44,7 @@ struct TopStats {
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String, logfile_name: &str, args: &Args) -> TopStats {
+fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String, logfile_name: &str, args: &Args) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut bgevent_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
@@ -61,7 +61,7 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
     make_notes!(&logfile_name, false, 
                 "==== Median Absolute Deviation ====\n\tMAD threshold = {}\n\tMAD window size={}% ({} of probes out of {})\n\n", args.mad_threshold, args.mad_window_size, full_window_size, awrs.len());
     
-    for awr in &awrs {
+    for awr in awrs {
         let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
         let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
         let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
@@ -255,7 +255,11 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
 }
 
 // Generate plots for top events
-fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, dirpath: &str) {
+fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, snap_range: &str, dirpath: &str) {
+    let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
+    let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
+    let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+    
     // Detect number and type of buckets
     // Ensure that there is at least one AWR with fg or bg event and they are explicitly checked
     assert!(!awrs.is_empty(),"generate_events_plotfiles: No AWR data available.");
@@ -299,41 +303,44 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
     
     // Let's gather all needed data
     for awr in awrs {
-        let snap_time = awr.snap_info.begin_snap_time.clone();
-        let events = if is_fg {
-            &awr.foreground_wait_events
-        } else {
-            &awr.background_wait_events
-        };
+        if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+            let snap_time: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
+        
+            let events = if is_fg {
+                &awr.foreground_wait_events
+            } else {
+                &awr.background_wait_events
+            };
 
-        for event in events {
-            if !top_events.contains_key(&event.event) {
-                continue;
-            }
-            // Initilize events map
-            let entry = data_by_event
-                .entry(event.event.clone())
-                .or_insert_with(|| EventStats {
-                    pct_dbtime: Vec::new(),
-                    total_wait_time_s: Vec::new(),
-                    waits: Vec::new(),
-                    histogram_by_bucket: BTreeMap::new(),
-                    histogram_heatmap: Vec::new(),
+            for event in events {
+                if !top_events.contains_key(&event.event) {
+                    continue;
+                }
+                // Initilize events map
+                let entry = data_by_event
+                    .entry(event.event.clone())
+                    .or_insert_with(|| EventStats {
+                        pct_dbtime: Vec::new(),
+                        total_wait_time_s: Vec::new(),
+                        waits: Vec::new(),
+                        histogram_by_bucket: BTreeMap::new(),
+                        histogram_heatmap: Vec::new(),
+                    });
+                // Gather data by Event Name
+                entry.pct_dbtime.push(event.pct_dbtime);
+                entry.total_wait_time_s.push(event.total_wait_time_s);
+                entry.waits.push(event.waits);
+                for (bucket, value) in &event.waitevent_histogram_ms {
+                    entry.histogram_by_bucket
+                        .entry(bucket.clone())
+                        .or_insert_with(Vec::new)
+                        .push(*value);
+                }
+                entry.histogram_heatmap.push(HeatmapEntry {
+                    snap_time: snap_time.clone(),
+                    histogram: event.waitevent_histogram_ms.clone(),
                 });
-            // Gather data by Event Name
-            entry.pct_dbtime.push(event.pct_dbtime);
-            entry.total_wait_time_s.push(event.total_wait_time_s);
-            entry.waits.push(event.waits);
-            for (bucket, value) in &event.waitevent_histogram_ms {
-                entry.histogram_by_bucket
-                    .entry(bucket.clone())
-                    .or_insert_with(Vec::new)
-                    .push(*value);
             }
-            entry.histogram_heatmap.push(HeatmapEntry {
-                snap_time: snap_time.clone(),
-                histogram: event.waitevent_histogram_ms.clone(),
-            });
         }
     }
 
@@ -547,6 +554,41 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
     }
 }
 
+// Generate TOP SQLs html subpages with plots - To Be Developed
+fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, snap_range: &str, dirpath: &str){
+    let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
+    let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
+    let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+    
+    struct SQLStats{
+        execs: Vec<u64>,            // Number of Executions
+        ela_exec_s: Vec<f64>,       // Elapsed Time (s) per Execution
+        ela_pct_total: Vec<f64>,    // Elapsed Time as a percentage of Total DB time
+        pct_cpu: Vec<f64>,          // CPU Time as a percentage of Elapsed Time
+        pct_io: Vec<f64>,           // User I/O Time as a percentage of Elapsed Time
+        cpu_time_exec_s: Vec<f64>,  // CPU Time (s) per Execution
+        cpu_t_pct_total: Vec<f64>,  // CPU Time as a percentage of Total DB CPU
+        io_time_exec_s: Vec<f64>,   // User I/O Wait Time (s) per Execution
+        io_pct_total: Vec<f64>,     // User I/O Time as a percentage of Total User I/O Wait time
+        gets_per_exec: Vec<f64>,    // Number of Buffer Gets per Execution
+        gets_pct_total: Vec<f64>,   // Buffer Gets as a percentage of Total Buffer Gets
+        phy_r_exec: Vec<f64>,       // Number of Physical Reads per Execution
+        phy_r_pct_total: Vec<f64>   // Physical Reads as a percentage of Total Disk Reads
+    }
+    let mut sqls_by_stats: HashMap<String, SQLStats> = HashMap::new();
+    
+    for awr in awrs {
+        if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+            let mut x_vals: Vec<String> = Vec::new();
+            let xval: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
+            x_vals.push(xval.clone());
+            // ...........
+        }            
+    }
+}
+
+
+
 pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let db_time_cpu_ratio: f64 = args.time_cpu_ratio;
     let filter_db_time: f64 = args.filter_db_time;
@@ -601,7 +643,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     // === ANALYZING ===
     println!("{}","\n==== ANALYZING ===".bright_cyan());
-    let top_stats: TopStats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone(), &logfile_name, &args);
+    let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, snap_range.clone(), &logfile_name, &args);
     
     let mut is_logfilesync_high: bool = false;
     
@@ -620,8 +662,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     println!("{}","\n==== CREATING PLOTS ===".bright_cyan());
     fs::create_dir(&html_dir).unwrap_or_default();
-    generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &html_dir);
-    generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false,&html_dir);
+    generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &snap_range, &html_dir);
+    generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false, &snap_range, &html_dir);
+    //generate_sqls_plotfiles(&collection.awrs, &top_stats.bgevents, &snap_range, &html_dir);
     let fname: String = format!("{}/jasmin_{}", &html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
