@@ -75,7 +75,7 @@ struct Args {
 	 mad_threshold: f64,
 
 	///Window size for detecting anomalies using MAD for local sliding window specified as % of probes
-	#[clap(short = 'W', long, default_value_t = 20)]
+	#[clap(short = 'W', long, default_value_t = 100)]
     mad_window_size: usize,
 
 	///Parallelism level
@@ -88,6 +88,7 @@ fn main() {
 	let args = Args::parse(); 
 	println!("{}{} (Running with parallel degree: {})","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow(), args.parallel);
 
+	//This creates a global pool configuration for rayon to limit threads for par_iter
 	ThreadPoolBuilder::new()
         .num_threads(args.parallel)
         .build_global()

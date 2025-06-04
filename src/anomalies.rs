@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, BTreeMap};
 use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 use crate::Args;
 use prettytable::{Table, Row, Cell, format, Attr};
+use rayon::prelude::*;
 use crate::make_notes;
 use colored::*;
 
@@ -196,53 +197,92 @@ fn get_statistics_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
 fn detect_anomalies_mad_sliding(awrs: &Vec<AWR>, stats_vector: &HashMap<String, Vec<f64>>,  args: &Args) -> HashMap<String, Vec<(String,f64)>> {
     let mut anomalies: HashMap<String, Vec<(String, f64)>> = HashMap::new();
     //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
+    
+    //if window is 100% don't use sliding window alghorithm - use normal detection for better performance
+    if args.mad_window_size == 100 {
+        anomalies = detect_anomalies_mad(awrs, stats_vector, args);
+        return anomalies;
+    }
+    
     let threshold = args.mad_threshold;
     let len = awrs.len();
-    let mut full_window_size = ((args.mad_window_size as f32 / 100.0 ) * len as f32) as usize; // Default is 20% of probes
+    let mut full_window_size = ((args.mad_window_size as f32 / 100.0 ) * len as f32) as usize;
     if full_window_size % 2 == 1 {
         full_window_size = full_window_size + 1;
     }
     let half_window_size = full_window_size / 2;
-    
-    for (stat_name, values) in stats_vector {
 
-        for i in 0..len {
-            
-            let start = if i >= half_window_size {
-                                    i - half_window_size
+    //For sliding window there will parallel processing using rayon - Global Thread Pool is configured in main.rs
+    anomalies = stats_vector
+        .par_iter() //parallel iteration
+        .map(|(stat_name, values)| { //each thread will process one statistic
+            let mut local_anomalies = Vec::new();
+            for (i, &val) in values.iter().enumerate() { //For the given statistic process vector values of each snap and define local window
+                
+                /* Define boundries for the window  */
+                let start = if i >= half_window_size {
+                                        i - half_window_size
+                                    } else {
+                                            0
+                                    };
+
+                let end = if start + full_window_size <= len {
+                                        start + full_window_size
                                 } else {
-                                        0
+                                    len
                                 };
+                /* ********************************** */
 
-            let end = if start + full_window_size <= len {
-                                    start + full_window_size
-                            } else {
-                                len
-                            };
+                let window = &values[start..end]; //local surrounding window
 
-            let window = &values[start..end];
+                let local_median = median(window); 
+                let local_mad = mad(window, local_median);
 
-            let local_median = median(window);
-            let local_mad = mad(window, local_median);
+                if local_mad == 0.0 {
+                    continue; // no scatter - ignore
+                }
 
-            if local_mad == 0.0 {
-                continue; // no scatter - ignore
+                let val_mad_check = ((val - local_median).abs()) / local_mad;
+
+                //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
+                if val_mad_check > threshold && val >= 0.0 { //Don't take into considaration negative values that are placeholders
+                    let snap_date = awrs[i].snap_info.begin_snap_time.clone();
+                    local_anomalies.push((snap_date, val_mad_check)); //put in vector date of anomalie and value of MAD
+                } 
             }
+            (stat_name.clone(), local_anomalies) //return statistic name and anomalies
+        }).filter(|(_, v)| {!v.is_empty()}) //filter out statistics with empty vectors - it means that no anomalie was detected for this stat
+        .collect();
 
-            let val = values[i];
-            if val < 0.0 {
-                continue; // ignore placeholders
-            }
+    anomalies    
+    
+}
 
-            let val_mad_check = ((val - local_median).abs()) / local_mad;
+fn detect_anomalies_mad(awrs: &Vec<AWR>, stats_vector: &HashMap<String, Vec<f64>>,  args: &Args) -> HashMap<String, Vec<(String,f64)>> {
+    let mut anomalies: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+    //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
+    let threshold = args.mad_threshold;
 
-            if val_mad_check > threshold {
+    for (stat_name, values) in stats_vector {
+         let med = median(values);
+         let mad_val = mad(values, med);
+
+        if mad_val == 0.0 {
+            continue; // no nomalies - just move on
+        }
+
+        for (i, &val) in values.iter().enumerate() {
+            let val_mad_check = ((val - med).abs()) / mad_val ;
+
+            //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
+            if val_mad_check > threshold && val >= 0.0 { //Don't take into considaration negative values that are placeholders
                 let snap_date = awrs[i].snap_info.begin_snap_time.clone();
-                anomalies
-                    .entry(stat_name.to_string())
-                    .or_insert_with(Vec::new)
-                    .push((snap_date, val_mad_check));
-            }
+                if let Some(a) = anomalies.get_mut(stat_name) {
+                    a.push((snap_date, val_mad_check));
+                } else {
+                    anomalies.insert(stat_name.to_string(), vec![(snap_date, val_mad_check)]);
+                }
+            } 
         }
     } 
 
