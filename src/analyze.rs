@@ -44,7 +44,7 @@ struct TopStats {
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String, logfile_name: &str, args: &Args) -> TopStats {
+fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String, logfile_name: &str, args: &Args) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut bgevent_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
@@ -61,7 +61,7 @@ fn find_top_stats(awrs: Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, s
     make_notes!(&logfile_name, false, 
                 "==== Median Absolute Deviation ====\n\tMAD threshold = {}\n\tMAD window size={}% ({} of probes out of {})\n\n", args.mad_threshold, args.mad_window_size, full_window_size, awrs.len());
     
-    for awr in &awrs {
+    for awr in awrs {
         let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
         let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
         let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
@@ -597,7 +597,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     // === ANALYZING ===
     println!("{}","\n==== ANALYZING ===".bright_cyan());
-    let top_stats: TopStats = find_top_stats(collection.awrs.clone(), db_time_cpu_ratio, filter_db_time, snap_range.clone(), &logfile_name, &args);
+    let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, snap_range.clone(), &logfile_name, &args);
     
     let mut is_logfilesync_high: bool = false;
     
