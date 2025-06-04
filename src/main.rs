@@ -36,43 +36,43 @@ struct Args {
 	#[clap(short, long, default_value_t=1)]
     plot: u8,
 
-	 ///Write output to nondefault file? Default is directory_name.json
-	 #[clap(short, long, default_value="NO")]
-	 outfile: String,
+	///Write output to nondefault file? Default is directory_name.json
+	#[clap(short, long, default_value="NO")]
+	outfile: String,
 
-	 ///Ratio of DB CPU / DB TIME
-	 #[clap(short, long, default_value_t=0.666)]
-	 time_cpu_ratio: f64,
+	///Ratio of DB CPU / DB TIME
+	#[clap(short, long, default_value_t=0.666)]
+	time_cpu_ratio: f64,
 
-	 ///Filter only for DBTIME greater than (if zero the filter is not effective)
-	 #[clap(short, long, default_value_t=0.0)]
-	 filter_db_time: f64,
+	///Filter only for DBTIME greater than (if zero the filter is not effective)
+	#[clap(short, long, default_value_t=0.0)]
+	filter_db_time: f64,
 
-	 ///Analyze provided JSON file
-	 #[clap(short, long, default_value="NO")]
-	 json_file: String,
+	///Analyze provided JSON file
+	#[clap(short, long, default_value="NO")]
+	json_file: String,
 
-	 ///Filter snapshots, based on dates in format BEGIN-END
-	 #[clap(short, long, default_value="0-666666666")]
-	 snap_range: String,
+	///Filter snapshots, based on SNAP IDs in format BEGIN_ID- END_ID
+	#[clap(short, long, default_value="0-666666666")]
+	snap_range: String,
 
-	 ///Should I be quiet? This mode suppresses terminal output but still writes to log file
-	 #[clap(short, long)]
-     quiet: bool,
+	///Should I be quiet? This mode suppresses terminal output but still writes to log file
+	#[clap(short, long)]
+    quiet: bool,
 
-	 ///Use AI model to interpret collected statistics and describe them. 
-	 ///Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key 
-	 ///The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL)
-	 #[clap(short, long, default_value="NO")]
-	 ai: String,
+	///Use AI model to interpret collected statistics and describe them. 
+	///Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key 
+	///The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL)
+	#[clap(short, long, default_value="NO")]
+	ai: String,
 
 	///Launches the backend agent used by the JASMIN Assistant. Configuration details such as API keys and the selected PORT number are loaded from the .env file
-	 #[clap(short, long)]
-	 backend_assistant: bool,
+	#[clap(short, long)]
+	backend_assistant: bool,
 
 	///Threshold for detecting anomalies using MAD
-	 #[clap(short, long, default_value_t=7.0)]
-	 mad_threshold: f64,
+	#[clap(short, long, default_value_t=7.0)]
+	mad_threshold: f64,
 
 	///Window size for detecting anomalies using MAD for local sliding window specified as % of probes
 	#[clap(short = 'W', long, default_value_t = 100)]
