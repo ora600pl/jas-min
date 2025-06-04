@@ -14,7 +14,8 @@ use rayon::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-
+use std::thread;
+use std::time::Duration;
 
 use crate::analyze::plot_to_file;
 use crate::idleevents::is_idle;
@@ -1223,12 +1224,12 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
 	db_instance_information
 }
 
-fn parse_awr_report_internal(fname: String) -> AWR {
+fn parse_awr_report_internal(fname: &str) -> AWR {
 	let mut awr: AWR = AWR::default();
 	if fname.ends_with("html") {
 
 		//println!("Parsing file {}", &fname);
-		let html_file = fs::read_to_string(&fname);
+		let html_file = fs::read_to_string(fname);
 		let html = html_file.unwrap();
 
 		let doc = Html::parse_document(&html);
@@ -1285,7 +1286,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 			}
 		}
 	} else if fname.ends_with("txt") {
-		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname.clone()));
+		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname));
     	let awr_lines = awr_rep.split("\n").collect::<Vec<&str>>();
 
 		let mut snapshot_index = find_section_boundries(awr_lines.clone(), "Snapshot       Snap Id", "Cache Sizes",&fname);
@@ -1413,7 +1414,7 @@ fn parse_awr_report_internal(fname: String) -> AWR {
 		}
 	}
 	awr.status = "OK".to_string();
-	awr.file_name = fname.clone();
+	awr.file_name = fname.to_string();
 	awr
 }
 
@@ -1443,19 +1444,36 @@ pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
 
     let counter = Arc::new(AtomicUsize::new(0));
 
+	/* This will create a separate thread which will display a progress bar - updating progress bar inside a thread is too slow */
+	let counter_clone = Arc::clone(&counter); //clone of atomic counter
+	let pb_clone = pb.clone(); //clone of progress bar
+	let fc = file_collection.clone(); //clone of file_collection
+	let update_thread = thread::spawn(move || {
+		loop {
+			let val = counter_clone.load(Ordering::Relaxed); //check counter value
+			pb_clone.set_position(val as u64); //update progress bar
+
+			if val >= fc.len() {
+				break; //if counter is bigger or equal than the number of files you can stop displaying this
+			}
+			thread::sleep(Duration::from_millis(100)); // update display every 100ms
+		}
+	});
+	/************************************************************/
+
     let mut awr_vec: Vec<AWR> = file_collection
         .par_iter()
-        .map_init(
-            || Arc::clone(&counter),
-            |counter, f| {
-                let result = parse_awr_report_internal(f.to_string());
-                let prev = counter.fetch_add(1, Ordering::Relaxed);
-                pb.set_position((prev + 1) as u64);
+        .map_init( //initialize variables for each thread
+            || Arc::clone(&counter), //initializied will be counter as cloned value for each thread
+            |counter, f| { //map operator is initialized clone of counter and file name
+                let result = parse_awr_report_internal(f); //each thread is processing one file
+                counter.fetch_add(1, Ordering::Relaxed); //increment counter
                 result
             },
         )
-        .collect();
+        .collect(); //collect result into collection of awrs
 
+	update_thread.join().unwrap(); //wait for thread updating progress bar to finish
     pb.finish_with_message("Finished parsing! 🎉");
 
 	println!("");
@@ -1489,7 +1507,7 @@ pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::
 		fname = data.to_string();
 	}
 	println!("Try to parsee a file: {}", &fname);
-	let awr = parse_awr_report_internal(fname);
+	let awr = parse_awr_report_internal(&fname);
 	
     let awr_doc: String = serde_json::to_string_pretty(&awr).unwrap();
 	Ok(awr_doc)
