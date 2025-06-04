@@ -122,7 +122,11 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
         }
     }
     
-    println!("\n****Detecting anamalies using MAD sliding window****\n");
+    if args.mad_window_size == 100 {
+        println!("\n****Detecting anamalies using MAD from all probes****\n");
+    } else {
+        println!("\n****Detecting anamalies using MAD sliding window****\n");
+    }
     let event_anomalies = detect_event_anomalies_mad(&awrs, &args, "FOREGROUND");
     for a in &event_anomalies {
         event_names.entry(a.0.to_string()).or_insert(1);
