@@ -15,7 +15,7 @@ mod idleevents;
 mod reasonings;
 mod macros;
 mod anomalies;
-use crate::reasonings::{backend_ai};
+use crate::reasonings::{backend_ai,gemini};
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
@@ -119,7 +119,18 @@ fn main() {
 		println!("🤖 Starting JAS-MIN Assistant Backend on http://loclahost:{}",bckend_port);
 		println!("📁 Report File: {}",reportfile.clone());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(backend_ai(reportfile));
+        rt.block_on(backend_ai(reportfile.clone()));
+    }
+	if args.ai != "NO" {
+        let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
+        if vendor_model_lang[0] == "openai" {
+            println!("Sorry but report file got too big - we are working on it. Create an openai agent and use jas-min with -b option");
+            //chat_gpt(&logfile_name, vendor_model_lang).unwrap();
+        } else if vendor_model_lang[0] == "google" {
+            gemini(&reportfile, vendor_model_lang).unwrap();
+        } else {
+            println!("Unrecognized vendor. Supported vendors: openai, google");
+        }   
     }
 	
 }

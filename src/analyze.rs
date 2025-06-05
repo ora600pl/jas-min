@@ -1603,7 +1603,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                     <th onclick="sortInnerTable('{0}',1)" style="cursor: pointer;">MAD Score</th>
                                     <th onclick="sortInnerTable('{0}',2)" style="cursor: pointer;">Total Wait (s)</th>
                                     <th onclick="sortInnerTable('{0}',3)" style="cursor: pointer;">Waits</th>
-                                    <th onclick="sortInnerTable('{0}',4)" style="cursor: pointer;">AVG Wait (ms)</th>
+                                    <th onclick="sortInnerTable('{0}',4)" style="cursor: pointer;">AVG Wait (s)</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -2370,17 +2370,4 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     println!("{}{}\n","JAS-MIN Report saved to: ",&fname);
 
     open::that(fname);
-
-    if args.ai != "NO" {
-        let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
-        if vendor_model_lang[0] == "openai" {
-            println!("Sorry but report file got too big - we are working on it. Create an openai agent and use jas-min with -b option");
-            //chat_gpt(&logfile_name, vendor_model_lang).unwrap();
-        } else if vendor_model_lang[0] == "google" {
-            gemini(&logfile_name, vendor_model_lang).unwrap();
-        } else {
-            println!("Unrecognized vendor. Supported vendors: openai, google");
-        }
-        
-    };
 }

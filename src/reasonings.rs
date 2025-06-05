@@ -267,7 +267,7 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<
                 ]
             }],
             "generationConfig": {
-                "maxOutputTokens": 8192*2 
+                "maxOutputTokens": 8192*4 
             }
             });
 
