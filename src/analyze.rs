@@ -28,12 +28,12 @@ use crate::anomalies::*;
 
 use crate::make_notes;
 use prettytable::{Table, Row, Cell, format, Attr};
-
+use rayon::prelude::*;
 
 struct TopStats {
     events: BTreeMap<String, u8>,
     bgevents: BTreeMap<String, u8>,
-    sqls:   BTreeMap<String, String>,
+    sqls:   BTreeMap<String, String>,   // <SQL_ID, Module>
     stat_names: BTreeMap<String, u8>,
     event_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
     bgevent_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
@@ -555,7 +555,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
 }
 
 // Generate TOP SQLs html subpages with plots - To Be Developed
-fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, snap_range: &str, dirpath: &str){
+fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &str, dirpath: &str){
     let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
     let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
     let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
@@ -576,15 +576,287 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, s
         phy_r_pct_total: Vec<f64>   // Physical Reads as a percentage of Total Disk Reads
     }
     let mut sqls_by_stats: HashMap<String, SQLStats> = HashMap::new();
+
+    let x_vals: Vec<String> = awrs
+        .iter()
+        .filter(|awr| awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap)
+        .map(|awr| format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id))
+        .collect();
+
+    let sqls_by_stats: HashMap<String, SQLStats> = top_stats.sqls.par_iter()
+        .map(|(sql_id, _)| {
+            let mut stats = SQLStats {
+                execs: Vec::new(),
+                ela_exec_s: Vec::new(),
+                ela_pct_total: Vec::new(),
+                pct_cpu: Vec::new(),
+                pct_io: Vec::new(),
+                cpu_time_exec_s: Vec::new(),
+                cpu_t_pct_total: Vec::new(),
+                io_time_exec_s: Vec::new(),
+                io_pct_total: Vec::new(),
+                gets_per_exec: Vec::new(),
+                gets_pct_total: Vec::new(),
+                phy_r_exec: Vec::new(),
+                phy_r_pct_total: Vec::new(),
+            };
+
+            for awr in awrs {
+                if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+                    let mut sql_found: bool = false;
+                    // Elapsed Time
+                    if let Some(sql_et) = awr.sql_elapsed_time.iter().find(|e| &e.sql_id == sql_id) {
+                        stats.execs.push(sql_et.executions);
+                        stats.ela_exec_s.push(sql_et.elpased_time_exec_s);
+                        stats.ela_pct_total.push(sql_et.pct_total);
+                        stats.pct_cpu.push(sql_et.pct_cpu);
+                        stats.pct_io.push(sql_et.pct_io);
+                        sql_found = true;
+                    } else {
+                        //stats.execs.push(0);
+                        stats.ela_exec_s.push(0.0);
+                        stats.ela_pct_total.push(0.0);
+                        //stats.pct_cpu.push(0.0);
+                        //stats.pct_io.push(0.0);
+                    }
     
-    for awr in awrs {
-        if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
-            let mut x_vals: Vec<String> = Vec::new();
-            let xval: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
-            x_vals.push(xval.clone());
-            // ...........
-        }            
+                    // CPU Time
+                    if let Some(sql_cpu) = awr.sql_cpu_time.get(sql_id) {
+                        stats.cpu_time_exec_s.push(sql_cpu.cpu_time_exec_s);
+                        stats.cpu_t_pct_total.push(sql_cpu.pct_total);
+                        if !sql_found{
+                            stats.execs.push(sql_cpu.executions);
+                            stats.pct_cpu.push(sql_cpu.pct_cpu);
+                            stats.pct_io.push(sql_cpu.pct_io);
+                            sql_found = true;
+                        }
+                    } else {
+                        stats.cpu_time_exec_s.push(0.0);
+                        stats.cpu_t_pct_total.push(0.0);
+                    }
+    
+                    // IO Time
+                    if let Some(sql_io) = awr.sql_io_time.get(sql_id) {
+                        stats.io_time_exec_s.push(sql_io.io_time_exec_s);
+                        stats.io_pct_total.push(sql_io.pct_total);
+                        if !sql_found{
+                            stats.execs.push(sql_io.executions);
+                            stats.pct_cpu.push(sql_io.pct_cpu);
+                            stats.pct_io.push(sql_io.pct_io);
+                            sql_found = true;
+                        }
+                    } else {
+                        stats.io_time_exec_s.push(0.0);
+                        stats.io_pct_total.push(0.0);
+                    }
+    
+                    // Gets
+                    if let Some(sql_gets) = awr.sql_gets.get(sql_id) {
+                        stats.gets_per_exec.push(sql_gets.gets_per_exec);
+                        stats.gets_pct_total.push(sql_gets.pct_total);
+                        if !sql_found{
+                            stats.execs.push(sql_gets.executions);
+                            stats.pct_cpu.push(sql_gets.pct_cpu);
+                            stats.pct_io.push(sql_gets.pct_io);
+                            sql_found = true;
+                        }
+                    } else {
+                        stats.gets_per_exec.push(0.0);
+                        stats.gets_pct_total.push(0.0);
+                    }
+    
+                    // Reads
+                    if let Some(sql_reads) = awr.sql_reads.get(sql_id) {
+                        stats.phy_r_exec.push(sql_reads.reads_per_exec);
+                        stats.phy_r_pct_total.push(sql_reads.pct_total);
+                        if !sql_found{
+                            stats.execs.push(sql_reads.executions);
+                            stats.pct_cpu.push(sql_reads.cpu_time_pct);
+                            stats.pct_io.push(sql_reads.pct_io);
+                            sql_found = true;
+                        }
+                    } else {
+                        stats.phy_r_exec.push(0.0);
+                        stats.phy_r_pct_total.push(0.0);
+                    }
+                    if !sql_found {
+                        stats.execs.push(0);
+                        stats.pct_cpu.push(0.0);
+                        stats.pct_io.push(0.0);
+                    }
+                }
+            }
+    
+            (sql_id.clone(), stats)
+        })
+        .collect();
+
+    for (sql, stats) in sqls_by_stats{
+        let mut sql_plot: Plot = Plot::new();
+        let sql_id = format!("{}", &sql);
+
+        let sql_gets_per_exec = Scatter::new(x_vals.clone(), stats.gets_per_exec.clone())
+            .mode(Mode::Markers)
+            .name("# Buffer Gets")
+            .x_axis("x1")
+            .y_axis("y4")
+            .visible(Visible::LegendOnly);
+        sql_plot.add_trace(sql_gets_per_exec);
+
+        let sql_phy_r_exec = Scatter::new(x_vals.clone(), stats.phy_r_exec.clone())
+            .mode(Mode::Markers)
+            .name("# Physical Reads")
+            .x_axis("x1")
+            .y_axis("y4")
+            .visible(Visible::LegendOnly);
+        sql_plot.add_trace(sql_phy_r_exec);
+
+        let sql_ela_pct_total = Scatter::new(x_vals.clone(), stats.ela_pct_total.clone())
+            .mode(Mode::Lines)
+            .name("% Ela Time as DB Time")
+            .x_axis("x1")
+            .y_axis("y3");
+        sql_plot.add_trace(sql_ela_pct_total);
+
+        let sql_pct_cpu = Scatter::new(x_vals.clone(), stats.pct_cpu.clone())
+            .mode(Mode::Lines)
+            .name("% CPU of Ela")
+            .x_axis("x1")
+            .y_axis("y3");
+        sql_plot.add_trace(sql_pct_cpu);
+
+        // IO % of Ela
+        let sql_pct_io = Scatter::new(x_vals.clone(), stats.pct_io.clone())
+            .mode(Mode::Lines)
+            .name("% IO of Ela")
+            .x_axis("x1")
+            .y_axis("y3");
+        sql_plot.add_trace(sql_pct_io);
+
+        // CPU Time as % of DB CPU
+        let sql_cpu_t_pct_total = Scatter::new(x_vals.clone(), stats.cpu_t_pct_total.clone())
+            .mode(Mode::Markers)
+            .name("% CPU Time as DB CPU")
+            .x_axis("x1")
+            .y_axis("y3")
+            .visible(Visible::LegendOnly);
+        sql_plot.add_trace(sql_cpu_t_pct_total);
+
+        // IO Time as % of Total IO Wait
+        let sql_io_pct_total = Scatter::new(x_vals.clone(), stats.io_pct_total.clone())
+            .mode(Mode::Markers)
+            .name("% IO Time as DB IO Wait")
+            .x_axis("x1")
+            .y_axis("y3")
+            .visible(Visible::LegendOnly);
+        sql_plot.add_trace(sql_io_pct_total);
+
+        // Buffer Gets as % of Total
+        let sql_gets_pct_total = Scatter::new(x_vals.clone(), stats.gets_pct_total.clone())
+            .mode(Mode::Markers)
+            .name("% Gets as Total Gets")
+            .x_axis("x1")
+            .y_axis("y3")
+            .visible(Visible::LegendOnly);
+        sql_plot.add_trace(sql_gets_pct_total);
+
+        // Physical Reads as % of Total Disk Reads
+        let sql_phy_r_pct_total = Scatter::new(x_vals.clone(), stats.phy_r_pct_total.clone())
+            .mode(Mode::Markers)
+            .name("% Phys Reads as Total Disk Reads")
+            .x_axis("x1")
+            .y_axis("y3")
+            .visible(Visible::LegendOnly);
+        sql_plot.add_trace(sql_phy_r_pct_total);
+
+        let sql_ela_exec_s = Scatter::new(x_vals.clone(), stats.ela_exec_s.clone())
+            .mode(Mode::Lines)
+            .name("(s) Elapsed Time per Exec")
+            .x_axis("x1")
+            .y_axis("y2");
+        sql_plot.add_trace(sql_ela_exec_s);
+    
+        let sql_cpu_time_exec_s = Scatter::new(x_vals.clone(), stats.cpu_time_exec_s.clone())
+            .mode(Mode::Markers)
+            .name("(s) CPU Time")
+            .x_axis("x1")
+            .y_axis("y2")
+            .visible(Visible::LegendOnly);
+        sql_plot.add_trace(sql_cpu_time_exec_s);
+        
+        let sql_io_time_exec_s = Scatter::new(x_vals.clone(), stats.io_time_exec_s.clone())
+            .mode(Mode::Markers)
+            .name("(s) User I/O Wait Time")
+            .x_axis("x1")
+            .y_axis("y2")
+            .visible(Visible::LegendOnly);
+        sql_plot.add_trace(sql_io_time_exec_s);
+        
+        let sql_exec = Scatter::new(x_vals.clone(), stats.execs.clone())
+            .mode(Mode::Lines)
+            .name("# Executions")
+            .x_axis("x1")
+            .y_axis("y1");
+        sql_plot.add_trace(sql_exec);
+
+        let sql_layout: Layout = Layout::new()
+            //.title(&format!("'<b>{}</b>'", &sql))
+            .height(800)
+            .hover_mode(HoverMode::X)
+            .grid(
+                LayoutGrid::new()
+                    .rows(1)
+                    .columns(1),
+            )
+            .x_axis(
+                Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("y1")
+                    .range(vec![0.,])
+                    .show_grid(true)
+            )
+            .y_axis(
+                Axis::new()
+                    .domain(&[0.0, 0.23])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .title("#")
+                    .zero_line(true)
+            )
+            .y_axis2(
+                Axis::new()
+                    .domain(&[0.25, 0.48])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .title("(s) per Exec")
+                    .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
+            )
+            .y_axis3(
+                Axis::new()
+                    .domain(&[0.5, 0.73])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .title("%")
+                    .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
+            )
+            .y_axis4(
+                Axis::new()
+                    .domain(&[0.75, 1.0])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .title("#")
+                    .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
+            );
+            sql_plot.set_layout(sql_layout);
+            let file_name: String = format!("{}/sqlid_{}.html", dirpath, &sql);
+            let path: &Path = Path::new(&file_name);
+            sql_plot.write_html(path);
     }
+    println!("Saved plots for SQLs to '{}/sqlid_*'", dirpath);
+
 }
 
 
@@ -664,7 +936,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     fs::create_dir(&html_dir).unwrap_or_default();
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &snap_range, &html_dir);
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false, &snap_range, &html_dir);
-    //generate_sqls_plotfiles(&collection.awrs, &top_stats.bgevents, &snap_range, &html_dir);
+    generate_sqls_plotfiles(&collection.awrs, &top_stats, &snap_range, &html_dir);
     let fname: String = format!("{}/jasmin_{}", &html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
@@ -1569,7 +1841,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         table_sqls.push_str(&format!(
             r#"
             <tr>
-                <td><a href="{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
+                <td><a href="sqlid_{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
@@ -1632,8 +1904,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 make_notes!(&logfile_name, args.quiet, "{}\n", corr_text);
             }
         }
-
-        let filename: String = format!("{}/{}.html", &html_dir,sql_id);
+        
         // Format the content as HTML
         let sqlid_html_content: String = format!(
             r#"<!DOCTYPE html>
@@ -1651,7 +1922,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             </head>
             <body>
                 <div class="content">
-                    <p><span style="font-size:20px;font-weight:bold">{sql_id}</span></p>
+                    <p><span style="font-size:20px;font-weight:bold;width:100%;text-align:center;">{sql_id}</span></p>
                     <p><span style="color:blue;font-weight:bold;">Module:<br></span>{module}</p>
                     <p><span style="color:blue;font-weight:bold;">Other Top Sections:<br></span> {top_section}</p>
                     <p><span style="color:blue;font-weight:bold;">Correlations:<br></span>{sql_corr_txt}</p>
@@ -1665,8 +1936,15 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             sql_corr_txt = sql_corr_txt.join("<br>")
         );
 
-        // Write to the file
-        if let Err(e) = fs::write(&filename, sqlid_html_content) {
+        // Insert this into already existing sqlid_*.html file
+        let filename: String = format!("{}/sqlid_{}.html", &html_dir,sql_id);
+        let mut sql_file: String = fs::read_to_string(&filename)
+            .expect(&format!("Failed to read file: {}", filename));
+        sql_file = sql_file.replace(
+            "<body>",
+            &format!("<body>\n{}\n",sqlid_html_content)
+        );
+        if let Err(e) = fs::write(&filename, sql_file) {
             eprintln!("Error writing file {}: {}", filename, e);
         }
     }
