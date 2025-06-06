@@ -99,57 +99,57 @@ pub struct SQLElapsedTime {
 	pub elapsed_time_s: f64,
 	pub executions: u64,
 	pub elpased_time_exec_s: f64,
-	pct_total: f64,
-	pct_cpu: f64, 
-	pct_io: f64,
+	pub pct_total: f64,
+	pub pct_cpu: f64, 
+	pub pct_io: f64,
 	pub sql_module: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SQLCPUTime {
 	pub sql_id: String,
-	cpu_time_s: f64,
-	executions: u64,
-	cpu_time_exec_s: f64,
-	pct_total: f64,
-	pct_cpu: f64, 
-	pct_io: f64,
+	pub cpu_time_s: f64,
+	pub executions: u64,
+	pub cpu_time_exec_s: f64,
+	pub pct_total: f64,
+	pub pct_cpu: f64, 
+	pub pct_io: f64,
 	sql_module: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SQLIOTime {
 	pub sql_id: String,
-	io_time_s: f64,
-	executions: u64,
-	io_time_exec_s: f64,
-	pct_total: f64,
-	pct_cpu: f64, 
-	pct_io: f64,
+	pub io_time_s: f64,
+	pub executions: u64,
+	pub io_time_exec_s: f64,
+	pub pct_total: f64,
+	pub pct_cpu: f64, 
+	pub pct_io: f64,
 	sql_module: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SQLGets {
 	pub sql_id: String,
-	buffer_gets: f64,
-	executions: u64,
-	gets_per_exec: f64,
-	pct_total: f64,
-	pct_cpu: f64, 
-	pct_io: f64,
+	pub buffer_gets: f64,
+	pub executions: u64,
+	pub gets_per_exec: f64,
+	pub pct_total: f64,
+	pub pct_cpu: f64, 
+	pub pct_io: f64,
 	sql_module: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct SQLReads {
 	pub sql_id: String,
-	physical_reads: f64,
-	executions: u64,
-	reads_per_exec: f64,
-	pct_total: f64,
-	cpu_time_pct: f64, //in Statspack it is CPU Time - in AWR it is PCT CPU
-	pct_io: f64, //doesn't exists in statspack
+	pub physical_reads: f64,
+	pub executions: u64,
+	pub reads_per_exec: f64,
+	pub pct_total: f64,
+	pub cpu_time_pct: f64, //in Statspack it is CPU Time - in AWR it is PCT CPU
+	pub pct_io: f64, //doesn't exists in statspack
 	sql_module: String,
 }
 
