@@ -2,6 +2,7 @@ use colored::Colorize;
 use reqwest::{Client, multipart};
 use reqwest::multipart::{Form, Part};
 use serde_json::json;
+use std::env::Args;
 use std::fmt::format;
 use std::{env, fs, collections::HashMap, sync::Arc, path::Path};
 use axum::{routing::post, Router, Json, extract::State, http::StatusCode, response::IntoResponse};
@@ -119,7 +120,6 @@ async fn retrieve_context(query_embedding: &[f32]) -> Result<String, Box<dyn std
     Ok(context)
 }
 
-#[tokio::main]
 pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}{}{}","=== Consulting ChatGPT model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
@@ -217,8 +217,7 @@ async fn upload_log_file_gemini(api_key: &str, log_content: String) -> Result<St
 }
 
 
-#[tokio::main]
-pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}{}{}","=== Consulting Google Gemini model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
     let api_key = env::var("GEMINI_API_KEY").expect("You have to set GEMINI_API_KEY env variable");
@@ -267,7 +266,7 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<
                 ]
             }],
             "generationConfig": {
-                "maxOutputTokens": 8192*4 
+                "maxOutputTokens": 8192*token_count_factor
             }
             });
 
