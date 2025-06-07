@@ -561,7 +561,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
     let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
     
     struct SQLStats{
-        execs: Vec<u64>,            // Number of Executions
+        execs: Vec<Option<u64>>,            // Number of Executions
         ela_exec_s: Vec<Option<f64>>,       // Elapsed Time (s) per Execution
         ela_pct_total: Vec<Option<f64>>,    // Elapsed Time as a percentage of Total DB time
         pct_cpu: Vec<Option<f64>>,          // CPU Time as a percentage of Elapsed Time
@@ -622,7 +622,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
                     let mut sql_found: bool = false;
                     // Elapsed Time
                     if let Some(sql_et) = awr.sql_elapsed_time.iter().find(|e| &e.sql_id == sql_id) {
-                        stats.execs.push(sql_et.executions);
+                        stats.execs.push(Some(sql_et.executions));
                         stats.ela_exec_s.push(Some(sql_et.elpased_time_exec_s));
                         stats.ela_pct_total.push(Some(sql_et.pct_total));
                         stats.pct_cpu.push(Some(sql_et.pct_cpu));
@@ -641,7 +641,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
                         stats.cpu_time_exec_s.push(Some(sql_cpu.cpu_time_exec_s));
                         stats.cpu_t_pct_total.push(Some(sql_cpu.pct_total));
                         if !sql_found{
-                            stats.execs.push(sql_cpu.executions);
+                            stats.execs.push(Some(sql_cpu.executions));
                             stats.pct_cpu.push(Some(sql_cpu.pct_cpu));
                             stats.pct_io.push(Some(sql_cpu.pct_io));
                             sql_found = true;
@@ -656,7 +656,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
                         stats.io_time_exec_s.push(Some(sql_io.io_time_exec_s));
                         stats.io_pct_total.push(Some(sql_io.pct_total));
                         if !sql_found{
-                            stats.execs.push(sql_io.executions);
+                            stats.execs.push(Some(sql_io.executions));
                             stats.pct_cpu.push(Some(sql_io.pct_cpu));
                             stats.pct_io.push(Some(sql_io.pct_io));
                             sql_found = true;
@@ -671,7 +671,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
                         stats.gets_per_exec.push(Some(sql_gets.gets_per_exec));
                         stats.gets_pct_total.push(Some(sql_gets.pct_total));
                         if !sql_found{
-                            stats.execs.push(sql_gets.executions);
+                            stats.execs.push(Some(sql_gets.executions));
                             stats.pct_cpu.push(Some(sql_gets.pct_cpu));
                             stats.pct_io.push(Some(sql_gets.pct_io));
                             sql_found = true;
@@ -686,7 +686,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
                         stats.phy_r_exec.push(Some(sql_reads.reads_per_exec));
                         stats.phy_r_pct_total.push(Some(sql_reads.pct_total));
                         if !sql_found{
-                            stats.execs.push(sql_reads.executions);
+                            stats.execs.push(Some(sql_reads.executions));
                             stats.pct_cpu.push(Some(sql_reads.cpu_time_pct));
                             stats.pct_io.push(Some(sql_reads.pct_io));
                             sql_found = true;
@@ -696,7 +696,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
                         stats.phy_r_pct_total.push(None);
                     }
                     if !sql_found {
-                        stats.execs.push(0);
+                        stats.execs.push(None);
                         stats.pct_cpu.push(None);
                         stats.pct_io.push(None);
                     }
@@ -851,6 +851,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
                     .range(vec![0.,])
                     .title("#")
                     .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
             )
             .y_axis2(
                 Axis::new()
