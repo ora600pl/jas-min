@@ -562,20 +562,36 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
     
     struct SQLStats{
         execs: Vec<u64>,            // Number of Executions
-        ela_exec_s: Vec<f64>,       // Elapsed Time (s) per Execution
-        ela_pct_total: Vec<f64>,    // Elapsed Time as a percentage of Total DB time
-        pct_cpu: Vec<f64>,          // CPU Time as a percentage of Elapsed Time
-        pct_io: Vec<f64>,           // User I/O Time as a percentage of Elapsed Time
-        cpu_time_exec_s: Vec<f64>,  // CPU Time (s) per Execution
-        cpu_t_pct_total: Vec<f64>,  // CPU Time as a percentage of Total DB CPU
-        io_time_exec_s: Vec<f64>,   // User I/O Wait Time (s) per Execution
-        io_pct_total: Vec<f64>,     // User I/O Time as a percentage of Total User I/O Wait time
-        gets_per_exec: Vec<f64>,    // Number of Buffer Gets per Execution
-        gets_pct_total: Vec<f64>,   // Buffer Gets as a percentage of Total Buffer Gets
-        phy_r_exec: Vec<f64>,       // Number of Physical Reads per Execution
-        phy_r_pct_total: Vec<f64>   // Physical Reads as a percentage of Total Disk Reads
+        ela_exec_s: Vec<Option<f64>>,       // Elapsed Time (s) per Execution
+        ela_pct_total: Vec<Option<f64>>,    // Elapsed Time as a percentage of Total DB time
+        pct_cpu: Vec<Option<f64>>,          // CPU Time as a percentage of Elapsed Time
+        pct_io: Vec<Option<f64>>,           // User I/O Time as a percentage of Elapsed Time
+        cpu_time_exec_s: Vec<Option<f64>>,  // CPU Time (s) per Execution
+        cpu_t_pct_total: Vec<Option<f64>>,  // CPU Time as a percentage of Total DB CPU
+        io_time_exec_s: Vec<Option<f64>>,   // User I/O Wait Time (s) per Execution
+        io_pct_total: Vec<Option<f64>>,     // User I/O Time as a percentage of Total User I/O Wait time
+        gets_per_exec: Vec<Option<f64>>,    // Number of Buffer Gets per Execution
+        gets_pct_total: Vec<Option<f64>>,   // Buffer Gets as a percentage of Total Buffer Gets
+        phy_r_exec: Vec<Option<f64>>,       // Number of Physical Reads per Execution
+        phy_r_pct_total: Vec<Option<f64>>  // Physical Reads as a percentage of Total Disk Reads
     }
     let mut sqls_by_stats: HashMap<String, SQLStats> = HashMap::new();
+
+    let colors = vec![
+        "#1f77b4", // strong blue
+        "#ff7f0e", // vivid orange
+        "#2ca02c", // medium green
+        "#d62728", // bright red
+        "#9467bd", // deep purple
+        "#8c564b", // warm brown
+        "#e377c2", // magenta
+        "#7f7f7f", // dark gray
+        "#bcbd22", // olive green
+        "#17becf", // teal
+        "#393b79", // navy blue
+        "#ff9896", // salmon red
+        "#c49c94", // muted brown
+    ];
 
     let x_vals: Vec<String> = awrs
         .iter()
@@ -607,82 +623,82 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
                     // Elapsed Time
                     if let Some(sql_et) = awr.sql_elapsed_time.iter().find(|e| &e.sql_id == sql_id) {
                         stats.execs.push(sql_et.executions);
-                        stats.ela_exec_s.push(sql_et.elpased_time_exec_s);
-                        stats.ela_pct_total.push(sql_et.pct_total);
-                        stats.pct_cpu.push(sql_et.pct_cpu);
-                        stats.pct_io.push(sql_et.pct_io);
+                        stats.ela_exec_s.push(Some(sql_et.elpased_time_exec_s));
+                        stats.ela_pct_total.push(Some(sql_et.pct_total));
+                        stats.pct_cpu.push(Some(sql_et.pct_cpu));
+                        stats.pct_io.push(Some(sql_et.pct_io));
                         sql_found = true;
                     } else {
-                        //stats.execs.push(0);
-                        stats.ela_exec_s.push(0.0);
-                        stats.ela_pct_total.push(0.0);
-                        //stats.pct_cpu.push(0.0);
-                        //stats.pct_io.push(0.0);
+                        //stats.execs.push(Some(0));
+                        stats.ela_exec_s.push(None);
+                        stats.ela_pct_total.push(None);
+                        //stats.pct_cpu.push(Some(0.0);
+                        //stats.pct_io.push(Some(0.0);
                     }
     
                     // CPU Time
                     if let Some(sql_cpu) = awr.sql_cpu_time.get(sql_id) {
-                        stats.cpu_time_exec_s.push(sql_cpu.cpu_time_exec_s);
-                        stats.cpu_t_pct_total.push(sql_cpu.pct_total);
+                        stats.cpu_time_exec_s.push(Some(sql_cpu.cpu_time_exec_s));
+                        stats.cpu_t_pct_total.push(Some(sql_cpu.pct_total));
                         if !sql_found{
                             stats.execs.push(sql_cpu.executions);
-                            stats.pct_cpu.push(sql_cpu.pct_cpu);
-                            stats.pct_io.push(sql_cpu.pct_io);
+                            stats.pct_cpu.push(Some(sql_cpu.pct_cpu));
+                            stats.pct_io.push(Some(sql_cpu.pct_io));
                             sql_found = true;
                         }
                     } else {
-                        stats.cpu_time_exec_s.push(0.0);
-                        stats.cpu_t_pct_total.push(0.0);
+                        stats.cpu_time_exec_s.push(None);
+                        stats.cpu_t_pct_total.push(None);
                     }
     
                     // IO Time
                     if let Some(sql_io) = awr.sql_io_time.get(sql_id) {
-                        stats.io_time_exec_s.push(sql_io.io_time_exec_s);
-                        stats.io_pct_total.push(sql_io.pct_total);
+                        stats.io_time_exec_s.push(Some(sql_io.io_time_exec_s));
+                        stats.io_pct_total.push(Some(sql_io.pct_total));
                         if !sql_found{
                             stats.execs.push(sql_io.executions);
-                            stats.pct_cpu.push(sql_io.pct_cpu);
-                            stats.pct_io.push(sql_io.pct_io);
+                            stats.pct_cpu.push(Some(sql_io.pct_cpu));
+                            stats.pct_io.push(Some(sql_io.pct_io));
                             sql_found = true;
                         }
                     } else {
-                        stats.io_time_exec_s.push(0.0);
-                        stats.io_pct_total.push(0.0);
+                        stats.io_time_exec_s.push(None);
+                        stats.io_pct_total.push(None);
                     }
     
                     // Gets
                     if let Some(sql_gets) = awr.sql_gets.get(sql_id) {
-                        stats.gets_per_exec.push(sql_gets.gets_per_exec);
-                        stats.gets_pct_total.push(sql_gets.pct_total);
+                        stats.gets_per_exec.push(Some(sql_gets.gets_per_exec));
+                        stats.gets_pct_total.push(Some(sql_gets.pct_total));
                         if !sql_found{
                             stats.execs.push(sql_gets.executions);
-                            stats.pct_cpu.push(sql_gets.pct_cpu);
-                            stats.pct_io.push(sql_gets.pct_io);
+                            stats.pct_cpu.push(Some(sql_gets.pct_cpu));
+                            stats.pct_io.push(Some(sql_gets.pct_io));
                             sql_found = true;
                         }
                     } else {
-                        stats.gets_per_exec.push(0.0);
-                        stats.gets_pct_total.push(0.0);
+                        stats.gets_per_exec.push(None);
+                        stats.gets_pct_total.push(None);
                     }
     
                     // Reads
                     if let Some(sql_reads) = awr.sql_reads.get(sql_id) {
-                        stats.phy_r_exec.push(sql_reads.reads_per_exec);
-                        stats.phy_r_pct_total.push(sql_reads.pct_total);
+                        stats.phy_r_exec.push(Some(sql_reads.reads_per_exec));
+                        stats.phy_r_pct_total.push(Some(sql_reads.pct_total));
                         if !sql_found{
                             stats.execs.push(sql_reads.executions);
-                            stats.pct_cpu.push(sql_reads.cpu_time_pct);
-                            stats.pct_io.push(sql_reads.pct_io);
+                            stats.pct_cpu.push(Some(sql_reads.cpu_time_pct));
+                            stats.pct_io.push(Some(sql_reads.pct_io));
                             sql_found = true;
                         }
                     } else {
-                        stats.phy_r_exec.push(0.0);
-                        stats.phy_r_pct_total.push(0.0);
+                        stats.phy_r_exec.push(None);
+                        stats.phy_r_pct_total.push(None);
                     }
                     if !sql_found {
                         stats.execs.push(0);
-                        stats.pct_cpu.push(0.0);
-                        stats.pct_io.push(0.0);
+                        stats.pct_cpu.push(None);
+                        stats.pct_io.push(None);
                     }
                 }
             }
@@ -698,6 +714,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_gets_per_exec = Scatter::new(x_vals.clone(), stats.gets_per_exec.clone())
             .mode(Mode::Markers)
             .name("# Buffer Gets")
+            .marker(Marker::new().color(colors[12]))
             .x_axis("x1")
             .y_axis("y4")
             .visible(Visible::LegendOnly);
@@ -706,6 +723,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_phy_r_exec = Scatter::new(x_vals.clone(), stats.phy_r_exec.clone())
             .mode(Mode::Markers)
             .name("# Physical Reads")
+            .marker(Marker::new().color(colors[11]))
             .x_axis("x1")
             .y_axis("y4")
             .visible(Visible::LegendOnly);
@@ -714,6 +732,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_ela_pct_total = Scatter::new(x_vals.clone(), stats.ela_pct_total.clone())
             .mode(Mode::Lines)
             .name("% Ela Time as DB Time")
+            .marker(Marker::new().color(colors[10]))
             .x_axis("x1")
             .y_axis("y3");
         sql_plot.add_trace(sql_ela_pct_total);
@@ -721,6 +740,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_pct_cpu = Scatter::new(x_vals.clone(), stats.pct_cpu.clone())
             .mode(Mode::Lines)
             .name("% CPU of Ela")
+            .marker(Marker::new().color(colors[9]))
             .x_axis("x1")
             .y_axis("y3");
         sql_plot.add_trace(sql_pct_cpu);
@@ -729,6 +749,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_pct_io = Scatter::new(x_vals.clone(), stats.pct_io.clone())
             .mode(Mode::Lines)
             .name("% IO of Ela")
+            .marker(Marker::new().color(colors[8]))
             .x_axis("x1")
             .y_axis("y3");
         sql_plot.add_trace(sql_pct_io);
@@ -737,6 +758,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_cpu_t_pct_total = Scatter::new(x_vals.clone(), stats.cpu_t_pct_total.clone())
             .mode(Mode::Markers)
             .name("% CPU Time as DB CPU")
+            .marker(Marker::new().color(colors[7]))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -746,6 +768,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_io_pct_total = Scatter::new(x_vals.clone(), stats.io_pct_total.clone())
             .mode(Mode::Markers)
             .name("% IO Time as DB IO Wait")
+            .marker(Marker::new().color(colors[6]))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -755,6 +778,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_gets_pct_total = Scatter::new(x_vals.clone(), stats.gets_pct_total.clone())
             .mode(Mode::Markers)
             .name("% Gets as Total Gets")
+            .marker(Marker::new().color(colors[5]))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -764,6 +788,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_phy_r_pct_total = Scatter::new(x_vals.clone(), stats.phy_r_pct_total.clone())
             .mode(Mode::Markers)
             .name("% Phys Reads as Total Disk Reads")
+            .marker(Marker::new().color(colors[4]))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -772,6 +797,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_ela_exec_s = Scatter::new(x_vals.clone(), stats.ela_exec_s.clone())
             .mode(Mode::Lines)
             .name("(s) Elapsed Time per Exec")
+            .marker(Marker::new().color(colors[3]))
             .x_axis("x1")
             .y_axis("y2");
         sql_plot.add_trace(sql_ela_exec_s);
@@ -779,6 +805,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_cpu_time_exec_s = Scatter::new(x_vals.clone(), stats.cpu_time_exec_s.clone())
             .mode(Mode::Markers)
             .name("(s) CPU Time")
+            .marker(Marker::new().color(colors[2]))
             .x_axis("x1")
             .y_axis("y2")
             .visible(Visible::LegendOnly);
@@ -787,6 +814,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_io_time_exec_s = Scatter::new(x_vals.clone(), stats.io_time_exec_s.clone())
             .mode(Mode::Markers)
             .name("(s) User I/O Wait Time")
+            .marker(Marker::new().color(colors[1]))
             .x_axis("x1")
             .y_axis("y2")
             .visible(Visible::LegendOnly);
@@ -795,6 +823,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_exec = Scatter::new(x_vals.clone(), stats.execs.clone())
             .mode(Mode::Lines)
             .name("# Executions")
+            .marker(Marker::new().color(colors[0]))
             .x_axis("x1")
             .y_axis("y1");
         sql_plot.add_trace(sql_exec);
