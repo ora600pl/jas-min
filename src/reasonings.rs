@@ -422,10 +422,22 @@ async fn run_assistant(state: &AppState, thread_id: &str) -> anyhow::Result<Stri
         .bearer_auth(&state.api_key)
         .header("OpenAI-Beta", "assistants=v2")
         .json(&body)
-        .send().await?
-        .json::<serde_json::Value>().await?;
+        .send().await?;
+    // Check if the request was successful
+    if !res.status().is_success() {
+        let status = res.status();
+        let error_text = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(anyhow::anyhow!("API request failed with status {}: {}", status, error_text));
+    }
+    let json_res = res.json::<serde_json::Value>().await?;
+    // Debug: print the response to see what we're getting
+    //eprintln!("API Response: {}", serde_json::to_string_pretty(&json_res)?);
+    let run_id = json_res["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'id' field in response: {}", json_res))?
+        .to_string();
 
-    Ok(res["id"].as_str().unwrap().to_string())
+    Ok(run_id)
 }
 
 async fn wait_for_completion(state: &AppState, thread_id: &str, run_id: &str) -> anyhow::Result<()> {
