@@ -5,11 +5,13 @@ use serde_json::json;
 use std::env::Args;
 use std::fmt::format;
 use std::{env, fs, collections::HashMap, sync::Arc, path::Path};
+use std::time::Duration;
 use axum::{routing::post, Router, Json, extract::State, http::StatusCode, response::IntoResponse};
 use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{CorsLayer, Any};
 use tokio::sync::Mutex;
+use tokio::time::sleep;
 use qdrant_client::qdrant::{Condition, Filter, SearchParamsBuilder, SearchPointsBuilder, SearchPoints};
 use qdrant_client::Qdrant;
 
@@ -455,13 +457,13 @@ async fn wait_for_completion(state: &AppState, thread_id: &str, run_id: &str) ->
         match status {
             Some("completed") => return Ok(()),
             Some("failed") | Some("cancelled") | Some("expired") => {
-                return Err(anyhow::anyhow!("Run failed or was cancelled/expired: {:?}", res))
+                return Err(anyhow::anyhow!("Run failed or was cancelled/expired:\n {:?}", res))
             },
             Some(_) => {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             },
             None => {
-                return Err(anyhow::anyhow!("Missing 'status' field in response: {:?}", res));
+                return Err(anyhow::anyhow!("Missing 'status' field in response:\n {:?}", res));
             }
         }
     }
@@ -492,13 +494,20 @@ async fn get_reply(state: &AppState, thread_id: &str) -> anyhow::Result<String> 
 pub async fn create_thread_with_file(state: &AppState, file_path: String) -> anyhow::Result<String> {
     // === Step 1: Read file content ===
     let file_bytes = fs::read(&file_path)?;
-    let file_name = Path::new(&file_path).file_name().unwrap_or_else(|| std::ffi::OsStr::new("jasmin_report.txt")).to_string_lossy().to_string();
+    let file_name = Path::new(&file_path)
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("jasmin_report.txt"))
+        .to_string_lossy()
+        .to_string();
 
     // === Step 2: Upload file to OpenAI ===
-    let file_part = Part::bytes((file_bytes)).file_name(file_name).mime_str("text/plain")?;
-
-    let form = Form::new().part("file", file_part).text("purpose", "assistants");
-
+    let file_part = Part::bytes(file_bytes)
+        .file_name(file_name)
+        .mime_str("text/plain")?;
+    let form = Form::new()
+        .part("file", file_part)
+        .text("purpose", "assistants");
+    
     let upload_res = state.client
         .post("https://api.openai.com/v1/files")
         .bearer_auth(&state.api_key)
@@ -507,10 +516,11 @@ pub async fn create_thread_with_file(state: &AppState, file_path: String) -> any
         .await?
         .json::<serde_json::Value>()
         .await?;
-
-    let file_id = upload_res.get("id").and_then(|v| v.as_str())
+    
+    let file_id = upload_res.get("id")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Failed to upload file: {:?}", upload_res))?;
-
+    
     println!("✅ File uploaded with ID: {}", file_id);
 
     // === Step 3: Create thread with intro message ===
@@ -519,21 +529,20 @@ pub async fn create_thread_with_file(state: &AppState, file_path: String) -> any
         .bearer_auth(&state.api_key)
         .header("OpenAI-Beta", "assistants=v2")
         .json(&json!({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "Uploading file with performance report"
-                }
-            ]
+            "messages": [{
+                "role": "user",
+                "content": "Uploading file with performance report"
+            }]
         }))
         .send()
         .await?
         .json::<serde_json::Value>()
         .await?;
-
-    let thread_id = thread_res.get("id").and_then(|id| id.as_str())
+    
+    let thread_id = thread_res.get("id")
+        .and_then(|id| id.as_str())
         .ok_or_else(|| anyhow::anyhow!("Failed to create thread: {:?}", thread_res))?;
-
+    
     println!("✅ Thread created: {}", thread_id);
 
     // === Step 4: Attach file to thread ===
@@ -545,24 +554,107 @@ pub async fn create_thread_with_file(state: &AppState, file_path: String) -> any
         .json(&serde_json::json!({
             "role": "user",
             "content": "Please analyze the attached performance report.",
-            "attachments": [
-                {
-                    "file_id": file_id,
-                    "tools": [{ "type": "file_search" }]
-                }
-            ]
+            "attachments": [{
+                "file_id": file_id,
+                "tools": [{ "type": "file_search" }]
+            }]
         }))
         .send()
         .await?;
-    //println!("Raw response (attach file): {:?}", file_msg_res.status());
+
     if !file_msg_res.status().is_success() {
-        let status = file_msg_res.status(); // ✅ get status first
-        let err_text = file_msg_res.text().await?; // consumes file_msg_res
-        eprintln!("Attach file failed. Status: {}, Response body: {}",status, err_text);
+        let status = file_msg_res.status();
+        let err_text = file_msg_res.text().await?;
+        eprintln!("Attach file failed. Status: {}, Response body: {}", status, err_text);
         return Err(anyhow::anyhow!("Failed to attach file to thread."));
     }
 
+    let attach_response = file_msg_res.json::<serde_json::Value>().await?;
     println!("📎 File attached to thread.");
 
+    // === Step 5: Wait for vector store to process the file ===
+    println!("⏳ Waiting for file processing to complete...");
+    wait_for_file_processing(state, thread_id).await?;
+    
+    println!("✅ File processing completed! Thread is ready for use.");
     Ok(thread_id.to_string())
+}
+
+// Helper function to wait for file processing in the thread's vector store
+async fn wait_for_file_processing(state: &AppState, thread_id: &str) -> anyhow::Result<()> {
+    let mut attempts = 0;
+    let max_attempts = 3; // 10 minutes max wait time
+    
+    loop {
+        // Get thread details to find the vector store
+        let thread_url = format!("https://api.openai.com/v1/threads/{}", thread_id);
+        let thread_res = state.client
+            .get(&thread_url)
+            .bearer_auth(&state.api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .send()
+            .await?;
+            
+        if !thread_res.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to get thread details"));
+        }
+        
+        let thread_data = thread_res.json::<serde_json::Value>().await?;
+        
+        // Look for vector store ID in tool_resources
+        if let Some(tool_resources) = thread_data.get("tool_resources") {
+            if let Some(file_search) = tool_resources.get("file_search") {
+                if let Some(vector_store_ids) = file_search.get("vector_store_ids") {
+                    if let Some(vector_stores) = vector_store_ids.as_array() {
+                        if let Some(vs_id) = vector_stores.first().and_then(|v| v.as_str()) {
+                            // Check vector store status
+                            match check_vector_store_status(state, vs_id).await? {
+                                status if status == "completed" => {
+                                    println!("✅ Vector store processing completed!");
+                                    return Ok(());
+                                }
+                                status if status == "failed" => {
+                                    return Err(anyhow::anyhow!("Vector store processing failed"));
+                                }
+                                status => {
+                                    println!("📊 Vector store status: {} (attempt {}/{})", status, attempts + 1, max_attempts);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if attempts >= max_attempts {
+            return Err(anyhow::anyhow!("File processing timeout after {} attempts", max_attempts));
+        }
+        
+        sleep(Duration::from_secs(5)).await;
+        attempts += 1;
+    }
+}
+
+// Helper function to check vector store status
+async fn check_vector_store_status(state: &AppState, vector_store_id: &str) -> anyhow::Result<String> {
+    let url = format!("https://api.openai.com/v1/vector_stores/{}", vector_store_id);
+    
+    let res = state.client
+        .get(&url)
+        .bearer_auth(&state.api_key)
+        .header("OpenAI-Beta", "assistants=v2")
+        .send()
+        .await?;
+    
+    if !res.status().is_success() {
+        return Err(anyhow::anyhow!("Failed to check vector store status"));
+    }
+    
+    let json_res = res.json::<serde_json::Value>().await?;
+    
+    let status = json_res["status"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing status in vector store response"))?;
+    
+    Ok(status.to_string())
 }
