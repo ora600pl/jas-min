@@ -2485,7 +2485,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     dotenv().ok();
     let mut bckend_port: String = String::new();
-    if args.backend_assistant {
+    if !args.backend_assistant.is_empty() {
         bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
     }
     
