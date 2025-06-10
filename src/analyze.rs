@@ -40,11 +40,26 @@ struct TopStats {
     sql_elapsed_time_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
 }
 
+// Check if snap_range argument is passewd correctly
+fn parse_snap_range(snap_range: &str) -> Result<(u64, u64), String> {
+    let parts: Vec<&str> = snap_range.split('-').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid format for snap_range '{}'. Expected format: BEGIN_ID-END_ID", snap_range));
+    }
+    let begin = parts[0].parse::<u64>()
+        .map_err(|_| format!("Invalid number for BEGIN_ID in '{}'", snap_range))?;
+    let end = parts[1].parse::<u64>()
+        .map_err(|_| format!("Invalid number for END_ID in '{}'", snap_range))?;
 
+    if begin >= end {
+        return Err(format!("BEGIN_ID ({}) must be less than END_ID ({})", begin, end));
+    }
+    Ok((begin, end))
+}
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String, logfile_name: &str, args: &Args) -> TopStats {
+fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: &(u64,u64), logfile_name: &str, args: &Args) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut bgevent_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
@@ -62,11 +77,9 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
                 "==== Median Absolute Deviation ====\n\tMAD threshold = {}\n\tMAD window size={}% ({} of probes out of {})\n\n", args.mad_threshold, args.mad_window_size, full_window_size, awrs.len());
     
     for awr in awrs {
-        let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
-        let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
-        let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+        let (f_begin_snap,f_end_snap) = snap_range;
 
-        if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+        if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
             let mut dbtime: f64 = 0.0;
             let mut cputime: f64 = 0.0;
             //We want to find dbtime and cputime because based on their delta we will base our decisions 
@@ -255,10 +268,8 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
 }
 
 // Generate plots for top events
-fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, snap_range: &str, dirpath: &str) {
-    let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
-    let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
-    let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, snap_range: &(u64,u64), dirpath: &str) {
+    let (f_begin_snap,f_end_snap) = snap_range;
     
     // Detect number and type of buckets
     // Ensure that there is at least one AWR with fg or bg event and they are explicitly checked
@@ -303,7 +314,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
     
     // Let's gather all needed data
     for awr in awrs {
-        if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+        if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
             let snap_time: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
         
             let events = if is_fg {
@@ -555,10 +566,8 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
 }
 
 // Generate TOP SQLs html subpages with plots - To Be Developed
-fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &str, dirpath: &str){
-    let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
-    let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
-    let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(u64,u64), dirpath: &str){
+    let (f_begin_snap,f_end_snap) = snap_range;
     
     struct SQLStats{
         execs: Vec<Option<u64>>,            // Number of Executions
@@ -595,7 +604,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
 
     let x_vals: Vec<String> = awrs
         .iter()
-        .filter(|awr| awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap)
+        .filter(|awr| awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap)
         .map(|awr| format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id))
         .collect();
 
@@ -618,7 +627,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
             };
 
             for awr in awrs {
-                if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+                if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
                     let mut sql_found: bool = false;
                     // Elapsed Time
                     if let Some(sql_et) = awr.sql_elapsed_time.iter().find(|e| &e.sql_id == sql_id) {
@@ -894,7 +903,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
 pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let db_time_cpu_ratio: f64 = args.time_cpu_ratio;
     let filter_db_time: f64 = args.filter_db_time;
-    let snap_range: String = args.snap_range.clone();
+    let snap_range: (u64,u64) = parse_snap_range(&args.snap_range).expect("Invalid snap-range argument");
     
     let file_len = fname.len();
     let logfile_name: String = format!("{}.txt", &fname[0..file_len-5]); //cut .html from file name and add .txt
@@ -945,7 +954,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     // === ANALYZING ===
     println!("{}","\n==== ANALYZING ===".bright_cyan());
-    let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, snap_range.clone(), &logfile_name, &args);
+    let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, &snap_range, &logfile_name, &args);
     
     let mut is_logfilesync_high: bool = false;
     
@@ -972,9 +981,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     /* ------ Preparing data ------ */
     println!("\n{}","==== PREPARING RESULTS ===".bright_cyan());
     for awr in &collection.awrs {
-        let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
-        let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
-        let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+        let (f_begin_snap,f_end_snap) = snap_range;
 
         if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
 
