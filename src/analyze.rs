@@ -40,7 +40,7 @@ struct TopStats {
     sql_elapsed_time_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
 }
 
-// Check if snap_range argument is passewd correctly
+// Check if snap_range argument is passed correctly
 fn parse_snap_range(snap_range: &str) -> Result<(u64, u64), String> {
     let parts: Vec<&str> = snap_range.split('-').collect();
     if parts.len() != 2 {
@@ -2492,17 +2492,35 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let jasmin_html_scripts: String = format!(
         r#"
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-        <script>
+        <script> //JAS-MIN Assistant
         const messages = document.getElementById('messages');
         const input = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
-        messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Rreport<br>What is the most important Wait Event</div>`;
+        messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Report<br>What is the most important Wait Event</div>`;
+        function showLoadingIndicator() {{
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'message ai-msg loading-message';
+            loadingDiv.id = 'loading-indicator';
+            loadingDiv.innerHTML = '<span class="loading-dots"></span>';
+            messages.appendChild(loadingDiv);
+            messages.scrollTop = messages.scrollHeight;
+            return loadingDiv;
+        }}        
+        function removeLoadingIndicator() {{
+            const loadingDiv = document.getElementById('loading-indicator');
+            if (loadingDiv) {{
+                loadingDiv.remove();
+            }}
+        }}
         async function sendMessage() {{
             const userMsg = input.value.trim();
             if (userMsg === '') return;
+            input.disabled = true;
+            sendBtn.disabled = true;
             messages.innerHTML += `<div class="message user-msg">${{userMsg}}</div>`;
             messages.scrollTop = messages.scrollHeight;
             input.value = '';
+            const loadingDiv = showLoadingIndicator();
             try {{
                 const response = await fetch('http://localhost:{}/api/chat', {{
                     method: 'POST',
@@ -2510,15 +2528,22 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     body: JSON.stringify({{ message: userMsg }})
                 }});
                 const data = await response.json();
+                removeLoadingIndicator();
                 messages.innerHTML += `<div class="message ai-msg">${{marked.parse(data.reply)}}</div>`;
                 messages.scrollTop = messages.scrollHeight;
             }} catch (error) {{
+                removeLoadingIndicator();
                 messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
                 messages.scrollTop = messages.scrollHeight;
+            }} finally {{
+                // Re-enable input and button
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
             }}
         }}
         input.addEventListener('keydown', function(event) {{
-            if (event.key === 'Enter') {{
+            if (event.key === 'Enter' && !input.disabled) {{
                 sendMessage();
             }}
         }});
