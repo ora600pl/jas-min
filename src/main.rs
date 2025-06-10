@@ -66,6 +66,10 @@ struct Args {
 	#[clap(short, long, default_value="NO")]
 	ai: String,
 
+	///Base output token count is 8192 - you can update maximum number of output tokens by this factor
+	#[clap(short = 'T', long, default_value_t = 8)]
+	token_count_factor: usize,
+
 	///Launches the backend agent used by the JASMIN Assistant. Configuration details such as API keys and the selected PORT number are loaded from the .env file
 	#[clap(short, long)]
 	backend_assistant: bool,
@@ -83,7 +87,8 @@ struct Args {
     parallel: usize,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
 	let mut reportfile: String = "".to_string();
 	let args = Args::parse(); 
 	println!("{}{} (Running with parallel degree: {})","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow(), args.parallel);
@@ -112,25 +117,26 @@ fn main() {
 		let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
     	reportfile = format!("{}.txt", file_and_ext[0]);
 	}
+	if args.ai != "NO" {
+        let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
+        if vendor_model_lang[0] == "openai" {
+            println!("Sorry but report file got too big - we are working on it. Create an openai agent and use jas-min with -b option");
+            //chat_gpt(&logfile_name, vendor_model_lang).unwrap();
+        } else if vendor_model_lang[0] == "google" { 
+            gemini(&reportfile, vendor_model_lang, args.token_count_factor).await.unwrap();
+        } else {
+            println!("Unrecognized vendor. Supported vendors: openai, google");
+        }   
+    }
 	if args.backend_assistant {
 		dotenv().ok();
 		let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
 		println!("{}",r#"==== STARTING ASISTANT BACKEND ==="#.bright_cyan());
 		println!("🤖 Starting JAS-MIN Assistant Backend on http://loclahost:{}",bckend_port);
 		println!("📁 Report File: {}",reportfile.clone());
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(backend_ai(reportfile.clone()));
-    }
-	if args.ai != "NO" {
-        let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
-        if vendor_model_lang[0] == "openai" {
-            println!("Sorry but report file got too big - we are working on it. Create an openai agent and use jas-min with -b option");
-            //chat_gpt(&logfile_name, vendor_model_lang).unwrap();
-        } else if vendor_model_lang[0] == "google" {
-            gemini(&reportfile, vendor_model_lang).unwrap();
-        } else {
-            println!("Unrecognized vendor. Supported vendors: openai, google");
-        }   
+        //let rt = tokio::runtime::Runtime::new().unwrap();
+        //rt.block_on(backend_ai(reportfile.clone()));
+		backend_ai(reportfile).await;
     }
 	
 }
