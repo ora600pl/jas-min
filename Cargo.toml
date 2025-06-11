@@ -1,6 +1,6 @@
 [package]
 name = "jas-min"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radoslaw Kut <radek@ora-600.pl>"]
 
@@ -26,6 +26,7 @@ axum = "0.7"
 dotenv = "0.15"
 tower-http = { version = "0.5", features = ["cors"] }
 anyhow = "1"
+async-trait = "0.1"
 qdrant-client = "1.14.0"
 prettytable = "0.10.0"
 rayon = "1.10.0"

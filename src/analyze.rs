@@ -40,11 +40,26 @@ struct TopStats {
     sql_elapsed_time_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
 }
 
+// Check if snap_range argument is passed correctly
+fn parse_snap_range(snap_range: &str) -> Result<(u64, u64), String> {
+    let parts: Vec<&str> = snap_range.split('-').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid format for snap_range '{}'. Expected format: BEGIN_ID-END_ID", snap_range));
+    }
+    let begin = parts[0].parse::<u64>()
+        .map_err(|_| format!("Invalid number for BEGIN_ID in '{}'", snap_range))?;
+    let end = parts[1].parse::<u64>()
+        .map_err(|_| format!("Invalid number for END_ID in '{}'", snap_range))?;
 
+    if begin >= end {
+        return Err(format!("BEGIN_ID ({}) must be less than END_ID ({})", begin, end));
+    }
+    Ok((begin, end))
+}
 
 //We don't want to plot everything, because it would cause to much trouble 
 //we need to find only essential wait events and SQLIDs 
-fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String, logfile_name: &str, args: &Args) -> TopStats {
+fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: &(u64,u64), logfile_name: &str, args: &Args) -> TopStats {
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut bgevent_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
@@ -62,11 +77,9 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
                 "==== Median Absolute Deviation ====\n\tMAD threshold = {}\n\tMAD window size={}% ({} of probes out of {})\n\n", args.mad_threshold, args.mad_window_size, full_window_size, awrs.len());
     
     for awr in awrs {
-        let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
-        let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
-        let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+        let (f_begin_snap,f_end_snap) = snap_range;
 
-        if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+        if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
             let mut dbtime: f64 = 0.0;
             let mut cputime: f64 = 0.0;
             //We want to find dbtime and cputime because based on their delta we will base our decisions 
@@ -255,10 +268,8 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
 }
 
 // Generate plots for top events
-fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, snap_range: &str, dirpath: &str) {
-    let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
-    let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
-    let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, snap_range: &(u64,u64), dirpath: &str) {
+    let (f_begin_snap,f_end_snap) = snap_range;
     
     // Detect number and type of buckets
     // Ensure that there is at least one AWR with fg or bg event and they are explicitly checked
@@ -303,7 +314,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
     
     // Let's gather all needed data
     for awr in awrs {
-        if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+        if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
             let snap_time: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
         
             let events = if is_fg {
@@ -555,31 +566,45 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
 }
 
 // Generate TOP SQLs html subpages with plots - To Be Developed
-fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &str, dirpath: &str){
-    let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
-    let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
-    let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(u64,u64), dirpath: &str){
+    let (f_begin_snap,f_end_snap) = snap_range;
     
     struct SQLStats{
-        execs: Vec<u64>,            // Number of Executions
-        ela_exec_s: Vec<f64>,       // Elapsed Time (s) per Execution
-        ela_pct_total: Vec<f64>,    // Elapsed Time as a percentage of Total DB time
-        pct_cpu: Vec<f64>,          // CPU Time as a percentage of Elapsed Time
-        pct_io: Vec<f64>,           // User I/O Time as a percentage of Elapsed Time
-        cpu_time_exec_s: Vec<f64>,  // CPU Time (s) per Execution
-        cpu_t_pct_total: Vec<f64>,  // CPU Time as a percentage of Total DB CPU
-        io_time_exec_s: Vec<f64>,   // User I/O Wait Time (s) per Execution
-        io_pct_total: Vec<f64>,     // User I/O Time as a percentage of Total User I/O Wait time
-        gets_per_exec: Vec<f64>,    // Number of Buffer Gets per Execution
-        gets_pct_total: Vec<f64>,   // Buffer Gets as a percentage of Total Buffer Gets
-        phy_r_exec: Vec<f64>,       // Number of Physical Reads per Execution
-        phy_r_pct_total: Vec<f64>   // Physical Reads as a percentage of Total Disk Reads
+        execs: Vec<Option<u64>>,            // Number of Executions
+        ela_exec_s: Vec<Option<f64>>,       // Elapsed Time (s) per Execution
+        ela_pct_total: Vec<Option<f64>>,    // Elapsed Time as a percentage of Total DB time
+        pct_cpu: Vec<Option<f64>>,          // CPU Time as a percentage of Elapsed Time
+        pct_io: Vec<Option<f64>>,           // User I/O Time as a percentage of Elapsed Time
+        cpu_time_exec_s: Vec<Option<f64>>,  // CPU Time (s) per Execution
+        cpu_t_pct_total: Vec<Option<f64>>,  // CPU Time as a percentage of Total DB CPU
+        io_time_exec_s: Vec<Option<f64>>,   // User I/O Wait Time (s) per Execution
+        io_pct_total: Vec<Option<f64>>,     // User I/O Time as a percentage of Total User I/O Wait time
+        gets_per_exec: Vec<Option<f64>>,    // Number of Buffer Gets per Execution
+        gets_pct_total: Vec<Option<f64>>,   // Buffer Gets as a percentage of Total Buffer Gets
+        phy_r_exec: Vec<Option<f64>>,       // Number of Physical Reads per Execution
+        phy_r_pct_total: Vec<Option<f64>>  // Physical Reads as a percentage of Total Disk Reads
     }
     let mut sqls_by_stats: HashMap<String, SQLStats> = HashMap::new();
 
+    let colors = vec![
+        "#1f77b4", // strong blue
+        "#ff7f0e", // vivid orange
+        "#2ca02c", // medium green
+        "#d62728", // bright red
+        "#9467bd", // deep purple
+        "#8c564b", // warm brown
+        "#e377c2", // magenta
+        "#7f7f7f", // dark gray
+        "#bcbd22", // olive green
+        "#17becf", // teal
+        "#393b79", // navy blue
+        "#ff9896", // salmon red
+        "#c49c94", // muted brown
+    ];
+
     let x_vals: Vec<String> = awrs
         .iter()
-        .filter(|awr| awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap)
+        .filter(|awr| awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap)
         .map(|awr| format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id))
         .collect();
 
@@ -602,87 +627,87 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
             };
 
             for awr in awrs {
-                if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
+                if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
                     let mut sql_found: bool = false;
                     // Elapsed Time
                     if let Some(sql_et) = awr.sql_elapsed_time.iter().find(|e| &e.sql_id == sql_id) {
-                        stats.execs.push(sql_et.executions);
-                        stats.ela_exec_s.push(sql_et.elpased_time_exec_s);
-                        stats.ela_pct_total.push(sql_et.pct_total);
-                        stats.pct_cpu.push(sql_et.pct_cpu);
-                        stats.pct_io.push(sql_et.pct_io);
+                        stats.execs.push(Some(sql_et.executions));
+                        stats.ela_exec_s.push(Some(sql_et.elpased_time_exec_s));
+                        stats.ela_pct_total.push(Some(sql_et.pct_total));
+                        stats.pct_cpu.push(Some(sql_et.pct_cpu));
+                        stats.pct_io.push(Some(sql_et.pct_io));
                         sql_found = true;
                     } else {
-                        //stats.execs.push(0);
-                        stats.ela_exec_s.push(0.0);
-                        stats.ela_pct_total.push(0.0);
-                        //stats.pct_cpu.push(0.0);
-                        //stats.pct_io.push(0.0);
+                        //stats.execs.push(Some(0));
+                        stats.ela_exec_s.push(None);
+                        stats.ela_pct_total.push(None);
+                        //stats.pct_cpu.push(Some(0.0);
+                        //stats.pct_io.push(Some(0.0);
                     }
     
                     // CPU Time
                     if let Some(sql_cpu) = awr.sql_cpu_time.get(sql_id) {
-                        stats.cpu_time_exec_s.push(sql_cpu.cpu_time_exec_s);
-                        stats.cpu_t_pct_total.push(sql_cpu.pct_total);
+                        stats.cpu_time_exec_s.push(Some(sql_cpu.cpu_time_exec_s));
+                        stats.cpu_t_pct_total.push(Some(sql_cpu.pct_total));
                         if !sql_found{
-                            stats.execs.push(sql_cpu.executions);
-                            stats.pct_cpu.push(sql_cpu.pct_cpu);
-                            stats.pct_io.push(sql_cpu.pct_io);
+                            stats.execs.push(Some(sql_cpu.executions));
+                            stats.pct_cpu.push(Some(sql_cpu.pct_cpu));
+                            stats.pct_io.push(Some(sql_cpu.pct_io));
                             sql_found = true;
                         }
                     } else {
-                        stats.cpu_time_exec_s.push(0.0);
-                        stats.cpu_t_pct_total.push(0.0);
+                        stats.cpu_time_exec_s.push(None);
+                        stats.cpu_t_pct_total.push(None);
                     }
     
                     // IO Time
                     if let Some(sql_io) = awr.sql_io_time.get(sql_id) {
-                        stats.io_time_exec_s.push(sql_io.io_time_exec_s);
-                        stats.io_pct_total.push(sql_io.pct_total);
+                        stats.io_time_exec_s.push(Some(sql_io.io_time_exec_s));
+                        stats.io_pct_total.push(Some(sql_io.pct_total));
                         if !sql_found{
-                            stats.execs.push(sql_io.executions);
-                            stats.pct_cpu.push(sql_io.pct_cpu);
-                            stats.pct_io.push(sql_io.pct_io);
+                            stats.execs.push(Some(sql_io.executions));
+                            stats.pct_cpu.push(Some(sql_io.pct_cpu));
+                            stats.pct_io.push(Some(sql_io.pct_io));
                             sql_found = true;
                         }
                     } else {
-                        stats.io_time_exec_s.push(0.0);
-                        stats.io_pct_total.push(0.0);
+                        stats.io_time_exec_s.push(None);
+                        stats.io_pct_total.push(None);
                     }
     
                     // Gets
                     if let Some(sql_gets) = awr.sql_gets.get(sql_id) {
-                        stats.gets_per_exec.push(sql_gets.gets_per_exec);
-                        stats.gets_pct_total.push(sql_gets.pct_total);
+                        stats.gets_per_exec.push(Some(sql_gets.gets_per_exec));
+                        stats.gets_pct_total.push(Some(sql_gets.pct_total));
                         if !sql_found{
-                            stats.execs.push(sql_gets.executions);
-                            stats.pct_cpu.push(sql_gets.pct_cpu);
-                            stats.pct_io.push(sql_gets.pct_io);
+                            stats.execs.push(Some(sql_gets.executions));
+                            stats.pct_cpu.push(Some(sql_gets.pct_cpu));
+                            stats.pct_io.push(Some(sql_gets.pct_io));
                             sql_found = true;
                         }
                     } else {
-                        stats.gets_per_exec.push(0.0);
-                        stats.gets_pct_total.push(0.0);
+                        stats.gets_per_exec.push(None);
+                        stats.gets_pct_total.push(None);
                     }
     
                     // Reads
                     if let Some(sql_reads) = awr.sql_reads.get(sql_id) {
-                        stats.phy_r_exec.push(sql_reads.reads_per_exec);
-                        stats.phy_r_pct_total.push(sql_reads.pct_total);
+                        stats.phy_r_exec.push(Some(sql_reads.reads_per_exec));
+                        stats.phy_r_pct_total.push(Some(sql_reads.pct_total));
                         if !sql_found{
-                            stats.execs.push(sql_reads.executions);
-                            stats.pct_cpu.push(sql_reads.cpu_time_pct);
-                            stats.pct_io.push(sql_reads.pct_io);
+                            stats.execs.push(Some(sql_reads.executions));
+                            stats.pct_cpu.push(Some(sql_reads.cpu_time_pct));
+                            stats.pct_io.push(Some(sql_reads.pct_io));
                             sql_found = true;
                         }
                     } else {
-                        stats.phy_r_exec.push(0.0);
-                        stats.phy_r_pct_total.push(0.0);
+                        stats.phy_r_exec.push(None);
+                        stats.phy_r_pct_total.push(None);
                     }
                     if !sql_found {
-                        stats.execs.push(0);
-                        stats.pct_cpu.push(0.0);
-                        stats.pct_io.push(0.0);
+                        stats.execs.push(None);
+                        stats.pct_cpu.push(None);
+                        stats.pct_io.push(None);
                     }
                 }
             }
@@ -698,6 +723,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_gets_per_exec = Scatter::new(x_vals.clone(), stats.gets_per_exec.clone())
             .mode(Mode::Markers)
             .name("# Buffer Gets")
+            .marker(Marker::new().color(colors[12]))
             .x_axis("x1")
             .y_axis("y4")
             .visible(Visible::LegendOnly);
@@ -706,6 +732,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_phy_r_exec = Scatter::new(x_vals.clone(), stats.phy_r_exec.clone())
             .mode(Mode::Markers)
             .name("# Physical Reads")
+            .marker(Marker::new().color(colors[11]))
             .x_axis("x1")
             .y_axis("y4")
             .visible(Visible::LegendOnly);
@@ -714,6 +741,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_ela_pct_total = Scatter::new(x_vals.clone(), stats.ela_pct_total.clone())
             .mode(Mode::Lines)
             .name("% Ela Time as DB Time")
+            .marker(Marker::new().color(colors[10]))
             .x_axis("x1")
             .y_axis("y3");
         sql_plot.add_trace(sql_ela_pct_total);
@@ -721,6 +749,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_pct_cpu = Scatter::new(x_vals.clone(), stats.pct_cpu.clone())
             .mode(Mode::Lines)
             .name("% CPU of Ela")
+            .marker(Marker::new().color(colors[9]))
             .x_axis("x1")
             .y_axis("y3");
         sql_plot.add_trace(sql_pct_cpu);
@@ -729,6 +758,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_pct_io = Scatter::new(x_vals.clone(), stats.pct_io.clone())
             .mode(Mode::Lines)
             .name("% IO of Ela")
+            .marker(Marker::new().color(colors[8]))
             .x_axis("x1")
             .y_axis("y3");
         sql_plot.add_trace(sql_pct_io);
@@ -737,6 +767,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_cpu_t_pct_total = Scatter::new(x_vals.clone(), stats.cpu_t_pct_total.clone())
             .mode(Mode::Markers)
             .name("% CPU Time as DB CPU")
+            .marker(Marker::new().color(colors[7]))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -746,6 +777,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_io_pct_total = Scatter::new(x_vals.clone(), stats.io_pct_total.clone())
             .mode(Mode::Markers)
             .name("% IO Time as DB IO Wait")
+            .marker(Marker::new().color(colors[6]))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -755,6 +787,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_gets_pct_total = Scatter::new(x_vals.clone(), stats.gets_pct_total.clone())
             .mode(Mode::Markers)
             .name("% Gets as Total Gets")
+            .marker(Marker::new().color(colors[5]))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -764,6 +797,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_phy_r_pct_total = Scatter::new(x_vals.clone(), stats.phy_r_pct_total.clone())
             .mode(Mode::Markers)
             .name("% Phys Reads as Total Disk Reads")
+            .marker(Marker::new().color(colors[4]))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -772,6 +806,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_ela_exec_s = Scatter::new(x_vals.clone(), stats.ela_exec_s.clone())
             .mode(Mode::Lines)
             .name("(s) Elapsed Time per Exec")
+            .marker(Marker::new().color(colors[3]))
             .x_axis("x1")
             .y_axis("y2");
         sql_plot.add_trace(sql_ela_exec_s);
@@ -779,6 +814,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_cpu_time_exec_s = Scatter::new(x_vals.clone(), stats.cpu_time_exec_s.clone())
             .mode(Mode::Markers)
             .name("(s) CPU Time")
+            .marker(Marker::new().color(colors[2]))
             .x_axis("x1")
             .y_axis("y2")
             .visible(Visible::LegendOnly);
@@ -787,6 +823,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_io_time_exec_s = Scatter::new(x_vals.clone(), stats.io_time_exec_s.clone())
             .mode(Mode::Markers)
             .name("(s) User I/O Wait Time")
+            .marker(Marker::new().color(colors[1]))
             .x_axis("x1")
             .y_axis("y2")
             .visible(Visible::LegendOnly);
@@ -795,6 +832,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
         let sql_exec = Scatter::new(x_vals.clone(), stats.execs.clone())
             .mode(Mode::Lines)
             .name("# Executions")
+            .marker(Marker::new().color(colors[0]))
             .x_axis("x1")
             .y_axis("y1");
         sql_plot.add_trace(sql_exec);
@@ -822,6 +860,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
                     .range(vec![0.,])
                     .title("#")
                     .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
             )
             .y_axis2(
                 Axis::new()
@@ -864,7 +903,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &s
 pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let db_time_cpu_ratio: f64 = args.time_cpu_ratio;
     let filter_db_time: f64 = args.filter_db_time;
-    let snap_range: String = args.snap_range.clone();
+    let snap_range: (u64,u64) = parse_snap_range(&args.snap_range).expect("Invalid snap-range argument");
     
     let file_len = fname.len();
     let logfile_name: String = format!("{}.txt", &fname[0..file_len-5]); //cut .html from file name and add .txt
@@ -915,7 +954,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     // === ANALYZING ===
     println!("{}","\n==== ANALYZING ===".bright_cyan());
-    let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, snap_range.clone(), &logfile_name, &args);
+    let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, &snap_range, &logfile_name, &args);
     
     let mut is_logfilesync_high: bool = false;
     
@@ -942,9 +981,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     /* ------ Preparing data ------ */
     println!("\n{}","==== PREPARING RESULTS ===".bright_cyan());
     for awr in &collection.awrs {
-        let snap_filter: Vec<&str> = snap_range.split("-").collect::<Vec<&str>>();
-        let f_begin_snap: u64 = u64::from_str(snap_filter[0]).unwrap();
-        let f_end_snap: u64 = u64::from_str(snap_filter[1]).unwrap();
+        let (f_begin_snap,f_end_snap) = snap_range;
 
         if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
 
@@ -2448,24 +2485,42 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
     dotenv().ok();
     let mut bckend_port: String = String::new();
-    if args.backend_assistant {
+    if !args.backend_assistant.is_empty() {
         bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
     }
     
     let jasmin_html_scripts: String = format!(
         r#"
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-        <script>
+        <script> //JAS-MIN Assistant
         const messages = document.getElementById('messages');
         const input = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
-        messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Rreport<br>What is the most important Wait Event</div>`;
+        messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Report<br>What is the most important Wait Event</div>`;
+        function showLoadingIndicator() {{
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'message ai-msg loading-message';
+            loadingDiv.id = 'loading-indicator';
+            loadingDiv.innerHTML = '<span class="loading-dots"></span>';
+            messages.appendChild(loadingDiv);
+            messages.scrollTop = messages.scrollHeight;
+            return loadingDiv;
+        }}        
+        function removeLoadingIndicator() {{
+            const loadingDiv = document.getElementById('loading-indicator');
+            if (loadingDiv) {{
+                loadingDiv.remove();
+            }}
+        }}
         async function sendMessage() {{
             const userMsg = input.value.trim();
             if (userMsg === '') return;
+            input.disabled = true;
+            sendBtn.disabled = true;
             messages.innerHTML += `<div class="message user-msg">${{userMsg}}</div>`;
             messages.scrollTop = messages.scrollHeight;
             input.value = '';
+            const loadingDiv = showLoadingIndicator();
             try {{
                 const response = await fetch('http://localhost:{}/api/chat', {{
                     method: 'POST',
@@ -2473,15 +2528,22 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     body: JSON.stringify({{ message: userMsg }})
                 }});
                 const data = await response.json();
+                removeLoadingIndicator();
                 messages.innerHTML += `<div class="message ai-msg">${{marked.parse(data.reply)}}</div>`;
                 messages.scrollTop = messages.scrollHeight;
             }} catch (error) {{
+                removeLoadingIndicator();
                 messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
                 messages.scrollTop = messages.scrollHeight;
+            }} finally {{
+                // Re-enable input and button
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
             }}
         }}
         input.addEventListener('keydown', function(event) {{
-            if (event.key === 'Enter') {{
+            if (event.key === 'Enter' && !input.disabled) {{
                 sendMessage();
             }}
         }});
