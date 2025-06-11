@@ -80,13 +80,19 @@ OPTIONS:
           Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key.
           The parameter should be set to the value in format VENDOR:MODEL_NAME:LANGUAGE_CODE 
           (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL) [default: NO]
+
+    -T, --token-count-factor <TOKEN_COUNT_FACTOR>
+          Base output token count is 8192 - you can update maximum number of output tokens by this factor [default: 8]
     
-    -b --backend-assistant
+    -b --backend-assistant <openai|gemini>
           Launches the backend agent used by the JASMIN Assistant. 
           Configuration details such as API keys and the selected PORT number are loaded from the .env file
 
     -m, --mad-threshold <MAD_THRESHOLD>
-          Threshold for detecting anomalies using MAD [default: 7]
+          Threshold for detecting anomalies using MAD [default: 7] 
+
+    -W, --mad-window-size <MAD_WINDOW_SIZE>
+          Window size for detecting anomalies using MAD for local sliding window specified as % of probes [default: 100]
 
     -P, --parallel <PARALLEL>
           Parallelism level [default: 4]
