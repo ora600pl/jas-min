@@ -10,6 +10,7 @@ use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{CorsLayer, Any};
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 use qdrant_client::qdrant::{Condition, Filter, SearchParamsBuilder, SearchPointsBuilder, SearchPoints};
 use qdrant_client::Qdrant;
 
@@ -306,251 +307,509 @@ struct AIResponse {
     reply: String,
 }
 
-pub struct AppState {
+// Backend type enum
+#[derive(Clone, Debug)]
+pub enum BackendType {
+    OpenAI,
+    Gemini,
+}
+
+// Trait for AI backends
+#[async_trait::async_trait]
+trait AIBackend: Send + Sync {
+    async fn initialize(&mut self, file_path: String) -> anyhow::Result<()>;
+    async fn send_message(&self, message: &str) -> anyhow::Result<String>;
+}
+
+// OpenAI implementation
+struct OpenAIBackend {
     client: reqwest::Client,
     api_key: String,
     assistant_id: String,
-    thread_id: Mutex<Option<String>>,
+    thread_id: Option<String>,
 }
 
-pub async fn backend_ai(reportfile: String) -> anyhow::Result<()> {
-    dotenv().ok();
-    let api_key = env::var("OPENAI_API_KEY").expect("You have to set OPENAI_API_KEY variable in .env");
-    let assistant_id = env::var("OPENAI_ASST_ID").expect("You have to set OPENAI_ASST_ID variable in .env");
-    let bckend_port = env::var("PORT").unwrap_or("3000".to_string());
-
-    let state = Arc::new(AppState {
-        client: reqwest::Client::new(),
-        api_key,
-        assistant_id,
-        thread_id: Mutex::new(None),
-    });
-    let thread_id = create_thread_with_file(&state, reportfile).await?;
-    // Store thread_id in shared state
-    {
-        let mut id_lock = state.thread_id.lock().await;
-        *id_lock = Some(thread_id);
+impl OpenAIBackend {
+    fn new(api_key: String, assistant_id: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key,
+            assistant_id,
+            thread_id: None,
+        }
     }
+
+    async fn create_thread_with_file(&self, file_path: String) -> anyhow::Result<String> {
+        // === Step 1: Read file content ===
+        let file_bytes = fs::read(&file_path)?;
+        let file_name = Path::new(&file_path)
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("jasmin_report.txt"))
+            .to_string_lossy()
+            .to_string();
+
+        // === Step 2: Upload file to OpenAI ===
+        let file_part = Part::bytes(file_bytes)
+            .file_name(file_name)
+            .mime_str("text/plain")?;
+        let form = Form::new()
+            .part("file", file_part)
+            .text("purpose", "assistants");
+        
+        let upload_res = self.client
+            .post("https://api.openai.com/v1/files")
+            .bearer_auth(&self.api_key)
+            .multipart(form)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        
+        let file_id = upload_res.get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Failed to upload file: {:?}", upload_res))?;
+        
+        println!("✅ File uploaded with ID: {}", file_id);
+
+        // === Step 3: Create thread with intro message ===
+        let thread_res = self.client
+            .post("https://api.openai.com/v1/threads")
+            .bearer_auth(&self.api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .json(&serde_json::json!({
+                "messages": [{
+                    "role": "user",
+                    "content": "Uploading file with performance report"
+                }]
+            }))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        
+        let thread_id = thread_res.get("id")
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Failed to create thread: {:?}", thread_res))?;
+        
+        println!("✅ Thread created: {}", thread_id);
+
+        // === Step 4: Attach file to thread ===
+        let message_url = format!("https://api.openai.com/v1/threads/{}/messages", thread_id);
+        let file_msg_res = self.client
+            .post(&message_url)
+            .bearer_auth(&self.api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .json(&serde_json::json!({
+                "role": "user",
+                "content": "Please analyze the attached performance report.",
+                "attachments": [{
+                    "file_id": file_id,
+                    "tools": [{ "type": "file_search" }]
+                }]
+            }))
+            .send()
+            .await?;
+
+        if !file_msg_res.status().is_success() {
+            let status = file_msg_res.status();
+            let err_text = file_msg_res.text().await?;
+            eprintln!("Attach file failed. Status: {}, Response body: {}", status, err_text);
+            return Err(anyhow::anyhow!("Failed to attach file to thread."));
+        }
+
+        println!("📎 File attached to thread.");
+
+        // === Step 5: Wait for vector store to process the file ===
+        println!("⏳ Waiting for file processing to complete...");
+        self.wait_for_file_processing(&thread_id).await?;
+        
+        println!("✅ File processing completed! Thread is ready for use.");
+        Ok(thread_id.to_string())
+    }
+
+    async fn wait_for_file_processing(&self, thread_id: &str) -> anyhow::Result<()> {
+        let mut attempts = 0;
+        let max_attempts = 30;
+        
+        loop {
+            let thread_url = format!("https://api.openai.com/v1/threads/{}", thread_id);
+            let thread_res = self.client
+                .get(&thread_url)
+                .bearer_auth(&self.api_key)
+                .header("OpenAI-Beta", "assistants=v2")
+                .send()
+                .await?;
+                
+            if !thread_res.status().is_success() {
+                return Err(anyhow::anyhow!("Failed to get thread details"));
+            }
+            
+            let thread_data = thread_res.json::<serde_json::Value>().await?;
+            
+            if let Some(tool_resources) = thread_data.get("tool_resources") {
+                if let Some(file_search) = tool_resources.get("file_search") {
+                    if let Some(vector_store_ids) = file_search.get("vector_store_ids") {
+                        if let Some(vector_stores) = vector_store_ids.as_array() {
+                            if let Some(vs_id) = vector_stores.first().and_then(|v| v.as_str()) {
+                                match self.check_vector_store_status(vs_id).await? {
+                                    status if status == "completed" => {
+                                        println!("✅ Vector store processing completed!");
+                                        return Ok(());
+                                    }
+                                    status if status == "failed" => {
+                                        return Err(anyhow::anyhow!("Vector store processing failed"));
+                                    }
+                                    status => {
+                                        println!("📊 Vector store status: {} (attempt {}/{})", status, attempts + 1, max_attempts);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if attempts >= max_attempts {
+                return Err(anyhow::anyhow!("File processing timeout after {} attempts", max_attempts));
+            }
+            
+            sleep(Duration::from_secs(5)).await;
+            attempts += 1;
+        }
+    }
+
+    async fn check_vector_store_status(&self, vector_store_id: &str) -> anyhow::Result<String> {
+        let url = format!("https://api.openai.com/v1/vector_stores/{}", vector_store_id);
+        
+        let res = self.client
+            .get(&url)
+            .bearer_auth(&self.api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .send()
+            .await?;
+        
+        if !res.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to check vector store status"));
+        }
+        
+        let json_res = res.json::<serde_json::Value>().await?;
+        
+        let status = json_res["status"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing status in vector store response"))?;
+        
+        Ok(status.to_string())
+    }
+
+    async fn create_message(&self, thread_id: &str, content: &str) -> anyhow::Result<()> {
+        let url = format!("https://api.openai.com/v1/threads/{}/messages", thread_id);
+
+        let mut body = HashMap::new();
+        body.insert("role", "user");
+        body.insert("content", content);
+
+        self.client.post(&url)
+            .bearer_auth(&self.api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .json(&body)
+            .send().await?
+            .error_for_status()?;
+
+        Ok(())
+    }
+
+    async fn run_assistant(&self, thread_id: &str) -> anyhow::Result<String> {
+        let url = format!("https://api.openai.com/v1/threads/{}/runs", thread_id);
+
+        let mut body = HashMap::new();
+        body.insert("assistant_id", &self.assistant_id);
+
+        let res = self.client.post(&url)
+            .bearer_auth(&self.api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .json(&body)
+            .send().await?;
+            
+        if !res.status().is_success() {
+            let status = res.status();
+            let error_text = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow::anyhow!("API request failed with status {}: {}", status, error_text));
+        }
+        
+        let json_res = res.json::<serde_json::Value>().await?;
+        let run_id = json_res["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'id' field in response: {}", json_res))?
+            .to_string();
+
+        Ok(run_id)
+    }
+
+    async fn wait_for_completion(&self, thread_id: &str, run_id: &str) -> anyhow::Result<()> {
+        loop {
+            let url = format!("https://api.openai.com/v1/threads/{}/runs/{}", thread_id, run_id);
+            let res = self.client
+                .get(&url)
+                .bearer_auth(&self.api_key)
+                .header("OpenAI-Beta", "assistants=v2")
+                .send().await?
+                .json::<serde_json::Value>().await?;
+
+            let status = res.get("status").and_then(|s| s.as_str());
+
+            match status {
+                Some("completed") => return Ok(()),
+                Some("failed") | Some("cancelled") | Some("expired") => {
+                    return Err(anyhow::anyhow!("Run failed or was cancelled/expired:\n {:?}", res))
+                },
+                Some(_) => {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                },
+                None => {
+                    return Err(anyhow::anyhow!("Missing 'status' field in response:\n {:?}", res));
+                }
+            }
+        }
+    }
+
+    async fn get_reply(&self, thread_id: &str) -> anyhow::Result<String> {
+        let url = format!("https://api.openai.com/v1/threads/{}/messages", thread_id);
+
+        let res = self.client
+            .get(&url)
+            .bearer_auth(&self.api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        if let Some(reply) = res["data"][0]["content"][0]["text"]["value"].as_str() {
+            Ok(reply.to_string())
+        } else {
+            Err(anyhow::anyhow!("Failed to extract assistant reply: {:?}", res))
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AIBackend for OpenAIBackend {
+    async fn initialize(&mut self, file_path: String) -> anyhow::Result<()> {
+        let thread_id = self.create_thread_with_file(file_path).await?;
+        self.thread_id = Some(thread_id);
+        Ok(())
+    }
+
+    async fn send_message(&self, message: &str) -> anyhow::Result<String> {
+        let thread_id = self.thread_id.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Thread not initialized"))?;
+
+        self.create_message(thread_id, message).await?;
+        let run_id = self.run_assistant(thread_id).await?;
+        self.wait_for_completion(thread_id, &run_id).await?;
+        self.get_reply(thread_id).await
+    }
+}
+
+// Gemini implementation
+struct GeminiBackend {
+    client: reqwest::Client,
+    api_key: String,
+    model: String,
+    conversation_history: Vec<GeminiMessage>,
+    file_content: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct GeminiMessage {
+    role: String,
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum GeminiPart {
+    Text { text: String },
+    InlineData { inline_data: InlineData },
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct InlineData {
+    mime_type: String,
+    data: String,
+}
+
+impl GeminiBackend {
+    fn new(api_key: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key,
+            model: "gemini-2.5-flash-preview-05-20".to_string(), // or gemini-1.5-pro
+            conversation_history: Vec::new(),
+            file_content: None,
+        }
+    }
+
+    async fn send_to_gemini(&self, messages: &[GeminiMessage]) -> anyhow::Result<String> {
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            self.model, self.api_key
+        );
+
+        let body = serde_json::json!({
+            "contents": messages,
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 8192,
+            }
+        });
+
+        let res = self.client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let error_text = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow::anyhow!("Gemini API request failed with status {}: {}", status, error_text));
+        }
+
+        let json_res = res.json::<serde_json::Value>().await?;
+        
+        // Extract response text
+        if let Some(candidates) = json_res["candidates"].as_array() {
+            if let Some(first_candidate) = candidates.first() {
+                if let Some(content) = first_candidate["content"]["parts"][0]["text"].as_str() {
+                    return Ok(content.to_string());
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("Failed to extract response from Gemini: {:?}", json_res))
+    }
+}
+
+#[async_trait::async_trait]
+impl AIBackend for GeminiBackend {
+    async fn initialize(&mut self, file_path: String) -> anyhow::Result<()> {
+        // Read file content
+        let file_content = fs::read_to_string(&file_path)?;
+        self.file_content = Some(file_content.clone());
+        
+        let mut spell: String = format!("{}", SPELL);
+        let pr = private_reasoninings();
+        if pr.is_some() {
+            spell = format!("{}\n\n# Additional insights: {}", spell, pr.unwrap());
+        }
+        // Initialize conversation with file content
+        let initial_message = GeminiMessage {
+            role: "user".to_string(),
+            parts: vec![
+                GeminiPart::Text { 
+                    text: format!("I'm uploading a performance report.\n{} detect from question.\nPlease analyze it and be ready to answer questions about it.\n\nReport content:\n{}", spell, file_content)
+                }
+            ],
+        };
+        
+        self.conversation_history.push(initial_message.clone());
+        
+        // Get initial response
+        let response = self.send_to_gemini(&self.conversation_history).await?;
+        
+        // Add assistant response to history
+        self.conversation_history.push(GeminiMessage {
+            role: "model".to_string(),
+            parts: vec![GeminiPart::Text { text: response.clone() }],
+        });
+        
+        println!("✅ Gemini initialized with file content");
+        Ok(())
+    }
+
+    async fn send_message(&self, message: &str) -> anyhow::Result<String> {
+        let mut messages = self.conversation_history.clone();
+        
+        // Add user message
+        messages.push(GeminiMessage {
+            role: "user".to_string(),
+            parts: vec![GeminiPart::Text { text: message.to_string() }],
+        });
+        
+        // Send to Gemini
+        let response = self.send_to_gemini(&messages).await?;
+        
+        Ok(response)
+    }
+}
+
+// App state with dynamic backend
+pub struct AppState {
+    backend: Arc<Mutex<Box<dyn AIBackend>>>,
+}
+
+// Main backend function
+pub async fn backend_ai(reportfile: String, backend_type: BackendType) -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
+    
+    let backend: Box<dyn AIBackend> = match backend_type {
+        BackendType::OpenAI => {
+            let api_key = env::var("OPENAI_API_KEY")
+                .expect("You have to set OPENAI_API_KEY variable in .env");
+            let assistant_id = env::var("OPENAI_ASST_ID")
+                .expect("You have to set OPENAI_ASST_ID variable in .env");
+            Box::new(OpenAIBackend::new(api_key, assistant_id))
+        },
+        BackendType::Gemini => {
+            let api_key = env::var("GEMINI_API_KEY")
+                .expect("You have to set GEMINI_API_KEY variable in .env");
+            Box::new(GeminiBackend::new(api_key))
+        },
+    };
+    
+    let backend_port = env::var("PORT").unwrap_or("3000".to_string());
+    
+    // Initialize backend with file
+    let mut backend_mut = backend;
+    backend_mut.initialize(reportfile).await?;
+    
+    let state = Arc::new(AppState {
+        backend: Arc::new(Mutex::new(backend_mut)),
+    });
 
     let app = Router::new()
         .route("/api/chat", post(chat_handler))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}",bckend_port)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", backend_port)).await?;
+    println!("🚀 Server running on http://127.0.0.1:{}", backend_port);
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn chat_handler(State(state): State<Arc<AppState>>, Json(payload): Json<UserMessage>) -> impl IntoResponse {
-    let thread_id = {
-        let id_lock = state.thread_id.lock().await;
-        match &*id_lock {
-            Some(id) => id.clone(), // clone the String for local use
-            None => {
-                eprintln!("Thread ID not initialized");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Thread not initialized").into_response();
-            }
-        }
-    };
+// Unified chat handler
+async fn chat_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<UserMessage>,
+) -> impl IntoResponse {
+    let backend = state.backend.lock().await;
     
-    if let Err(err) = create_message(&state, &thread_id, &payload.message).await {
-        eprintln!("Failed to create message: {:?}", err);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Message creation failed").into_response();
-    }
-
-    let run_id = match run_assistant(&state, &thread_id).await {
-        Ok(id) => id,
-        Err(err) => {
-            eprintln!("Failed to run assistant: {:?}", err);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Assistant run failed").into_response();
-        }
-    };
-
-    if let Err(err) = wait_for_completion(&state, &thread_id, &run_id).await {
-        eprintln!("Error waiting for completion: {:?}", err);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Completion failed").into_response();
-    }
-
-    match get_reply(&state, &thread_id).await {
+    match backend.send_message(&payload.message).await {
         Ok(reply) => (StatusCode::OK, Json(AIResponse { reply })).into_response(),
         Err(err) => {
-            eprintln!("Failed to get reply: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Reply retrieval failed").into_response()
+            eprintln!("Error processing message: {:?}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to process message").into_response()
         }
     }
 }
 
-async fn create_message(state: &AppState, thread_id: &str, content: &str) -> anyhow::Result<()> {
-    let url = format!("https://api.openai.com/v1/threads/{}/messages", thread_id);
-
-    let spell = content.to_string();
-
-    /* Code for future RAG -> RAG */
-    // println!("BEFORE: {}", spell);
-    // if let Ok(qdrant_url) = env::var("QDRANT_URL") {
-    //     let embedding = embed_text(&content).await.unwrap();
-    //     let context =  retrieve_context(&embedding).await.unwrap();
-    //     if content.len() >= 10 {
-    //         spell = format!("{}DOKUMENTY:\n{}\n\nPytanie: {}", SPELL_RAG, context, spell);
-    //     }
-    // }
-    // println!("AFTER: {}", spell);
-    /* ************************* */
-
-    let mut body = HashMap::new();
-    body.insert("role", "user");
-    body.insert("content", &spell);
-
-    state.client.post(&url)
-        .bearer_auth(&state.api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .json(&body)
-        .send().await?
-        .error_for_status()?;
-
-    Ok(())
-}
-
-async fn run_assistant(state: &AppState, thread_id: &str) -> anyhow::Result<String> {
-    let url = format!("https://api.openai.com/v1/threads/{}/runs", thread_id);
-
-    let mut body = HashMap::new();
-    body.insert("assistant_id", &state.assistant_id);
-
-    let res = state.client.post(&url)
-        .bearer_auth(&state.api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .json(&body)
-        .send().await?
-        .json::<serde_json::Value>().await?;
-
-    Ok(res["id"].as_str().unwrap().to_string())
-}
-
-async fn wait_for_completion(state: &AppState, thread_id: &str, run_id: &str) -> anyhow::Result<()> {
-    loop {
-        let url = format!("https://api.openai.com/v1/threads/{}/runs/{}", thread_id, run_id);
-        let res = state.client
-            .get(&url)
-            .bearer_auth(&state.api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .send().await?
-            .json::<serde_json::Value>().await?;
-
-        let status = res.get("status").and_then(|s| s.as_str());
-
-        match status {
-            Some("completed") => return Ok(()),
-            Some("failed") | Some("cancelled") | Some("expired") => {
-                return Err(anyhow::anyhow!("Run failed or was cancelled/expired: {:?}", res))
-            },
-            Some(_) => {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            },
-            None => {
-                return Err(anyhow::anyhow!("Missing 'status' field in response: {:?}", res));
-            }
-        }
+// Parse command line arguments
+pub fn parse_backend_type(args: &str) -> Result<BackendType, String> {
+    match args {
+        "openai" => Ok(BackendType::OpenAI),
+        "gemini" => Ok(BackendType::Gemini),
+        _ => Err(format!("Backend must be 'openai' or 'gemini' -> found: {}",args)),
     }
-}
-
-async fn get_reply(state: &AppState, thread_id: &str) -> anyhow::Result<String> {
-    let url = format!("https://api.openai.com/v1/threads/{}/messages", thread_id);
-
-    let res = state.client
-        .get(&url)
-        .bearer_auth(&state.api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    //println!("Message response: {:#?}", res);
-    if let Some(reply) = res["data"][0]["content"][0]["text"]["value"].as_str() {
-        //println!("{}",reply);
-        return Ok(reply.to_string());
-        
-    } else {
-        Err(anyhow::anyhow!("Failed to extract assistant reply: {:?}", res))
-    }
-}
-
-pub async fn create_thread_with_file(state: &AppState, file_path: String) -> anyhow::Result<String> {
-    // === Step 1: Read file content ===
-    let file_bytes = fs::read(&file_path)?;
-    let file_name = Path::new(&file_path).file_name().unwrap_or_else(|| std::ffi::OsStr::new("jasmin_report.txt")).to_string_lossy().to_string();
-
-    // === Step 2: Upload file to OpenAI ===
-    let file_part = Part::bytes((file_bytes)).file_name(file_name).mime_str("text/plain")?;
-
-    let form = Form::new().part("file", file_part).text("purpose", "assistants");
-
-    let upload_res = state.client
-        .post("https://api.openai.com/v1/files")
-        .bearer_auth(&state.api_key)
-        .multipart(form)
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    let file_id = upload_res.get("id").and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Failed to upload file: {:?}", upload_res))?;
-
-    println!("✅ File uploaded with ID: {}", file_id);
-
-    // === Step 3: Create thread with intro message ===
-    let thread_res = state.client
-        .post("https://api.openai.com/v1/threads")
-        .bearer_auth(&state.api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .json(&json!({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "Uploading file with performance report"
-                }
-            ]
-        }))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    let thread_id = thread_res.get("id").and_then(|id| id.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Failed to create thread: {:?}", thread_res))?;
-
-    println!("✅ Thread created: {}", thread_id);
-
-    // === Step 4: Attach file to thread ===
-    let message_url = format!("https://api.openai.com/v1/threads/{}/messages", thread_id);
-    let file_msg_res = state.client
-        .post(&message_url)
-        .bearer_auth(&state.api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .json(&serde_json::json!({
-            "role": "user",
-            "content": "Please analyze the attached performance report.",
-            "attachments": [
-                {
-                    "file_id": file_id,
-                    "tools": [{ "type": "file_search" }]
-                }
-            ]
-        }))
-        .send()
-        .await?;
-    //println!("Raw response (attach file): {:?}", file_msg_res.status());
-    if !file_msg_res.status().is_success() {
-        let status = file_msg_res.status(); // ✅ get status first
-        let err_text = file_msg_res.text().await?; // consumes file_msg_res
-        eprintln!("Attach file failed. Status: {}, Response body: {}",status, err_text);
-        return Err(anyhow::anyhow!("Failed to attach file to thread."));
-    }
-
-    println!("📎 File attached to thread.");
-
-    Ok(thread_id.to_string())
 }

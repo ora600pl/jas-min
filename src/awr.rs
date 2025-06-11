@@ -449,7 +449,8 @@ fn sql_gets(table: ElementRef) -> HashMap<String,SQLGets> {
 			let pct_cpu = f64::from_str(&pct_cpu[0].trim().replace(",",".")).unwrap_or(0.0);
 
 			let pct_io = columns[6].text().collect::<Vec<_>>();
-			let pct_io = f64::from_str(&pct_io[0].trim().replace(",","")).unwrap_or(0.0);
+			let pct_io = f64::from_str(&pct_io[0].trim().replace(",",".")).unwrap_or(0.0);
+			
 
 			let sql_module = columns[8].text().collect::<Vec<_>>();
 			let sql_module = sql_module[0].trim().to_string();

@@ -15,7 +15,7 @@ mod idleevents;
 mod reasonings;
 mod macros;
 mod anomalies;
-use crate::reasonings::{backend_ai,gemini};
+use crate::reasonings::{backend_ai,parse_backend_type, BackendType,gemini};
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
@@ -70,9 +70,11 @@ struct Args {
 	#[clap(short = 'T', long, default_value_t = 8)]
 	token_count_factor: usize,
 
-	///Launches the backend agent used by the JASMIN Assistant. Configuration details such as API keys and the selected PORT number are loaded from the .env file
-	#[clap(short, long)]
-	backend_assistant: bool,
+	///Launches the backend agent used by the JASMIN Assistant.
+	///-b <openai>|<gemini>
+	/// Configuration details such as API keys and the selected PORT number are loaded from the .env file
+	#[clap(short, long, default_value="")]
+	backend_assistant: String,
 
 	///Threshold for detecting anomalies using MAD
 	#[clap(short, long, default_value_t=7.0)]
@@ -128,15 +130,23 @@ async fn main() {
             println!("Unrecognized vendor. Supported vendors: openai, google");
         }   
     }
-	if args.backend_assistant {
+	if !args.backend_assistant.is_empty() {
 		dotenv().ok();
 		let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
+		let backend_type = match parse_backend_type(&args.backend_assistant) {
+			Ok(backend) => backend,
+			Err(e) => {
+				eprintln!("❌ Error: {}", e);
+				std::process::exit(1);
+			}
+		};
 		println!("{}",r#"==== STARTING ASISTANT BACKEND ==="#.bright_cyan());
-		println!("🤖 Starting JAS-MIN Assistant Backend on http://loclahost:{}",bckend_port);
+		println!("🤖 Starting JAS-MIN Assistant Backend using: {}",args.backend_assistant);
 		println!("📁 Report File: {}",reportfile.clone());
         //let rt = tokio::runtime::Runtime::new().unwrap();
         //rt.block_on(backend_ai(reportfile.clone()));
-		backend_ai(reportfile).await;
+		// Start the backend
+		backend_ai(reportfile, backend_type).await;
     }
 	
 }
