@@ -927,6 +927,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut y_vals_hparses: Vec<f64> = Vec::new();
     let mut y_vals_cpu_user: Vec<f64> = Vec::new();
     let mut y_vals_cpu_load: Vec<f64> = Vec::new();
+    let mut y_vals_cpu_count: Vec<u32> = Vec::new();
     let mut y_vals_redo_switches: Vec<f64> = Vec::new();
     let mut y_excessive_commits: Vec<f64> = Vec::new();
     let mut y_cleanout_ktugct: Vec<f64> = Vec::new();
@@ -1100,6 +1101,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     y_vals_cpu_user.push(awr.host_cpu.pct_user);
                 }
                 y_vals_cpu_load.push(100.0-awr.host_cpu.pct_idle);
+                y_vals_cpu_count.push(awr.host_cpu.cpus);
 
                 // ----- Additionally plot Redo Log Switches
                 y_vals_redo_switches.push(awr.redo_log.per_hour);
@@ -1234,6 +1236,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                     .name("CPU Load")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
+    let cpu_count = Scatter::new(x_vals.clone(), y_vals_cpu_count.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("CPU Count")
+                                                    .x_axis("x1")
+                                                    .y_axis("y4");
     let cpu_load_box_plot  = BoxPlot::new(y_vals_cpu_load)
                                                     //.mode(Mode::LinesText)
                                                     .name("CPU Load")
@@ -1340,6 +1347,19 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     plot_main.add_trace(hparses_trace);
     plot_main.add_trace(cpu_user);
     plot_main.add_trace(cpu_load);
+    
+    
+    let first_cpu = y_vals_cpu_count.first(); //Get first value of CPU Count
+    if first_cpu.is_some() { // if you found something
+        let cpu_is_changing = y_vals_cpu_count.iter()
+                                                        .find(|cpu| {
+                                                                *cpu != first_cpu.unwrap()
+                                                        }); //scan the whole vector to find the first value different - it means that number of cpus changes over time
+        if cpu_is_changing.is_some() {
+             plot_main.add_trace(cpu_count); //if so - add the plot to the cpu scatter
+        }                                              
+    }
+    
     plot_highlight.add_trace(cpu_load_box_plot);
     plot_highlight.add_trace(read_mb_box_plot);
     plot_highlight.add_trace(write_mb_box_plot);
@@ -2299,7 +2319,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             .anchor("x1")
             .domain(&[0.47, 0.625])
             .range(vec![0.,])
-            .title("CPU Util (%)")
+            .title("CPU Util (%/#)")
             .zero_line(true)
             .range(vec![0.,])
             .range_mode(RangeMode::ToZero)
