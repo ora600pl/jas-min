@@ -71,7 +71,7 @@ struct Args {
 	token_count_factor: usize,
 
 	///Launches the backend agent used by the JASMIN Assistant.
-	///-b <openai>|<gemini>
+	///-b <openai>|<gemini:model>
 	/// Configuration details such as API keys and the selected PORT number are loaded from the .env file
 	#[clap(short, long, default_value="")]
 	backend_assistant: String,
@@ -140,13 +140,16 @@ async fn main() {
 				std::process::exit(1);
 			}
 		};
+		let mut model_name = "gemini-2.5-flash".to_string();
+		if args.backend_assistant.contains(":") {
+			model_name = args.backend_assistant.split(":").collect::<Vec<&str>>()[1].to_string();
+		}
+
 		println!("{}",r#"==== STARTING ASISTANT BACKEND ==="#.bright_cyan());
 		println!("🤖 Starting JAS-MIN Assistant Backend using: {}",args.backend_assistant);
 		println!("📁 Report File: {}",reportfile.clone());
-        //let rt = tokio::runtime::Runtime::new().unwrap();
-        //rt.block_on(backend_ai(reportfile.clone()));
-		// Start the backend
-		backend_ai(reportfile, backend_type).await;
+        
+		backend_ai(reportfile, backend_type, model_name).await;
     }
 	
 }
