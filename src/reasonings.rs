@@ -640,11 +640,11 @@ struct InlineData {
 }
 
 impl GeminiBackend {
-    fn new(api_key: String) -> Self {
+    fn new(api_key: String, gemini_model: String) -> Self {
         Self {
             client: reqwest::Client::new(),
             api_key,
-            model: "gemini-2.5-flash-preview-05-20".to_string(), // or gemini-1.5-pro
+            model: gemini_model, 
             conversation_history: Vec::new(),
             file_content: None,
         }
@@ -750,7 +750,7 @@ pub struct AppState {
 }
 
 // Main backend function
-pub async fn backend_ai(reportfile: String, backend_type: BackendType) -> anyhow::Result<()> {
+pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String) -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     
     let backend: Box<dyn AIBackend> = match backend_type {
@@ -764,7 +764,8 @@ pub async fn backend_ai(reportfile: String, backend_type: BackendType) -> anyhow
         BackendType::Gemini => {
             let api_key = env::var("GEMINI_API_KEY")
                 .expect("You have to set GEMINI_API_KEY variable in .env");
-            Box::new(GeminiBackend::new(api_key))
+            
+            Box::new(GeminiBackend::new(api_key, model_name))
         },
     };
     
@@ -807,7 +808,11 @@ async fn chat_handler(
 
 // Parse command line arguments
 pub fn parse_backend_type(args: &str) -> Result<BackendType, String> {
-    match args {
+    let mut btype = args; 
+    if args.contains(":") {
+        btype = args.split(":").collect::<Vec<&str>>()[0]; //for gemini you have to specify model - for example gemini:gemini-2.5-flash
+    }
+    match btype {
         "openai" => Ok(BackendType::OpenAI),
         "gemini" => Ok(BackendType::Gemini),
         _ => Err(format!("Backend must be 'openai' or 'gemini' -> found: {}",args)),
