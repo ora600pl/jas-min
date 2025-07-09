@@ -121,13 +121,10 @@ async fn retrieve_context(query_embedding: &[f32]) -> Result<String, Box<dyn std
     Ok(context)
 }
 
-pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}{}{}","=== Consulting ChatGPT model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
     let api_key = env::var("OPENAI_API_KEY").expect("You have to set OPENAI_API_KEY env variable");
-
-    let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
-
     let client = Client::new();
 
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
@@ -135,46 +132,227 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>) -> Resul
     if pr.is_some() {
         spell = format!("{}\n{}", spell, pr.unwrap());
     }
-    /* Code for future RAG -> RAG */
 
-    // if let Ok(qdrant_url) = env::var("QDRANT_URL") {
-    //     let embedding = match embed_text(&spell).await {
-    //         Ok(e) => e,
-    //         Err(err) => return Err(err),
-    //     };
-    //     let context = match retrieve_context(&embedding).await {
-    //         Ok(c) => c,
-    //         Err(err) => return Err(err),           
-    //     };
-    //     spell = format!("{}DOKUMENTY:\n{}\n\nPytanie: {}", SPELL_RAG, context, spell);
-    // }
-    
-    // println!("Your final prompt is: \n {}", spell);
-    // println!(" <=============== RESPONSE ===============> \n\n");
-
-    /* **************************** */
-
-    let response = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
+    // === 0. Create temporary assistant dynamically ===
+    let assistant_create_resp = client
+        .post("https://api.openai.com/v1/assistants")
+        .bearer_auth(&api_key)
+        .header("OpenAI-Beta", "assistants=v2")
         .json(&json!({
-            "model": format!("{}", vendor_model_lang[1]),
-            "messages": [
-                {"role": "system", "content": "You are an Oracle Database performance tuning expert."},
-                {"role": "user", "content": format!("{} \n {}", spell, log_content)}
-            ],
-            "max_tokens": 4096
+            "model": vendor_model_lang[1], // e.g. gpt-4.1-2025-04-14
+            "name": "Temp Oracle Assistant",
+            "instructions": spell,
+            "tools": [{ "type": "file_search" }]
         }))
         .send()
-        .await.unwrap();
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
 
-    let json: serde_json::Value = response.json().await.unwrap();
-
-    if json["error"].is_object() {
-        println!("{}", json["error"]["message"].as_str().unwrap());
+    let assistant_id: &str;
+    if let Some(aid) = assistant_create_resp["id"].as_str() {
+        assistant_id = aid;
+        println!("🎩 Temporary assistant created: {}", assistant_id);
     } else {
-        println!("{}", json["choices"][0]["message"]["content"].as_str().unwrap());
+        eprintln!("❌ Thread creation failed:\n{}", assistant_create_resp);
+        return Ok(());
+    }
+    
+
+    let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
+    let response_file = format!("{}_openai.md", logfile_name);
+
+   
+
+    // === 1. Upload pliku ===
+    // prepart multipart form
+    let part = multipart::Part::bytes(log_content.into_bytes())
+        .file_name("performance_report.txt") 
+        .mime_str("text/plain").unwrap(); //  MIME type as text
+
+    // Create multipart form
+    let form = multipart::Form::new().text("purpose", "assistants").part("file", part);
+
+    let upload_resp = client
+        .post("https://api.openai.com/v1/files")
+        .bearer_auth(&api_key)
+        .multipart(form)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+    let file_id = upload_resp["id"].as_str().unwrap();
+    println!("✅ File uploaded: {}", file_id);
+
+    // === 2. Create thread ===
+    let thread_resp_text = client
+        .post("https://api.openai.com/v1/threads")
+        .bearer_auth(&api_key)
+        .header("OpenAI-Beta", "assistants=v2")
+        .json(&json!({}))
+        .send()
+        .await?
+        .text()
+        .await?; 
+
+    let thread_id: &str;
+    let thread_json: serde_json::Value = serde_json::from_str(&thread_resp_text)?;
+    if let Some(tid) = thread_json.get("id").and_then(|v| v.as_str()) {
+        thread_id = tid;
+        println!("🧵 Thread created: {}", thread_id);
+    } else {
+        eprintln!("❌ Thread creation failed:\n{}", thread_resp_text);
+        return Ok(());
+    }
+
+    // === 3. Add user message ===
+    let message_resp = client
+        .post(format!("https://api.openai.com/v1/threads/{}/messages", thread_id))
+        .bearer_auth(&api_key)
+        .header("OpenAI-Beta", "assistants=v2")
+        .json(&json!({
+            "role": "user",
+            "content": spell,
+            "attachments": [{
+                "file_id": file_id,
+                "tools": [{ "type": "file_search" }]
+            }]
+        }))
+        .send()
+        .await?;
+    println!("📩 Message sent");
+
+    // === 3.5 Wait for vector store to process the file ===
+    println!("⏳ Waiting for file processing to complete...");
+    let mut attempts = 0;
+    let max_attempts = 30;
+
+    loop {
+        let thread_url = format!("https://api.openai.com/v1/threads/{}", thread_id);
+        let thread_res = client
+            .get(&thread_url)
+            .bearer_auth(&api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .send()
+            .await?;
+
+        if !thread_res.status().is_success() {
+            eprintln!("Failed to get thread status: {}", thread_res.status());
+            break;
+        }
+
+        let thread_data = thread_res.json::<serde_json::Value>().await?;
+        if let Some(tool_resources) = thread_data.get("tool_resources") {
+            if let Some(file_search) = tool_resources.get("file_search") {
+                if let Some(vector_store_ids) = file_search.get("vector_store_ids") {
+                    if let Some(first_id) = vector_store_ids.as_array().and_then(|arr| arr.get(0)).and_then(|v| v.as_str()) {
+                        // Check vector store status
+                        let url = format!("https://api.openai.com/v1/vector_stores/{}", first_id);
+                        let res = client
+                            .get(&url)
+                            .bearer_auth(&api_key)
+                            .header("OpenAI-Beta", "assistants=v2")
+                            .send()
+                            .await?;
+                        if !res.status().is_success() {
+                            eprintln!("Failed to get vector store status: {}", res.status());
+                            break;
+                        }
+
+                        let json_res = res.json::<serde_json::Value>().await?;
+                        let status = json_res["status"].as_str().unwrap_or("unknown");
+                        println!("📊 Vector store status: {} (attempt {}/{})", status, attempts + 1, max_attempts);
+
+                        if status == "completed" {
+                            println!("✅ Vector store processing completed!");
+                            break;
+                        } else if status == "failed" {
+                            eprintln!("❌ Vector store processing failed!");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if attempts >= max_attempts {
+            eprintln!("❌ File processing timeout after {} attempts", max_attempts);
+            break;
+        }
+
+        sleep(Duration::from_secs(3)).await;
+        attempts += 1;
+    }
+
+    // === 4. Run assistant ===
+    let run_resp = client
+        .post(format!("https://api.openai.com/v1/threads/{}/runs", thread_id))
+        .bearer_auth(&api_key)
+        .header("OpenAI-Beta", "assistants=v2")
+        .json(&json!({
+            "assistant_id": assistant_id,
+            "tools": [{ "type": "file_search" }]
+        }))
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+    let run_id = run_resp["id"].as_str().unwrap();
+    println!("🏃 Run started: {}", run_id);
+
+    // === 5. Poll status until completed ===
+    loop {
+        let status_resp = client
+            .get(format!("https://api.openai.com/v1/threads/{}/runs/{}", thread_id, run_id))
+            .bearer_auth(&api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        let status = status_resp["status"].as_str().unwrap();
+        println!("⏳ Status: {}", status);
+        if status == "completed" {
+            break;
+        } else if status == "failed" {
+            panic!("❌ Run failed");
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
+
+    // === 6. Read response ===
+    let messages_resp = client
+        .get(format!("https://api.openai.com/v1/threads/{}/messages", thread_id))
+        .bearer_auth(&api_key)
+        .header("OpenAI-Beta", "assistants=v2")
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let messages = messages_resp["data"].as_array().unwrap();
+    for msg in messages {
+    if msg["role"].as_str().unwrap_or("") == "assistant" {
+        if let Some(content) = msg["content"][0]["text"]["value"].as_str() {
+            fs::write(&response_file, content.as_bytes())?;
+            println!("🍻 OpenAI response written to file: {}", response_file);
+        }
+    }
+}
+
+    // === 7. Delete temporary assistant ===
+    let delete_resp = client
+        .delete(format!("https://api.openai.com/v1/assistants/{}", assistant_id))
+        .bearer_auth(&api_key)
+        .header("OpenAI-Beta", "assistants=v2")
+        .send()
+        .await?;
+
+    if delete_resp.status().is_success() {
+        println!("🗑️ Temporary assistant deleted: {}", assistant_id);
+    } else {
+        eprintln!("⚠️ Failed to delete assistant: {}", delete_resp.status());
     }
 
     Ok(())
