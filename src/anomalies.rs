@@ -268,6 +268,43 @@ fn get_libcache_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
     stats_map
 }
 
+fn get_latch_activity_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
+    //Create list of all statistics
+    let all_stats: HashSet<String> = awrs
+                    .iter()
+                    .flat_map(|awr| awr.latch_activity.iter())
+                    .map(|l| l.statname.clone())
+                    .collect();
+    
+
+    //This will hold stat name and vector of values filled with -1.0 as default value
+    let mut stats_map: HashMap<String, Vec<f64>> = all_stats
+                                                    .iter()
+                                                    .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+                                                    .collect();
+
+    //we are iterating over AWR
+    for (i, awr) in awrs.iter().enumerate() {
+        let mut snapshot_map: HashMap<&String, f64> = HashMap::new();
+
+        snapshot_map = awr
+                        .latch_activity
+                        .iter()
+                        .map(|l| (&l.statname, l.get_requests as f64))
+                        .collect();
+        
+
+        //Let's go through all of the instance stats
+        for l in &all_stats {
+            //If some stat exists in this snapshot, set actual value in the map, instead of -1.0
+            if let Some(&val) = snapshot_map.get(l) {
+                stats_map.get_mut(l).unwrap()[i] = val;
+            }
+        }
+    }
+    stats_map
+}
+
 fn detect_anomalies_mad_sliding(awrs: &Vec<AWR>, stats_vector: &HashMap<String, Vec<f64>>,  args: &Args) -> HashMap<String, Vec<(String,f64)>> {
     let mut anomalies: HashMap<String, Vec<(String, f64)>> = HashMap::new();
     //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
@@ -411,6 +448,14 @@ pub fn detect_dc_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap<String, 
 //Median Absolute Deviation for anomalies detection in Library Cache stats
 pub fn detect_libcache_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap<String, Vec<(String,f64)>> {
     let stats_map_vectors = get_libcache_map_vectors(awrs);    
+    let anomalies = detect_anomalies_mad_sliding(awrs, &stats_map_vectors, args);
+
+    anomalies
+}
+
+//Median Absolute Deviation for anomalies detection in Latch Activity stats
+pub fn detect_latch_activity_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap<String, Vec<(String,f64)>> {
+    let stats_map_vectors = get_latch_activity_map_vectors(awrs);    
     let anomalies = detect_anomalies_mad_sliding(awrs, &stats_map_vectors, args);
 
     anomalies

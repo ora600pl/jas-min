@@ -182,6 +182,14 @@ pub struct LibraryCache {
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct LatchActivity {
+	pub statname: String, 
+	pub get_requests: u64,
+	pub get_pct_miss: f64,
+	pub wait_time: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct AWR {
 	pub file_name: String,
 	pub snap_info: SnapInfo,
@@ -201,6 +209,7 @@ pub struct AWR {
 	pub key_instance_stats: Vec<KeyInstanceStats>,
 	pub dictionary_cache: Vec<DictionaryCache>,
 	pub library_cache: Vec<LibraryCache>,
+	pub latch_activity: Vec<LatchActivity>,
 } 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -293,6 +302,34 @@ fn library_cache_stats(table: ElementRef) -> Vec<LibraryCache> {
 	}
 
 	library_cache_stats
+}
+
+
+fn latch_activity_stats(table: ElementRef) -> Vec<LatchActivity> {
+	let mut latch_activity_stats: Vec<LatchActivity> = Vec::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() >= 7 {
+			let stat_name = columns[0].text().collect::<Vec<_>>();
+			let stat_name = stat_name[0].trim();
+
+			let get_req = columns[1].text().collect::<Vec<_>>();
+			let get_req = u64::from_str(&get_req[0].trim().replace(",","")).unwrap_or(0);
+
+			let wait_time_s = columns[4].text().collect::<Vec<_>>();
+			let wait_time_s = f64::from_str(&wait_time_s[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let get_req_pct_miss = columns[2].text().collect::<Vec<_>>();
+			let get_req_pct_miss = f64::from_str(&get_req_pct_miss[0].trim().replace(",","")).unwrap_or(0.0);
+
+			latch_activity_stats.push(LatchActivity {statname: stat_name.to_string(), get_requests: get_req, get_pct_miss: get_req_pct_miss, wait_time: wait_time_s});
+		}
+	}
+
+	latch_activity_stats
 }
 
 fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
@@ -1339,6 +1376,8 @@ fn parse_awr_report_internal(fname: &str) -> AWR {
 				awr.dictionary_cache = dictionary_cache_stats(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays library cache statistics. Get requests, % misses, pin request, % miss, reloads, etc. are displayed for each library cache namespace" {
 				awr.library_cache = library_cache_stats(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays latch statistics. Get requests, % get miss, wait time, noWait requests are displayed for each latch" {
+				awr.latch_activity = latch_activity_stats(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays total number of waits, and information about total wait time, for each wait event" {
 				let event_histogram = waitevent_histogram_ms(element);
 				if event_histogram.len() > 0 {
