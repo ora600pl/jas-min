@@ -277,6 +277,22 @@ fn dictionary_cache_stats(table: ElementRef) -> Vec<DictionaryCache> {
 	dictionary_cache_stats
 }
 
+fn dictionary_cache_stats_txt(dictionary_cache_section: Vec<&str>) -> Vec<DictionaryCache> {
+	let mut dictionary_cache_stats_txt: Vec<DictionaryCache> = Vec::new();
+	for line in dictionary_cache_section {
+		if line.len() >= 77 {
+			let statname = line[0..25].to_string().trim().to_string();
+			let get_requests = u64::from_str(&line[26..38].trim().replace(",",""));
+			let final_usage = u64::from_str(&line[69..79].trim().replace(",",""));
+			if get_requests.is_ok() && final_usage.is_ok() {
+				dictionary_cache_stats_txt.push(DictionaryCache{statname: statname.to_string(), get_requests: get_requests.unwrap() , final_usage: final_usage.unwrap()});
+			}
+		}
+		
+	} 
+	dictionary_cache_stats_txt
+}
+
 fn library_cache_stats(table: ElementRef) -> Vec<LibraryCache> {
 	let mut library_cache_stats: Vec<LibraryCache> = Vec::new();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -305,6 +321,23 @@ fn library_cache_stats(table: ElementRef) -> Vec<LibraryCache> {
 }
 
 
+fn library_cache_stats_txt(library_cache_stats_section: Vec<&str>) -> Vec<LibraryCache> {
+	let mut library_cache_stats_txt: Vec<LibraryCache> = Vec::new();
+	for line in library_cache_stats_section {
+		if line.len() >= 79 && !line.starts_with(" "){
+			let statname = line[0..45].to_string().trim().to_string();
+			let get_requests = u64::from_str(&line[45..58].trim().replace(",",""));
+			let pct_miss = f64::from_str(&line[59..65].trim().replace(",",""));
+			let pin_req = u64::from_str(&line[66..80].trim().replace(",",""));
+			if get_requests.is_ok() && pct_miss.is_ok() && pin_req.is_ok() {
+				library_cache_stats_txt.push(LibraryCache{statname: statname.to_string(), get_requests: get_requests.unwrap() , get_pct_miss: pct_miss.unwrap(), pin_requests: pin_req.unwrap()});
+			}
+		}
+		
+	} 
+	library_cache_stats_txt
+}
+
 fn latch_activity_stats(table: ElementRef) -> Vec<LatchActivity> {
 	let mut latch_activity_stats: Vec<LatchActivity> = Vec::new();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -330,6 +363,23 @@ fn latch_activity_stats(table: ElementRef) -> Vec<LatchActivity> {
 	}
 
 	latch_activity_stats
+}
+
+fn latch_activity_stats_txt(latch_activity_stats_section: Vec<&str>) -> Vec<LatchActivity> {
+	let mut latch_activity_stats_txt: Vec<LatchActivity> = Vec::new();
+	for line in latch_activity_stats_section {
+		if line.len() >= 72 && !line.starts_with(" "){
+			let statname = line[0..24].to_string().trim().to_string();
+			let get_req = u64::from_str(&line[25..39].trim().replace(",",""));
+			let pct_miss = f64::from_str(&line[40..46].trim().replace(",",""));
+			let wait_time_s = f64::from_str(&line[54..60].trim().replace(",",""));
+			if get_req.is_ok() && pct_miss.is_ok() && wait_time_s.is_ok() {
+				latch_activity_stats_txt.push(LatchActivity {statname: statname.to_string(), get_requests: get_req.unwrap(), get_pct_miss: pct_miss.unwrap(), wait_time: wait_time_s.unwrap()});
+			}
+		}
+		
+	} 
+	latch_activity_stats_txt
 }
 
 fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
@@ -1483,6 +1533,28 @@ fn parse_awr_report_internal(fname: &str) -> AWR {
 		let mut inst_stats: Vec<&str> = Vec::new();
 		inst_stats.extend_from_slice(&awr_lines[instance_act_index.begin..instance_act_index.end+2]);
 		awr.key_instance_stats = instance_activity_stats_txt(inst_stats);
+
+		let dictionary_cache_start = format!("{}{}", 12u8 as char, "Dictionary Cache Stats");
+		let dictionary_cache_end = format!("{}{}", 12u8 as char, "Library Cache Activity");
+		let dictionary_cache_index = find_section_boundries(awr_lines.clone(), &dictionary_cache_start, &dictionary_cache_end,&fname);
+		let mut dictionary_cache: Vec<&str> = Vec::new();
+		dictionary_cache.extend_from_slice(&awr_lines[dictionary_cache_index.begin..dictionary_cache_index.end+2]);
+		awr.dictionary_cache = dictionary_cache_stats_txt(dictionary_cache);
+
+
+		let library_cache_start = format!("{}{}", 12u8 as char, "Library Cache Activity");
+		let library_cache_end = format!("{}{}", 12u8 as char, "          -------------------------------------------------------------");
+		let library_cache_index = find_section_boundries(awr_lines.clone(), &library_cache_start, &library_cache_end,&fname);
+		let mut library_cache: Vec<&str> = Vec::new();
+		library_cache.extend_from_slice(&awr_lines[library_cache_index.begin..library_cache_index.end+2]);
+		awr.library_cache = library_cache_stats_txt(library_cache);
+
+		let latch_activity_start = format!("{}{}", 12u8 as char, "Latch Activity");
+		let latch_activity_end = format!("{}{}", 12u8 as char, "          -------------------------------------------------------------");
+		let latch_activity_index = find_section_boundries(awr_lines.clone(), &latch_activity_start, &latch_activity_end,&fname);
+		let mut latch_activity: Vec<&str> = Vec::new();
+		latch_activity.extend_from_slice(&awr_lines[latch_activity_index.begin..latch_activity_index.end+2]);
+		awr.latch_activity = latch_activity_stats_txt(latch_activity);
 
 		let mut event_names: HashMap<String, String> = HashMap::new();
 		for ev in &awr.foreground_wait_events {
