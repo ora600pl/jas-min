@@ -166,6 +166,28 @@ pub struct KeyInstanceStats {
 	pub statname: String,
 	pub total: u64,
 }
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct DictionaryCache {
+	pub statname: String, 
+	pub get_requests: u64,
+	pub final_usage: u64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct LibraryCache {
+	pub statname: String, 
+	pub get_requests: u64,
+	pub get_pct_miss: f64,
+	pub pin_requests: u64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct LatchActivity {
+	pub statname: String, 
+	pub get_requests: u64,
+	pub get_pct_miss: f64,
+	pub wait_time: f64,
+}
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct AWR {
@@ -185,6 +207,9 @@ pub struct AWR {
 	pub sql_gets: HashMap<String, SQLGets>,
 	pub sql_reads: HashMap<String, SQLReads>,
 	pub key_instance_stats: Vec<KeyInstanceStats>,
+	pub dictionary_cache: Vec<DictionaryCache>,
+	pub library_cache: Vec<LibraryCache>,
+	pub latch_activity: Vec<LatchActivity>,
 } 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -226,6 +251,85 @@ fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: 
             panic!("JAS-MIN is quitting");
         }
     }
+}
+
+fn dictionary_cache_stats(table: ElementRef) -> Vec<DictionaryCache> {
+	let mut dictionary_cache_stats: Vec<DictionaryCache> = Vec::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() >= 7 {
+			let stat_name = columns[0].text().collect::<Vec<_>>();
+			let stat_name = stat_name[0].trim();
+
+			let get_req = columns[1].text().collect::<Vec<_>>();
+			let get_req = u64::from_str(&get_req[0].trim().replace(",","")).unwrap_or(0);
+
+			let final_usage = columns[6].text().collect::<Vec<_>>();
+			let final_usage = u64::from_str(&final_usage[0].trim().replace(",","")).unwrap_or(0);
+
+			dictionary_cache_stats.push(DictionaryCache {statname: stat_name.to_string(), get_requests: get_req, final_usage: final_usage});
+		}
+	}
+
+	dictionary_cache_stats
+}
+
+fn library_cache_stats(table: ElementRef) -> Vec<LibraryCache> {
+	let mut library_cache_stats: Vec<LibraryCache> = Vec::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() >= 7 {
+			let stat_name = columns[0].text().collect::<Vec<_>>();
+			let stat_name = stat_name[0].trim();
+
+			let get_req = columns[1].text().collect::<Vec<_>>();
+			let get_req = u64::from_str(&get_req[0].trim().replace(",","")).unwrap_or(0);
+
+			let pin_req = columns[3].text().collect::<Vec<_>>();
+			let pin_req = u64::from_str(&pin_req[0].trim().replace(",","")).unwrap_or(0);
+
+			let get_req_pct_miss = columns[2].text().collect::<Vec<_>>();
+			let get_req_pct_miss = f64::from_str(&get_req_pct_miss[0].trim().replace(",","")).unwrap_or(0.0);
+
+			library_cache_stats.push(LibraryCache {statname: stat_name.to_string(), get_requests: get_req, get_pct_miss: get_req_pct_miss, pin_requests: pin_req});
+		}
+	}
+
+	library_cache_stats
+}
+
+
+fn latch_activity_stats(table: ElementRef) -> Vec<LatchActivity> {
+	let mut latch_activity_stats: Vec<LatchActivity> = Vec::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() >= 7 {
+			let stat_name = columns[0].text().collect::<Vec<_>>();
+			let stat_name = stat_name[0].trim();
+
+			let get_req = columns[1].text().collect::<Vec<_>>();
+			let get_req = u64::from_str(&get_req[0].trim().replace(",","")).unwrap_or(0);
+
+			let wait_time_s = columns[4].text().collect::<Vec<_>>();
+			let wait_time_s = f64::from_str(&wait_time_s[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let get_req_pct_miss = columns[2].text().collect::<Vec<_>>();
+			let get_req_pct_miss = f64::from_str(&get_req_pct_miss[0].trim().replace(",","")).unwrap_or(0.0);
+
+			latch_activity_stats.push(LatchActivity {statname: stat_name.to_string(), get_requests: get_req, get_pct_miss: get_req_pct_miss, wait_time: wait_time_s});
+		}
+	}
+
+	latch_activity_stats
 }
 
 fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
@@ -1268,6 +1372,12 @@ fn parse_awr_report_internal(fname: &str) -> AWR {
 				awr.key_instance_stats = instance_activity_stats(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays thread activity stats in the instance. For each activity , total number of activity and activity per hour are displayed" {
 				awr.redo_log = redo_log_switches(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays dictionary cache statistics. Get requests, % misses, scan requests, final usage, etc. are displayed for each cache" {
+				awr.dictionary_cache = dictionary_cache_stats(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays library cache statistics. Get requests, % misses, pin request, % miss, reloads, etc. are displayed for each library cache namespace" {
+				awr.library_cache = library_cache_stats(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays latch statistics. Get requests, % get miss, wait time, noWait requests are displayed for each latch" {
+				awr.latch_activity = latch_activity_stats(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays total number of waits, and information about total wait time, for each wait event" {
 				let event_histogram = waitevent_histogram_ms(element);
 				if event_histogram.len() > 0 {
