@@ -1,6 +1,6 @@
 [package]
 name = "jas-min"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radoslaw Kut <radek@ora-600.pl>"]
 
@@ -14,7 +14,7 @@ serde = { version = "1.0", features = ["derive"] }
 execute = "0.2.11"
 base64 = "0.21.0"
 clap = { version = "4.5.31", features = ["derive"] }
-plotly = "0.12.1"
+plotly = { version = "0.13", features = ["static_export_default"] }
 regex = "1.11.1"
 ndarray = "0.16"
 ndarray-stats = "0.6.0"
@@ -27,7 +27,6 @@ dotenv = "0.15"
 tower-http = { version = "0.5", features = ["cors"] }
 anyhow = "1"
 async-trait = "0.1"
-qdrant-client = "1.14.0"
 prettytable = "0.10.0"
 rayon = "1.10.0"
 indicatif = "0.17.11"

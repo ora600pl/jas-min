@@ -89,8 +89,7 @@ struct Args {
     parallel: usize,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
 	let mut reportfile: String = "".to_string();
 	let args = Args::parse(); 
 	println!("{}{} (Running with parallel degree: {})","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow(), args.parallel);
@@ -123,9 +122,9 @@ async fn main() {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
         if vendor_model_lang[0] == "openai" {
             //println!("Sorry but report file got too big - we are working on it. Create an openai agent and use jas-min with -b option");
-            chat_gpt(&reportfile, vendor_model_lang, args.token_count_factor).await.unwrap();
+            chat_gpt(&reportfile, vendor_model_lang, args.token_count_factor).unwrap();
         } else if vendor_model_lang[0] == "google" { 
-            gemini(&reportfile, vendor_model_lang, args.token_count_factor).await.unwrap();
+            gemini(&reportfile, vendor_model_lang, args.token_count_factor).unwrap();
         } else {
             println!("Unrecognized vendor. Supported vendors: openai, google");
         }   
@@ -149,7 +148,7 @@ async fn main() {
 		println!("🤖 Starting JAS-MIN Assistant Backend using: {}",args.backend_assistant);
 		println!("📁 Report File: {}",reportfile.clone());
         
-		backend_ai(reportfile, backend_type, model_name).await;
+		backend_ai(reportfile, backend_type, model_name);
     }
 	
 }
