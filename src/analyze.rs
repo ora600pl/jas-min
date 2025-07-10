@@ -1,10 +1,11 @@
 use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 
 use plotly::color::NamedColor;
-use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap};
+use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap, Image};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette};
 use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
+use plotly::plotly_static::ImageFormat;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::format;
@@ -2552,6 +2553,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // plot_highlight.use_local_plotly();
     plot_main.write_html(fname.clone());
     plot_highlight.write_html(format!("{}/jasmin_highlight.html", &html_dir));
+    plot_highlight.write_image(format!("{}/jasmin_highlight.png", &html_dir), ImageFormat::PNG, 1024, 768, 1.0);
+    
     
     let first_snap_time: String = collection.awrs.first().unwrap().snap_info.begin_snap_time.clone();
     let last_snap_time: String = collection.awrs.last().unwrap().snap_info.end_snap_time.clone();

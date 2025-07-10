@@ -11,20 +11,16 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::{CorsLayer, Any};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
-use qdrant_client::qdrant::{Condition, Filter, SearchParamsBuilder, SearchPointsBuilder, SearchPoints};
-use qdrant_client::Qdrant;
+use tokio::sync::oneshot;
+use std::io::{stdout, Write};
 
 
 static SPELL: &str =   "You are a sarcastic as shit Oracle Database performance tuning expert and assistant.
                         You are analyzing report file containing summarized statistics from parsed AWR reports from long period of time. 
-                        Based on received input (like AWR, STATSPACK reports), you can describe the current database performance profile, 
+                        Based on received input you can describe the current database performance profile, 
                         spot potential bottlenecks, suggest the heaviest wait events impacting database performance, and identify SQL IDs that require further performance analysis. 
-                        Highlight which statistics are crucial to understanding the current performance situation.
-                        Write answear in language:";
-
-static SPELL_RAG: &str = "Udziel odpowiedzi **tylko na podstawie poniższych dokumentów**.
-                          Nie używaj własnej wiedzy. Zacytuj źródła. 
-                          Jeśli brakuje danych, powiedz to wprost.:\n\n";
+                        Highlight which statistics are crucial to understanding the current performance situation. If you receive image file, containing load profile summary for the database, analyze it first and write comprehensive summary for all plots with as many statistical insights as possible.
+                        Write answear in language: ";
 
 
 #[derive(Deserialize)]
@@ -65,62 +61,7 @@ fn private_reasoninings() -> Option<String> {
     Some(r_content)
 }
 
-/* Embeddings based on OpenAI model - later it will have to be based on choosen model provided as argument */
-async fn embed_text(text: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-    let api_key = env::var("OPENAI_API_KEY").unwrap();
-    let client = Client::new();
-    let res = client
-        .post("https://api.openai.com/v1/embeddings")
-        .bearer_auth(api_key)
-        .json(&serde_json::json!({
-            "model": "text-embedding-3-small",
-            "input": text
-        }))
-        .send()
-        .await.unwrap();
-
-    let json: serde_json::Value = res.json().await?;
-    let vector = json["data"][0]["embedding"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_f64().unwrap() as f32)
-        .collect();
-    Ok(vector)
-}
-
-/* Function for retrievieng context from QDRANT database */
-async fn retrieve_context(query_embedding: &[f32]) -> Result<String, Box<dyn std::error::Error>> {
-    /* Setting QDRANT client based on QDRANT_URL variable */
-    let client = Qdrant::from_url(&env::var("QDRANT_URL")
-                         .expect("No QDRANT_URL in .env"))
-                         .skip_compatibility_check().build().unwrap(); 
-
-    /* determining collection anme */
-    let collection = env::var("COLLECTION_NAME").expect("No COLLECTION_NAME in .env");
-
-    /* search result based on vector search */
-    let search_result = client.search_points(SearchPointsBuilder::new(collection.clone(), 
-                                          query_embedding.to_vec(), 
-                                          1).with_payload(true).build()).await.unwrap();
-
-    /* Result points */
-    let points = search_result.result;
-
-    /* building context based on returned points */
-    let mut context = String::new();
-    for point in points {
-        let payload = point.payload;
-        if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
-            context.push_str("- ");
-            context.push_str(text);
-            context.push('\n');
-        }
-    }
-
-    Ok(context)
-}
-
+#[tokio::main]
 pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}{}{}","=== Consulting ChatGPT model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
@@ -164,7 +105,7 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_co
 
    
 
-    // === 1. Upload pliku ===
+    // === 1. Upload file ===
     // prepart multipart form
     let part = multipart::Part::bytes(log_content.into_bytes())
         .file_name("performance_report.txt") 
@@ -181,8 +122,27 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_co
         .await?
         .json::<serde_json::Value>()
         .await?;
-    let file_id = upload_resp["id"].as_str().unwrap();
-    println!("✅ File uploaded: {}", file_id);
+    let file_id_txt = upload_resp["id"].as_str().unwrap();
+    println!("✅ Report file uploaded: {}", file_id_txt);
+
+    let load_profile_png_name = format!("{}.html_reports/jasmin_highlight.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
+    let image_bytes = fs::read(load_profile_png_name)?;
+
+    let part_png = multipart::Part::bytes(image_bytes)
+        .file_name("load_profile.png")
+        .mime_str("image/png")?;
+
+    let form_png = multipart::Form::new().text("purpose", "assistants").part("file", part_png);
+    let upload_resp_png = client
+        .post("https://api.openai.com/v1/files")
+        .bearer_auth(&api_key)
+        .multipart(form_png)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+    let file_id_png = upload_resp_png["id"].as_str().unwrap();
+    println!("✅ Load profile image uploaded: {}", file_id_png);
 
     // === 2. Create thread ===
     let thread_resp_text = client
@@ -206,26 +166,39 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_co
     }
 
     // === 3. Add user message ===
+    for file_id in [file_id_txt, file_id_png] {
+        let attach_resp = client
+            .post(format!("https://api.openai.com/v1/threads/{}/messages", thread_id))
+            .bearer_auth(&api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .json(&json!({
+                "role": "user",
+                "content": "Attaching file for context.",
+                "attachments": [{
+                    "file_id": file_id,
+                    "tools": [{ "type": "file_search" }]
+                }]
+            }))
+            .send()
+            .await?;
+    }
     let message_resp = client
-        .post(format!("https://api.openai.com/v1/threads/{}/messages", thread_id))
-        .bearer_auth(&api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .json(&json!({
-            "role": "user",
-            "content": spell,
-            "attachments": [{
-                "file_id": file_id,
-                "tools": [{ "type": "file_search" }]
-            }]
-        }))
-        .send()
-        .await?;
+            .post(format!("https://api.openai.com/v1/threads/{}/messages", thread_id))
+            .bearer_auth(&api_key)
+            .header("OpenAI-Beta", "assistants=v2")
+            .json(&json!({
+                "role": "user",
+                "content": spell
+            }))
+            .send()
+            .await?;
+
     println!("📩 Message sent");
 
     // === 3.5 Wait for vector store to process the file ===
     println!("⏳ Waiting for file processing to complete...");
     let mut attempts = 0;
-    let max_attempts = 30;
+    let max_attempts = 100;
 
     loop {
         let thread_url = format!("https://api.openai.com/v1/threads/{}", thread_id);
@@ -242,37 +215,57 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_co
         }
 
         let thread_data = thread_res.json::<serde_json::Value>().await?;
-        if let Some(tool_resources) = thread_data.get("tool_resources") {
-            if let Some(file_search) = tool_resources.get("file_search") {
-                if let Some(vector_store_ids) = file_search.get("vector_store_ids") {
-                    if let Some(first_id) = vector_store_ids.as_array().and_then(|arr| arr.get(0)).and_then(|v| v.as_str()) {
-                        // Check vector store status
-                        let url = format!("https://api.openai.com/v1/vector_stores/{}", first_id);
-                        let res = client
-                            .get(&url)
-                            .bearer_auth(&api_key)
-                            .header("OpenAI-Beta", "assistants=v2")
-                            .send()
-                            .await?;
-                        if !res.status().is_success() {
-                            eprintln!("Failed to get vector store status: {}", res.status());
-                            break;
-                        }
+        let vector_store_ids_opt = thread_data
+            .get("tool_resources")
+            .and_then(|v| v.get("file_search"))
+            .and_then(|v| v.get("vector_store_ids"))
+            .and_then(|v| v.as_array());
 
-                        let json_res = res.json::<serde_json::Value>().await?;
-                        let status = json_res["status"].as_str().unwrap_or("unknown");
-                        println!("📊 Vector store status: {} (attempt {}/{})", status, attempts + 1, max_attempts);
+        if let Some(ids) = vector_store_ids_opt {
+            println!("📦 Found {} vector stores", ids.len());
+            let mut all_completed = true;
 
-                        if status == "completed" {
-                            println!("✅ Vector store processing completed!");
+            for id in ids {
+                if let Some(vs_id) = id.as_str() {
+                    let url = format!("https://api.openai.com/v1/vector_stores/{}", vs_id);
+                    let res = client
+                        .get(&url)
+                        .bearer_auth(&api_key)
+                        .header("OpenAI-Beta", "assistants=v2")
+                        .send()
+                        .await?;
+
+                    if !res.status().is_success() {
+                        eprintln!("Failed to get vector store status for {}: {}", vs_id, res.status());
+                        all_completed = false;
+                        break;
+                    }
+
+                    let json_res = res.json::<serde_json::Value>().await?;
+                    let status = json_res["status"].as_str().unwrap_or("unknown");
+                    println!("📊 Vector store {} status: {} (attempt {}/{})", vs_id, status, attempts + 1, max_attempts);
+
+                    match status {
+                        "completed" => continue,
+                        "failed" => {
+                            eprintln!("❌ Vector store {} failed!", vs_id);
+                            all_completed = false;
                             break;
-                        } else if status == "failed" {
-                            eprintln!("❌ Vector store processing failed!");
-                            break;
+                        },
+                        _ => {
+                            all_completed = false;
                         }
                     }
                 }
             }
+
+            if all_completed {
+                println!("✅ All vector stores completed!");
+                break;
+            }
+        } else {
+            println!("⏳ Vector store IDs not available yet...");
+            println!("🧵 Full thread_data: {}", thread_data);
         }
 
         if attempts >= max_attempts {
@@ -301,6 +294,8 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_co
     println!("🏃 Run started: {}", run_id);
 
     // === 5. Poll status until completed ===
+    let (tx, rx) = oneshot::channel();
+    let spinner = tokio::spawn(spinning_beer(rx));
     loop {
         let status_resp = client
             .get(format!("https://api.openai.com/v1/threads/{}/runs/{}", thread_id, run_id))
@@ -312,7 +307,6 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_co
             .await?;
 
         let status = status_resp["status"].as_str().unwrap();
-        println!("⏳ Status: {}", status);
         if status == "completed" {
             break;
         } else if status == "failed" {
@@ -320,6 +314,8 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_co
         }
         sleep(Duration::from_secs(2)).await;
     }
+    let _ = tx.send(());
+    let _ = spinner.await;
 
     // === 6. Read response ===
     let messages_resp = client
@@ -356,6 +352,42 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_co
     }
 
     Ok(())
+}
+
+async fn upload_png_file_gemini_from_path(api_key: &str, path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let image_bytes = fs::read(path)?;
+
+    let part = multipart::Part::bytes(image_bytes)
+        .file_name("load_profile.png")
+        .mime_str("image/png")?;
+
+    let form = multipart::Form::new().part("file", part);
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("https://generativelanguage.googleapis.com/upload/v1beta/files?key={}", api_key))
+        .multipart(form)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let response_text = response.text().await?;
+        match serde_json::from_str::<GeminiFileUploadResponse>(&response_text) {
+            Ok(file_upload_response) => {
+                println!("✅ PNG uploaded! URI: {}", file_upload_response.file.uri);
+                Ok(file_upload_response.file.uri)
+            }
+            Err(e) => {
+                eprintln!("Error while parsing JSON: {}", e);
+                Err(format!("Parsing error: {}. TEXT: '{}'", e, response_text).into())
+            }
+        }
+    } else {
+        let status = response.status();
+        let error_text = response.text().await?;
+        eprintln!("Error while uploading PNG {} - {}", status, error_text);
+        Err(format!("HTTP Error: {}", status).into())
+    }
 }
 
 async fn upload_log_file_gemini(api_key: &str, log_content: String) -> Result<String, Box<dyn std::error::Error>> {
@@ -396,12 +428,26 @@ async fn upload_log_file_gemini(api_key: &str, log_content: String) -> Result<St
 }
 
 
+async fn spinning_beer(mut done: oneshot::Receiver<()>) {
+    let frames = ["🍺", "🍻", "🍺", "🍻"];
+    let mut i = 0;
+    while done.try_recv().is_err() {
+        print!("\r{}", frames[i % frames.len()]);
+        stdout().flush().unwrap();
+        i += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    println!("\r✅ Got response!");
+}
+
+#[tokio::main]
 pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}{}{}","=== Consulting Google Gemini model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
     let api_key = env::var("GEMINI_API_KEY").expect("You have to set GEMINI_API_KEY env variable");
 
     let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
+    let load_profile_png_name = format!("{}.html_reports/jasmin_highlight.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
 
     let response_file = format!("{}_gemini.md", logfile_name);
 
@@ -412,42 +458,35 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
     if pr.is_some() {
         spell = format!("{}\n\n# Additional insights: {}", spell, pr.unwrap());
     }
-    
-    /* Code for future RAG -> RAG */
-    // if let Ok(qdrant_url) = env::var("QDRANT_URL") {
-    //     let embedding = match embed_text(&spell).await {
-    //         Ok(e) => e,
-    //         Err(err) => return Err(err),
-    //     };
-    //     let context = match retrieve_context(&embedding).await {
-    //         Ok(c) => c,
-    //         Err(err) => return Err(err),           
-    //     };
-    //     spell = format!("{}{}{}", SPELL_RAG, context, spell);
-    // }
-    
-    // println!("Your final prompt is: \n {}", spell);
-    // println!(" <=============== RESPONSE ===============> \n\n");
-    /* ****************************** */
 
     let file_uri = upload_log_file_gemini(&api_key, log_content).await.unwrap();
+    let file_uri_png = upload_png_file_gemini_from_path(&api_key, &load_profile_png_name).await.unwrap();
 
     let payload = json!({
-            "contents": [{
-                "parts": [
-                    { "text": spell }, // Twój prompt/polecenie
-                    {
-                        "fileData": {
-                            "mimeType": "text/plain",
-                            "fileUri": file_uri
-                        }
+                    "contents": [{
+                        "parts": [
+                            { "text": spell }, 
+                            {
+                                "fileData": {
+                                    "mimeType": "text/plain",
+                                    "fileUri": file_uri
+                                }
+                            },
+                            {
+                                "fileData": {
+                                    "mimeType": "image/png",
+                                    "fileUri": file_uri_png
+                                }
+                            }
+                        ]
+                    }],
+                    "generationConfig": {
+                        "maxOutputTokens": 8192 * token_count_factor
                     }
-                ]
-            }],
-            "generationConfig": {
-                "maxOutputTokens": 8192*token_count_factor
-            }
-            });
+                });
+
+    let (tx, rx) = oneshot::channel();
+    let spinner = tokio::spawn(spinning_beer(rx));
 
     let response = client
             .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
@@ -455,12 +494,13 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
             .json(&payload)
             .send()
             .await.unwrap();
+    
+    let _ = tx.send(()); //stop spinner
+    let _ = spinner.await;
 
     if response.status().is_success() {
         let json: serde_json::Value = response.json().await.unwrap();
         let response = json["candidates"][0]["content"]["parts"][0]["text"].as_str().unwrap();
-        //println!("{}", response);
-        //println!("Parts: {}", json["candidates"][0]["content"]["parts"].as_array().iter().len());
         fs::write(&response_file, response.as_bytes());
         println!("🍻 Gemini response written to file: {}", response_file);
     } else {
