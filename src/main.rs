@@ -15,7 +15,7 @@ mod idleevents;
 mod reasonings;
 mod macros;
 mod anomalies;
-use crate::reasonings::{backend_ai,parse_backend_type, BackendType,gemini};
+use crate::reasonings::{backend_ai,parse_backend_type, BackendType,gemini,chat_gpt};
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
@@ -122,8 +122,8 @@ async fn main() {
 	if args.ai != "NO" {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
         if vendor_model_lang[0] == "openai" {
-            println!("Sorry but report file got too big - we are working on it. Create an openai agent and use jas-min with -b option");
-            //chat_gpt(&logfile_name, vendor_model_lang).unwrap();
+            //println!("Sorry but report file got too big - we are working on it. Create an openai agent and use jas-min with -b option");
+            chat_gpt(&reportfile, vendor_model_lang, args.token_count_factor).await.unwrap();
         } else if vendor_model_lang[0] == "google" { 
             gemini(&reportfile, vendor_model_lang, args.token_count_factor).await.unwrap();
         } else {
