@@ -6,7 +6,6 @@ use std::env::Args;
 use std::fmt::format;
 use std::{env, fs, collections::HashMap, sync::Arc, path::Path};
 use axum::{routing::post, Router, Json, extract::State, http::StatusCode, response::IntoResponse};
-use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::{CorsLayer, Any};
@@ -56,7 +55,13 @@ struct GeminiFileUploadResponse {
 
 
 fn private_reasoninings() -> Option<String> {
-    let r_content = fs::read_to_string("reasonings.txt");
+    let jasmin_home = env::var("JASMIN_HOME");
+    let mut prpath = "reasonings.txt".to_string();
+    if jasmin_home.is_ok() {
+        prpath = format!("{}/reasonings.txt", jasmin_home.unwrap());
+    }
+    println!("Private reasonings.txt loaded from {}", prpath);
+    let r_content = fs::read_to_string(prpath);
     if r_content.is_err() {
         return None;
     }
@@ -980,9 +985,7 @@ pub struct AppState {
 }
 
 // Main backend function
-pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String) -> anyhow::Result<()> {
-    dotenv::dotenv().ok();
-    
+pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String) -> anyhow::Result<()> {    
     let backend: Box<dyn AIBackend> = match backend_type {
         BackendType::OpenAI => {
             let api_key = env::var("OPENAI_API_KEY")

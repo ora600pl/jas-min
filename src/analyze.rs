@@ -16,7 +16,6 @@ use std::path::Path;
 use std::str::FromStr;
 
 use colored::*;
-use dotenv::dotenv;
 use open::*;
 
 use ndarray::Array2;
@@ -2581,7 +2580,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         last_snap_time
     );
     
-    dotenv().ok();
     let mut bckend_port: String = String::new();
     if !args.backend_assistant.is_empty() {
         bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
