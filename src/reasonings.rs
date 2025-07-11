@@ -985,6 +985,7 @@ pub struct AppState {
 }
 
 // Main backend function
+#[tokio::main]
 pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String) -> anyhow::Result<()> {    
     let backend: Box<dyn AIBackend> = match backend_type {
         BackendType::OpenAI => {
