@@ -2298,6 +2298,32 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     } 
     /********************************************************/
 
+
+    /* Add information about Time Model anomalies to the summary */
+    let stat_anomalies = detect_time_model_anomalies_mad(&collection.awrs, &args);
+    let all_stats: HashSet<String> = collection.awrs
+                                    .iter()
+                                    .flat_map(|a| a.time_model_stats.clone())
+                                    .map(|lc| lc.stat_name)
+                                    .collect();
+
+    for s in all_stats {
+        if let Some(anomalies) = stat_anomalies.get(&s) {
+            for a in anomalies {
+                let begin_snap_id = collection.awrs
+                                                    .iter()
+                                                    .find_map(|awr| {
+                                                        (awr.snap_info.begin_snap_time == a.0)
+                                                            .then(|| awr.snap_info.begin_snap_id)
+                                                    }).unwrap();
+
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"TM", s.clone());
+
+            }
+        }
+    } 
+    /********************************************************/
+
     /****************   Report anomalies summary ************/
     println!("{}","Anomalies Summary");
     let anomalies_summary_html: String = format!(
