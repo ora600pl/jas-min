@@ -75,21 +75,17 @@ OPTIONS:
     -q, --quiet
           Should I be quiet? This mode suppresses terminal output but still writes to log file
 
-    -a, --ai <AI>
-          Use AI model to interpret collected statistics and describe them. 
-          Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key.
-          The parameter should be set to the value in format VENDOR:MODEL_NAME:LANGUAGE_CODE 
-          (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL) [default: NO]
-
     -T, --token-count-factor <TOKEN_COUNT_FACTOR>
           Base output token count is 8192 - you can update maximum number of output tokens by this factor [default: 8]
-    
-    -b --backend-assistant <openai|gemini>
-          Launches the backend agent used by the JASMIN Assistant. 
-          Configuration details such as API keys and the selected PORT number are loaded from the .env file
+
+    -b, --backend-assistant <BACKEND_ASSISTANT>
+          Launches the backend agent used by the JASMIN Assistant. -b <openai>|<gemini:model> Configuration details such as API keys and the selected PORT number are loaded from the .env file [default: ]
 
     -m, --mad-threshold <MAD_THRESHOLD>
           Threshold for detecting anomalies using MAD [default: 7] 
+
+    -W, --mad-window-size <MAD_WINDOW_SIZE>
+          Window size for detecting anomalies using MAD for local sliding window specified as % of probes [default: 100]
 
     -W, --mad-window-size <MAD_WINDOW_SIZE>
           Window size for detecting anomalies using MAD for local sliding window specified as % of probes [default: 100]
@@ -102,3 +98,5 @@ OPTIONS:
     
 
 If you choose to plot a chart, you will see a basic distribution of DB Time vs DB CPU, distribution TOP 5 wait events from the times, when DB CPU was less then 66.6% of DB Time plus some TOP SQLs by Elapsed Time, sorted by amount of occuriance.  
+
+To read reasonnings.txt and .env from other directory than current working directory, use JASMIN_HOME
