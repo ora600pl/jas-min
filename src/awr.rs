@@ -76,9 +76,9 @@ pub struct HostCPU {
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct TimeModelStats {
-	stat_name: String,
-	time_s: f64,
-	pct_dbtime: f64,
+	pub stat_name: String,
+	pub time_s: f64,
+	pub pct_dbtime: f64,
 	//begin_snap_time: String,
 }
 
@@ -198,7 +198,7 @@ pub struct AWR {
 	pub redo_log: RedoLog,
 	wait_classes: Vec<WaitClasses>,
 	pub host_cpu: HostCPU,
-	time_model_stats: Vec<TimeModelStats>,
+	pub time_model_stats: Vec<TimeModelStats>,
 	pub foreground_wait_events: Vec<WaitEvents>,
 	pub background_wait_events: Vec<WaitEvents>,
 	pub sql_elapsed_time: Vec<SQLElapsedTime>,
@@ -933,7 +933,7 @@ fn time_model_stats_txt(time_model_section: Vec<&str>) -> Vec<TimeModelStats> {
 			if time_s.is_ok() && pct_dbtime.is_ok() {
 				time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s.unwrap(), pct_dbtime: pct_dbtime.unwrap()});
 			}
-		}
+		} 
 		
 	} 
 	time_model_stats

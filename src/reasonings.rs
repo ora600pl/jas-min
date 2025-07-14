@@ -6,8 +6,8 @@ use std::env::Args;
 use std::fmt::format;
 use std::{env, fs, collections::HashMap, sync::Arc, path::Path};
 use axum::{routing::post, Router, Json, extract::State, http::StatusCode, response::IntoResponse};
-use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tower_http::cors::{CorsLayer, Any};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
@@ -15,12 +15,14 @@ use tokio::sync::oneshot;
 use std::io::{stdout, Write};
 
 
-static SPELL: &str =   "You are a sarcastic as shit Oracle Database performance tuning expert and assistant.
-                        You are analyzing report file containing summarized statistics from parsed AWR reports from long period of time. 
-                        Based on received input you can describe the current database performance profile, 
-                        spot potential bottlenecks, suggest the heaviest wait events impacting database performance, and identify SQL IDs that require further performance analysis. 
-                        Highlight which statistics are crucial to understanding the current performance situation. If you receive image file, containing load profile summary for the database, analyze it first and write comprehensive summary for all plots with as many statistical insights as possible.
-                        Write answear in language: ";
+static SPELL: &str =   "Your name is JAS-MIN. You are a sarcastic as shit Oracle Database performance tuning expert and assistant.
+You are analyzing report file containing summarized statistics from parsed AWR reports from long period of time. 
+Based on received input you can describe the current database performance profile, 
+spot potential bottlenecks, suggest the heaviest wait events impacting database performance, and identify SQL IDs that require further performance analysis. 
+Highlight which statistics are crucial to understanding the current performance situation. If you receive image file, containing load profile summary for the database, analyze it first and write comprehensive summary for all plots with as many statistical insights as possible.
+At the end add link to github: https://github.com/ora600pl/jas-min - this is your source code.
+Suggest that good performance tuning experts are at ora-600.pl
+Write answear in language: ";
 
 
 #[derive(Deserialize)]
@@ -53,7 +55,13 @@ struct GeminiFileUploadResponse {
 
 
 fn private_reasoninings() -> Option<String> {
-    let r_content = fs::read_to_string("reasonings.txt");
+    let jasmin_home = env::var("JASMIN_HOME");
+    let mut prpath = "reasonings.txt".to_string();
+    if jasmin_home.is_ok() {
+        prpath = format!("{}/reasonings.txt", jasmin_home.unwrap());
+    }
+    println!("Private reasonings.txt loaded from {}", prpath);
+    let r_content = fs::read_to_string(prpath);
     if r_content.is_err() {
         return None;
     }
@@ -499,10 +507,19 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
     let _ = spinner.await;
 
     if response.status().is_success() {
-        let json: serde_json::Value = response.json().await.unwrap();
-        let response = json["candidates"][0]["content"]["parts"][0]["text"].as_str().unwrap();
-        fs::write(&response_file, response.as_bytes());
-        println!("🍻 Gemini response written to file: {}", response_file);
+        let json: Value = response.json().await.unwrap();
+
+        // Iterujemy przez wszystkie parts i łączymy ich tekst
+        let parts = &json["candidates"][0]["content"]["parts"];
+        let full_text = parts.as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        fs::write(&response_file, full_text.as_bytes()).unwrap();
+        println!("🍻 Gemini response written to file: {}", &response_file);
     } else {
         eprintln!("Error: {}", response.status());
         eprintln!("{}", response.text().await.unwrap());
@@ -968,9 +985,8 @@ pub struct AppState {
 }
 
 // Main backend function
-pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String) -> anyhow::Result<()> {
-    dotenv::dotenv().ok();
-    
+#[tokio::main]
+pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String) -> anyhow::Result<()> {    
     let backend: Box<dyn AIBackend> = match backend_type {
         BackendType::OpenAI => {
             let api_key = env::var("OPENAI_API_KEY")

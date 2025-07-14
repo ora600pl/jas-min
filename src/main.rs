@@ -3,7 +3,9 @@ use std::io::Read;
 use std::io::Write;
 use std::str;
 use std::fs;
-use dotenv::dotenv;
+use std::env;
+use std::path::PathBuf;
+use dotenvy::from_path;
 use colored::*;
 use clap::Parser;
 use rayon::ThreadPoolBuilder;
@@ -89,7 +91,39 @@ struct Args {
     parallel: usize,
 }
 
+
+fn load_env() {
+    // 1.Check existense of $JASMIN_HOME 
+    let env_loaded = if let Ok(jasmin_home) = env::var("JASMIN_HOME") {
+        let mut path = PathBuf::from(jasmin_home);
+        path.push(".env");
+
+        // 2. Check if .env exists in the directory
+        if path.exists() {
+            from_path(&path).expect("Can't load .env z JASMIN_HOME");
+            println!("✅ Loaded .env from JASMIN_HOME: {:?}", path);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // 3. If there is no .env in JASMIN_HOME, check local dir
+    if !env_loaded {
+        let local_path = PathBuf::from(".env");
+        if local_path.exists() {
+            from_path(&local_path).expect("Can't load .env from local dir");
+            println!("✅ Loaded local .env");
+        } else {
+            println!("⚠️  No .env found");
+        }
+    }
+}
+
 fn main() {
+	load_env();
 	let mut reportfile: String = "".to_string();
 	let args = Args::parse(); 
 	println!("{}{} (Running with parallel degree: {})","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow(), args.parallel);
@@ -130,7 +164,6 @@ fn main() {
         }   
     }
 	if !args.backend_assistant.is_empty() {
-		dotenv().ok();
 		let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
 		let backend_type = match parse_backend_type(&args.backend_assistant) {
 			Ok(backend) => backend,
