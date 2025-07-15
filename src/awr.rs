@@ -1,5 +1,6 @@
 use std::clone;
 use std::env;
+use std::env::args;
 use std::fs;
 use std::str;
 use std::result;
@@ -203,6 +204,16 @@ pub struct LatchActivity {
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct SegmentStats {
+	pub obj: u64,
+	pub objd: u64,
+	pub object_name: String,
+	pub object_type: String,
+	pub stat_name: String, 
+	pub stat_vlalue: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct AWR {
 	pub file_name: String,
 	pub snap_info: SnapInfo,
@@ -224,6 +235,7 @@ pub struct AWR {
 	pub io_stats_byfunc: HashMap<String,IOStats>,
 	pub library_cache: Vec<LibraryCache>,
 	pub latch_activity: Vec<LatchActivity>,
+	pub segment_stats: HashMap<String, Vec<SegmentStats>>,
 } 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -265,6 +277,40 @@ fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: 
             panic!("JAS-MIN is quitting");
         }
     }
+}
+
+fn segment_stats(table: ElementRef, stat_name: &str, args: &Args) -> Vec<SegmentStats> {
+	let mut segment_stats: Vec<SegmentStats> = Vec::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() >= 7 {
+
+			let mut segment_name = "#".to_string();
+			if args.security_level > 0 {
+				let sname = columns[2].text().collect::<Vec<_>>();
+			    segment_name = sname[0].trim().to_string();
+			}
+			
+			let segment_type =  columns[4].text().collect::<Vec<_>>();
+			let segment_type = segment_type[0].trim().to_string();
+
+			let obj = columns[5].text().collect::<Vec<_>>();
+			let obj = u64::from_str(&obj[0].trim().replace(",","")).unwrap_or(0);
+
+			let objd = columns[6].text().collect::<Vec<_>>();
+			let objd = u64::from_str(&objd[0].trim().replace(",","")).unwrap_or(0);
+
+			let stat_value = columns[7].text().collect::<Vec<_>>();
+			let stat_value = f64::from_str(&stat_value[0].trim().replace(",","")).unwrap_or(0.0);
+
+			segment_stats.push(SegmentStats {obj: obj, objd: objd, object_name: segment_name, object_type: segment_type, stat_name: stat_name.to_string(), stat_vlalue: stat_value});
+		}
+	}
+
+	segment_stats
 }
 
 fn dictionary_cache_stats(table: ElementRef) -> Vec<DictionaryCache> {
@@ -1639,7 +1685,7 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
 	db_instance_information
 }
 
-fn parse_awr_report_internal(fname: &str) -> AWR {
+fn parse_awr_report_internal(fname: &str, args: &Args) -> AWR {
 	let mut awr: AWR = AWR::default();
 	if fname.ends_with("html") {
 
@@ -1690,6 +1736,36 @@ fn parse_awr_report_internal(fname: &str) -> AWR {
 				awr.library_cache = library_cache_stats(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays latch statistics. Get requests, % get miss, wait time, noWait requests are displayed for each latch" {
 				awr.latch_activity = latch_activity_stats(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by row lock waits. Owner, tablespace name, object type, row lock waits, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "Row Lock Waits", &args);
+				awr.segment_stats.insert("Row Lock Waits".to_string(), segment);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by logical reads. Owner, tablespace name, object type, logical read, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "Logical Reads", &args);
+				awr.segment_stats.insert("Logical Reads".to_string(), segment);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by physical reads. Owner, tablespace name, object type, physical reads, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "Reads", &args);
+				awr.segment_stats.insert("Physical Reads".to_string(), segment);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by physical read requests. Owner, tablespace name, object type, physical read requests, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "Read Requests", &args);
+				awr.segment_stats.insert("Physical Read Requests".to_string(), segment);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by direct physical reads. Owner, tablespace name, object type, direct reads, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "Direct Reads", &args);
+				awr.segment_stats.insert("Direct Physical Reads".to_string(), segment);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by physical writes. Owner, tablespace name, object type, physical writes, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "Writes", &args);
+				awr.segment_stats.insert("Physical Writes".to_string(), segment);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by physical write requests. Owner, tablespace name, object type, physical write requests, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "Write Requests", &args);
+				awr.segment_stats.insert("Physical Write Requests".to_string(), segment);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by direct physical writes. Owner, tablespace name, object type, direct writes, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "Direct Writes", &args);
+				awr.segment_stats.insert("Direct Physical Writes".to_string(), segment);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by buffer busy waits. Owner, tablespace name, object type, buffer busy waits, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "Busy Waits", &args);
+				awr.segment_stats.insert("Buffer Busy Waits".to_string(), segment);
+			} else if element.value().attr("summary").unwrap() == "This table displays top segments by global cache buffer busy waits. Owner, tablespace name, object type, GC buffer busy waits, etc. are displayed for each segment" {
+				let segment = segment_stats(element, "GCBusy Waits", &args);
+				awr.segment_stats.insert("Global Cache Buffer Busy".to_string(), segment);
 			} else if element.value().attr("summary").unwrap() == "This table displays total number of waits, and information about total wait time, for each wait event" {
 				let event_histogram = waitevent_histogram_ms(element);
 				if event_histogram.len() > 0 {
@@ -1918,7 +1994,7 @@ pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
         .map_init( //initialize variables for each thread
             || Arc::clone(&counter), //initializied will be counter as cloned value for each thread
             |counter, f| { //map operator is initialized clone of counter and file name
-                let result = parse_awr_report_internal(f); //each thread is processing one file
+                let result = parse_awr_report_internal(f, &args); //each thread is processing one file
                 counter.fetch_add(1, Ordering::Relaxed); //increment counter
                 result
             },
@@ -1942,7 +2018,7 @@ pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
     Ok(json_str)
 }
 
-pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::Error> {
+pub fn parse_awr_report(data: &str, json_data: bool, args: &Args) -> Result<String, std::io::Error> {
 	let mut fname: String = "nofile.html".to_string();
 	if json_data {
 		let cmd_data: Result<HashMap<String, String>, serde_json::Error> = serde_json::from_str(&data);
@@ -1959,7 +2035,7 @@ pub fn parse_awr_report(data: &str, json_data: bool) -> Result<String, std::io::
 		fname = data.to_string();
 	}
 	println!("Try to parsee a file: {}", &fname);
-	let awr = parse_awr_report_internal(&fname);
+	let awr = parse_awr_report_internal(&fname, &args);
 	
     let awr_doc: String = serde_json::to_string_pretty(&awr).unwrap();
 	Ok(awr_doc)
