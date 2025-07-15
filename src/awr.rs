@@ -1246,6 +1246,170 @@ fn io_stats_byfunc(table: ElementRef) -> HashMap<String, IOStats> {
 	result
 }
 
+fn io_stats_byfunc_txt(iostats_section: Vec<&str>) -> HashMap<String, IOStats> {
+	let mut result: HashMap<String, IOStats> = HashMap::new();
+    
+    fn parse_data_size(s: &str) -> f64 {
+        let s = s.trim().replace(",", ".");
+        if s.is_empty() || s == "." {
+            return 0.0;
+        }
+        let (num, unit) = match s.get(..s.len() - 1).zip(s.chars().last()) {
+            Some((num, unit)) => (num.trim(), unit),
+            None => return 0.0, // fallback if string is too short
+        };
+        let val: f64 = num.parse().unwrap_or(0.0);
+        match unit {
+            'K' => val / 1024.0,
+            'M' => val,
+            'G' => val * 1024.0,
+            'T' => val * 1024.0 * 1024.0,
+            _ => val,
+        }
+    }
+    
+    fn parse_wait_time(s: &str) -> Option<f64> {
+        let s = s.replace("&#160;", "").trim().replace(",", "").replace('\u{00A0}', "");
+        if s.is_empty() || s == "." {
+            return None;
+        }
+        if s.ends_with("us") {
+            s.trim_end_matches("us").parse::<f64>().ok().map(|v| (v / 1000.0 * 1_000_000.0).round() / 1_000_000.0) //round({:6})
+        } else if s.ends_with("ms") {
+            s.trim_end_matches("ms").parse::<f64>().ok()
+        } else if s.ends_with("ns") {
+            s.trim_end_matches("ns").parse::<f64>().ok().map(|v| (v / 1_000_000.0 * 1_000_000.0).round() / 1_000_000.0)
+        } else {
+            s.parse::<f64>().ok()
+        }
+    }
+    
+    fn parse_count(s: &str) -> u64 {
+        let s = s.trim().replace(",", ".").to_lowercase();
+        if s.is_empty() || s == "." {
+            return 0;
+        }
+        let multiplier = match s.chars().last() {
+            Some('k') => 1_000.0,
+            Some('m') => 1_000_000.0,
+            Some('g') => 1_000_000_000.0,
+            Some('t') => 1_000_000_000_000.0,
+            Some('p') => 1_000_000_000_000_000.0,
+            _ => 1.0,
+        };
+        let number_str = match s.chars().last() {
+            Some(c) if "kmgtp".contains(c) => &s[..s.len() - 1],
+            _ => &s,
+        };
+        number_str.parse::<f64>().map(|n| (n * multiplier) as u64).unwrap_or(0)
+    }
+    
+    fn parse_requests_per_sec(s: &str) -> f64 {
+        s.trim().replace(",", ".").parse().unwrap_or(0.0)
+    }
+
+	fn extract_columns(line: &str) -> Vec<String> {
+		// Split line into columns, handling the fixed-width format
+		let mut columns = Vec::new();
+		let parts: Vec<&str> = line.split_whitespace().collect();
+		
+		if parts.is_empty() {
+			return columns;
+		}
+		// Function name (first part, may contain spaces)
+		let mut function_name = String::new();
+		let mut data_start_idx = 0;
+		// Find where numeric data starts
+		for (i, part) in parts.iter().enumerate() {
+			if is_numeric_or_volume(part) {
+				data_start_idx = i;
+				break;
+			} else {
+				if !function_name.is_empty() {
+					function_name.push(' ');
+				}
+				function_name.push_str(part);
+			}
+		}
+		
+		columns.push(function_name);
+		// Add the remaining data columns
+		for part in &parts[data_start_idx..] {
+			columns.push(part.to_string());
+		}
+		// Ensure we have at least 8 columns, pad with empty strings if needed
+		while columns.len() < 9 {
+			columns.push(String::new());
+		}
+		columns
+	}
+	
+	fn is_numeric_or_volume(s: &str) -> bool {
+		if s.is_empty() || s == "." {
+			return true;
+		}
+		// Check if it's a number with optional volume suffix
+		let s = s.trim();
+		if s.ends_with(char::is_alphabetic) {
+			let (num_part, _) = s.split_at(s.len() - 1);
+			num_part.parse::<f64>().is_ok()
+		} else {
+			s.parse::<f64>().is_ok()
+		}
+	}
+    
+    // Find data rows (skip headers and separators)
+    let mut in_data_section = false;
+    for line in iostats_section {
+        let line = line.trim();
+        // Skip empty lines and comments
+        if line.is_empty() || line.starts_with("->") || line.starts_with("IO Stat") {
+            continue;
+        }
+        // Mark start of data section
+        if line.contains("Function") && line.contains("Volume") {
+            in_data_section = true;
+            continue;
+        }
+        // Skip separator lines
+        if line.starts_with("---") || line.starts_with("===") || line.contains("-----") {
+            continue;
+        }
+        
+        // Process data lines
+        if in_data_section && !line.is_empty() {
+            let columns = extract_columns(line);
+            if columns.len() >= 8 { // Minimum required columns
+                let name = match columns[0].trim() {
+					"Buffer Cache Re" => "Buffer Cache Reads".to_string(),
+					other => other.to_string(),
+				};
+                if name == "TOTAL:" || name.is_empty() {
+                    continue;
+                }
+                
+                let mut iostats = IOStats::default();
+                iostats.reads_data = parse_data_size(&columns[1]);
+                iostats.reads_req_s = parse_requests_per_sec(&columns[2]);
+                iostats.reads_data_s = parse_data_size(&columns[3]);
+                iostats.writes_data = parse_data_size(&columns[4]);
+                iostats.writes_req_s = parse_requests_per_sec(&columns[5]);
+                iostats.writes_data_s = parse_data_size(&columns[6]);
+                iostats.waits_count = parse_count(&columns[7]);
+                iostats.avg_time = if columns.len() > 8 {
+                    parse_wait_time(&columns[8])
+                } else {
+                    None
+                };
+                result.insert(name, iostats);
+            }
+        }
+    }
+    
+    result
+}
+
+
 fn wait_classes(table: ElementRef) -> Vec<WaitClasses> {
 	let mut wait_classes: Vec<WaitClasses> = Vec::new();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -1708,6 +1872,13 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> AWR {
 		inst_stats.extend_from_slice(&awr_lines[instance_act_index.begin..instance_act_index.end+2]);
 		awr.key_instance_stats = instance_activity_stats_txt(inst_stats);
 
+		let iostats_summary_start = format!("{}{}", 12u8 as char, "IO Stat by Function - summary");
+		let iostats_summary_end = format!("{}{}", 12u8 as char, "IO Stat by Function - detail");
+		let iostats_summary_index = find_section_boundries(awr_lines.clone(), &iostats_summary_start, &iostats_summary_end,&fname);
+		let mut iostats_summary_stats: Vec<&str> = Vec::new();
+		iostats_summary_stats.extend_from_slice(&awr_lines[iostats_summary_index.begin..iostats_summary_index.end+2]);
+		awr.io_stats_byfunc = io_stats_byfunc_txt(iostats_summary_stats);
+		
 		let dictionary_cache_start = format!("{}{}", 12u8 as char, "Dictionary Cache Stats");
 		let dictionary_cache_end = format!("{}{}", 12u8 as char, "Library Cache Activity");
 		let dictionary_cache_index = find_section_boundries(awr_lines.clone(), &dictionary_cache_start, &dictionary_cache_end,&fname);
