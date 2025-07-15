@@ -89,6 +89,11 @@ struct Args {
 	///Parallelism level
 	#[clap(short = 'P', long, default_value_t=4)]
     parallel: usize,
+
+	///Security level - highest security level is 0 - JAS-MIN will not store any object names, database names or any other sensitive data
+	///                                           1 - JAS-MIN will store segment_names from Segment Statistics section
+	#[clap(short = 'S', long, default_value_t=0)]
+    security_level: usize,
 }
 
 
@@ -135,7 +140,7 @@ fn main() {
         .expect("Can't create rayon pool");
 
 	if args.file != "NO" {
-		let awr_doc = awr::parse_awr_report(&args.file, false).unwrap();
+		let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
 		println!("{}", awr_doc);
 	} else if args.directory != "NO" {
 		let awr_doc = awr::parse_awr_dir(args.clone()).unwrap();
