@@ -898,7 +898,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
 
 }
 
-fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &str){
+fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &str) -> Vec<String> {
     let (f_begin_snap,f_end_snap) = snap_range;
     
     const IO_FUNCTIONS: [&str; 14] = [
@@ -943,6 +943,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
             }
         );
     }
+    let mut functions_to_plot: Vec<String> = Vec::new();
     let mut x_vals: Vec<String> = Vec::new();
     let mut plot_iostats_main: Plot = Plot::new();
 
@@ -979,10 +980,24 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
             }
         }
     }
+    
+    for func in IO_FUNCTIONS.iter() {
+        if let Some(stats) = io_stats_byfunc.get(*func) {
+            // Check if any metric has a non-zero mean
+            let has_empty_data = 
+                mean(stats.reads_data.clone()).unwrap_or(0.0) == 0.0 &&
+                mean(stats.writes_data.clone()).unwrap_or(0.0) == 0.0 &&
+                mean(stats.waits_count.iter().map(|&x| x as f64).collect()).unwrap_or(0.0) == 0.0;
+            
+            if !has_empty_data {
+                functions_to_plot.push(func.to_string());
+            }
+        }
+    }
 
-    for func in IO_FUNCTIONS.iter(){
+    for func in &functions_to_plot{
         let mut plot_iostats: Plot = Plot::new();
-        let reads_data = BoxPlot::new(io_stats_byfunc[*func].reads_data.clone())
+        let reads_data = BoxPlot::new(io_stats_byfunc[func].reads_data.clone())
                                         .name("Reads Data(MB)")
                                         .x_axis("x1")
                                         .y_axis("y1")
@@ -991,7 +1006,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                                         .box_points(BoxPoints::All)
                                         .whisker_width(0.2)
                                         .marker(Marker::new().color("#003366".to_string()).opacity(0.7).size(2));
-        let reads_req_s = BoxPlot::new(io_stats_byfunc[*func].reads_req_s.clone())
+        let reads_req_s = BoxPlot::new(io_stats_byfunc[func].reads_req_s.clone())
                                         .name("ReadsReq/s")
                                         .x_axis("x2")
                                         .y_axis("y2")
@@ -1000,7 +1015,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                                         .box_points(BoxPoints::All)
                                         .whisker_width(0.2)
                                         .marker(Marker::new().color("#0066CC".to_string()).opacity(0.7).size(2));
-        let reads_data_s = BoxPlot::new(io_stats_byfunc[*func].reads_data_s.clone())
+        let reads_data_s = BoxPlot::new(io_stats_byfunc[func].reads_data_s.clone())
                                         .name("Reads Data(MB)/s")
                                         .x_axis("x3")
                                         .y_axis("y3")
@@ -1009,7 +1024,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                                         .box_points(BoxPoints::All)
                                         .whisker_width(0.2)
                                         .marker(Marker::new().color("#66B2FF".to_string()).opacity(0.7).size(2));
-        let writes_data = BoxPlot::new(io_stats_byfunc[*func].writes_data.clone())
+        let writes_data = BoxPlot::new(io_stats_byfunc[func].writes_data.clone())
                                         .name("Writes Data(MB)")
                                         .x_axis("x4")
                                         .y_axis("y4")
@@ -1018,7 +1033,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                                         .box_points(BoxPoints::All)
                                         .whisker_width(0.2)
                                         .marker(Marker::new().color("#800000".to_string()).opacity(0.7).size(2));
-        let writes_req_s = BoxPlot::new(io_stats_byfunc[*func].writes_req_s.clone())
+        let writes_req_s = BoxPlot::new(io_stats_byfunc[func].writes_req_s.clone())
                                         .name("WritesReq/s")
                                         .x_axis("x5")
                                         .y_axis("y5")
@@ -1027,7 +1042,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                                         .box_points(BoxPoints::All)
                                         .whisker_width(0.2)
                                         .marker(Marker::new().color("#FF0000".to_string()).opacity(0.7).size(2));
-        let writes_data_s = BoxPlot::new(io_stats_byfunc[*func].writes_data_s.clone())
+        let writes_data_s = BoxPlot::new(io_stats_byfunc[func].writes_data_s.clone())
                                         .name("Writes Data(MB)/s")
                                         .x_axis("x6")
                                         .y_axis("y6")
@@ -1036,7 +1051,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                                         .box_points(BoxPoints::All)
                                         .whisker_width(0.2)
                                         .marker(Marker::new().color("#FF6666".to_string()).opacity(0.7).size(2));                                    
-        let waits_count = BoxPlot::new(io_stats_byfunc[*func].waits_count.clone())
+        let waits_count = BoxPlot::new(io_stats_byfunc[func].waits_count.clone())
                                         .name("Waits Count")
                                         .x_axis("x7")
                                         .y_axis("y7")
@@ -1045,7 +1060,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                                         .box_points(BoxPoints::All)
                                         .whisker_width(0.2)
                                         .marker(Marker::new().color("#FF8800".to_string()).opacity(0.7).size(2));
-        let avg_time = BoxPlot::new(io_stats_byfunc[*func].avg_time.clone())
+        let avg_time = BoxPlot::new(io_stats_byfunc[func].avg_time.clone())
                                         .name("Avg Time(ms)")
                                         .x_axis("x8")
                                         .y_axis("y8")
@@ -1054,21 +1069,54 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                                         .box_points(BoxPoints::All)
                                         .whisker_width(0.2)
                                         .marker(Marker::new().color("#00AA00".to_string()).opacity(0.7).size(2));                        
-        let reads_data_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[*func].reads_data.clone())
+        let reads_data_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[func].reads_data.clone())
                                     .mode(Mode::Lines)
                                     .name(format!("{} Reads Data",func))
                                     //.marker(Marker::new().color(colors[12]))
                                     .x_axis("x1")
                                     .y_axis("y1");
-                                    //.visible(Visible::LegendOnly);
-        let writes_data_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[*func].writes_data.clone())
+        let writes_data_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[func].writes_data.clone())
                                     .mode(Mode::Lines)
                                     .name(format!("{} Writes Data",func))
                                     //.marker(Marker::new().color(colors[12]))
                                     .x_axis("x1")
                                     .y_axis("y1");
-                                    //.visible(Visible::LegendOnly);
-
+        let reads_req_s_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[func].reads_req_s.clone())
+                                    .mode(Mode::Lines)
+                                    .name(format!("{} Reads Req/s",func))
+                                    //.marker(Marker::new().color(colors[12]))
+                                    .x_axis("x1")
+                                    .y_axis("y3");
+        let writes_req_s_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[func].writes_req_s.clone())
+                                    .mode(Mode::Lines)
+                                    .name(format!("{} Writes Req/s",func))
+                                    //.marker(Marker::new().color(colors[12]))
+                                    .x_axis("x1")
+                                    .y_axis("y3");
+        let reads_data_s_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[func].reads_data_s.clone())
+                                    .mode(Mode::Lines)
+                                    .name(format!("{} Reads Data/s",func))
+                                    //.marker(Marker::new().color(colors[12]))
+                                    .x_axis("x1")
+                                    .y_axis("y2");
+        let writes_data_s_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[func].writes_data_s.clone())
+                                    .mode(Mode::Lines)
+                                    .name(format!("{} Writes Data/s",func))
+                                    //.marker(Marker::new().color(colors[12]))
+                                    .x_axis("x1")
+                                    .y_axis("y2");
+        let waits_count_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[func].waits_count.clone())
+                                    .mode(Mode::Lines)
+                                    .name(format!("{} Wait Count",func))
+                                    //.marker(Marker::new().color(colors[12]))
+                                    .x_axis("x1")
+                                    .y_axis("y4");
+        let avg_time_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[func].avg_time.clone())
+                                    .mode(Mode::Lines)
+                                    .name(format!("{} Wait AVG Time",func))
+                                    //.marker(Marker::new().color(colors[12]))
+                                    .x_axis("x1")
+                                    .y_axis("y5");
         plot_iostats.add_trace(reads_data);
         plot_iostats.add_trace(reads_req_s);
         plot_iostats.add_trace(reads_data_s);
@@ -1079,6 +1127,12 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
         plot_iostats.add_trace(avg_time);
         plot_iostats_main.add_trace(reads_data_scat);
         plot_iostats_main.add_trace(writes_data_scat);
+        plot_iostats_main.add_trace(reads_data_s_scat);
+        plot_iostats_main.add_trace(writes_data_s_scat);
+        plot_iostats_main.add_trace(reads_req_s_scat);
+        plot_iostats_main.add_trace(writes_req_s_scat);
+        plot_iostats_main.add_trace(waits_count_scat);
+        plot_iostats_main.add_trace(avg_time_scat);
 
         let layout_iostats: Layout = Layout::new()
             .height(400)
@@ -1205,47 +1259,86 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                 Axis::new()
                         .domain(&[0.0, 1.0])
                         .anchor("x1")
-                        .title(*func)
+                        .title(func)
                         .range(vec![0.,])
                         .range_mode(RangeMode::ToZero)
                         .show_grid(false),
             );
         plot_iostats.set_layout(layout_iostats);
-        let file_name: String = format!("{}/{}_iostats.html", dirpath,func);
+        let func_name = func.replace(" ","_");
+        let file_name: String = format!("{}/iostats_{}.html", dirpath,func_name);
         let path: &Path = Path::new(&file_name);
         plot_iostats.write_html(path);
     }
 
     let layout_io_stats_main: Layout = Layout::new()
-            .height(400)
+            .height(800)
             .hover_mode(HoverMode::X)
             .grid(
                 LayoutGrid::new()
-                    .rows(1)
+                    .rows(5)
                     .columns(1),
             )
             .x_axis(
                 Axis::new()
                     .domain(&[0.0, 1.0])
-                    .anchor("y1")
+                    .anchor("y5")
                     .range(vec![0.,])
                     .show_grid(true)
             )
             .y_axis(
                 Axis::new()
-                    .domain(&[0.0, 1.0])
+                    .domain(&[0.82, 1.0])
                     .anchor("x1")
                     .range(vec![0.,])
                     .title("MB")
                     .zero_line(true)
                     .range_mode(RangeMode::ToZero)
+            )
+            .y_axis2(
+                Axis::new()
+                    .domain(&[0.62, 0.80])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .title("MB/s")
+                    .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
+            )
+            .y_axis3(
+                Axis::new()
+                    .domain(&[0.41, 0.60])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .title("Req/s")
+                    .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
+            )
+            .y_axis4(
+                Axis::new()
+                    .domain(&[0.21, 0.39])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .title("#")
+                    .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
+            )
+            .y_axis5(
+                Axis::new()
+                    .domain(&[0.0, 0.19])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .title("ms")
+                    .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
             );
             plot_iostats_main.set_layout(layout_io_stats_main);
-            let file_name: String = format!("{}/MAIN_iostats.html", dirpath);
+            let file_name: String = format!("{}/iostats_MAIN.html", dirpath);
             let path: &Path = Path::new(&file_name);
             plot_iostats_main.write_html(path);
 
-
+    println!("Saved plots for IO Stats to '{}/iostats_*'", dirpath);
+    functions_to_plot.push("MAIN".to_string());
+    functions_to_plot
 }
 
 
@@ -1327,7 +1420,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &snap_range, &html_dir);
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false, &snap_range, &html_dir);
     generate_sqls_plotfiles(&collection.awrs, &top_stats, &snap_range, &html_dir);
-    generate_iostats_plotfile(&collection.awrs, &snap_range, &html_dir);
+    let iostats = generate_iostats_plotfile(&collection.awrs, &snap_range, &html_dir);
     let fname: String = format!("{}/jasmin_{}", &html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
@@ -3118,6 +3211,60 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 row.style.display = 'none';
             }}
         }}
+        function toggleElement(buttonId, elementSelector,checkboxSelector) {{
+            const button = document.getElementById(buttonId);
+            const element = document.getElementById(elementSelector);
+            const checkboxContainer = document.getElementById(checkboxSelector);
+            button.addEventListener('click', () => {{
+                if (element.style.display === 'none' || element.style.display === '') {{
+                    element.style.display = 'block';
+                    element.style.width = '100%';
+                    button.classList.add("button-active");
+                    if (checkboxContainer) {{
+                        checkboxContainer.style.display = 'block';
+                    }}
+                    if (window.Plotly) {{
+                        window.Plotly.Plots.resize(element);
+                    }}
+                }} else {{
+                    element.style.display = 'none';
+                    button.classList.remove("button-active");
+                    if (checkboxContainer) {{
+                        checkboxContainer.style.display = 'none';
+                    }}
+                }}
+            }});
+        }}
+        function toggleElementWithCheckbox(checkboxId, elementId) {{
+            const checkbox = document.getElementById(checkboxId);
+            const element = document.getElementById(elementId);
+            checkbox.addEventListener('change', () => {{
+                if (checkbox.checked) {{
+                    element.style.display = 'block';
+                    element.style.width = '100%';
+                    if (window.Plotly) {{
+                        window.Plotly.Plots.resize(element);
+                    }}
+                }} else {{
+                    element.style.display = 'none';
+                }}
+            }});
+        }}
+        document.addEventListener('DOMContentLoaded', function() {{
+            toggleElement('show-iostats-button','iostat_MAIN-html-element','checkbox-container');
+            const checkboxes = document.querySelectorAll('input[type="checkbox"][id$="-checkbox"]');
+            checkboxes.forEach(checkbox => {{
+                const checkboxId = checkbox.id;
+                const elementId = 'iostat_' + checkboxId.replace('-checkbox', '-html-element');
+                const element = document.getElementById(elementId);
+                if (element) {{
+                    toggleElementWithCheckbox(checkboxId, elementId);
+                    console.log(`Set up toggle for ${{checkboxId}} -> ${{elementId}}`);
+                }} else {{
+                    console.warn(`Element '${{elementId}}' not found for checkbox '${{checkboxId}}'`);
+                }}
+            }});
+        }});
         </script>"#,bckend_port
     );
     let jasmin_assistant: String = format!(
@@ -3174,14 +3321,64 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             sqls_table_html,
             jasmin_html_scripts)
     );
-    // Inject HighLight section into Main HTML
     let highlight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Load Profile</h4></div>\n";
-    let insight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Performance Insight</h4></div>\n";
+    let explorer_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Stats Explorer</h4></div>\n";
+    let insight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Performance Insight</h4></div>\n";    
+    /*let explorer_button = format!(
+        "\n\t{}\n\t<div id=\"checkbox-container\" style=\"margin-top: 10px; display: none;\">{}</div>",
+        "<button id=\"show-iostats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">IO Stats</span><span>IO Stats</span></button>",
+        "<input type=\"checkbox\" id=\"lgwr-checkbox\"><label for=\"lgwr-checkbox\">LGWR</label>"
+    );*/
+    let explorer_button = format!(
+        "\n\t{}\n\t<div id=\"checkbox-container\" style=\"margin-top: 10px; display: none;\">{}</div>",
+        "<button id=\"show-iostats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">IO Stats</span><span>IO Stats</span></button>",
+        iostats
+            .iter()
+            .filter(|&func| func != "MAIN")
+            .map(|func| {
+                let sanitized_func = func.replace(" ", "_");
+                format!(
+                    "<input type=\"checkbox\" id=\"{}-checkbox\"><label for=\"{}-checkbox\">{}</label>", 
+                    sanitized_func, sanitized_func, func
+                )
+            })
+            .collect::<Vec<String>>()
+            .join(" ")
+    );
+    // Inject HighLight section into Main HTML
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
-        &format!("{}{}\n\t\t\t\t</script>\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
-        highlight_title,highlight_html,insight_title)
+        &format!("{}{}\n\t\t\t\t</script>\n{}\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
+        highlight_title, highlight_html,explorer_title,explorer_button)
     );
+
+    // Inject Explorer Sections ot inject
+    
+    for func in &iostats{
+        let func_name = func.replace(" ","_");
+        let mut stats_explorer_html: String = fs::read_to_string(format!("{}/iostats_{}.html", &html_dir,func_name))
+            .expect("Failed to read iostats file");
+        stats_explorer_html = stats_explorer_html.replace("plotly-html-element",&format!("iostat_{}-html-element",func_name));
+        fs::write(format!("{}/iostats_{}.html", &html_dir,func_name),&stats_explorer_html);
+        stats_explorer_html = stats_explorer_html
+                        .lines() // Iterate over lines
+                        .skip_while(|line| !line.contains(&format!("<div id=\"iostat_{}-html-element\"",func_name))) // Skip lines until found
+                        .take_while(|line| !line.contains("</script>")) // Keep only lines before `</script>`
+                        .collect::<Vec<&str>>() // Collect remaining lines into a Vec
+                        .join("\n"); // Convert back into a String
+        plotly_html = plotly_html.replace(
+                        "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
+                        &format!("{}\n\t\t\t\t</script><div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
+                        stats_explorer_html)
+                    );
+    }
+    
+    plotly_html = plotly_html.replace(
+        "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
+        &format!("\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
+        insight_title)
+    );
+
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
         .expect("Failed to write updated Plotly HTML file");
