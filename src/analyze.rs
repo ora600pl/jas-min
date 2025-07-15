@@ -1,5 +1,6 @@
-use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection, IOStats};
+use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR};
 
+use axum::http::header;
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap, Image};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette};
@@ -18,7 +19,7 @@ use std::str::FromStr;
 use colored::*;
 use open::*;
 
-use ndarray::Array2;
+use ndarray::{iter, Array2};
 use ndarray_stats::CorrelationExt;
 use ndarray_stats::histogram::Grid;
 use regex::*;
@@ -1341,7 +1342,129 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
     functions_to_plot
 }
 
+fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
 
+    let mut objects_in_section: HashMap<String, Vec<SegmentStats>> = HashMap::new();
+
+    for awr in awrs {
+        for (section_name, segments) in &awr.segment_stats {
+            objects_in_section
+                .entry(section_name.clone())
+                .or_insert_with(Vec::new)
+                .extend(segments.clone());
+        }
+    }
+    
+
+    for (section, objects) in objects_in_section {
+
+        let section_msg = format!("\n\nTOP 10 Segments by {} ordered by PCT of occuriance desc. Statstic values computed based on {}\n", section, objects[0].stat_name);
+        make_notes!(logfile_name, args.quiet, "{}", section_msg.bold().blue());
+        let mut table = Table::new();
+
+        if args.security_level > 0 {
+            table.set_titles(Row::new(vec![
+                Cell::new("Segment Name"),
+                Cell::new("Segment Type"),
+                Cell::new("Object Id"),
+                Cell::new("Data Object Id"),
+                Cell::new("AVG"),
+                Cell::new("STDDEV"),
+                Cell::new("PCT of occuriance")
+            ]));
+        } else {
+            table.set_titles(Row::new(vec![
+                Cell::new("Segment Type"),
+                Cell::new("Object Id"),
+                Cell::new("Data Object Id"),
+                Cell::new("AVG"),
+                Cell::new("STDDEV"),
+                Cell::new("PCT of occuriance")
+            ]));
+        }
+        
+        struct SegmentSummary {
+            segment_name: String,
+            segment_type: String,
+            object_id: String,
+            data_object_id: String,
+            stat_name: String,
+            avg: String,
+            stddev: String,
+            pct: String,
+        }
+
+        let mut segment_summary: BTreeMap<(i64, u64, u64), SegmentSummary> = BTreeMap::new();
+
+        let all_ids: HashSet<(u64,u64)> = objects
+                                      .iter()
+                                      .map(|s| (s.obj, s.objd ))
+                                      .collect();
+                
+        for id in all_ids {
+            let mut all_values: Vec<f64> = Vec::new();
+
+            objects
+            .iter()
+            .for_each(|s| {
+                if s.obj == id.0 && s.objd == id.1 {
+                    all_values.push(s.stat_vlalue);
+                }
+            });
+
+            let segment_data = objects
+                                         .iter()
+                                         .find(|s| s.obj == id.0 && s.objd == id.1)
+                                         .unwrap();
+
+            let avg = mean(all_values.clone()).unwrap();
+            let stddev = std_deviation(all_values.clone()).unwrap();
+            let pct = (all_values.len() as f64 / awrs.len() as f64) * 100.0;
+
+            let pct_key: i64 = (pct*-100000.0) as i64;
+
+            segment_summary.insert((pct_key, id.0, id.1), SegmentSummary{
+                segment_name: segment_data.object_name.clone(),
+                segment_type: segment_data.object_type.clone(),
+                object_id: id.0.to_string(),
+                data_object_id: id.1.to_string(),
+                stat_name: segment_data.stat_name.clone(),
+                avg: format!("{:.3}", avg),
+                stddev: format!("{:.3}", stddev),
+                pct: format!("{:.3}", pct),
+            });
+        }
+
+        for (_, s) in segment_summary.iter().take(10) {
+            if args.security_level > 0 {
+                table.add_row(Row::new(vec![
+                    Cell::new(&s.segment_name),
+                    Cell::new(&s.segment_type),
+                    Cell::new(&s.object_id),
+                    Cell::new(&s.data_object_id),
+                    Cell::new(&s.avg),
+                    Cell::new(&s.stddev),
+                    Cell::new(&s.pct)
+                ]));
+            } else {
+                table.add_row(Row::new(vec![
+                    Cell::new(&s.segment_type),
+                    Cell::new(&s.object_id),
+                    Cell::new(&s.data_object_id),
+                    Cell::new(&s.avg),
+                    Cell::new(&s.stddev),
+                    Cell::new(&s.pct)
+                ]));
+            }
+            
+        }
+
+        for table_line in table.to_string().lines() {
+            make_notes!(logfile_name, args.quiet, "{}\n", table_line);
+        }
+    }
+    
+}
 
 pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let db_time_cpu_ratio: f64 = args.time_cpu_ratio;
@@ -3019,6 +3142,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     .show_grid(false),
     );
 
+    /******** Report Segment Statistics Summary */
+        report_segments_summary(&collection.awrs, &args, &logfile_name);
+    /********************************************/
     println!("{}","Generating Plots");
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
