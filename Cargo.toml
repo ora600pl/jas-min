@@ -1,6 +1,6 @@
 [package]
 name = "jas-min"
-version = "0.5.6"
+version = "0.6.0"
 edition = "2021"
 authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radoslaw Kut <radek@ora-600.pl>"]
 
@@ -30,3 +30,5 @@ async-trait = "0.1"
 prettytable = "0.10.0"
 rayon = "1.10.0"
 indicatif = "0.17.11"
+pulldown-cmark = "0.13.0"
+html-escape = "0.2.13"

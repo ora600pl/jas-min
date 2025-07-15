@@ -5,6 +5,7 @@ use prettytable::{Table, Row, Cell, format, Attr};
 use rayon::prelude::*;
 use crate::make_notes;
 use colored::*;
+use open::*;
 
 fn median(data: &[f64]) -> f64 {
     let mut sorted = data.to_vec();
@@ -446,7 +447,6 @@ pub fn detect_event_anomalies_mad(awrs: &Vec<AWR>, args: &Args, bg_or_fg: &str) 
     anomalies
 }
 
-
 //Median Absolute Deviation for anomalies detection in SQLs
 pub fn detect_sql_anomalies_mad(awrs: &Vec<AWR>, args: &Args, sql_type: &str) -> HashMap<String, Vec<(String,f64)>> {
     
@@ -455,8 +455,6 @@ pub fn detect_sql_anomalies_mad(awrs: &Vec<AWR>, args: &Args, sql_type: &str) ->
     
     anomalies
 }
-
-
 
 //Median Absolute Deviation for anomalies detection in Load Profile
 pub fn detect_loadprofile_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap<String, Vec<(String,f64)>> {
