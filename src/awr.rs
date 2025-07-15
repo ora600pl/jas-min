@@ -166,6 +166,19 @@ pub struct KeyInstanceStats {
 	pub statname: String,
 	pub total: u64,
 }
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct IOStats {
+	pub reads_data: f64,	// in MB
+	pub reads_req_s: f64,
+	pub reads_data_s: f64,	// in MB
+	pub writes_data: f64,	// in MB
+	pub writes_req_s: f64,
+	pub writes_data_s: f64,	// in MB
+	pub waits_count: u64,
+	pub avg_time: Option<f64>,		// in ms
+}
+
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct DictionaryCache {
 	pub statname: String, 
@@ -208,6 +221,7 @@ pub struct AWR {
 	pub sql_reads: HashMap<String, SQLReads>,
 	pub key_instance_stats: Vec<KeyInstanceStats>,
 	pub dictionary_cache: Vec<DictionaryCache>,
+	pub io_stats_byfunc: HashMap<String,IOStats>,
 	pub library_cache: Vec<LibraryCache>,
 	pub latch_activity: Vec<LatchActivity>,
 } 
@@ -1104,6 +1118,88 @@ fn instance_activity_stats_txt(inst_stats_section: Vec<&str>) -> Vec<KeyInstance
 	ias
 }
 
+fn io_stats_byfunc(table: ElementRef) -> HashMap<String, IOStats> {
+	let mut result: HashMap<String, IOStats> = HashMap::new();
+	let row_selector = Selector::parse("tr").unwrap();
+	let column_selector = Selector::parse("td").unwrap();
+	
+	fn parse_data_size(s: &str) -> f64 {
+		let s = s.trim().replace(",", ".");
+		if s.is_empty() {
+			return 0.0;
+		}
+		let (num, unit) = match s.get(..s.len() - 1).zip(s.chars().last()) {
+			Some((num, unit)) => (num.trim(), unit),
+			None => return 0.0, // fallback if string is too short
+		};
+		let val: f64 = num.parse().unwrap_or(0.0);
+		match unit {
+			'K' => val / 1024.0,
+			'M' => val,
+			'G' => val * 1024.0,
+			'T' => val * 1024.0 * 1024.0,
+			_ => val,
+		}
+	}
+	
+	fn parse_wait_time(s: &str) -> Option<f64> {
+		let s = s.replace("&#160;", "").trim().replace(",", "").replace('\u{00A0}', "");
+		if s.is_empty() {
+			return None;
+		}
+		if s.ends_with("us") {
+			s.trim_end_matches("us").parse::<f64>().ok().map(|v| (v / 1000.0 * 1_000_000.0).round() / 1_000_000.0) //round({:6})
+		} else if s.ends_with("ms") {
+			s.trim_end_matches("ms").parse::<f64>().ok()
+		} else if s.ends_with("ns") {
+			s.trim_end_matches("ns").parse::<f64>().ok().map(|v| (v / 1_000_000.0 * 1_000_000.0).round() / 1_000_000.0)
+		} else {
+			s.parse::<f64>().ok()
+		}
+	}
+	
+	fn parse_count(s: &str) -> u64 {
+		let s = s.trim().replace(",", ".").to_lowercase();
+		let multiplier = match s.chars().last() {
+			Some('k') => 1_000.0,
+			Some('m') => 1_000_000.0,
+			Some('g') => 1_000_000_000.0,
+			Some('t') => 1_000_000_000_000.0,
+			Some('p') => 1_000_000_000_000_000.0,
+			_ => 1.0,
+		};
+		let number_str = match s.chars().last() {
+			Some(c) if "kmgtp".contains(c) => &s[..s.len() - 1],
+			_ => &s,
+		};
+		number_str.parse::<f64>().map(|n| (n * multiplier) as u64).unwrap_or(0)
+	}
+
+	for row in table.select(&row_selector) {
+		let columns = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() != 9 {
+			continue;
+		}
+		let name = columns[0].text().collect::<String>().trim().to_string();
+		if name == "TOTAL:" {
+            continue;
+        }
+		let mut iostats = IOStats::default();
+		
+		iostats.reads_data = parse_data_size(&columns[1].text().collect::<String>());
+		iostats.reads_req_s = columns[2].text().collect::<String>().replace(",", ".").parse().unwrap_or(0.0);
+		iostats.reads_data_s = parse_data_size(&columns[3].text().collect::<String>());
+		iostats.writes_data = parse_data_size(&columns[4].text().collect::<String>());
+		iostats.writes_req_s = columns[5].text().collect::<String>().replace(",", ".").parse().unwrap_or(0.0);
+		iostats.writes_data_s = parse_data_size(&columns[6].text().collect::<String>());
+		iostats.waits_count = parse_count(&columns[7].text().collect::<String>());
+		iostats.avg_time = parse_wait_time(&columns[8].text().collect::<String>());
+
+		result.insert(name,iostats);
+	}
+	result
+}
+
 fn wait_classes(table: ElementRef) -> Vec<WaitClasses> {
 	let mut wait_classes: Vec<WaitClasses> = Vec::new();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -1420,6 +1516,8 @@ fn parse_awr_report_internal(fname: &str) -> AWR {
 				awr.snap_info = snap_info(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays Instance activity statistics. For each instance, activity total, activity per second, and activity per transaction are displayed" {
 				awr.key_instance_stats = instance_activity_stats(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays the IO Statistics for different functions. IO stats includes amount of reads and writes, requests per second, data per second, wait count and average wait time" {
+				awr.io_stats_byfunc = io_stats_byfunc(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays thread activity stats in the instance. For each activity , total number of activity and activity per hour are displayed" {
 				awr.redo_log = redo_log_switches(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays dictionary cache statistics. Get requests, % misses, scan requests, final usage, etc. are displayed for each cache" {
