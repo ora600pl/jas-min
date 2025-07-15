@@ -1344,7 +1344,8 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
 
 fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
 
-    let mut objects_in_section: HashMap<String, Vec<SegmentStats>> = HashMap::new();
+    //It will contain section name and vector for all segment stats from the whole AWR collection
+    let mut objects_in_section: BTreeMap<String, Vec<SegmentStats>> = BTreeMap::new();
 
     for awr in awrs {
         for (section_name, segments) in &awr.segment_stats {
@@ -1362,7 +1363,7 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
         make_notes!(logfile_name, args.quiet, "{}", section_msg.bold().blue());
         let mut table = Table::new();
 
-        if args.security_level > 0 {
+        if args.security_level > 0 { //In security level 0 there is no segment name
             table.set_titles(Row::new(vec![
                 Cell::new("Segment Name"),
                 Cell::new("Segment Type"),
@@ -1396,12 +1397,13 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
 
         let mut segment_summary: BTreeMap<(i64, u64, u64), SegmentSummary> = BTreeMap::new();
 
+        //build unique set od object_id, data_object_id from all objects in current section
         let all_ids: HashSet<(u64,u64)> = objects
                                       .iter()
                                       .map(|s| (s.obj, s.objd ))
-                                      .collect();
+                                      .collect(); 
                 
-        for id in all_ids {
+        for id in all_ids { //iterate over each object id
             let mut all_values: Vec<f64> = Vec::new();
 
             objects
@@ -1410,18 +1412,18 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
                 if s.obj == id.0 && s.objd == id.1 {
                     all_values.push(s.stat_vlalue);
                 }
-            });
+            }); //build vector of statistic values 
 
             let segment_data = objects
                                          .iter()
                                          .find(|s| s.obj == id.0 && s.objd == id.1)
-                                         .unwrap();
+                                         .unwrap(); //get details of the given object id
 
             let avg = mean(all_values.clone()).unwrap();
             let stddev = std_deviation(all_values.clone()).unwrap();
             let pct = (all_values.len() as f64 / awrs.len() as f64) * 100.0;
 
-            let pct_key: i64 = (pct*-100000.0) as i64;
+            let pct_key: i64 = (pct*-100000.0) as i64; //this will be used to sort BTree over PCT - it will negative number to get the biggest value on top
 
             segment_summary.insert((pct_key, id.0, id.1), SegmentSummary{
                 segment_name: segment_data.object_name.clone(),
@@ -1435,6 +1437,7 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
             });
         }
 
+        //Iterate over top 10 segment statistics
         for (_, s) in segment_summary.iter().take(10) {
             if args.security_level > 0 {
                 table.add_row(Row::new(vec![
