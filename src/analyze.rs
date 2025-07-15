@@ -1,4 +1,4 @@
-use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
+use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection, IOStats};
 
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap, Image};
@@ -898,6 +898,356 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
 
 }
 
+fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &str){
+    let (f_begin_snap,f_end_snap) = snap_range;
+    
+    const IO_FUNCTIONS: [&str; 14] = [
+        "RMAN",
+        "DBWR",
+        "LGWR",
+        "ARCH",
+        "XDB",
+        "Streams AQ",
+        "Data Pump",
+        "Recovery",
+        "Buffer Cache Reads",
+        "Direct Reads",
+        "Direct Writes",
+        "Smart Scan",
+        "Archive Manager",
+        "Others",
+    ];
+    struct IOStats{
+        reads_data: Vec<f64>,	// in MB
+        reads_req_s: Vec<f64>,
+        reads_data_s: Vec<f64>,	// in MB
+        writes_data: Vec<f64>,	// in MB
+        writes_req_s: Vec<f64>,
+        writes_data_s: Vec<f64>,	// in MB
+        waits_count: Vec<u64>,
+        avg_time: Vec<Option<f64>>,		// in ms
+    }
+    let mut io_stats_byfunc: HashMap<String, IOStats> = HashMap::new();
+    for func in IO_FUNCTIONS.iter() {
+        io_stats_byfunc.insert(
+            func.to_string(), 
+            IOStats {
+                reads_data: Vec::new(),
+                reads_req_s: Vec::new(),
+                reads_data_s: Vec::new(),
+                writes_data: Vec::new(),
+                writes_req_s: Vec::new(),
+                writes_data_s: Vec::new(),
+                waits_count: Vec::new(),
+                avg_time: Vec::new(),
+            }
+        );
+    }
+    let mut x_vals: Vec<String> = Vec::new();
+    let mut plot_iostats_main: Plot = Plot::new();
+
+    for awr in awrs{
+        if awr.snap_info.begin_snap_id < *f_begin_snap || awr.snap_info.begin_snap_id > *f_end_snap {
+            continue;
+        }
+        x_vals.push(format!("{} ({})",awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id));
+        // Process each IO function
+        for func in IO_FUNCTIONS.iter() {
+            let func_name = func.to_string();
+            let entry = io_stats_byfunc.get_mut(&func_name).unwrap();
+            
+            if let Some(stat) = awr.io_stats_byfunc.get(*func) {
+                // Function exists in this AWR, use its values
+                entry.reads_data.push(stat.reads_data);
+                entry.reads_req_s.push(stat.reads_req_s);
+                entry.reads_data_s.push(stat.reads_data_s);
+                entry.writes_data.push(stat.writes_data);
+                entry.writes_req_s.push(stat.writes_req_s);
+                entry.writes_data_s.push(stat.writes_data_s);
+                entry.waits_count.push(stat.waits_count);
+                entry.avg_time.push(stat.avg_time);
+            } else {
+                // Function doesn't exist in this AWR, fill with zeros/None
+                entry.reads_data.push(0.0);
+                entry.reads_req_s.push(0.0);
+                entry.reads_data_s.push(0.0);
+                entry.writes_data.push(0.0);
+                entry.writes_req_s.push(0.0);
+                entry.writes_data_s.push(0.0);
+                entry.waits_count.push(0);
+                entry.avg_time.push(None);
+            }
+        }
+    }
+
+    for func in IO_FUNCTIONS.iter(){
+        let mut plot_iostats: Plot = Plot::new();
+        let reads_data = BoxPlot::new(io_stats_byfunc[*func].reads_data.clone())
+                                        .name("Reads Data(MB)")
+                                        .x_axis("x1")
+                                        .y_axis("y1")
+                                        .box_mean(BoxMean::True)
+                                        .show_legend(false)
+                                        .box_points(BoxPoints::All)
+                                        .whisker_width(0.2)
+                                        .marker(Marker::new().color("#003366".to_string()).opacity(0.7).size(2));
+        let reads_req_s = BoxPlot::new(io_stats_byfunc[*func].reads_req_s.clone())
+                                        .name("ReadsReq/s")
+                                        .x_axis("x2")
+                                        .y_axis("y2")
+                                        .box_mean(BoxMean::True)
+                                        .show_legend(false)
+                                        .box_points(BoxPoints::All)
+                                        .whisker_width(0.2)
+                                        .marker(Marker::new().color("#0066CC".to_string()).opacity(0.7).size(2));
+        let reads_data_s = BoxPlot::new(io_stats_byfunc[*func].reads_data_s.clone())
+                                        .name("Reads Data(MB)/s")
+                                        .x_axis("x3")
+                                        .y_axis("y3")
+                                        .box_mean(BoxMean::True)
+                                        .show_legend(false)
+                                        .box_points(BoxPoints::All)
+                                        .whisker_width(0.2)
+                                        .marker(Marker::new().color("#66B2FF".to_string()).opacity(0.7).size(2));
+        let writes_data = BoxPlot::new(io_stats_byfunc[*func].writes_data.clone())
+                                        .name("Writes Data(MB)")
+                                        .x_axis("x4")
+                                        .y_axis("y4")
+                                        .box_mean(BoxMean::True)
+                                        .show_legend(false)
+                                        .box_points(BoxPoints::All)
+                                        .whisker_width(0.2)
+                                        .marker(Marker::new().color("#800000".to_string()).opacity(0.7).size(2));
+        let writes_req_s = BoxPlot::new(io_stats_byfunc[*func].writes_req_s.clone())
+                                        .name("WritesReq/s")
+                                        .x_axis("x5")
+                                        .y_axis("y5")
+                                        .box_mean(BoxMean::True)
+                                        .show_legend(false)
+                                        .box_points(BoxPoints::All)
+                                        .whisker_width(0.2)
+                                        .marker(Marker::new().color("#FF0000".to_string()).opacity(0.7).size(2));
+        let writes_data_s = BoxPlot::new(io_stats_byfunc[*func].writes_data_s.clone())
+                                        .name("Writes Data(MB)/s")
+                                        .x_axis("x6")
+                                        .y_axis("y6")
+                                        .box_mean(BoxMean::True)
+                                        .show_legend(false)
+                                        .box_points(BoxPoints::All)
+                                        .whisker_width(0.2)
+                                        .marker(Marker::new().color("#FF6666".to_string()).opacity(0.7).size(2));                                    
+        let waits_count = BoxPlot::new(io_stats_byfunc[*func].waits_count.clone())
+                                        .name("Waits Count")
+                                        .x_axis("x7")
+                                        .y_axis("y7")
+                                        .box_mean(BoxMean::True)
+                                        .show_legend(false)
+                                        .box_points(BoxPoints::All)
+                                        .whisker_width(0.2)
+                                        .marker(Marker::new().color("#FF8800".to_string()).opacity(0.7).size(2));
+        let avg_time = BoxPlot::new(io_stats_byfunc[*func].avg_time.clone())
+                                        .name("Avg Time(ms)")
+                                        .x_axis("x8")
+                                        .y_axis("y8")
+                                        .box_mean(BoxMean::True)
+                                        .show_legend(false)
+                                        .box_points(BoxPoints::All)
+                                        .whisker_width(0.2)
+                                        .marker(Marker::new().color("#00AA00".to_string()).opacity(0.7).size(2));                        
+        let reads_data_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[*func].reads_data.clone())
+                                    .mode(Mode::Lines)
+                                    .name(format!("{} Reads Data",func))
+                                    //.marker(Marker::new().color(colors[12]))
+                                    .x_axis("x1")
+                                    .y_axis("y1");
+                                    //.visible(Visible::LegendOnly);
+        let writes_data_scat = Scatter::new(x_vals.clone(), io_stats_byfunc[*func].writes_data.clone())
+                                    .mode(Mode::Lines)
+                                    .name(format!("{} Writes Data",func))
+                                    //.marker(Marker::new().color(colors[12]))
+                                    .x_axis("x1")
+                                    .y_axis("y1");
+                                    //.visible(Visible::LegendOnly);
+
+        plot_iostats.add_trace(reads_data);
+        plot_iostats.add_trace(reads_req_s);
+        plot_iostats.add_trace(reads_data_s);
+        plot_iostats.add_trace(writes_data);
+        plot_iostats.add_trace(writes_req_s);
+        plot_iostats.add_trace(writes_data_s);
+        plot_iostats.add_trace(waits_count);
+        plot_iostats.add_trace(avg_time);
+        plot_iostats_main.add_trace(reads_data_scat);
+        plot_iostats_main.add_trace(writes_data_scat);
+
+        let layout_iostats: Layout = Layout::new()
+            .height(400)
+            .grid(
+                LayoutGrid::new()
+                    .rows(1)
+                    .columns(1),
+                    //.row_order(Grid::TopToBottom),
+            )
+            .hover_mode(HoverMode::X)
+            .x_axis8(
+                Axis::new()
+                        .domain(&[0.91, 1.0])
+                        .anchor("y8")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis8(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x8")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis7(
+                Axis::new()
+                        .domain(&[0.78, 0.87])
+                        .anchor("y7")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis7(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x7")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis6(
+                Axis::new()
+                        .domain(&[0.65, 0.74])
+                        .anchor("y6")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis6(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x6")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis5(
+                Axis::new()
+                        .domain(&[0.52, 0.61])
+                        .anchor("y5")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis5(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x5")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis4(
+                Axis::new()
+                        .domain(&[0.39, 0.48])
+                        .anchor("y4")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis4(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x4")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis3(
+                Axis::new()
+                        .domain(&[0.26, 0.35])
+                        .anchor("y3")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis3(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x3")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis2(
+                Axis::new()
+                        .domain(&[0.13, 0.22])
+                        .anchor("y2")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis2(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x2")
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            )
+            .x_axis(
+                Axis::new()
+                        .domain(&[0.0, 0.09])
+                        .anchor("y1")
+                        .range(vec![0.,])
+                        .show_grid(false)
+            )
+            .y_axis(
+                Axis::new()
+                        .domain(&[0.0, 1.0])
+                        .anchor("x1")
+                        .title(*func)
+                        .range(vec![0.,])
+                        .range_mode(RangeMode::ToZero)
+                        .show_grid(false),
+            );
+        plot_iostats.set_layout(layout_iostats);
+        let file_name: String = format!("{}/{}_iostats.html", dirpath,func);
+        let path: &Path = Path::new(&file_name);
+        plot_iostats.write_html(path);
+    }
+
+    let layout_io_stats_main: Layout = Layout::new()
+            .height(400)
+            .hover_mode(HoverMode::X)
+            .grid(
+                LayoutGrid::new()
+                    .rows(1)
+                    .columns(1),
+            )
+            .x_axis(
+                Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("y1")
+                    .range(vec![0.,])
+                    .show_grid(true)
+            )
+            .y_axis(
+                Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .title("MB")
+                    .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
+            );
+            plot_iostats_main.set_layout(layout_io_stats_main);
+            let file_name: String = format!("{}/MAIN_iostats.html", dirpath);
+            let path: &Path = Path::new(&file_name);
+            plot_iostats_main.write_html(path);
+
+
+}
+
 
 
 pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
@@ -945,8 +1295,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut y_vals_sqls_exec_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_exec_n: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_exec_s: BTreeMap<String, Vec<f64>> = BTreeMap::new(); //For Elapsed Time AVG STDDEV calculations
-    /********************************************/
-
+     
+    /****************************************************/
     /*HashMap for calculating instance stats correlation*/
     let mut instance_stats: HashMap<String, Vec<f64>> = HashMap::new();
     /****************************************************/
@@ -977,6 +1327,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &snap_range, &html_dir);
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false, &snap_range, &html_dir);
     generate_sqls_plotfiles(&collection.awrs, &top_stats, &snap_range, &html_dir);
+    generate_iostats_plotfile(&collection.awrs, &snap_range, &html_dir);
     let fname: String = format!("{}/jasmin_{}", &html_dir, &stripped_fname); //new file name path for main report
 
     /* ------ Preparing data ------ */
@@ -1094,49 +1445,53 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                         y_write_mb.push(lp.per_second*collection.db_instance_information.db_block_size as f64/1024.0/1024.0);
                     }
             }
-                // ----- Host CPU
-                if awr.host_cpu.pct_user < 0.0 {
-                    y_vals_cpu_user.push(0.0);
-                } else {
-                    y_vals_cpu_user.push(awr.host_cpu.pct_user);
-                }
-                y_vals_cpu_load.push(100.0-awr.host_cpu.pct_idle);
-                y_vals_cpu_count.push(awr.host_cpu.cpus);
 
-                // ----- Additionally plot Redo Log Switches
-                y_vals_redo_switches.push(awr.redo_log.per_hour);
+            // IO Stats data gathering and preparing them for plotting
 
-                let mut calls: u64 = 0;
-                let mut commits: u64 = 0;
-                let mut rollbacks: u64 = 0;
-                let mut cleanout_ktugct: u64 = 0;
-                let mut cleanout_cr: u64 = 0;
-                let mut excessive_commit: f64 = 0.0;
 
-                for activity in &awr.key_instance_stats {
-                    let mut v: &mut Vec<f64> = instance_stats.get_mut(&activity.statname).unwrap();
-                    v[x_vals.len()-1] = activity.total as f64;
+            // ----- Host CPU
+            if awr.host_cpu.pct_user < 0.0 {
+                y_vals_cpu_user.push(0.0);
+            } else {
+                y_vals_cpu_user.push(awr.host_cpu.pct_user);
+            }
+            y_vals_cpu_load.push(100.0-awr.host_cpu.pct_idle);
+            y_vals_cpu_count.push(awr.host_cpu.cpus);
 
-                    // Plot additional stats if 'log file sync' is in top events
-                    if is_logfilesync_high {
-                    
-                        if activity.statname == "user calls" {
-                            calls = activity.total;
-                        } else if activity.statname == "user commits" {
-                            commits = activity.total;
-                        } else if activity.statname == "user rollbacks" {
-                            rollbacks = activity.total;
-                        } else if activity.statname.starts_with("cleanout - number of ktugct calls") {
-                            cleanout_ktugct = activity.total;
-                        } else if activity.statname.starts_with("cleanouts only - consistent read") {
-                            cleanout_cr = activity.total;
-                        }
-                        excessive_commit = if commits + rollbacks > 0 {
-                            (calls as f64) / ((commits + rollbacks) as f64)
-                            } else {
-                                0.0
-                        };
+            // ----- Additionally plot Redo Log Switches
+            y_vals_redo_switches.push(awr.redo_log.per_hour);
+
+            let mut calls: u64 = 0;
+            let mut commits: u64 = 0;
+            let mut rollbacks: u64 = 0;
+            let mut cleanout_ktugct: u64 = 0;
+            let mut cleanout_cr: u64 = 0;
+            let mut excessive_commit: f64 = 0.0;
+
+            for activity in &awr.key_instance_stats {
+                let mut v: &mut Vec<f64> = instance_stats.get_mut(&activity.statname).unwrap();
+                v[x_vals.len()-1] = activity.total as f64;
+
+                // Plot additional stats if 'log file sync' is in top events
+                if is_logfilesync_high {
+                
+                    if activity.statname == "user calls" {
+                        calls = activity.total;
+                    } else if activity.statname == "user commits" {
+                        commits = activity.total;
+                    } else if activity.statname == "user rollbacks" {
+                        rollbacks = activity.total;
+                    } else if activity.statname.starts_with("cleanout - number of ktugct calls") {
+                        cleanout_ktugct = activity.total;
+                    } else if activity.statname.starts_with("cleanouts only - consistent read") {
+                        cleanout_cr = activity.total;
                     }
+                    excessive_commit = if commits + rollbacks > 0 {
+                        (calls as f64) / ((commits + rollbacks) as f64)
+                        } else {
+                            0.0
+                    };
+                }
             }
             if is_logfilesync_high {
                     y_excessive_commits.push(excessive_commit);
@@ -2820,10 +3175,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             jasmin_html_scripts)
     );
     // Inject HighLight section into Main HTML
+    let highlight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Load Profile</h4></div>\n";
+    let insight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Performance Insight</h4></div>\n";
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
-        &format!("{}\n\t\t\t\t</script>\n<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
-                highlight_html)
+        &format!("{}{}\n\t\t\t\t</script>\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
+        highlight_title,highlight_html,insight_title)
     );
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)

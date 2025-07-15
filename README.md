@@ -82,7 +82,10 @@ OPTIONS:
           Launches the backend agent used by the JASMIN Assistant. -b <openai>|<gemini:model> Configuration details such as API keys and the selected PORT number are loaded from the .env file [default: ]
 
     -m, --mad-threshold <MAD_THRESHOLD>
-          Threshold for detecting anomalies using MAD [default: 7]
+          Threshold for detecting anomalies using MAD [default: 7] 
+
+    -W, --mad-window-size <MAD_WINDOW_SIZE>
+          Window size for detecting anomalies using MAD for local sliding window specified as % of probes [default: 100]
 
     -W, --mad-window-size <MAD_WINDOW_SIZE>
           Window size for detecting anomalies using MAD for local sliding window specified as % of probes [default: 100]
