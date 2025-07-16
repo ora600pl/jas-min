@@ -5,7 +5,7 @@
         #iostat_RMAN-html-element, #iostat_DBWR-html-element, #iostat_LGWR-html-element, #iostat_ARCH-html-element,
         #iostat_XDB-html-element, #iostat_Streams_AQ-html-element, #iostat_Data_Pump-html-element, #iostat_Recovery-html-element,
         #iostat_Buffer_Cache_Reads-html-element, #iostat_Direct_Reads-html-element, #iostat_Direct_Writes-html-element,
-        #iostat_Smart_Scan-html-element, #iostat_Archive_Manager-html-element, #iostat_Others-html-element, #iostat_MAIN-html-element{
+        #iostat_Smart_Scan-html-element, #iostat_Archive_Manager-html-element, #iostat_Others-html-element, #iostat_zMAIN-html-element{
             display: none;
         }
         body{
