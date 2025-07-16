@@ -899,7 +899,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
 
 }
 
-fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &str) -> Vec<String> {
+fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &str) -> BTreeMap<String,BTreeMap<String, (f64, f64)>> {
     let (f_begin_snap,f_end_snap) = snap_range;
     
     const IO_FUNCTIONS: [&str; 14] = [
@@ -944,7 +944,8 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
             }
         );
     }
-    let mut functions_to_plot: Vec<String> = Vec::new();
+    //let mut functions_to_plot: Vec<String> = Vec::new();
+    let mut functions_to_plot: BTreeMap<String,BTreeMap<String, (f64, f64)>> = BTreeMap::new();
     let mut x_vals: Vec<String> = Vec::new();
     let mut plot_iostats_main: Plot = Plot::new();
 
@@ -984,19 +985,62 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
     
     for func in IO_FUNCTIONS.iter() {
         if let Some(stats) = io_stats_byfunc.get(*func) {
-            // Check if any metric has a non-zero mean
-            let has_empty_data = 
-                mean(stats.reads_data.clone()).unwrap_or(0.0) == 0.0 &&
-                mean(stats.writes_data.clone()).unwrap_or(0.0) == 0.0 &&
-                mean(stats.waits_count.iter().map(|&x| x as f64).collect()).unwrap_or(0.0) == 0.0;
+            let mean_reads_data = mean(stats.reads_data.clone()).unwrap_or(0.0);
+            let mean_writes_data = mean(stats.writes_data.clone()).unwrap_or(0.0);
+            let mean_waits_count = mean(stats.waits_count.iter().map(|&x| x as f64).collect()).unwrap_or(0.0);
             
+            // Check if any metric has a non-zero mean
+            let has_empty_data =
+                mean_reads_data == 0.0 &&
+                mean_writes_data == 0.0 &&
+                mean_waits_count == 0.0;
+                
             if !has_empty_data {
-                functions_to_plot.push(func.to_string());
+                // Calculate all means and standard deviations
+                let mean_reads_req_s = mean(stats.reads_req_s.clone()).unwrap_or(0.0);
+                let mean_reads_data_s = mean(stats.reads_data_s.clone()).unwrap_or(0.0);
+                let mean_writes_req_s = mean(stats.writes_req_s.clone()).unwrap_or(0.0);
+                let mean_writes_data_s = mean(stats.writes_data_s.clone()).unwrap_or(0.0);
+                
+                let std_reads_data = std_deviation(stats.reads_data.clone()).unwrap_or(0.0);
+                let std_reads_req_s = std_deviation(stats.reads_req_s.clone()).unwrap_or(0.0);
+                let std_reads_data_s = std_deviation(stats.reads_data_s.clone()).unwrap_or(0.0);
+                let std_writes_data = std_deviation(stats.writes_data.clone()).unwrap_or(0.0);
+                let std_writes_req_s = std_deviation(stats.writes_req_s.clone()).unwrap_or(0.0);
+                let std_writes_data_s = std_deviation(stats.writes_data_s.clone()).unwrap_or(0.0);
+                
+                let std_waits_count = std_deviation(stats.waits_count.iter().map(|&x| x as f64).collect()).unwrap_or(0.0);
+                
+                // Handle avg_time (Option<f64>)
+                let avg_time_values: Vec<f64> = stats.avg_time.iter().filter_map(|&x| x).collect();
+                let mean_avg_time = if !avg_time_values.is_empty() {
+                    mean(avg_time_values.clone()).unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                let std_avg_time = if !avg_time_values.is_empty() {
+                    std_deviation(avg_time_values).unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                
+                let mut stats_map: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+                stats_map.insert("reads_data".to_string(), (mean_reads_data, std_reads_data));
+                stats_map.insert("reads_req_s".to_string(), (mean_reads_req_s, std_reads_req_s));
+                stats_map.insert("reads_data_s".to_string(), (mean_reads_data_s, std_reads_data_s));
+                stats_map.insert("writes_data".to_string(), (mean_writes_data, std_writes_data));
+                stats_map.insert("writes_req_s".to_string(), (mean_writes_req_s, std_writes_req_s));
+                stats_map.insert("writes_data_s".to_string(), (mean_writes_data_s, std_writes_data_s));
+                stats_map.insert("waits_count".to_string(), (mean_waits_count, std_waits_count));
+                stats_map.insert("avg_time".to_string(), (mean_avg_time, std_avg_time));
+                
+                // Insert into the main HashMap
+                functions_to_plot.insert(func.to_string(), stats_map);
             }
         }
     }
 
-    for func in &functions_to_plot{
+    for func in functions_to_plot.keys(){
         let mut plot_iostats: Plot = Plot::new();
         let reads_data = BoxPlot::new(io_stats_byfunc[func].reads_data.clone())
                                         .name("Reads Data(MB)")
@@ -1333,12 +1377,12 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                     .range_mode(RangeMode::ToZero)
             );
             plot_iostats_main.set_layout(layout_io_stats_main);
-            let file_name: String = format!("{}/iostats_MAIN.html", dirpath);
+            let file_name: String = format!("{}/iostats_zMAIN.html", dirpath);
             let path: &Path = Path::new(&file_name);
             plot_iostats_main.write_html(path);
 
     println!("Saved plots for IO Stats to '{}/iostats_*'", dirpath);
-    functions_to_plot.push("MAIN".to_string());
+    functions_to_plot.insert("zMAIN".to_string(),BTreeMap::new());
     functions_to_plot
 }
 
@@ -1817,7 +1861,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                     .y_axis("y4");
     let cpu_load_box_plot  = BoxPlot::new(y_vals_cpu_load)
                                                     //.mode(Mode::LinesText)
-                                                    .name("CPU Load")
+                                                    .name("CPU Load %")
                                                     .x_axis("x1")
                                                     .y_axis("y1")
                                                     .box_mean(BoxMean::True)
@@ -1854,7 +1898,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                     .marker(Marker::new().color("#904fc2".to_string()).opacity(0.7).size(2));
     let read_mb_box_plot  = BoxPlot::new(y_read_mb)
                                                     //.mode(Mode::LinesText)
-                                                    .name("Read MB/s")
+                                                    .name("Phy Reads MB/s")
                                                     .x_axis("x5")
                                                     .y_axis("y5")
                                                     .box_mean(BoxMean::True)
@@ -1864,7 +1908,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                     .marker(Marker::new().color("#c2be4f".to_string()).opacity(0.7).size(2));
     let write_mb_box_plot  = BoxPlot::new(y_write_mb)
                                                     //.mode(Mode::LinesText)
-                                                    .name("Write MB/s")
+                                                    .name("Phy Writes MB/s")
                                                     .x_axis("x6")
                                                     .y_axis("y6")
                                                     .box_mean(BoxMean::True)
@@ -2602,6 +2646,55 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         "#,
         table_sqls
     );
+
+    /* "IO Stats by Function" are goin into report */
+    make_notes!(&logfile_name, args.quiet,"\n\n{}\n",format!("IO STATS by Function - Summary").blue().underline());
+    // Create the table
+    let mut table_iostats = Table::new();
+
+    table_iostats.set_titles(Row::new(vec![
+        Cell::new("Function").with_style(Attr::Bold),
+        Cell::new("Statistic").with_style(Attr::Bold),
+        Cell::new("Mean").with_style(Attr::Bold),
+        Cell::new("Std Dev").with_style(Attr::Bold),
+    ]));
+    
+    // Function to convert metric names to readable format
+    fn format_metric_name(metric: &str) -> String {
+        match metric {
+            "reads_data" => "Read Data (MB)".to_string(),
+            "reads_req_s" => "Read Requests/sec".to_string(),
+            "reads_data_s" => "Read Data (MB)/sec".to_string(),
+            "writes_data" => "Write Data (MB)".to_string(),
+            "writes_req_s" => "Write Requests/sec".to_string(),
+            "writes_data_s" => "Write Data (MB)/sec".to_string(),
+            "waits_count" => "Wait Count".to_string(),
+            "avg_time" => "Wait Avg Time (ms)".to_string(),
+            _ => metric.to_string(), // fallback for unknown metrics
+        }
+    }
+    // Add data rows
+    for (function_name, stats) in &iostats {
+        if function_name == "zMAIN"{
+            continue;
+        }
+        let mut stat_metrics: Vec<String> = Vec::new();
+        let mut stat_mean: Vec<String> = Vec::new();
+        let mut stat_std_dev: Vec<String> = Vec::new();
+
+        for (metric_name, (mean, std_dev)) in stats {
+            stat_metrics.push(format_metric_name(&metric_name));
+            stat_mean.push(format!("{:.2}", mean));
+            stat_std_dev.push(format!("{:.2}", std_dev));
+        }
+        table_iostats.add_row(Row::new(vec![
+            Cell::new(&function_name),
+            Cell::new(&stat_metrics.join("\n")),
+            Cell::new(&stat_mean.join("\n")),
+            Cell::new(&stat_std_dev.join("\n")),
+        ]));
+    }
+    make_notes!(&logfile_name, args.quiet, "{}\n", table_iostats);
 
 
     /* Load Profile Anomalies detection and report */
@@ -3380,7 +3473,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             }});
         }}
         document.addEventListener('DOMContentLoaded', function() {{
-            toggleElement('show-iostats-button','iostat_MAIN-html-element','checkbox-container');
+            toggleElement('show-iostats-button','iostat_zMAIN-html-element','checkbox-container');
             const checkboxes = document.querySelectorAll('input[type="checkbox"][id$="-checkbox"]');
             checkboxes.forEach(checkbox => {{
                 const checkboxId = checkbox.id;
@@ -3452,18 +3545,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     );
     let highlight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Load Profile</h4></div>\n";
     let explorer_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Stats Explorer</h4></div>\n";
-    let insight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Performance Insight</h4></div>\n";    
-    /*let explorer_button = format!(
-        "\n\t{}\n\t<div id=\"checkbox-container\" style=\"margin-top: 10px; display: none;\">{}</div>",
-        "<button id=\"show-iostats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">IO Stats</span><span>IO Stats</span></button>",
-        "<input type=\"checkbox\" id=\"lgwr-checkbox\"><label for=\"lgwr-checkbox\">LGWR</label>"
-    );*/
+    let insight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Performance Insight</h4></div>\n";
     let explorer_button = format!(
         "\n\t{}\n\t<div id=\"checkbox-container\" style=\"margin-top: 10px; display: none;\">{}</div>",
         "<button id=\"show-iostats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">IO Stats</span><span>IO Stats</span></button>",
         iostats
-            .iter()
-            .filter(|&func| func != "MAIN")
+            .keys()
+            .filter(|&func| func != "zMAIN")
             .map(|func| {
                 let sanitized_func = func.replace(" ", "_");
                 format!(
@@ -3481,9 +3569,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         highlight_title, highlight_html,explorer_title,explorer_button)
     );
 
-    // Inject Explorer Sections ot inject
-    
-    for func in &iostats{
+    // Inject Explorer Sections into Main HTML
+    for func in iostats.keys(){
         let func_name = func.replace(" ","_");
         let mut stats_explorer_html: String = fs::read_to_string(format!("{}/iostats_{}.html", &html_dir,func_name))
             .expect("Failed to read iostats file");
