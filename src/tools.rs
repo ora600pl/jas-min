@@ -164,7 +164,7 @@ fn markdown_to_html_with_toc(markdown_input: &str) -> String {
     </a></p>
 {toc}
 {content}
-<p align="center"><a href="https://github.com/ora600pl/jas-min" target="_blank">
+<p align="center"><a href="https://www.ora-600.pl" target="_blank">
         <img src="https://raw.githubusercontent.com/ora600pl/jas-min/main/img/ora-600.png" width="150" alt="ORA-600" onerror="this.style.display='none';"/>
     </a></p>
 </body>
