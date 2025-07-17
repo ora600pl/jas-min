@@ -17,6 +17,7 @@ mod idleevents;
 mod reasonings;
 mod macros;
 mod anomalies;
+mod tools;
 use crate::reasonings::{backend_ai,parse_backend_type, BackendType,gemini,chat_gpt};
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
