@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="/img/jasmin_LOGO_black.png" alt="JAS-MIN" 
-       media="(prefers-color-scheme: light)">
-  <img src="/img/jasmin_LOGO_white.png" alt="JAS-MIN" 
-       media="(prefers-color-scheme: dark)">
+  <img src="/img/jasmin_LOGO_black.png#gh-dark-mode-only" alt="JAS-MIN"?
+  <img src="/img/jasmin_LOGO_white.png#gh-light-mode-only" alt="JAS-MIN">
 </p>
 
 ### JSON AWR/STATSPACK Mining Tool
