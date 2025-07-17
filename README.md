@@ -1,4 +1,6 @@
-![Alt text](/img/jasmin_LOGO_black.png)
+<p align="center">
+  <img src="/img/jasmin_LOGO_black.png" alt="JAS-MIN" width="300">
+</p>
 
 ### JSON AWR/STATSPACK Mining Tool
 
