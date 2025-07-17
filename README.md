@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="/img/jasmin_LOGO_black.png" alt="JAS-MIN">
+  <img src="/img/jasmin_LOGO_black.png" alt="JAS-MIN" 
+       media="(prefers-color-scheme: light)">
+  <img src="/img/jasmin_LOGO_white.png" alt="JAS-MIN" 
+       media="(prefers-color-scheme: dark)">
 </p>
 
 ### JSON AWR/STATSPACK Mining Tool
