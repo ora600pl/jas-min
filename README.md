@@ -1,11 +1,8 @@
- ```
-      ██╗ █████╗ ███████╗      ███╗   ███╗██╗███╗   ██╗
-      ██║██╔══██╗██╔════╝      ████╗ ████║██║████╗  ██║
-      ██║███████║███████╗█████╗██╔████╔██║██║██╔██╗ ██║
-██   ██║██╔══██║╚════██║╚════╝██║╚██╔╝██║██║██║╚██╗██║
-╚█████╔╝██║  ██║███████║      ██║ ╚═╝ ██║██║██║ ╚████║
-  ╚════╝ ╚═╝  ╚═╝╚══════╝      ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="/img/jasmin_LOGO_black.png">
+  <source media="(prefers-color-scheme: light)" srcset="/img/jasmin_LOGO_white.png">
+  <img alt="JAS-MIN logo" src="/img/jasmin_LOGO_white.png">
+</picture>
 
 ### JSON AWR/STATSPACK Mining Tool
 
@@ -87,8 +84,10 @@ OPTIONS:
     -W, --mad-window-size <MAD_WINDOW_SIZE>
           Window size for detecting anomalies using MAD for local sliding window specified as % of probes [default: 100]
 
-    -W, --mad-window-size <MAD_WINDOW_SIZE>
-          Window size for detecting anomalies using MAD for local sliding window specified as % of probes [default: 100]
+    -S, --security-level <LEVEL>
+          Controls JAS-MIN to include sensitive infromations when generating report:
+          0 - default (no sensitive data)
+          1 - include objects and segments names
 
     -P, --parallel <PARALLEL>
           Parallelism level [default: 4]
