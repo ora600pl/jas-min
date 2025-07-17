@@ -5,26 +5,8 @@ use prettytable::{Table, Row, Cell, format, Attr};
 use rayon::prelude::*;
 use crate::make_notes;
 use colored::*;
-use open::*;
-
-fn median(data: &[f64]) -> f64 {
-    let mut sorted = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let len = sorted.len();
-    if len == 0 {
-        return 0.0;
-    }
-    if len % 2 == 0 {
-        (sorted[len / 2 - 1] + sorted[len / 2]) / 2.0
-    } else {
-        sorted[len / 2]
-    }
-}
-
-fn mad(data: &[f64], med: f64) -> f64 {
-    let deviations: Vec<f64> = data.iter().map(|x| (x - med).abs()).collect();
-    median(&deviations)
-}
+use open::*; 
+use crate::tools::*; 
 
 fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> HashMap<String, Vec<f64>> {
     //Create list of all events

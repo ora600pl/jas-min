@@ -19,9 +19,6 @@ use std::str::FromStr;
 use colored::*;
 use open::*;
 
-use ndarray::{iter, Array2};
-use ndarray_stats::CorrelationExt;
-use ndarray_stats::histogram::Grid;
 use regex::*;
 use crate::{anomalies, Args};
 use crate::reasonings::{chat_gpt, gemini};
@@ -30,6 +27,8 @@ use crate::anomalies::*;
 use crate::make_notes;
 use prettytable::{Table, Row, Cell, format, Attr};
 use rayon::prelude::*;
+
+use crate::tools::*;
 
 struct TopStats {
     events: BTreeMap<String, u8>,
@@ -165,45 +164,6 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
     top
 }
 
-//Calculate pearson correlation of 2 vectors and return simple result
-fn pearson_correlation_2v(vec1: &Vec<f64>, vec2: &Vec<f64>) -> f64 {
-    let rows: usize = 2;
-    let cols: usize = vec1.len();
-
-    let mut data: Vec<f64> = Vec::new();
-    data.extend(vec1);
-    data.extend(vec2);
-    
-    let a: ndarray::ArrayBase<ndarray::OwnedRepr<f64>, ndarray::Dim<[usize; 2]>> = Array2::from_shape_vec((rows, cols), data).unwrap();
-    let crr = a.pearson_correlation().unwrap();
-
-    crr.row(0)[1]
-}
-
-fn mean(data: Vec<f64>) -> Option<f64> {
-    let sum: f64 = data.iter().sum::<f64>() as f64;
-    let count: usize = data.len();
-
-    match count {
-        positive if positive > 0 => Some(sum / count as f64),
-        _ => None,
-    }
-}
-
-fn std_deviation(data: Vec<f64>) -> Option<f64> {
-    match (mean(data.clone()), data.len()) {
-        (Some(data_mean), count) if count > 0 => {
-            let variance: f64 = data.iter().map(|value| {
-                let diff: f64 = data_mean - (*value as f64);
-
-                diff * diff
-            }).sum::<f64>() / count as f64;
-
-            Some(variance.sqrt())
-        },
-        _ => None
-    }
-}
 
 fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> HashMap<String, f64> {
     let probe_size: f64 = awrs.len() as f64;
@@ -3521,7 +3481,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         "<head>",
         &format!("<head>\n<title>JAS-MIN</title>\n{}",STYLE_CSS)
     );
-    let mut jasmin_logo = format!("<p align=\"center\"><a href=\"https://github.com/ora600pl/jas-min\" target=\"_blank\">
+    let jasmin_logo = format!("<p align=\"center\"><a href=\"https://github.com/ora600pl/jas-min\" target=\"_blank\">
         <img src=\"https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png\" width=\"150\" alt=\"JAS-MIN\" onerror=\"this.style.display='none';\"/>
     </a></p>");
     // Inject Buttons and Tables into Main HTML
