@@ -3521,10 +3521,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         "<head>",
         &format!("<head>\n<title>JAS-MIN</title>\n{}",STYLE_CSS)
     );
+    let mut jasmin_logo = format!("<p align=\"center\"><a href=\"https://github.com/ora600pl/jas-min\" target=\"_blank\">
+        <img src=\"https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png\" width=\"150\" alt=\"JAS-MIN\" onerror=\"this.style.display='none';\"/>
+    </a></p>");
     // Inject Buttons and Tables into Main HTML
     plotly_html = plotly_html.replace(
         "<body>",
-        &format!("<body>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
+        &format!("<body>\n{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
+            jasmin_logo,
             db_instance_info_html,
             "<button id=\"show-events-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait Events</span><span>TOP Wait Events</span></button>",
             "<button id=\"show-sqls-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait SQLs</span><span>TOP Wait SQLs</span></button>",
