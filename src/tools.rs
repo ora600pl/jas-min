@@ -113,7 +113,7 @@ fn markdown_to_html_with_toc(markdown_input: &str) -> String {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Markdown to HTML</title>
+    <title>JAS-MIN thoughts</title>
     <style>
         body {{
             font-family: Arial, sans-serif;
