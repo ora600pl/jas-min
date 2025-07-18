@@ -73,7 +73,7 @@ fn private_reasoninings() -> Option<String> {
 
 
 #[tokio::main]
-pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}{}{}","=== Consulting ChatGPT model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
     let api_key = env::var("OPENAI_API_KEY").expect("You have to set OPENAI_API_KEY env variable");
@@ -346,7 +346,7 @@ pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_co
             }
         }
     }
-    convert_md_to_html_file(&response_file);
+    convert_md_to_html_file(&response_file, events_sqls);
 
     // === 7. Delete temporary assistant ===
     let delete_resp = client
@@ -452,7 +452,7 @@ async fn spinning_beer(mut done: oneshot::Receiver<()>) {
 }
 
 #[tokio::main]
-pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}{}{}","=== Consulting Google Gemini model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
     let api_key = env::var("GEMINI_API_KEY").expect("You have to set GEMINI_API_KEY env variable");
@@ -526,7 +526,7 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
 
         fs::write(&response_file, full_text.as_bytes()).unwrap();
         println!("🍻 Gemini response written to file: {}", &response_file);
-        convert_md_to_html_file(&response_file);
+        convert_md_to_html_file(&response_file, events_sqls);
     } else {
         eprintln!("Error: {}", response.status());
         eprintln!("{}", response.text().await.unwrap());
