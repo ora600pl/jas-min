@@ -231,34 +231,17 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
 // Generate plots for top events
 fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, snap_range: &(u64,u64), dirpath: &str) {
     let (f_begin_snap,f_end_snap) = snap_range;
-    
-    // Detect number and type of buckets
     // Ensure that there is at least one AWR with fg or bg event and they are explicitly checked
     assert!(!awrs.is_empty(),"generate_events_plotfiles: No AWR data available.");
 
-    let first_wait_events = if is_fg {
-        &awrs[0].foreground_wait_events
-    } else {
-        &awrs[0].background_wait_events
-    };
-
-    assert!(!first_wait_events.is_empty(),
-        "generate_events_plotfiles: No {} wait events in first AWR snapshot.", if is_fg { "foreground" } else { "background" }
-    );
+    let mut hist_buckets: Vec<String> = Vec::new();
+    let mut bucket_colors: HashMap<String, String> = HashMap::new();
     // Make colors consistent across buckets 
     let color_palette = vec![
         "#00E399", "#2FD900", "#E3E300", "#FFBF00", "#FF8000",
         "#FF4000", "#FF0000", "#B22222", "#8B0000", "#4B0082",
         "#8A2BE2", "#1E90FF"
     ];
-    // To cover buckets dynamic across db versions - Extract bucket names from the first event's histogram_ms 
-    let hist_buckets: Vec<String> = first_wait_events[0].waitevent_histogram_ms.keys().cloned().collect();
-    // Assign colors from the palette to detected buckets
-    let mut bucket_colors: HashMap<String, String> = HashMap::new();
-    for (i, bucket) in hist_buckets.iter().enumerate() {
-        let color = color_palette.get(i % color_palette.len()).unwrap();
-        bucket_colors.insert(bucket.clone(), color.to_string());
-    }
     // Group Events by Name and by needed data (ename(db_time, total_wait, waits,histogram values by bucket, heatmap)
     struct HeatmapEntry { //Group Events by Snap Time and histograms
         snap_time: String,
@@ -272,7 +255,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         histogram_heatmap: Vec<HeatmapEntry>
     }
     let mut data_by_event: HashMap<String, EventStats> = HashMap::new();
-    
+    let mut buckets_found: bool = false;
     // Let's gather all needed data
     for awr in awrs {
         if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
@@ -284,34 +267,48 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
                 &awr.background_wait_events
             };
 
-            for event in events {
-                if !top_events.contains_key(&event.event) {
-                    continue;
+            if events.is_empty(){
+                continue;
+            } else{
+                if !buckets_found{
+                     // To cover buckets dynamic across db versions - Extract bucket names from the first event's histogram_ms found
+                    hist_buckets = events[0].waitevent_histogram_ms.keys().cloned().collect();
+                    // Assign colors from the palette to detected buckets
+                    for (i, bucket) in hist_buckets.iter().enumerate() {
+                        let color = color_palette.get(i % color_palette.len()).unwrap();
+                        bucket_colors.insert(bucket.clone(), color.to_string());
+                    }
+                    buckets_found = true;
                 }
-                // Initilize events map
-                let entry = data_by_event
-                    .entry(event.event.clone())
-                    .or_insert_with(|| EventStats {
-                        pct_dbtime: Vec::new(),
-                        total_wait_time_s: Vec::new(),
-                        waits: Vec::new(),
-                        histogram_by_bucket: BTreeMap::new(),
-                        histogram_heatmap: Vec::new(),
+                for event in events {
+                    if !top_events.contains_key(&event.event) {
+                        continue;
+                    }
+                    // Initilize events map
+                    let entry = data_by_event
+                        .entry(event.event.clone())
+                        .or_insert_with(|| EventStats {
+                            pct_dbtime: Vec::new(),
+                            total_wait_time_s: Vec::new(),
+                            waits: Vec::new(),
+                            histogram_by_bucket: BTreeMap::new(),
+                            histogram_heatmap: Vec::new(),
+                        });
+                    // Gather data by Event Name
+                    entry.pct_dbtime.push(event.pct_dbtime);
+                    entry.total_wait_time_s.push(event.total_wait_time_s);
+                    entry.waits.push(event.waits);
+                    for (bucket, value) in &event.waitevent_histogram_ms {
+                        entry.histogram_by_bucket
+                            .entry(bucket.clone())
+                            .or_insert_with(Vec::new)
+                            .push(*value);
+                    }
+                    entry.histogram_heatmap.push(HeatmapEntry {
+                        snap_time: snap_time.clone(),
+                        histogram: event.waitevent_histogram_ms.clone(),
                     });
-                // Gather data by Event Name
-                entry.pct_dbtime.push(event.pct_dbtime);
-                entry.total_wait_time_s.push(event.total_wait_time_s);
-                entry.waits.push(event.waits);
-                for (bucket, value) in &event.waitevent_histogram_ms {
-                    entry.histogram_by_bucket
-                        .entry(bucket.clone())
-                        .or_insert_with(Vec::new)
-                        .push(*value);
                 }
-                entry.histogram_heatmap.push(HeatmapEntry {
-                    snap_time: snap_time.clone(),
-                    histogram: event.waitevent_histogram_ms.clone(),
-                });
             }
         }
     }
