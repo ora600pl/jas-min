@@ -3496,7 +3496,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">STATS Correlation</span><span>STATS Correlation</span></button>
                 </a>", "statistics_corr.html"
             ),
-            "<button id=\"show-JASMINAI-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">JAS-MIN Assistant</span><span>JAS-MIN Assistant</span></button>",
+            if !args.backend_assistant.is_empty() { format!("{}","<button id=\"show-JASMINAI-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">JAS-MIN Assistant</span><span>JAS-MIN Assistant</span></button>")}else{format!("")},
             jasmin_assistant,
             event_table_html,
             bgevent_table_html,
