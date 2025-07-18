@@ -1955,7 +1955,7 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> AWR {
 
 
 
-pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>>) {
+pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>>, file: &str) {
 	println!("{}","\n==== PARSING DIRECTORY DATA ===".bright_cyan());
 	//let mut awr_vec: Vec<AWR> = Vec::new();
 	let mut file_collection: Vec<String> = Vec::new();

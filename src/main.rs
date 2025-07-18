@@ -148,14 +148,12 @@ fn main() {
 		let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
 		println!("{}", awr_doc);
 	} else if !args.directory.is_empty() {
-		let awr_doc = awr::parse_awr_dir(args.clone(), events_sqls).unwrap();
 		let mut fname = format!("{}.json", &args.directory);
 		reportfile = format!("{}.txt", &args.directory);
 		if !args.outfile.is_empty() {
-			fname = args.outfile;
+			fname = args.outfile.clone();
 		}
-		let mut f = fs::File::create(fname).unwrap();
-		f.write_all(awr_doc.as_bytes()).unwrap();
+		 awr::parse_awr_dir(args.clone(), events_sqls, &fname);
 		
 	} else if !args.json_file.is_empty() {
 		awr::prarse_json_file(args.clone(), events_sqls);

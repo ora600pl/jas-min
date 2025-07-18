@@ -195,14 +195,16 @@ fn heading_level_to_int(level: &HeadingLevel) -> usize {
 
 fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, html_dir: String) -> String {
     let mut html_with_links: String = html;
-    for (name_type, names) in events_sqls {
+    let bgevents = events_sqls.get("BG").unwrap().clone();
+    for (name_type, names) in events_sqls { //first deal with Forground events and SQLIDs
         for name in names {
             if name_type == "FG" {
                 let file_name = get_safe_event_filename(&html_dir, name.clone(), true);
                 let path = Path::new(&file_name);
                 if path.exists() {
                     let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
-                    html_with_links = html_with_links.replace(&name, &link_txt);
+                    let from_name = format!("<code>{}</code>", &name);
+                    html_with_links = html_with_links.replace(&from_name, &link_txt);
                 }
             } else if name_type == "SQL" {
                 let file_name = format!("{}/sqlid_{}.html", html_dir, &name);
@@ -212,6 +214,16 @@ fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, 
                     html_with_links = html_with_links.replace(&name, &link_txt);
                 }
             }
+        }
+    }
+    
+    for name in bgevents { //then check what's left for Background Events
+        let file_name = get_safe_event_filename(&html_dir, name.clone(), false);
+        let path = Path::new(&file_name);
+        if path.exists() {
+            let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
+            let from_name = format!("<code>{}</code>", &name);
+            html_with_links = html_with_links.replace(&from_name, &link_txt);
         }
     }
     html_with_links
