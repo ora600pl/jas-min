@@ -144,15 +144,13 @@ fn main() {
 		let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
 		println!("{}", awr_doc);
 	} else if args.directory != "NO" {
-		let awr_doc = awr::parse_awr_dir(args.clone()).unwrap();
+		//let awr_doc = awr::parse_awr_dir(args.clone()).unwrap();
 		let mut fname = format!("{}.json", &args.directory);
 		reportfile = format!("{}.txt", &args.directory);
 		if args.outfile != "NO" {
-			fname = args.outfile;
+			fname = args.clone().outfile;
 		}
-		let mut f = fs::File::create(fname).unwrap();
-		f.write_all(awr_doc.as_bytes()).unwrap();
-		
+		awr::parse_awr_dir(args.clone(),fname);
 	} else if args.json_file != "NO" {
 		awr::prarse_json_file(args.clone());
 		let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
