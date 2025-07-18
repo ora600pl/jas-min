@@ -1,4 +1,5 @@
 #![allow(dead_code, unused)]
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::io::Write;
 use std::str;
@@ -28,11 +29,11 @@ use crate::reasonings::{backend_ai,parse_backend_type, BackendType,gemini,chat_g
 #[clap(author, version, about, long_about = None)]
 struct Args {
     ///Parse a single text or html file
-    #[clap(long, default_value="NO")]
+    #[clap(long, default_value="")]
     file: String,
 
     ///Parse whole directory of files
-	#[clap(short, long, default_value="NO")]
+	#[clap(short, long, default_value="")]
     directory: String,
 
 	///Draw a plot? 
@@ -40,7 +41,7 @@ struct Args {
     plot: u8,
 
 	///Write output to nondefault file? Default is directory_name.json
-	#[clap(short, long, default_value="NO")]
+	#[clap(short, long, default_value="")]
 	outfile: String,
 
 	///Ratio of DB CPU / DB TIME
@@ -52,7 +53,7 @@ struct Args {
 	filter_db_time: f64,
 
 	///Analyze provided JSON file
-	#[clap(short, long, default_value="NO")]
+	#[clap(short, long, default_value="")]
 	json_file: String,
 
 	///Filter snapshots, based on SNAP IDs in format BEGIN_ID- END_ID
@@ -66,7 +67,7 @@ struct Args {
 	///Use AI model to interpret collected statistics and describe them. 
 	///Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key 
 	///The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL)
-	#[clap(short, long, default_value="NO")]
+	#[clap(short, long, default_value="")]
 	ai: String,
 
 	///Base output token count is 8192 - you can update maximum number of output tokens by this factor
@@ -140,31 +141,33 @@ fn main() {
         .build_global()
         .expect("Can't create rayon pool");
 
-	if args.file != "NO" {
+	//This is map that will be used to generate and insert appropriate links to html AI output
+	let mut events_sqls: &mut HashMap<&str, HashSet<String>> = &mut HashMap::new();
+
+	if !args.file.is_empty() {
 		let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
 		println!("{}", awr_doc);
-	} else if args.directory != "NO" {
-		let awr_doc = awr::parse_awr_dir(args.clone()).unwrap();
+	} else if !args.directory.is_empty() {
+		let awr_doc = awr::parse_awr_dir(args.clone(), events_sqls).unwrap();
 		let mut fname = format!("{}.json", &args.directory);
 		reportfile = format!("{}.txt", &args.directory);
-		if args.outfile != "NO" {
+		if !args.outfile.is_empty() {
 			fname = args.outfile;
 		}
 		let mut f = fs::File::create(fname).unwrap();
 		f.write_all(awr_doc.as_bytes()).unwrap();
 		
-	} else if args.json_file != "NO" {
-		awr::prarse_json_file(args.clone());
+	} else if !args.json_file.is_empty() {
+		awr::prarse_json_file(args.clone(), events_sqls);
 		let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
     	reportfile = format!("{}.txt", file_and_ext[0]);
 	}
-	if args.ai != "NO" {
+	if !args.ai.is_empty() {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
         if vendor_model_lang[0] == "openai" {
-            //println!("Sorry but report file got too big - we are working on it. Create an openai agent and use jas-min with -b option");
-            chat_gpt(&reportfile, vendor_model_lang, args.token_count_factor).unwrap();
+            chat_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone()).unwrap();
         } else if vendor_model_lang[0] == "google" { 
-            gemini(&reportfile, vendor_model_lang, args.token_count_factor).unwrap();
+            gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone()).unwrap();
         } else {
             println!("Unrecognized vendor. Supported vendors: openai, google");
         }   
