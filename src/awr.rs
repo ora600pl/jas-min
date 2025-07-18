@@ -1,4 +1,5 @@
 use std::clone;
+use std::collections::HashSet;
 use std::env;
 use std::env::args;
 use std::fs;
@@ -1947,7 +1948,7 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> AWR {
 }
 
 
-pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
+pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>>) -> Result<String, std::io::Error> {
 	println!("{}","\n==== PARSING DIRECTORY DATA ===".bright_cyan());
 	//let mut awr_vec: Vec<AWR> = Vec::new();
 	let mut file_collection: Vec<String> = Vec::new();
@@ -2005,7 +2006,31 @@ pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
     pb.finish_with_message("Finished parsing! 🎉");
 
 	println!("");
+
 	awr_vec.sort_by_key(|a| a.snap_info.begin_snap_id);
+
+    let fg_events: HashSet<String> = awr_vec
+										.iter()
+										.flat_map(|a| a.foreground_wait_events.clone())
+										.map(|e| e.event)
+										.collect();
+
+	let bg_events: HashSet<String> = awr_vec
+										.iter()
+										.flat_map(|a| a.background_wait_events.clone())
+										.map(|e| e.event)
+										.collect();
+
+	let sqls: HashSet<String> = awr_vec
+								.iter()
+								.flat_map(|a| a.sql_elapsed_time.clone())
+								.map(|s| s.sql_id)
+								.collect();
+
+	events_sqls.insert("FG", fg_events);
+	events_sqls.insert("BG", bg_events);
+	events_sqls.insert("SQL", sqls);
+
     let collection = AWRSCollection {
         db_instance_information: is_instance_info.unwrap_or_default(),
         awrs: awr_vec,
@@ -2015,6 +2040,7 @@ pub fn parse_awr_dir(args: Args) -> Result<String, std::io::Error> {
         let html_fname = format!("{}.html", &args.directory);
         plot_to_file(collection, html_fname, args.clone());
     }
+	
     Ok(json_str)
 }
 
@@ -2041,14 +2067,35 @@ pub fn parse_awr_report(data: &str, json_data: bool, args: &Args) -> Result<Stri
 	Ok(awr_doc)
 }
 
-pub fn prarse_json_file(args: Args) {
+pub fn prarse_json_file(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>>) {
 	println!("{}","\n==== PARSING JSON DATA ===".bright_cyan());
 	//fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String
 	let json_file = fs::read_to_string(&args.json_file).expect(&format!("Something wrong with a file {} ", &args.json_file));
 	let mut collection: AWRSCollection = serde_json::from_str(&json_file).expect("Wrong JSON format");
 	collection.awrs.clone().sort_by_key(|a| a.snap_info.begin_snap_id);
 	println!("{} samples found",collection.awrs.len());
-	let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
+    let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
     let html_fname = format!("{}.html", file_and_ext[0]);
+	let fg_events: HashSet<String> = collection.awrs
+										.iter()
+										.flat_map(|a| a.foreground_wait_events.clone())
+										.map(|e| e.event)
+										.collect();
+
+	let bg_events: HashSet<String> = collection.awrs
+										.iter()
+										.flat_map(|a| a.background_wait_events.clone())
+										.map(|e| e.event)
+										.collect();
+
+	let sqls: HashSet<String> = collection.awrs
+								.iter()
+								.flat_map(|a| a.sql_elapsed_time.clone())
+								.map(|s| s.sql_id)
+								.collect();
+
+	events_sqls.insert("FG", fg_events);
+	events_sqls.insert("BG", bg_events);
+	events_sqls.insert("SQL", sqls);
 	plot_to_file(collection, html_fname, args.clone());
 }
