@@ -9,7 +9,7 @@ use ndarray_stats::histogram::Grid;
 /// - CSS styling
 /// - Table of Contents (TOC)
 /// - Anchored headings
-fn markdown_to_html_with_toc(markdown_input: &str) -> String {
+fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
     // Enable desired Markdown extensions
     let mut options = Options::empty();
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
@@ -107,6 +107,9 @@ fn markdown_to_html_with_toc(markdown_input: &str) -> String {
     // Render HTML from modified parser stream
     html::push_html(&mut html_output, parser_with_ids.into_iter());
 
+    let load_profile = format!("{}/jasmin_highlight.html", html_dir);
+    let jasmin_main = format!("{}/jasmin_main.html", html_dir);
+
     // Wrap the result in a complete HTML template
     format!(
         r#"<!DOCTYPE html>
@@ -163,6 +166,8 @@ fn markdown_to_html_with_toc(markdown_input: &str) -> String {
         <img src="https://raw.githubusercontent.com/ora600pl/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
     </a></p>
 {toc}
+<iframe src="{lp}" width="100%" height="600px" style="border: none;"></iframe>
+<a href="{jm}" target="_blank">ALL CHARTS</a>
 {content}
 <p align="center"><a href="https://www.ora-600.pl" target="_blank">
         <img src="https://raw.githubusercontent.com/ora600pl/jas-min/main/img/ora-600.png" width="150" alt="ORA-600" onerror="this.style.display='none';"/>
@@ -170,6 +175,8 @@ fn markdown_to_html_with_toc(markdown_input: &str) -> String {
 </body>
 </html>"#,
         toc = toc_html,
+        lp = load_profile,
+        jm = jasmin_main,
         content = html_output
     )
 }
@@ -186,12 +193,38 @@ fn heading_level_to_int(level: &HeadingLevel) -> usize {
     }
 }
 
+fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, html_dir: String) -> String {
+    let mut html_with_links: String = html;
+    for (name_type, names) in events_sqls {
+        for name in names {
+            if name_type == "FG" {
+                let file_name = get_safe_event_filename(&html_dir, name.clone(), true);
+                let path = Path::new(&file_name);
+                if path.exists() {
+                    let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
+                    html_with_links = html_with_links.replace(&name, &link_txt);
+                }
+            } else if name_type == "SQL" {
+                let file_name = format!("{}/sqlid_{}.html", html_dir, &name);
+                let path = Path::new(&file_name);
+                if path.exists() {
+                    let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
+                    html_with_links = html_with_links.replace(&name, &link_txt);
+                }
+            }
+        }
+    }
+    html_with_links
+}
+
 /// Reads a Markdown file, converts to HTML with TOC, writes to .html file
-pub fn convert_md_to_html_file(input_path: &str) {
+pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, HashSet<String>>) {
     let markdown = fs::read_to_string(input_path)
         .unwrap_or_else(|_| panic!("Could not read file '{}'", input_path));
 
-    let html = markdown_to_html_with_toc(&markdown);
+    let html_dir = format!("{}.html_reports", input_path.split('.').collect::<Vec<&str>>()[0]);
+    let html_plain = markdown_to_html_with_toc(&markdown, &html_dir);
+    let html = add_links_to_html(html_plain, events_sqls, html_dir);
 
     let output_path = Path::new(input_path).with_extension("html");
 
@@ -259,4 +292,16 @@ pub fn median(data: &[f64]) -> f64 {
 pub fn mad(data: &[f64], med: f64) -> f64 {
     let deviations: Vec<f64> = data.iter().map(|x| (x - med).abs()).collect();
     median(&deviations)
+}
+
+pub fn get_safe_event_filename(dirpath: &str, event: String, is_fg: bool ) -> String {
+    // Replace invalid characters for filenames (e.g., slashes or spaces)
+    let safe_event_name: String = event.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
+    let mut file_name: String = String::new();
+    if is_fg {
+        file_name = format!("{}/fg_{}.html", dirpath, safe_event_name);
+    } else {
+        file_name = format!("{}/bg_{}.html", dirpath, safe_event_name);
+    }
+    file_name
 }

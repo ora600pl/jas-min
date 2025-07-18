@@ -502,14 +502,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             );
             plot.set_layout(layout);
         
-        // Replace invalid characters for filenames (e.g., slashes or spaces)
-        let safe_event_name: String = event.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
-        let mut file_name: String = String::new();
-        if is_fg {
-            file_name = format!("{}/fg_{}.html", dirpath, safe_event_name);
-        } else {
-            file_name = format!("{}/bg_{}.html", dirpath, safe_event_name);
-        }
+        let file_name = get_safe_event_filename(&dirpath, event.clone(), is_fg);
 
         // Save the plot as an HTML file
         let path: &Path = Path::new(&file_name);
@@ -1548,7 +1541,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false, &snap_range, &html_dir);
     generate_sqls_plotfiles(&collection.awrs, &top_stats, &snap_range, &html_dir);
     let iostats = generate_iostats_plotfile(&collection.awrs, &snap_range, &html_dir);
-    let fname: String = format!("{}/jasmin_{}", &html_dir, &stripped_fname); //new file name path for main report
+    let fname: String = format!("{}/jasmin_main.html", &html_dir); //new file name path for main report
 
     /* ------ Preparing data ------ */
     println!("\n{}","==== PREPARING RESULTS ===".bright_cyan());
