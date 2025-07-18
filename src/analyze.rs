@@ -1336,7 +1336,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
     functions_to_plot
 }
 
-fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
+fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir: &str) -> Vec<String> {
 
     //It will contain section name and vector for all segment stats from the whole AWR collection
     let mut objects_in_section: BTreeMap<String, Vec<SegmentStats>> = BTreeMap::new();
@@ -1349,13 +1349,14 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
                 .extend(segments.clone());
         }
     }
-    
 
+    let mut sections_toplot: Vec<String> = Vec::new();    
     for (section, objects) in objects_in_section {
-
+        sections_toplot.push(objects[0].stat_name.replace(" ","_"));
         let section_msg = format!("\n\nTOP 10 Segments by {} ordered by PCT of occuriance desc. Statstic values computed based on {}\n", section, objects[0].stat_name);
         make_notes!(logfile_name, args.quiet, "{}", section_msg.bold().blue());
         let mut table = Table::new();
+        let mut segment_stat_rows = String::new();
 
         if args.security_level > 0 { //In security level 0 there is no segment name
             table.set_titles(Row::new(vec![
@@ -1443,6 +1444,18 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
                     Cell::new(&s.stddev),
                     Cell::new(&s.pct)
                 ]));
+                segment_stat_rows.push_str(&format!(
+                    r#"<tr>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                    </tr>"#,
+                    &s.segment_name,&s.segment_type,&s.object_id,&s.data_object_id, &s.avg, &s.stddev,&s.pct
+                ));
             } else {
                 table.add_row(Row::new(vec![
                     Cell::new(&s.segment_type),
@@ -1452,6 +1465,17 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
                     Cell::new(&s.stddev),
                     Cell::new(&s.pct)
                 ]));
+                segment_stat_rows.push_str(&format!(
+                    r#"<tr>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                    </tr>"#,
+                    &s.segment_type,&s.object_id,&s.data_object_id, &s.avg, &s.stddev,&s.pct
+                ));
             }
             
         }
@@ -1459,8 +1483,69 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str) {
         for table_line in table.to_string().lines() {
             make_notes!(logfile_name, args.quiet, "{}\n", table_line);
         }
+        
+        if args.security_level > 0 {
+            let table_segment_stat: String = format!(
+                r#"
+                <table id="segstat-{idname}-table" style="display: none">
+                    <thead>
+                        <tr style="background-color: #3cbdc9;">
+                            <th colspan="7" style="text-align: center; font-weight: bold; color: rgba(255, 0, 103, 1); font-size: 1.1em;">TOP 10 Segments by {idname}</th>
+                        </tr>
+                        <tr style="background-color: #3cbdc9;">
+                            <th onclick="sortTable('segstat-{idname}-table',0)" style="cursor: pointer;">Segment Name</th>
+                            <th onclick="sortTable('segstat-{idname}-table',1)" style="cursor: pointer;">Segment Type</th>
+                            <th onclick="sortTable('segstat-{idname}-table',2)" style="cursor: pointer;">Object Id</th>
+                            <th onclick="sortTable('segstat-{idname}-table',3)" style="cursor: pointer;">Data Object Id</th>
+                            <th onclick="sortTable('segstat-{idname}-table',4)" style="cursor: pointer;">AVG</th>
+                            <th onclick="sortTable('segstat-{idname}-table',5)" style="cursor: pointer;">STDDEV</th>
+                            <th onclick="sortTable('segstat-{idname}-table',6)" style="cursor: pointer;">% of occurrence</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {rows}
+                    </tbody>
+                </table>
+                "#,
+                idname = objects[0].stat_name.replace(" ","_"),
+                rows = segment_stat_rows
+            );
+            let segment_stats_filename: String = format!("{}/segstats_{}.html", dir, objects[0].stat_name.replace(" ","_"),);
+            if let Err(e) = fs::write(&segment_stats_filename, table_segment_stat) {
+                eprintln!("Error writing file {}: {}", segment_stats_filename, e);
+            }
+        } else {
+            let table_segment_stat: String = format!(
+                r#"
+                <table id="segstat-{idname}-table" style="display: none">
+                    <thead>
+                        <tr style="background-color: #3cbdc9;">
+                            <th colspan="6" style="text-align: center; font-weight: bold; color: rgba(255, 0, 103, 1);font-size: 1.1em;">TOP 10 Segments by {idname}</th>
+                        </tr>
+                        <tr style="background-color: #3cbdc9;">
+                            <th onclick="sortTable('segstat-{idname}-table',1)" style="cursor: pointer;">Segment Type</th>
+                            <th onclick="sortTable('segstat-{idname}-table',2)" style="cursor: pointer;">Object Id</th>
+                            <th onclick="sortTable('segstat-{idname}-table',3)" style="cursor: pointer;">Data Object Id</th>
+                            <th onclick="sortTable('segstat-{idname}-table',4)" style="cursor: pointer;">AVG</th>
+                            <th onclick="sortTable('segstat-{idname}-table',5)" style="cursor: pointer;">STDDEV</th>
+                            <th onclick="sortTable('segstat-{idname}-table',6)" style="cursor: pointer;">% of occurrence</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {rows}
+                    </tbody>
+                </table>
+                "#,
+                idname = objects[0].stat_name.replace(" ","_"),
+                rows = segment_stat_rows
+            );
+            let segment_stats_filename: String = format!("{}/segstats_{}.html", dir, objects[0].stat_name.replace(" ","_"),);
+            if let Err(e) = fs::write(&segment_stats_filename, table_segment_stat) {
+                eprintln!("Error writing file {}: {}", segment_stats_filename, e);
+            }
+        };
     }
-    
+    sections_toplot   
 }
 
 pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
@@ -2792,7 +2877,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         </head>
         <body>
             <div class="content">
-                <p><span>JAS-MIN<br></span><span style="font-size:20px;font-weight:bold;">Correlation of Instance Statistics with DB Time for Values >= 0.5 and <= -0.5</span></p>
+                <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
+                <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
+                </a></p>
+                <p><span style="font-size:20px;font-weight:bold;">Correlation of Instance Statistics with DB Time for Values >= 0.5 and <= -0.5</span></p>
                 <table id="stats_corr_table" >
                     <thead>
                         <tr>
@@ -3189,7 +3277,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     );
 
     /******** Report Segment Statistics Summary */
-        report_segments_summary(&collection.awrs, &args, &logfile_name);
+    let segstats = report_segments_summary(&collection.awrs, &args, &logfile_name, &html_dir);
     /********************************************/
     println!("{}","Generating Plots");
     plot_main.set_layout(layout_main);
@@ -3306,6 +3394,18 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 }}
             }});
         }}
+        function toggleTableWithCheckbox(checkboxId, tableId) {{
+            const checkbox = document.getElementById(checkboxId);
+            const table = document.getElementById(tableId);
+            if (!checkbox || !table) return;
+            checkbox.addEventListener('change', () => {{
+                if (checkbox.checked) {{
+                    table.style.display = 'table';
+                }} else {{
+                    table.style.display = 'none';
+                }}
+            }});
+        }}
         toggleTable('show-events-button', 'events-table');
         toggleTable('show-sqls-button', 'sqls-table');
         toggleTable('show-bgevents-button', 'bgevents-table');
@@ -3383,26 +3483,39 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 row.style.display = 'none';
             }}
         }}
-        function toggleElement(buttonId, elementSelector,checkboxSelector) {{
+        function toggleElement(buttonId, elementSelector = null, checkboxSelector) {{
             const button = document.getElementById(buttonId);
-            const element = document.getElementById(elementSelector);
+            const element = elementSelector ? document.getElementById(elementSelector) : null;
             const checkboxContainer = document.getElementById(checkboxSelector);
+            if (!button) return;
             button.addEventListener('click', () => {{
-                if (element.style.display === 'none' || element.style.display === '') {{
-                    element.style.display = 'block';
-                    element.style.width = '100%';
-                    button.classList.add("button-active");
-                    if (checkboxContainer) {{
-                        checkboxContainer.style.display = 'block';
-                    }}
-                    if (window.Plotly) {{
-                        window.Plotly.Plots.resize(element);
+                if (element) {{
+                    if (element.style.display === 'none' || element.style.display === '') {{
+                        element.style.display = 'block';
+                        element.style.width = '100%';
+                        button.classList.add("button-active");
+                        if (checkboxContainer) {{
+                            checkboxContainer.style.display = 'block';
+                        }}
+                        if (window.Plotly) {{
+                            window.Plotly.Plots.resize(element);
+                        }}
+                    }} else {{
+                        element.style.display = 'none';
+                        button.classList.remove("button-active");
+                        if (checkboxContainer) {{
+                            checkboxContainer.style.display = 'none';
+                        }}
                     }}
                 }} else {{
-                    element.style.display = 'none';
-                    button.classList.remove("button-active");
                     if (checkboxContainer) {{
-                        checkboxContainer.style.display = 'none';
+                        if (checkboxContainer.style.display === 'none' || checkboxContainer.style.display === '') {{
+                            checkboxContainer.style.display = 'block';
+                            button.classList.add("button-active");
+                        }} else {{
+                            checkboxContainer.style.display = 'none';
+                            button.classList.remove("button-active");
+                        }}
                     }}
                 }}
             }});
@@ -3423,17 +3536,30 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             }});
         }}
         document.addEventListener('DOMContentLoaded', function() {{
-            toggleElement('show-iostats-button','iostat_zMAIN-html-element','checkbox-container');
-            const checkboxes = document.querySelectorAll('input[type="checkbox"][id$="-checkbox"]');
-            checkboxes.forEach(checkbox => {{
+            toggleElement('show-iostats-button','iostat_zMAIN-html-element','iocheckbox-container');
+            toggleElement('show-segstats-button',null,'segcheckbox-container');
+            const iocheckboxes = document.querySelectorAll('input[type="checkbox"][id$="-iocheckbox"]');
+            iocheckboxes.forEach(checkbox => {{
                 const checkboxId = checkbox.id;
-                const elementId = 'iostat_' + checkboxId.replace('-checkbox', '-html-element');
+                const elementId = 'iostat_' + checkboxId.replace('-iocheckbox', '-html-element');
                 const element = document.getElementById(elementId);
                 if (element) {{
                     toggleElementWithCheckbox(checkboxId, elementId);
                     console.log(`Set up toggle for ${{checkboxId}} -> ${{elementId}}`);
                 }} else {{
                     console.warn(`Element '${{elementId}}' not found for checkbox '${{checkboxId}}'`);
+                }}
+            }});
+            const segcheckboxes = document.querySelectorAll('input[type="checkbox"][id$="-segcheckbox"]');
+            segcheckboxes.forEach(checkbox => {{
+                const checkboxId = checkbox.id;
+                const tableId = 'segstat-' + checkboxId.replace('-segcheckbox', '-table');
+                const table = document.getElementById(tableId);
+                if (table) {{
+                    toggleTableWithCheckbox(checkboxId, tableId); // Use dedicated function
+                    console.log(`Set up table toggle for ${{checkboxId}} -> ${{tableId}}`);
+                }} else {{
+                    console.warn(`Table '${{tableId}}' not found for checkbox '${{checkboxId}}'`);
                 }}
             }});
         }});
@@ -3504,20 +3630,28 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let explorer_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Stats Explorer</h4></div>\n";
     let insight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Performance Insight</h4></div>\n";
     let explorer_button = format!(
-        "\n\t{}\n\t<div id=\"checkbox-container\" style=\"margin-top: 10px; display: none;\">{}</div>",
+        "\n\t{}\t{}\n\t<div id=\"iocheckbox-container\" style=\"margin-top: 10px; display: none;\">{}</div>
+        \n\t<div id=\"segcheckbox-container\" style=\"margin-top: 10px; display: none;\">{}</div>",
         "<button id=\"show-iostats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">IO Stats</span><span>IO Stats</span></button>",
+        "<button id=\"show-segstats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">SEGMENTS Stats</span><span>SEGMENTS Stats</span></button>",
         iostats
             .keys()
             .filter(|&func| func != "zMAIN")
             .map(|func| {
                 let sanitized_func = func.replace(" ", "_");
                 format!(
-                    "<input type=\"checkbox\" id=\"{}-checkbox\"><label for=\"{}-checkbox\">{}</label>", 
+                    "<input type=\"checkbox\" id=\"{}-iocheckbox\"><label for=\"{}-iocheckbox\">{}</label>", 
                     sanitized_func, sanitized_func, func
                 )
             })
             .collect::<Vec<String>>()
-            .join(" ")
+            .join(" "),
+        segstats.iter().map(|seg_stat| {
+            format!(
+                "<input type=\"checkbox\" id=\"{}-segcheckbox\"><label for=\"{}-segcheckbox\">by {}</label>", 
+                seg_stat, seg_stat, seg_stat.replace("_"," ")
+            )
+        }).collect::<Vec<String>>().join("\n"),
     );
     // Inject HighLight section into Main HTML
     plotly_html = plotly_html.replace(
@@ -3539,6 +3673,15 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                         .take_while(|line| !line.contains("</script>")) // Keep only lines before `</script>`
                         .collect::<Vec<&str>>() // Collect remaining lines into a Vec
                         .join("\n"); // Convert back into a String
+        plotly_html = plotly_html.replace(
+                        "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
+                        &format!("{}\n\t\t\t\t</script><div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
+                        stats_explorer_html)
+                    );
+    }
+    for func in segstats {
+        let mut stats_explorer_html: String = fs::read_to_string(format!("{}/segstats_{}.html", &html_dir,func))
+            .expect("Failed to read iostats file");
         plotly_html = plotly_html.replace(
                         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
                         &format!("{}\n\t\t\t\t</script><div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
