@@ -160,7 +160,7 @@ fn main() {
 	} else if !args.json_file.is_empty() {
 		awr::prarse_json_file(args.clone(), events_sqls);
 		let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
-    	reportfile = format!("{}.txt", file_and_ext[0]);
+    reportfile = format!("{}.txt", file_and_ext[0]);
 	}
 	if !args.ai.is_empty() {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
