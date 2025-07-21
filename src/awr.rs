@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
+use dashmap::DashMap;
 
 use crate::analyze::plot_to_file;
 use crate::idleevents::is_idle;
@@ -243,6 +244,8 @@ pub struct AWR {
 pub struct AWRSCollection {
     pub db_instance_information: DBInstance,
     pub awrs: Vec<AWR>,
+	pub sql_text: HashMap<String, String>,
+
 }
 
 #[derive(Debug)]
@@ -284,6 +287,26 @@ fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: 
 			}
 		}
     }
+}
+
+fn sql_text(table: ElementRef) -> HashMap<String, String> {
+	let mut sqls: HashMap<String, String> = HashMap::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() > 1 {
+			let sql_id: Vec<&str> =  columns[0].text().collect::<Vec<_>>();
+			let sql_id = sql_id[0].trim().to_string();
+
+			let sql_text: Vec<&str> =  columns[1].text().collect::<Vec<_>>();
+			let sql_text = sql_text[0].trim().to_string();
+
+			sqls.entry(sql_id).or_insert(sql_text);
+		}
+	}
+	sqls
 }
 
 fn segment_stats(table: ElementRef, stat_name: &str, args: &Args) -> Vec<SegmentStats> {
@@ -1692,8 +1715,9 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
 	db_instance_information
 }
 
-fn parse_awr_report_internal(fname: &str, args: &Args) -> AWR {
+fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, String>) {
 	let mut awr: AWR = AWR::default();
+	let mut sqls_txt: HashMap<String, String> = HashMap::new();
 	if fname.ends_with("html") {
 
 		//println!("Parsing file {}", &fname);
@@ -1773,6 +1797,8 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> AWR {
 			} else if element.value().attr("summary").unwrap() == "This table displays top segments by global cache buffer busy waits. Owner, tablespace name, object type, GC buffer busy waits, etc. are displayed for each segment" {
 				let segment = segment_stats(element, "GCBusy Waits", &args);
 				awr.segment_stats.insert("Global Cache Buffer Busy".to_string(), segment);
+			} else if args.security_level>=2 && element.value().attr("summary").unwrap().starts_with("This table displays the text of the SQL") {
+				 sqls_txt = sql_text(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays total number of waits, and information about total wait time, for each wait event" {
 				let event_histogram = waitevent_histogram_ms(element);
 				if event_histogram.len() > 0 {
@@ -1950,7 +1976,7 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> AWR {
 	}
 	awr.status = "OK".to_string();
 	awr.file_name = fname.to_string();
-	awr
+	(awr, sqls_txt)
 }
 
 
@@ -1997,13 +2023,21 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
 	});
 	/************************************************************/
 
+	//This is save HashMap which will be filled with SQLText if appropriate Security Level is being set
+	let sqls_txt = Arc::new(DashMap::<String, String>::new());
+
     let mut awr_vec: Vec<AWR> = file_collection
         .par_iter()
         .map_init( //initialize variables for each thread
-            || Arc::clone(&counter), //initializied will be counter as cloned value for each thread
-            |counter, f| { //map operator is initialized clone of counter and file name
-                let result = parse_awr_report_internal(f, &args); //each thread is processing one file
-                counter.fetch_add(1, Ordering::Relaxed); //increment counter
+            || (Arc::clone(&counter), Arc::clone(&sqls_txt)), //initializied will be counter as cloned value for each thread
+            |(counter, s), f| { //map operator is initialized clone of counter and file name
+                let (result, sqls) = parse_awr_report_internal(f, &args); //each thread is processing one file
+				if !sqls.is_empty() {
+					for (sqlid, sqltxt) in sqls {
+						s.entry(sqlid).or_insert(sqltxt);
+					}
+				}
+				counter.fetch_add(1, Ordering::Relaxed); //increment counter
                 result
             },
         )
@@ -2038,9 +2072,20 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
 	events_sqls.insert("BG", bg_events);
 	events_sqls.insert("SQL", sqls);
 
+	/* Collect sqls txt map from Arc */
+	let dash = Arc::try_unwrap(sqls_txt)
+    	.expect("Other Arc clones still exist");
+
+	let sql_txt_final: HashMap<_, _> = dash
+		.into_iter()
+		.collect();
+
+	/* ************************* */
+
     let collection = AWRSCollection {
         db_instance_information: is_instance_info.unwrap_or_default(),
         awrs: awr_vec,
+		sql_text: sql_txt_final,
     };
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
 	let mut f = fs::File::create(file).unwrap();
