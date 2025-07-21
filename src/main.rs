@@ -11,7 +11,6 @@ use colored::*;
 use clap::Parser;
 use rayon::ThreadPoolBuilder;
 
-
 mod awr;
 mod analyze;
 mod idleevents;
@@ -166,7 +165,7 @@ fn main() {
             chat_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone()).unwrap();
         } else if vendor_model_lang[0] == "google" { 
             gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone()).unwrap();
-        } else {
+		} else {
             println!("Unrecognized vendor. Supported vendors: openai, google");
         }   
     }
