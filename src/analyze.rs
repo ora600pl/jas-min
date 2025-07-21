@@ -1582,6 +1582,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut y_cleanout_cr: Vec<f64> = Vec::new();
     let mut y_read_mb: Vec<f64> = Vec::new();
     let mut y_write_mb: Vec<f64> = Vec::new();
+    let mut y_user_commits_s: Vec<u64> = Vec::new();
+    let mut y_user_rollbacks_s: Vec<u64> = Vec::new();
+    let mut y_logical_reads_s: Vec<f64> = Vec::new();
+    let mut y_block_changes_s: Vec<f64> = Vec::new();
 
     /*Variables used for statistics computations*/
     let mut y_vals_events_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
@@ -1733,6 +1737,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                             y_vals_trans.push(lp.per_second);
                     } else if lp.stat_name.starts_with("Redo size") {
                         y_vals_redosize.push(lp.per_second as f64/1024.0/1024.0);
+                    } else if lp.stat_name.starts_with("Block changes") {
+                        y_block_changes_s.push(lp.per_second);
                     } else if lp.stat_name.starts_with("Parses") {
                         y_vals_parses.push(lp.per_second);
                     } else if lp.stat_name.starts_with("Hard parses") {
@@ -1741,6 +1747,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                         y_read_mb.push(lp.per_second*collection.db_instance_information.db_block_size as f64/1024.0/1024.0);
                     } else if lp.stat_name.starts_with("Physical write") {
                         y_write_mb.push(lp.per_second*collection.db_instance_information.db_block_size as f64/1024.0/1024.0);
+                    } else if lp.stat_name.starts_with("Logical read") {
+                        y_logical_reads_s.push(lp.per_second*collection.db_instance_information.db_block_size as f64/1024.0/1024.0);
                     }
             }
 
@@ -1771,6 +1779,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 v[x_vals.len()-1] = activity.total as f64;
 
                 // Plot additional stats if 'log file sync' is in top events
+                if activity.statname == "user commits" {
+                    y_user_commits_s.push(activity.total);
+                } else if activity.statname == "user rollbacks" {
+                    y_user_rollbacks_s.push(activity.total);
+                };                    
+                    
                 if is_logfilesync_high {
                 
                     if activity.statname == "user calls" {
@@ -1843,6 +1857,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
     let mut plot_main: Plot = Plot::new();
     let mut plot_highlight: Plot = Plot::new();
+    let mut plot_highlight2: Plot = Plot::new();
 
     let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime.clone())
                                                     .mode(Mode::LinesText)
@@ -1854,7 +1869,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                     .name("DB CPU (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
-    let calls_trace = Scatter::new(x_vals.clone(), y_vals_calls)
+    let calls_trace = Scatter::new(x_vals.clone(), y_vals_calls.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("User Calls")
                                                     .x_axis("x1")
@@ -1869,12 +1884,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                     .name("Executes")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
-    let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses)
+    let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("Parses")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
-    let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses)
+    let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("Hard Parses")
                                                     .x_axis("x1")
@@ -1961,6 +1976,77 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
                                                 .marker(Marker::new().color("#ad247a".to_string()).opacity(0.7).size(2));
+    let user_commits_box_plot  = BoxPlot::new(y_user_commits_s)
+                                                //.mode(Mode::LinesText)
+                                                .name("User Commits/snap")
+                                                .x_axis("x1")
+                                                .y_axis("y1")
+                                                .box_mean(BoxMean::True)
+                                                .show_legend(false)
+                                                .box_points(BoxPoints::All)
+                                                .whisker_width(0.2)
+                                                .marker(Marker::new().color("#FF6EC7".to_string()).opacity(0.7).size(2));
+    let user_rollbacks_box_plot  = BoxPlot::new(y_user_rollbacks_s)
+                                            //.mode(Mode::LinesText)
+                                                .name("User Rollbacks/snap")
+                                                .x_axis("x2")
+                                                .y_axis("y2")
+                                                .box_mean(BoxMean::True)
+                                                .show_legend(false)
+                                                .box_points(BoxPoints::All)
+                                                .whisker_width(0.2)
+                                                .marker(Marker::new().color("#FF00CC".to_string()).opacity(0.7).size(2));
+    let user_parses_box_plot  = BoxPlot::new(y_vals_parses)
+                                            //.mode(Mode::LinesText)
+                                                .name("Parses/s")
+                                                .x_axis("x3")
+                                                .y_axis("y3")
+                                                .box_mean(BoxMean::True)
+                                                .show_legend(false)
+                                                .box_points(BoxPoints::All)
+                                                .whisker_width(0.2)
+                                                .marker(Marker::new().color("#11fa7a".to_string()).opacity(0.7).size(2));
+    let user_hparses_box_plot  = BoxPlot::new(y_vals_hparses)
+                                            //.mode(Mode::LinesText)
+                                                .name("Hard Parses/s")
+                                                .x_axis("x4")
+                                                .y_axis("y4")
+                                                .box_mean(BoxMean::True)
+                                                .show_legend(false)
+                                                .box_points(BoxPoints::All)
+                                                .whisker_width(0.2)
+                                                .marker(Marker::new().color("#f0dc02".to_string()).opacity(0.7).size(2));
+    let logical_reads_box_plot  = BoxPlot::new(y_logical_reads_s)
+                                            //.mode(Mode::LinesText)
+                                                .name("Logical Reads (MB)/s")
+                                                .x_axis("x5")
+                                                .y_axis("y5")
+                                                .box_mean(BoxMean::True)
+                                                .show_legend(false)
+                                                .box_points(BoxPoints::All)
+                                                .whisker_width(0.2)
+                                                .marker(Marker::new().color("#00FFFF".to_string()).opacity(0.7).size(2));
+    let block_changes_box_plot  = BoxPlot::new(y_block_changes_s)
+                                            //.mode(Mode::LinesText)
+                                                .name("Block Changes/s")
+                                                .x_axis("x6")
+                                                .y_axis("y6")
+                                                .box_mean(BoxMean::True)
+                                                .show_legend(false)
+                                                .box_points(BoxPoints::All)
+                                                .whisker_width(0.2)
+                                                .marker(Marker::new().color("#006aff".to_string()).opacity(0.7).size(2));
+    let user_calls_box_plot     = BoxPlot::new(y_vals_calls)
+                                            //.mode(Mode::LinesText)
+                                                .name("User Calls/s")
+                                                .x_axis("x7")
+                                                .y_axis("y7")
+                                                .box_mean(BoxMean::True)
+                                                .show_legend(false)
+                                                .box_points(BoxPoints::All)
+                                                .whisker_width(0.2)
+                                                .marker(Marker::new().color("#FF5F1F".to_string()).opacity(0.7).size(2));
+
     if is_logfilesync_high{
         let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
                                                         .mode(Mode::LinesText)
@@ -2017,6 +2103,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     plot_highlight.add_trace(read_mb_box_plot);
     plot_highlight.add_trace(write_mb_box_plot);
     plot_highlight.add_trace(redo_mb_box_plot);
+    plot_highlight2.add_trace(user_commits_box_plot);
+    plot_highlight2.add_trace(user_rollbacks_box_plot);
+    plot_highlight2.add_trace(user_parses_box_plot);
+    plot_highlight2.add_trace(user_hparses_box_plot);
+    plot_highlight2.add_trace(logical_reads_box_plot);
+    plot_highlight2.add_trace(block_changes_box_plot);
+    plot_highlight2.add_trace(user_calls_box_plot);
+
 
     // WAIT EVENTS Correlation and AVG/STDDEV calculation, print and feed table used for HTML
     let mut anomalies_html = String::new();
@@ -3164,7 +3258,123 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         .hover_mode(HoverMode::X);
 
     let layout_highlight: Layout = Layout::new()
-        .height(450)
+        .height(400)
+        .grid(
+            LayoutGrid::new()
+                .rows(1)
+                .columns(6),
+                //.row_order(Grid::TopToBottom),
+        )
+        .hover_mode(HoverMode::X)
+        .x_axis7(
+            Axis::new()
+                    .domain(&[0.9, 1.0])
+                    .anchor("y7")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis7(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x7")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis6(
+            Axis::new()
+                    .domain(&[0.75, 0.85])
+                    .anchor("y6")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis6(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x6")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis5(
+            Axis::new()
+                    .domain(&[0.6, 0.7])
+                    .anchor("y5")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis5(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x5")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis4(
+            Axis::new()
+                    .domain(&[0.45, 0.55])
+                    .anchor("y4")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis4(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x4")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis3(
+            Axis::new()
+                    .domain(&[0.3, 0.4])
+                    .anchor("y3")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis3(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x3")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis2(
+            Axis::new()
+                    .domain(&[0.15, 0.25])
+                    .anchor("y2")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis2(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x2")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        )
+        .x_axis(
+            Axis::new()
+                    .domain(&[0.0, 0.1])
+                    .anchor("y1")
+                    .range(vec![0.,])
+                    .show_grid(false)
+        )
+        .y_axis(
+            Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .range_mode(RangeMode::ToZero)
+                    .show_grid(false),
+        );
+    let layout_highlight2: Layout = Layout::new()
+        .height(400)
+        .paper_background_color("White")
+        .plot_background_color("White")
         .grid(
             LayoutGrid::new()
                 .rows(1)
@@ -3276,7 +3486,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     .range(vec![0.,])
                     .range_mode(RangeMode::ToZero)
                     .show_grid(false),
-    );
+        );
 
     /******** Report Segment Statistics Summary */
     let segstats = report_segments_summary(&collection.awrs, &args, &logfile_name, &html_dir);
@@ -3284,11 +3494,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     println!("{}","Generating Plots");
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
+    plot_highlight2.set_layout(layout_highlight2);
     // plot_main.use_local_plotly();
     // plot_highlight.use_local_plotly();
     plot_main.write_html(fname.clone());
     plot_highlight.write_html(format!("{}/jasmin_highlight.html", &html_dir));
+    plot_highlight2.write_html(format!("{}/jasmin_highlight2.html", &html_dir));
     plot_highlight.write_image(format!("{}/jasmin_highlight.png", &html_dir), ImageFormat::PNG, 1024, 768, 1.0);
+    plot_highlight2.write_image(format!("{}/jasmin_highlight2.png", &html_dir), ImageFormat::PNG, 1024, 768, 1.0);
     
     
     let first_snap_time: String = collection.awrs.first().unwrap().snap_info.begin_snap_time.clone();
@@ -3485,7 +3698,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 row.style.display = 'none';
             }}
         }}
-        function toggleElement(buttonId, elementSelector = null, checkboxSelector) {{
+        function toggleElement(buttonId, elementSelector = null, checkboxSelector = null) {{
             const button = document.getElementById(buttonId);
             const element = elementSelector ? document.getElementById(elementSelector) : null;
             const checkboxContainer = document.getElementById(checkboxSelector);
@@ -3540,6 +3753,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         document.addEventListener('DOMContentLoaded', function() {{
             toggleElement('show-iostats-button','iostat_zMAIN-html-element','iocheckbox-container');
             toggleElement('show-segstats-button',null,'segcheckbox-container');
+            toggleElement('show-lpmore-button','highlight2-html-element','');
             const iocheckboxes = document.querySelectorAll('input[type="checkbox"][id$="-iocheckbox"]');
             iocheckboxes.forEach(checkbox => {{
                 const checkboxId = checkbox.id;
@@ -3583,6 +3797,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         .expect("Failed to read Main JAS-MIN HTML file");
     let mut highlight_html: String = fs::read_to_string(format!("{}/jasmin_highlight.html", &html_dir))
         .expect("Failed to read HighLight JAS-MIN HTML file");
+    let mut highlight2_html: String = fs::read_to_string(format!("{}/jasmin_highlight2.html", &html_dir))
+        .expect("Failed to read HighLight JAS-MIN HTML file");
     
     //Prepare HighLight Section to be pasted into Main HTML file
     highlight_html = highlight_html.replace("plotly-html-element","highlight-html-element");
@@ -3590,6 +3806,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     highlight_html = highlight_html
                     .lines() // Iterate over lines
                     .skip_while(|line| !line.contains("<div id=\"highlight-html-element\"")) // Skip lines until found
+                    .take_while(|line| !line.contains("</script>")) // Keep only lines before `</script>`
+                    .collect::<Vec<&str>>() // Collect remaining lines into a Vec
+                    .join("\n"); // Convert back into a String
+    highlight2_html = highlight2_html.replace("plotly-html-element","highlight2-html-element");
+    fs::write(format!("{}/jasmin_highlight2.html", &html_dir),&highlight2_html);
+    highlight2_html = highlight2_html
+                    .lines() // Iterate over lines
+                    .skip_while(|line| !line.contains("<div id=\"highlight2-html-element\"")) // Skip lines until found
                     .take_while(|line| !line.contains("</script>")) // Keep only lines before `</script>`
                     .collect::<Vec<&str>>() // Collect remaining lines into a Vec
                     .join("\n"); // Convert back into a String
@@ -3632,8 +3856,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let explorer_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Stats Explorer</h4></div>\n";
     let insight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Performance Insight</h4></div>\n";
     let explorer_button = format!(
-        "\n\t{}\t{}\n\t<div id=\"iocheckbox-container\" style=\"margin-top: 10px; display: none;\">{}</div>
-        \n\t<div id=\"segcheckbox-container\" style=\"margin-top: 10px; display: none;\">{}</div>",
+        "\n\t{}\t{}\n\t<div id=\"iocheckbox-container\" style=\"margin-top: 10px; display: none;\">{}\n\t</div>
+    <div id=\"segcheckbox-container\" style=\"margin-top: 10px; display: none;\">\n{}\n\t</div>\n",
         "<button id=\"show-iostats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">IO Stats</span><span>IO Stats</span></button>",
         "<button id=\"show-segstats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">SEGMENTS Stats</span><span>SEGMENTS Stats</span></button>",
         iostats
@@ -3642,7 +3866,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             .map(|func| {
                 let sanitized_func = func.replace(" ", "_");
                 format!(
-                    "<input type=\"checkbox\" id=\"{}-iocheckbox\"><label for=\"{}-iocheckbox\">{}</label>", 
+                    "\n\t\t<input type=\"checkbox\" id=\"{}-iocheckbox\"><label for=\"{}-iocheckbox\">{}</label>", 
                     sanitized_func, sanitized_func, func
                 )
             })
@@ -3650,7 +3874,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             .join(" "),
         segstats.iter().map(|seg_stat| {
             format!(
-                "<input type=\"checkbox\" id=\"{}-segcheckbox\"><label for=\"{}-segcheckbox\">by {}</label>", 
+                "\t\t<input type=\"checkbox\" id=\"{}-segcheckbox\"><label for=\"{}-segcheckbox\">by {}</label>", 
                 seg_stat, seg_stat, seg_stat.replace("_"," ")
             )
         }).collect::<Vec<String>>().join("\n"),
@@ -3658,8 +3882,13 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // Inject HighLight section into Main HTML
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
-        &format!("{}{}\n\t\t\t\t</script>\n{}\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
-        highlight_title, highlight_html,explorer_title,explorer_button)
+        &format!("{}{}{}\n\t\t</script>\n{}\n\t\t</script>\n\t</div>\n{}\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
+        highlight_title, 
+        "<button id=\"show-lpmore-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">LP More</span><span>LP More</span></button>",
+        highlight_html,
+        highlight2_html,
+        explorer_title,
+        explorer_button)
     );
 
     // Inject Explorer Sections into Main HTML
