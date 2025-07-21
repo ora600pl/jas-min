@@ -3597,7 +3597,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         "<head>",
         &format!("<head>\n<title>JAS-MIN</title>\n{}",STYLE_CSS)
     );
-    let jasmin_logo = format!("<p align=\"center\"><a href=\"https://github.com/ora600pl/jas-min\" target=\"_blank\">
+    let jasmin_logo = format!("<p align=\"center\" style=\"margin-bottom: 0px; margin-top: 5px;\"><a href=\"https://github.com/ora600pl/jas-min\" target=\"_blank\">
         <img src=\"https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png\" width=\"150\" alt=\"JAS-MIN\" onerror=\"this.style.display='none';\"/>
     </a></p>");
     // Inject Buttons and Tables into Main HTML
