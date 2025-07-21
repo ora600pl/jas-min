@@ -2453,10 +2453,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
         let correlation_info: String = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
-            //print!("{: >49}", correlation_info.red().bold());
             make_notes!(&logfile_name, args.quiet, "{: >49}", correlation_info.red().bold());
         } else {
-            //print!("{: >49}", correlation_info);
             make_notes!(&logfile_name, args.quiet, "{: >49}", correlation_info);
         }
 
@@ -2615,6 +2613,10 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             }
         }
         
+        let mut sql_text = format!("Security level {} does not allow gathering SQL text, use level 2 or higher", args.security_level);
+        if args.security_level >= 2 {
+            sql_text = format!("<code><details><summary>FULL SQL TEXT</summary>{}</details></code>\n</body>",collection.sql_text.get(&sql_id).unwrap())
+        }
         // Format the content as HTML
         let sqlid_html_content: String = format!(
             r#"<!DOCTYPE html>
@@ -2634,16 +2636,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 <div class="content">
                     <p><span style="font-size:20px;font-weight:bold;width:100%;text-align:center;">{sql_id}</span></p>
                     <p><span style="color:blue;font-weight:bold;">Module:<br></span>{module}</p>
+                    <p><span style="color:blue;font-weight:bold;">SQL Text:<br></span>{sql_txt}</p>
                     <p><span style="color:blue;font-weight:bold;">Other Top Sections:<br></span> {top_section}</p>
                     <p><span style="color:blue;font-weight:bold;">Correlations:<br></span>{sql_corr_txt}</p>
                 </div>
-            </body>
-            </html>
             "#,
             sql_id = sql_id,
             module=top_stats.sqls.get(&sql_id).unwrap(),
             top_section=top_sections.iter().map(|(key, value)| format!("<span class=\"bold\">{}:</span> {:.2}%", key, value)).collect::<Vec<String>>().join("<br>"),
-            sql_corr_txt = sql_corr_txt.join("<br>")
+            sql_corr_txt = sql_corr_txt.join("<br>"),
+            sql_txt = sql_text,
         );
 
         // Insert this into already existing sqlid_*.html file
