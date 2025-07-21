@@ -2567,11 +2567,19 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let avg_exec_s: f64 = mean(x_s.clone()).unwrap();
         let stddev_exec_s: f64 = std_deviation(x_s).unwrap();
 
+        let sql_type = collection.awrs.iter()
+                                                .flat_map(|a| a.sql_elapsed_time.clone())
+                                                .find(|s| s.sql_id == sql_id)
+                                                .unwrap().sql_type;
+
         make_notes!(&logfile_name, args.quiet, "{: >24}{:.2}% of probes\n", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         make_notes!(&logfile_name, args.quiet, "{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}\n", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
         make_notes!(&logfile_name, args.quiet, "{: >36} {: <16.2} \tSTDDEV Ela Time   : {:.2}\n", "--- AVG Ela Time (s):", avg_exec_s, stddev_exec_s);
         make_notes!(&logfile_name, args.quiet, "{: >38} {: <14.2} \tSTDDEV No. executions:  {:.2}\n", "--- AVG No. executions:", avg_exec_n, stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >23} {} \n", "MODULE: ", top_stats.sqls.get(&sql_id).unwrap().blue());
+        if !sql_type.is_empty() {
+            make_notes!(&logfile_name, args.quiet, "{: >23} {} \n", "  TYPE: ", sql_type.green());
+        }
 
         
         /* Print table of detected anomalies for given SQL_ID (key.1)*/
