@@ -106,6 +106,7 @@ pub struct SQLElapsedTime {
 	pub pct_cpu: f64, 
 	pub pct_io: f64,
 	pub sql_module: String,
+	pub sql_type: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -504,7 +505,22 @@ fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
 			let sql_module = columns[7].text().collect::<Vec<_>>();
 			let sql_module = sql_module[0].trim().to_string();
 
-			sql_elapsed_time.push(SQLElapsedTime { sql_id, elapsed_time_s, executions, elpased_time_exec_s, pct_total, pct_cpu, pct_io, sql_module })
+			let sql_txt =  columns.last().unwrap().text().collect::<Vec<&str>>();
+			let sql_txt = sql_txt[0].trim().to_string();
+			let mut sql_type = "SELECT";
+			if sql_txt.to_uppercase().starts_with("UPDATE") {
+				sql_type = "UPDATE";
+			} else if sql_txt.to_uppercase().starts_with("DELETE") {
+				sql_type = "DELETE";
+			} else if sql_txt.to_uppercase().starts_with("INSERT") {
+				sql_type = "INSERT";
+			} else if sql_txt.to_uppercase().starts_with("MERGE") {
+				sql_type = "MERGE";
+			} else if sql_txt.to_uppercase().starts_with("BEGIN") || sql_txt.to_uppercase().starts_with("DECLARE")  {
+				sql_type = "PL/SQL";
+			}
+
+			sql_elapsed_time.push(SQLElapsedTime { sql_id, elapsed_time_s, executions, elpased_time_exec_s, pct_total, pct_cpu, pct_io, sql_module , sql_type: sql_type.to_string()})
 		
 		}
 	}
@@ -537,7 +553,7 @@ fn sql_ela_time_txt(sql_ela_section: Vec<&str>) -> Vec<SQLElapsedTime> {
 												executions: executions, 
 												elpased_time_exec_s: ela_exec, 
 												pct_total: pct_total, 
-												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string()});
+												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string(), sql_type: String::new()});
 			}
 		}
 		if line.starts_with("Module:") && !sql_id_hash.is_empty() {
