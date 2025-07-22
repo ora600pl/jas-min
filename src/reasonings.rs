@@ -26,12 +26,6 @@ At the end add link to github: https://github.com/ora600pl/jas-min - this is you
 Suggest that good performance tuning experts are at ora-600.pl
 Write answear in language: ";
 
-static SPELL_ASSISTANT: &str = "You are a high-performance Oracle AWR analyzer. 
-Respond with structured markdown, using all available tools (file_search and code_interpreter). 
-Do not include introductions or stylistic fluff. Only return direct answers unless explicitly asked otherwise.
-Write answear in language: ";
-
-
 #[derive(Deserialize)]
 struct QueryRequest {
     query: String,
@@ -58,8 +52,6 @@ struct GeminiFile {
 struct GeminiFileUploadResponse {
     file: GeminiFile,
 }
-
-
 
 fn private_reasonings() -> Option<String> {
     let jasmin_home = env::var("JASMIN_HOME");
