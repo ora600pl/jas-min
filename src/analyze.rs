@@ -2035,7 +2035,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                 .show_legend(false)
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
-                                                .marker(Marker::new().color("#FF5F1F".to_string()).opacity(0.7).size(2));
+                                                .marker(Marker::new().color("#ff8f1f".to_string()).opacity(0.7).size(2));
     let user_calls_box_plot     = BoxPlot::new(y_vals_calls)
                                             //.mode(Mode::LinesText)
                                                 .name("User Calls/s")
