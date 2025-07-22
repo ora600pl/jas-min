@@ -21,7 +21,6 @@ use open::*;
 
 use regex::*;
 use crate::{anomalies, Args};
-use crate::reasonings::{chat_gpt, gemini};
 use crate::anomalies::*;
 
 use crate::make_notes;

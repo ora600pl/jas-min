@@ -4,6 +4,9 @@ use std::{env, fs, collections::HashMap, path::Path, collections::HashSet};
 use ndarray::{iter, Array2};
 use ndarray_stats::CorrelationExt;
 use ndarray_stats::histogram::Grid;
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter};
+
 
 /// Converts Markdown input into a full HTML document with:
 /// - CSS styling
@@ -108,6 +111,7 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
     html::push_html(&mut html_output, parser_with_ids.into_iter());
 
     let load_profile = format!("{}/jasmin_highlight.html", html_dir);
+    let load_profile2 = format!("{}/jasmin_highlight2.html", html_dir);
     let jasmin_main = format!("{}/jasmin_main.html", html_dir);
 
     // Wrap the result in a complete HTML template
@@ -166,7 +170,8 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
         <img src="https://raw.githubusercontent.com/ora600pl/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
     </a></p>
 {toc}
-<iframe src="{lp}" width="100%" height="600px" style="border: none;"></iframe>
+<iframe src="{lp}" width="100%" height="400px" style="border: none;"></iframe>
+<iframe src="{lp2}" width="100%" height="400px" style="border: none;"></iframe>
 <a href="{jm}" target="_blank">ALL CHARTS</a>
 {content}
 <p align="center"><a href="https://www.ora-600.pl" target="_blank">
@@ -176,6 +181,7 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
 </html>"#,
         toc = toc_html,
         lp = load_profile,
+        lp2 = load_profile2,
         jm = jasmin_main,
         content = html_output
     )
