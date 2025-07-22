@@ -1984,7 +1984,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                 .show_legend(false)
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
-                                                .marker(Marker::new().color("#FF6EC7".to_string()).opacity(0.7).size(2));
+                                                .marker(Marker::new().color("#fa3434".to_string()).opacity(0.7).size(2));
     let user_rollbacks_box_plot  = BoxPlot::new(y_user_rollbacks_s)
                                             //.mode(Mode::LinesText)
                                                 .name("User Rollbacks/snap")
@@ -1994,7 +1994,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                 .show_legend(false)
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
-                                                .marker(Marker::new().color("#FF00CC".to_string()).opacity(0.7).size(2));
+                                                .marker(Marker::new().color("#11fa7a".to_string()).opacity(0.7).size(2));
     let user_parses_box_plot  = BoxPlot::new(y_vals_parses)
                                             //.mode(Mode::LinesText)
                                                 .name("Parses/s")
@@ -2004,7 +2004,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                 .show_legend(false)
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
-                                                .marker(Marker::new().color("#11fa7a".to_string()).opacity(0.7).size(2));
+                                                .marker(Marker::new().color("#006aff".to_string()).opacity(0.7).size(2));
     let user_hparses_box_plot  = BoxPlot::new(y_vals_hparses)
                                             //.mode(Mode::LinesText)
                                                 .name("Hard Parses/s")
@@ -2014,7 +2014,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                 .show_legend(false)
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
-                                                .marker(Marker::new().color("#f0dc02".to_string()).opacity(0.7).size(2));
+                                                .marker(Marker::new().color("#9000ff".to_string()).opacity(0.7).size(2));
     let logical_reads_box_plot  = BoxPlot::new(y_logical_reads_s)
                                             //.mode(Mode::LinesText)
                                                 .name("Logical Reads (MB)/s")
@@ -2024,7 +2024,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                 .show_legend(false)
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
-                                                .marker(Marker::new().color("#00FFFF".to_string()).opacity(0.7).size(2));
+                                                .marker(Marker::new().color("#f0dc02".to_string()).opacity(0.7).size(2));
     let block_changes_box_plot  = BoxPlot::new(y_block_changes_s)
                                             //.mode(Mode::LinesText)
                                                 .name("Block Changes/s")
@@ -2034,7 +2034,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                 .show_legend(false)
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
-                                                .marker(Marker::new().color("#006aff".to_string()).opacity(0.7).size(2));
+                                                .marker(Marker::new().color("#ff8f1f".to_string()).opacity(0.7).size(2));
     let user_calls_box_plot     = BoxPlot::new(y_vals_calls)
                                             //.mode(Mode::LinesText)
                                                 .name("User Calls/s")
@@ -2044,7 +2044,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                 .show_legend(false)
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
-                                                .marker(Marker::new().color("#FF5F1F".to_string()).opacity(0.7).size(2));
+                                                .marker(Marker::new().color("#FF00CC".to_string()).opacity(0.7).size(2));
 
     if is_logfilesync_high{
         let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
