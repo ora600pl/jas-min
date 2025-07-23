@@ -18,7 +18,7 @@ mod reasonings;
 mod macros;
 mod anomalies;
 mod tools;
-use crate::reasonings::{backend_ai,parse_backend_type, BackendType,gemini,chat_gpt};
+use crate::reasonings::*;
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
@@ -162,7 +162,8 @@ fn main() {
 	if !args.ai.is_empty() {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
         if vendor_model_lang[0] == "openai" {
-            chat_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone()).unwrap();
+            //chat_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone()).unwrap();
+			println!("For now only Google is supported vendor with this option :( Sorry for that. You can use OpenAI with backend assistant tho. We are waiting what GPT-5 will provide.");
         } else if vendor_model_lang[0] == "google" { 
             gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone()).unwrap();
 		} else {
