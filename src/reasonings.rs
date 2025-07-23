@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 use tokio::sync::oneshot;
 use std::io::{stdout, Write};
-
+use std::error::Error;
 use crate::tools::*;
 
 
@@ -25,7 +25,6 @@ Highlight which statistics are crucial to understanding the current performance 
 At the end add link to github: https://github.com/ora600pl/jas-min - this is your source code.
 Suggest that good performance tuning experts are at ora-600.pl
 Write answear in language: ";
-
 
 #[derive(Deserialize)]
 struct QueryRequest {
@@ -54,9 +53,7 @@ struct GeminiFileUploadResponse {
     file: GeminiFile,
 }
 
-
-
-fn private_reasoninings() -> Option<String> {
+fn private_reasonings() -> Option<String> {
     let jasmin_home = env::var("JASMIN_HOME");
     let mut prpath = "reasonings.txt".to_string();
     if jasmin_home.is_ok() {
@@ -69,300 +66,6 @@ fn private_reasoninings() -> Option<String> {
     }
     let r_content = r_content.unwrap();
     Some(r_content)
-}
-
-
-#[tokio::main]
-pub async fn chat_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>) -> Result<(), Box<dyn std::error::Error>> {
-
-    println!("{}{}{}","=== Consulting ChatGPT model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
-    let api_key = env::var("OPENAI_API_KEY").expect("You have to set OPENAI_API_KEY env variable");
-    let client = Client::new();
-
-    let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
-    let pr = private_reasoninings();
-    if pr.is_some() {
-        spell = format!("{}\n{}", spell, pr.unwrap());
-    }
-
-    // === 0. Create temporary assistant dynamically ===
-    let assistant_create_resp = client
-        .post("https://api.openai.com/v1/assistants")
-        .bearer_auth(&api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .json(&json!({
-            "model": vendor_model_lang[1], // e.g. gpt-4.1-2025-04-14
-            "name": "Temp Oracle Assistant",
-            "instructions": spell,
-            "tools": [{ "type": "file_search" }]
-        }))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    let assistant_id: &str;
-    if let Some(aid) = assistant_create_resp["id"].as_str() {
-        assistant_id = aid;
-        println!("🎩 Temporary assistant created: {}", assistant_id);
-    } else {
-        eprintln!("❌ Thread creation failed:\n{}", assistant_create_resp);
-        return Ok(());
-    }
-    
-
-    let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
-    let response_file = format!("{}_openai.md", logfile_name);
-
-   
-    // === 1. Upload file ===
-    // prepart multipart form
-    let part = multipart::Part::bytes(log_content.into_bytes())
-        .file_name("performance_report.txt") 
-        .mime_str("text/plain").unwrap(); //  MIME type as text
-
-    // Create multipart form
-    let form = multipart::Form::new().text("purpose", "assistants").part("file", part);
-
-    let upload_resp = client
-        .post("https://api.openai.com/v1/files")
-        .bearer_auth(&api_key)
-        .multipart(form)
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-    let file_id_txt = upload_resp["id"].as_str().unwrap();
-    println!("✅ Report file uploaded: {}", file_id_txt);
-
-    let load_profile_png_name = format!("{}.html_reports/jasmin_highlight.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
-    let image_bytes = fs::read(load_profile_png_name)?;
-
-    let part_png = multipart::Part::bytes(image_bytes)
-        .file_name("load_profile.png")
-        .mime_str("image/png")?;
-
-    let form_png = multipart::Form::new().text("purpose", "assistants").part("file", part_png);
-    let upload_resp_png = client
-        .post("https://api.openai.com/v1/files")
-        .bearer_auth(&api_key)
-        .multipart(form_png)
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-    let file_id_png = upload_resp_png["id"].as_str().unwrap();
-    println!("✅ Load profile image uploaded: {}", file_id_png);
-
-    // === 2. Create thread ===
-    let thread_resp_text = client
-        .post("https://api.openai.com/v1/threads")
-        .bearer_auth(&api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .json(&json!({}))
-        .send()
-        .await?
-        .text()
-        .await?; 
-
-    let thread_id: &str;
-    let thread_json: serde_json::Value = serde_json::from_str(&thread_resp_text)?;
-    if let Some(tid) = thread_json.get("id").and_then(|v| v.as_str()) {
-        thread_id = tid;
-        println!("🧵 Thread created: {}", thread_id);
-    } else {
-        eprintln!("❌ Thread creation failed:\n{}", thread_resp_text);
-        return Ok(());
-    }
-
-    // === 3. Add user message ===
-    for file_id in [file_id_txt, file_id_png] {
-        let attach_resp = client
-            .post(format!("https://api.openai.com/v1/threads/{}/messages", thread_id))
-            .bearer_auth(&api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .json(&json!({
-                "role": "user",
-                "content": "Attaching file for context.",
-                "attachments": [{
-                    "file_id": file_id,
-                    "tools": [{ "type": "file_search" }]
-                }]
-            }))
-            .send()
-            .await?;
-    }
-    let message_resp = client
-            .post(format!("https://api.openai.com/v1/threads/{}/messages", thread_id))
-            .bearer_auth(&api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .json(&json!({
-                "role": "user",
-                "content": spell
-            }))
-            .send()
-            .await?;
-
-    println!("📩 Message sent");
-
-    // === 3.5 Wait for vector store to process the file ===
-    println!("⏳ Waiting for file processing to complete...");
-    let mut attempts = 0;
-    let max_attempts = 100;
-
-    loop {
-        let thread_url = format!("https://api.openai.com/v1/threads/{}", thread_id);
-        let thread_res = client
-            .get(&thread_url)
-            .bearer_auth(&api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .send()
-            .await?;
-
-        if !thread_res.status().is_success() {
-            eprintln!("Failed to get thread status: {}", thread_res.status());
-            break;
-        }
-
-        let thread_data = thread_res.json::<serde_json::Value>().await?;
-        let vector_store_ids_opt = thread_data
-            .get("tool_resources")
-            .and_then(|v| v.get("file_search"))
-            .and_then(|v| v.get("vector_store_ids"))
-            .and_then(|v| v.as_array());
-
-        if let Some(ids) = vector_store_ids_opt {
-            println!("📦 Found {} vector stores", ids.len());
-            let mut all_completed = true;
-
-            for id in ids {
-                if let Some(vs_id) = id.as_str() {
-                    let url = format!("https://api.openai.com/v1/vector_stores/{}", vs_id);
-                    let res = client
-                        .get(&url)
-                        .bearer_auth(&api_key)
-                        .header("OpenAI-Beta", "assistants=v2")
-                        .send()
-                        .await?;
-
-                    if !res.status().is_success() {
-                        eprintln!("Failed to get vector store status for {}: {}", vs_id, res.status());
-                        all_completed = false;
-                        break;
-                    }
-
-                    let json_res = res.json::<serde_json::Value>().await?;
-                    let status = json_res["status"].as_str().unwrap_or("unknown");
-                    println!("📊 Vector store {} status: {} (attempt {}/{})", vs_id, status, attempts + 1, max_attempts);
-
-                    match status {
-                        "completed" => continue,
-                        "failed" => {
-                            eprintln!("❌ Vector store {} failed!", vs_id);
-                            all_completed = false;
-                            break;
-                        },
-                        _ => {
-                            all_completed = false;
-                        }
-                    }
-                }
-            }
-
-            if all_completed {
-                println!("✅ All vector stores completed!");
-                break;
-            }
-        } else {
-            println!("⏳ Vector store IDs not available yet...");
-            println!("🧵 Full thread_data: {}", thread_data);
-        }
-
-        if attempts >= max_attempts {
-            eprintln!("❌ File processing timeout after {} attempts", max_attempts);
-            break;
-        }
-
-        sleep(Duration::from_secs(3)).await;
-        attempts += 1;
-    }
-
-    // === 4. Run assistant ===
-    let run_resp = client
-        .post(format!("https://api.openai.com/v1/threads/{}/runs", thread_id))
-        .bearer_auth(&api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .json(&json!({
-            "assistant_id": assistant_id,
-            "tools": [{ "type": "file_search" }]
-        }))
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-    let run_id = run_resp["id"].as_str().unwrap();
-    println!("🏃 Run started: {}", run_id);
-
-    // === 5. Poll status until completed ===
-    let (tx, rx) = oneshot::channel();
-    let spinner = tokio::spawn(spinning_beer(rx));
-    loop {
-        let status_resp = client
-            .get(format!("https://api.openai.com/v1/threads/{}/runs/{}", thread_id, run_id))
-            .bearer_auth(&api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
-
-        let status = status_resp["status"].as_str().unwrap();
-        if status == "completed" {
-            break;
-        } else if status == "failed" {
-            panic!("❌ Run failed");
-        }
-        sleep(Duration::from_secs(2)).await;
-    }
-    let _ = tx.send(());
-    let _ = spinner.await;
-
-    // === 6. Read response ===
-    let messages_resp = client
-        .get(format!("https://api.openai.com/v1/threads/{}/messages", thread_id))
-        .bearer_auth(&api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    let messages = messages_resp["data"].as_array().unwrap();
-    for msg in messages {
-        if msg["role"].as_str().unwrap_or("") == "assistant" {
-            if let Some(content) = msg["content"][0]["text"]["value"].as_str() {
-                fs::write(&response_file, content.as_bytes())?;
-                println!("🍻 OpenAI response written to file: {}", response_file);
-            }
-        }
-    }
-    convert_md_to_html_file(&response_file, events_sqls);
-
-    // === 7. Delete temporary assistant ===
-    let delete_resp = client
-        .delete(format!("https://api.openai.com/v1/assistants/{}", assistant_id))
-        .bearer_auth(&api_key)
-        .header("OpenAI-Beta", "assistants=v2")
-        .send()
-        .await?;
-
-    if delete_resp.status().is_success() {
-        println!("🗑️ Temporary assistant deleted: {}", assistant_id);
-    } else {
-        eprintln!("⚠️ Failed to delete assistant: {}", delete_resp.status());
-    }
-
-    Ok(())
 }
 
 async fn upload_png_file_gemini_from_path(api_key: &str, path: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -385,7 +88,7 @@ async fn upload_png_file_gemini_from_path(api_key: &str, path: &str) -> Result<S
         let response_text = response.text().await?;
         match serde_json::from_str::<GeminiFileUploadResponse>(&response_text) {
             Ok(file_upload_response) => {
-                println!("✅ PNG uploaded! URI: {}", file_upload_response.file.uri);
+                println!("✅ {} uploaded! URI: {}", path, file_upload_response.file.uri);
                 Ok(file_upload_response.file.uri)
             }
             Err(e) => {
@@ -459,19 +162,21 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
 
     let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
     let load_profile_png_name = format!("{}.html_reports/jasmin_highlight.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
+    let load_profile2_png_name = format!("{}.html_reports/jasmin_highlight2.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
 
     let response_file = format!("{}_gemini.md", logfile_name);
 
     let client = Client::new();
 
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
-    let pr = private_reasoninings();
+    let pr = private_reasonings();
     if pr.is_some() {
         spell = format!("{}\n\n# Additional insights: {}", spell, pr.unwrap());
     }
 
     let file_uri = upload_log_file_gemini(&api_key, log_content).await.unwrap();
     let file_uri_png = upload_png_file_gemini_from_path(&api_key, &load_profile_png_name).await.unwrap();
+    let file_uri_png2 = upload_png_file_gemini_from_path(&api_key, &load_profile2_png_name).await.unwrap();
 
     let payload = json!({
                     "contents": [{
@@ -487,6 +192,12 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
                                 "fileData": {
                                     "mimeType": "image/png",
                                     "fileUri": file_uri_png
+                                }
+                            },
+                            {
+                                "fileData": {
+                                    "mimeType": "image/png",
+                                    "fileUri": file_uri_png2
                                 }
                             }
                         ]
@@ -941,7 +652,7 @@ impl AIBackend for GeminiBackend {
         self.file_content = Some(file_content.clone());
         
         let mut spell: String = format!("{}", SPELL);
-        let pr = private_reasoninings();
+        let pr = private_reasonings();
         if pr.is_some() {
             spell = format!("{}\n\n# Additional insights: {}", spell, pr.unwrap());
         }
