@@ -3887,7 +3887,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             )
         }).collect::<Vec<String>>().join("\n"),
     );
-    // Inject HighLight section into Main HTML
+    // Inject Load Profile section into Main HTML
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
         &format!("{}{}{}\n\t\t</script>\n{}\n\t\t</script>\n\t</div>\n{}\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
