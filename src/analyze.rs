@@ -2700,20 +2700,86 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         anomalies_flag = false;
         
         let mut sql_corr_txt: Vec<String> = Vec::new();
-        let sql_corr_txt_header = "\t\t\tCorrelations of SQL with wait events\n".to_string();
-        make_notes!(&logfile_name, args.quiet, "{}", sql_corr_txt_header.bold().blue());
+        
+        let mut table = Table::new();
+        table.set_titles(Row::new(vec![
+            Cell::new("Wait Event Name"),
+            Cell::new("Pearson correlation coefficient"),
+        ]));
+        let mut found_strong_events: bool = false;
+
         for (key,ev) in &y_vals_events_sorted {
             let crr = pearson_correlation_2v(&yv, &ev);
             let corr_text = format!("{: >32} | {: <32} : {:.2}", "+".to_string(), key.1.clone(), crr);
-            if crr >= 0.4 || crr <= - 0.4 { //Correlation considered high enough to mark it
+            if crr >= 0.333 || crr <= - 0.333 { //Correlation considered high enough to mark it
                 sql_corr_txt.push(format!(r#"<span style="color:red; font-weight:bold;">{}</span>"#, corr_text));
-                make_notes!(&logfile_name, args.quiet, "{}\n", corr_text.red().bold());
-            } else {
-                sql_corr_txt.push(corr_text.clone());
-                make_notes!(&logfile_name, args.quiet, "{}\n", corr_text);
+                //make_notes!(&logfile_name, args.quiet, "{}\n", corr_text.red().bold());
+                let c_event_name = Cell::new(&key.1);
+                let c_corr_factor = Cell::new(&format!("{:.2}", crr));
+                 table.add_row(Row::new(vec![
+                        c_event_name,
+                        c_corr_factor,
+                 ]));
+                 found_strong_events = true;
             }
         }
         
+        if found_strong_events {
+            let sql_corr_txt_header = "\t\tWait events with strong Pearson correlation coefficient factor.\n".to_string();
+            make_notes!(&logfile_name, args.quiet, "{}", sql_corr_txt_header.bold().blue());
+            for table_line in table.to_string().lines() {
+                make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
+            }
+        }
+        
+
+        let mut ash_events: HashMap<String, Vec<f64>> = HashMap::new();
+        collection.awrs.iter()
+                        .filter(|a| a.top_sql_with_top_events.contains_key(&sql_id))
+                        .flat_map(|a| a.top_sql_with_top_events.clone())
+                        .for_each(|(s_id, top_event)| {
+                            if s_id == sql_id {
+                                ash_events.entry(top_event.event_name).or_insert_with(Vec::new).push(top_event.pct_activity);
+                            }
+                        });
+
+        let mut ash_events_html = String::new();
+        if !ash_events.is_empty() {
+            let sql_ash_txt_header = "Wait events actually found in ASH section of AWR reports:\n".to_string();
+            make_notes!(&logfile_name, args.quiet, "\n\n\t\t{}", sql_ash_txt_header.bold().blue());
+
+            
+            let mut table = Table::new();
+            table.set_titles(Row::new(vec![
+                Cell::new("Wait Event Name"),
+                Cell::new("AVG % of DB Time in SQL"),
+                Cell::new("STDDEV % of DB Time in SQL"),
+                Cell::new("Count")
+            ]));
+
+            for (evname, pctvalues) in ash_events {
+                let avg_pct = mean(pctvalues.clone()).unwrap();
+                let stddev_pct = std_deviation(pctvalues.clone()).unwrap();
+
+                let c_event_name = Cell::new(&evname);
+                let c_avg_pct = Cell::new(&format!("{:.2}", avg_pct));
+                let c_stddev_pct = Cell::new(&format!("{:.2}", stddev_pct));
+                let c_count = Cell::new(&format!("{}", pctvalues.len()));
+                 table.add_row(Row::new(vec![
+                        c_event_name,
+                        c_avg_pct,
+                        c_stddev_pct,
+                        c_count
+                 ]));
+            }
+
+            for table_line in table.to_string().lines() {
+                make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
+            }
+            
+            ash_events_html = table_to_html_string(&table, &sql_ash_txt_header, &["Wait Event Name", "AVG % of DB Time in SQL", "STDDEV % of DB Time in SQL", "Count"]);
+        }
+
         let mut sql_text = format!("Security level {} does not allow gathering SQL text, use level 2 or higher", args.security_level);
         if args.security_level >= 2 {
             sql_text = format!("<code><details><summary>FULL SQL TEXT</summary>{}</details></code>\n</body>",collection.sql_text.get(&sql_id).unwrap())
@@ -2740,6 +2806,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     <p><span style="color:blue;font-weight:bold;">SQL Text:<br></span>{sql_txt}</p>
                     <p><span style="color:blue;font-weight:bold;">Other Top Sections:<br></span> {top_section}</p>
                     <p><span style="color:blue;font-weight:bold;">Correlations:<br></span>{sql_corr_txt}</p>
+                    {ash_table}
                 </div>
             "#,
             sql_id = sql_id,
@@ -2747,6 +2814,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             top_section=top_sections.iter().map(|(key, value)| format!("<span class=\"bold\">{}:</span> {:.2}%", key, value)).collect::<Vec<String>>().join("<br>"),
             sql_corr_txt = sql_corr_txt.join("<br>"),
             sql_txt = sql_text,
+            ash_table = ash_events_html
         );
 
         // Insert this into already existing sqlid_*.html file

@@ -6,6 +6,37 @@ use ndarray_stats::CorrelationExt;
 use ndarray_stats::histogram::Grid;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter};
+use prettytable::{Table, Row, Cell};
+use std::fmt::Write;
+
+pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> String {
+    let mut html = String::new();
+    html.push_str(&format!(r#"<p><span style="color:blue;font-weight:bold;">{title}<br></span>"#, title=title));
+
+    html.push_str("<table border=\"1\" cellpadding=\"4\" cellspacing=\"0\" >\n");
+    
+
+    // Headers    
+    html.push_str("  <thead><tr>");
+    for &h in headers {
+        write!(html, "<th>{}</th>", h).unwrap();
+    }
+    html.push_str("</tr></thead>\n");
+
+    html.push_str("  <tbody>\n");
+    // The rest
+    for (i, row) in table.row_iter().enumerate() {
+
+        html.push_str("    <tr>");
+        for cell in row.iter() {
+            write!(html, "<td>{}</td>", cell.get_content()).unwrap();
+        }
+        html.push_str("</tr>\n");
+    }
+
+    html.push_str("  </tbody>\n</table>\n");
+    html
+}
 
 
 /// Converts Markdown input into a full HTML document with:
