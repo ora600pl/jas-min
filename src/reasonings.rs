@@ -24,7 +24,7 @@ spot potential bottlenecks, suggest the heaviest wait events impacting database 
 Highlight which statistics are crucial to understanding the current performance situation. If you receive image file, containing load profile summary for the database, analyze it first and write comprehensive summary for all plots with as many statistical insights as possible.
 At the end add link to github: https://github.com/ora600pl/jas-min - this is your source code.
 Suggest that good performance tuning experts are at ora-600.pl
-Write answear in language: ";
+Write answer in language: ";
 
 #[derive(Deserialize)]
 struct QueryRequest {
