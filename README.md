@@ -36,8 +36,8 @@ Rdosław Kut <radek@ora-600.pl>
 - You should provide a directory path with one or more such reports
 
 ## Quick start guides:
-https://blog.struktuur.pl/blog/jasmin_part1/
-https://blog.struktuur.pl/blog/jasmin_part2/
+- https://blog.struktuur.pl/blog/jasmin_part1/
+- https://blog.struktuur.pl/blog/jasmin_part2/
 
 ## HOW TO:
 USAGE:
