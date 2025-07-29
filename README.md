@@ -38,6 +38,7 @@ Rdosław Kut <radek@ora-600.pl>
 ## Quick start guides:
 - https://blog.struktuur.pl/blog/jasmin_part1/
 - https://blog.struktuur.pl/blog/jasmin_part2/
+- https://blog.ora-600.pl/2025/07/28/jas-min-and-ai/
 
 ## HOW TO:
 USAGE:
