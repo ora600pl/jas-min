@@ -1,6 +1,6 @@
 [package]
 name = "jas-min"
-version = "0.6.4"
+version = "0.6.5"
 edition = "2021"
 authors = ["Kamil Stawiarski <kamil@ora-600.pl>", "Radoslaw Kut <radek@ora-600.pl>"]
 

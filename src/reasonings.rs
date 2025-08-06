@@ -68,6 +68,36 @@ fn private_reasonings() -> Option<String> {
     Some(r_content)
 }
 
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+struct UrlContext{
+    action: String,
+    url: String,
+}
+
+
+fn url_context(url_fname: &str, events_sqls: HashMap<&str, HashSet<String>>) -> Option<String> {
+    let r_content = fs::read_to_string(url_fname);
+    println!("URL context loaded from {}", url_fname);
+    if r_content.is_err() {
+        println!("Couldn't read url file");
+        return None;
+    }
+    let url_context_data: HashMap<String, Vec<UrlContext>> = serde_json::from_str(&r_content.unwrap()).expect("Wrong url file JSON format");
+    let mut url_context_msg = "\nAdditionally you have to follow those commands:".to_string();
+
+    for (_, search_key) in events_sqls {
+        for k in search_key {
+            if let Some(urls) = url_context_data.get(&k) {
+                for u in urls {
+                    url_context_msg = format!("{}\n - {} : {}\n", url_context_msg, u.action, u.url);
+                }
+            }
+        }
+    }
+
+    Some(url_context_msg)
+}
+
 async fn upload_png_file_gemini_from_path(api_key: &str, path: &str) -> Result<String, Box<dyn std::error::Error>> {
     let image_bytes = fs::read(path)?;
 
@@ -155,7 +185,7 @@ async fn spinning_beer(mut done: oneshot::Receiver<()>) {
 }
 
 #[tokio::main]
-pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>, args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}{}{}","=== Consulting Google Gemini model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
     let api_key = env::var("GEMINI_API_KEY").expect("You have to set GEMINI_API_KEY env variable");
@@ -171,7 +201,14 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
     let pr = private_reasonings();
     if pr.is_some() {
-        spell = format!("{}\n\n# Additional insights: {}", spell, pr.unwrap());
+        spell = format!("{}\n\n# You have to follow rules: {}", spell, pr.unwrap());
+    }
+
+    if !args.url_context_file.is_empty() {
+        let urls = url_context(&args.url_context_file, events_sqls.clone());
+        if urls.is_some() {
+            spell = format!("{}\n{}", spell, urls.unwrap());
+        }
     }
 
     let file_uri = upload_log_file_gemini(&api_key, log_content).await.unwrap();
@@ -202,8 +239,16 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
                             }
                         ]
                     }],
+                    "tools": [
+                            {
+                                "url_context": {}
+                            }
+                    ],
                     "generationConfig": {
-                        "maxOutputTokens": 8192 * token_count_factor
+                        "maxOutputTokens": 8192 * token_count_factor,
+                        "thinkingConfig": {
+                            "thinkingBudget": -1
+                        }
                     }
                 });
 
@@ -238,6 +283,9 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
         fs::write(&response_file, full_text.as_bytes()).unwrap();
         println!("🍻 Gemini response written to file: {}", &response_file);
         convert_md_to_html_file(&response_file, events_sqls);
+        //let rsp = serde_json::to_string_pretty(&json).unwrap();
+        println!("Total amount of tokens drank by Google: {}\nFinished reason was: {}\n", &json["usageMetadata"]["totalTokenCount"], &json["candidates"][0]["finishReason"]);
+
     } else {
         eprintln!("Error: {}", response.status());
         eprintln!("{}", response.text().await.unwrap());
