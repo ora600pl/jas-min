@@ -1,6 +1,7 @@
 use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR};
 
 use axum::http::header;
+use execute::generic_array::typenum::True;
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap, Image};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette};
@@ -225,6 +226,32 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
         }
     }
     sorted_correlation
+}
+
+//Add SQL_IDs found in ASH to event charts
+fn merge_ash_sqls_to_events(ash_event_sql_map: HashMap<String, HashSet<String>>, dirpath: &str) {
+
+    for (event, sqls) in ash_event_sql_map {
+        let filename = get_safe_event_filename(&dirpath, event.clone(), true);
+        let mut event_html_content = "<h2>SQL IDs found in ASH</h2><br /><ul>".to_string();
+        for sqlid in sqls {
+            event_html_content = format!("{}<li><a href=sqlid_{}.html target=_blank>{}</a></li>", event_html_content, sqlid, sqlid);
+        }
+        event_html_content = format!("{}</ul>", event_html_content);
+        if Path::new(&filename).exists() {
+            let mut event_file: String = fs::read_to_string(&filename)
+                                            .expect(&format!("Failed to read file: {}", filename));
+            event_file = event_file.replace(
+                                    "<body>",
+                                    &format!("<body>\n{}\n",event_html_content));
+
+            if let Err(e) = fs::write(&filename, event_file) {
+                eprintln!("Error writing file {}: {}", filename, e);
+            }
+        }
+        
+    }
+
 }
 
 // Generate plots for top events
@@ -2523,6 +2550,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     //println!("{}","SQLs");
     make_notes!(&logfile_name, false, "TOP SQLs by Elapsed time (SQL_ID or OLD_HASH_VALUE presented)");
 
+    let mut ash_event_sql_map: HashMap<String, HashSet<String>> = HashMap::new();
+
     for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
@@ -2739,7 +2768,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                         .flat_map(|a| a.top_sql_with_top_events.clone())
                         .for_each(|(s_id, top_event)| {
                             if s_id == sql_id {
-                                ash_events.entry(top_event.event_name).or_insert_with(Vec::new).push(top_event.pct_activity);
+                                ash_events.entry(top_event.event_name.clone()).or_insert_with(Vec::new).push(top_event.pct_activity);
+                                ash_event_sql_map.entry(top_event.event_name).or_insert_with(HashSet::new).insert(s_id);
                             }
                         });
 
@@ -2852,6 +2882,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         "#,
         table_sqls
     );
+
+    /* If ASH data is present, add SQL_ID information to wait event html reports */
+    if !ash_event_sql_map.is_empty() {
+        merge_ash_sqls_to_events(ash_event_sql_map, &html_dir);
+    }
+    
 
     /* "IO Stats by Function" are goin into report */
     make_notes!(&logfile_name, args.quiet,"\n\n{}\n",format!("IO STATS by Function - Summary").blue().underline());
