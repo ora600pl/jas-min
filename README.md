@@ -35,6 +35,11 @@ Rdosław Kut <radek@ora-600.pl>
 - `.html` file is assumed to be an AWR report
 - You should provide a directory path with one or more such reports
 
+## Quick start guides:
+- https://blog.struktuur.pl/blog/jasmin_part1/
+- https://blog.struktuur.pl/blog/jasmin_part2/
+- https://blog.ora-600.pl/2025/07/28/jas-min-and-ai/
+
 ## HOW TO:
 USAGE:
 

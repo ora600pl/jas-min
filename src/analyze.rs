@@ -1,6 +1,7 @@
 use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR};
 
 use axum::http::header;
+use execute::generic_array::typenum::True;
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap, Image};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette};
@@ -225,6 +226,32 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
         }
     }
     sorted_correlation
+}
+
+//Add SQL_IDs found in ASH to event charts
+fn merge_ash_sqls_to_events(ash_event_sql_map: HashMap<String, HashSet<String>>, dirpath: &str) {
+
+    for (event, sqls) in ash_event_sql_map {
+        let filename = get_safe_event_filename(&dirpath, event.clone(), true);
+        let mut event_html_content = "<h2>SQL IDs found in ASH</h2><br /><ul>".to_string();
+        for sqlid in sqls {
+            event_html_content = format!("{}<li><a href=sqlid_{}.html target=_blank>{}</a></li>", event_html_content, sqlid, sqlid);
+        }
+        event_html_content = format!("{}</ul>", event_html_content);
+        if Path::new(&filename).exists() {
+            let mut event_file: String = fs::read_to_string(&filename)
+                                            .expect(&format!("Failed to read file: {}", filename));
+            event_file = event_file.replace(
+                                    "<body>",
+                                    &format!("<body>\n{}\n",event_html_content));
+
+            if let Err(e) = fs::write(&filename, event_file) {
+                eprintln!("Error writing file {}: {}", filename, e);
+            }
+        }
+        
+    }
+
 }
 
 // Generate plots for top events
@@ -1585,6 +1612,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut y_user_rollbacks_s: Vec<u64> = Vec::new();
     let mut y_logical_reads_s: Vec<f64> = Vec::new();
     let mut y_block_changes_s: Vec<f64> = Vec::new();
+    let mut y_failed_parse_count: Vec<u64> = Vec::new();
 
     /*Variables used for statistics computations*/
     let mut y_vals_events_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
@@ -1777,13 +1805,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let mut v: &mut Vec<f64> = instance_stats.get_mut(&activity.statname).unwrap();
                 v[x_vals.len()-1] = activity.total as f64;
 
-                // Plot additional stats if 'log file sync' is in top events
+                
                 if activity.statname == "user commits" {
                     y_user_commits_s.push(activity.total);
                 } else if activity.statname == "user rollbacks" {
                     y_user_rollbacks_s.push(activity.total);
-                };                    
-                    
+                } else if activity.statname == "parse count (failures)" {
+                    y_failed_parse_count.push(activity.total);
+                }
+                
+                // Plot additional stats if 'log file sync' is in top events
                 if is_logfilesync_high {
                 
                     if activity.statname == "user calls" {
@@ -2067,10 +2098,17 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                         .name("cleanouts only - consistent read gets")
                                                         .x_axis("x1")
                                                         .y_axis("y2");
+        let parse_failure_count = Scatter::new(x_vals.clone(), y_failed_parse_count)
+                                                        .mode(Mode::LinesText)
+                                                        .name("Failed Parses")
+                                                        .x_axis("x1")
+                                                        .y_axis("y2");
+        
         plot_main.add_trace(redo_switches);
         plot_main.add_trace(excessive_commits);
         plot_main.add_trace(cleanout_cr_only);
         plot_main.add_trace(cleanout_ktugct_calls);
+        plot_main.add_trace(parse_failure_count);
     }
     
     plot_main.add_trace(dbtime_trace);
@@ -2523,6 +2561,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     //println!("{}","SQLs");
     make_notes!(&logfile_name, false, "TOP SQLs by Elapsed time (SQL_ID or OLD_HASH_VALUE presented)");
 
+    let mut ash_event_sql_map: HashMap<String, HashSet<String>> = HashMap::new();
+
     for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
@@ -2700,20 +2740,87 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         anomalies_flag = false;
         
         let mut sql_corr_txt: Vec<String> = Vec::new();
-        let sql_corr_txt_header = "\t\t\tCorrelations of SQL with wait events\n".to_string();
-        make_notes!(&logfile_name, args.quiet, "{}", sql_corr_txt_header.bold().blue());
+        
+        let mut table = Table::new();
+        table.set_titles(Row::new(vec![
+            Cell::new("Wait Event Name"),
+            Cell::new("Pearson correlation coefficient"),
+        ]));
+        let mut found_strong_events: bool = false;
+
         for (key,ev) in &y_vals_events_sorted {
             let crr = pearson_correlation_2v(&yv, &ev);
             let corr_text = format!("{: >32} | {: <32} : {:.2}", "+".to_string(), key.1.clone(), crr);
-            if crr >= 0.4 || crr <= - 0.4 { //Correlation considered high enough to mark it
+            if crr >= 0.333 || crr <= - 0.333 { //Correlation considered high enough to mark it
                 sql_corr_txt.push(format!(r#"<span style="color:red; font-weight:bold;">{}</span>"#, corr_text));
-                make_notes!(&logfile_name, args.quiet, "{}\n", corr_text.red().bold());
-            } else {
-                sql_corr_txt.push(corr_text.clone());
-                make_notes!(&logfile_name, args.quiet, "{}\n", corr_text);
+                //make_notes!(&logfile_name, args.quiet, "{}\n", corr_text.red().bold());
+                let c_event_name = Cell::new(&key.1);
+                let c_corr_factor = Cell::new(&format!("{:.2}", crr));
+                 table.add_row(Row::new(vec![
+                        c_event_name,
+                        c_corr_factor,
+                 ]));
+                 found_strong_events = true;
             }
         }
         
+        if found_strong_events {
+            let sql_corr_txt_header = "\t\tWait events with strong Pearson correlation coefficient factor.\n".to_string();
+            make_notes!(&logfile_name, args.quiet, "{}", sql_corr_txt_header.bold().blue());
+            for table_line in table.to_string().lines() {
+                make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
+            }
+        }
+        
+
+        let mut ash_events: HashMap<String, Vec<f64>> = HashMap::new();
+        collection.awrs.iter()
+                        .filter(|a| a.top_sql_with_top_events.contains_key(&sql_id))
+                        .flat_map(|a| a.top_sql_with_top_events.clone())
+                        .for_each(|(s_id, top_event)| {
+                            if s_id == sql_id {
+                                ash_events.entry(top_event.event_name.clone()).or_insert_with(Vec::new).push(top_event.pct_activity);
+                                ash_event_sql_map.entry(top_event.event_name).or_insert_with(HashSet::new).insert(s_id);
+                            }
+                        });
+
+        let mut ash_events_html = String::new();
+        if !ash_events.is_empty() {
+            let sql_ash_txt_header = "Wait events actually found in ASH section of AWR reports:\n".to_string();
+            make_notes!(&logfile_name, args.quiet, "\n\n\t\t{}", sql_ash_txt_header.bold().blue());
+
+            
+            let mut table = Table::new();
+            table.set_titles(Row::new(vec![
+                Cell::new("Wait Event Name"),
+                Cell::new("AVG % of DB Time in SQL"),
+                Cell::new("STDDEV % of DB Time in SQL"),
+                Cell::new("Count")
+            ]));
+
+            for (evname, pctvalues) in ash_events {
+                let avg_pct = mean(pctvalues.clone()).unwrap();
+                let stddev_pct = std_deviation(pctvalues.clone()).unwrap();
+
+                let c_event_name = Cell::new(&evname);
+                let c_avg_pct = Cell::new(&format!("{:.2}", avg_pct));
+                let c_stddev_pct = Cell::new(&format!("{:.2}", stddev_pct));
+                let c_count = Cell::new(&format!("{}", pctvalues.len()));
+                 table.add_row(Row::new(vec![
+                        c_event_name,
+                        c_avg_pct,
+                        c_stddev_pct,
+                        c_count
+                 ]));
+            }
+
+            for table_line in table.to_string().lines() {
+                make_notes!(&logfile_name, args.quiet, "\t\t{}\n", table_line);
+            }
+            
+            ash_events_html = table_to_html_string(&table, &sql_ash_txt_header, &["Wait Event Name", "AVG % of DB Time in SQL", "STDDEV % of DB Time in SQL", "Count"]);
+        }
+
         let mut sql_text = format!("Security level {} does not allow gathering SQL text, use level 2 or higher", args.security_level);
         if args.security_level >= 2 {
             sql_text = format!("<code><details><summary>FULL SQL TEXT</summary>{}</details></code>\n</body>",collection.sql_text.get(&sql_id).unwrap())
@@ -2740,6 +2847,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     <p><span style="color:blue;font-weight:bold;">SQL Text:<br></span>{sql_txt}</p>
                     <p><span style="color:blue;font-weight:bold;">Other Top Sections:<br></span> {top_section}</p>
                     <p><span style="color:blue;font-weight:bold;">Correlations:<br></span>{sql_corr_txt}</p>
+                    {ash_table}
                 </div>
             "#,
             sql_id = sql_id,
@@ -2747,6 +2855,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             top_section=top_sections.iter().map(|(key, value)| format!("<span class=\"bold\">{}:</span> {:.2}%", key, value)).collect::<Vec<String>>().join("<br>"),
             sql_corr_txt = sql_corr_txt.join("<br>"),
             sql_txt = sql_text,
+            ash_table = ash_events_html
         );
 
         // Insert this into already existing sqlid_*.html file
@@ -2784,6 +2893,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         "#,
         table_sqls
     );
+
+    /* If ASH data is present, add SQL_ID information to wait event html reports */
+    if !ash_event_sql_map.is_empty() {
+        merge_ash_sqls_to_events(ash_event_sql_map, &html_dir);
+    }
+    
 
     /* "IO Stats by Function" are goin into report */
     make_notes!(&logfile_name, args.quiet,"\n\n{}\n",format!("IO STATS by Function - Summary").blue().underline());

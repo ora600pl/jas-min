@@ -93,8 +93,15 @@ struct Args {
 
 	///Security level - highest security level is 0 - JAS-MIN will not store any object names, database names or any other sensitive data
 	///                                           1 - JAS-MIN will store segment_names from Segment Statistics section
+	/// 										  2 - JAS-MIN will store Full SQL Text from AWR reports
 	#[clap(short = 'S', long, default_value_t=0)]
     security_level: usize,
+
+	///This can be used with Gemini models - Using the URL context tool, you can provide Gemini with URLs as additional context for your prompt. The model can then retrieve content from the URLs and use that content to inform and shape its response.
+	///Check Google Documentation for more info: https://ai.google.dev/gemini-api/docs/url-context
+	#[clap(short, long, default_value="")]
+	url_context_file: String,
+
 }
 
 
@@ -165,7 +172,7 @@ fn main() {
             //chat_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone()).unwrap();
 			println!("For now only Google is supported vendor with this option :( Sorry for that. You can use OpenAI with backend assistant tho. We are waiting what GPT-5 will provide.");
         } else if vendor_model_lang[0] == "google" { 
-            gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone()).unwrap();
+            gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args).unwrap();
 		} else {
             println!("Unrecognized vendor. Supported vendors: openai, google");
         }   
