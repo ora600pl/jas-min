@@ -217,6 +217,18 @@ pub struct SegmentStats {
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct TopSQLWithTopEvents {
+	pub sql_id: String,
+	pub plan_hash_value: u64,
+	pub executions: u64,
+	pub pct_activity: f64,
+	pub event_name: String,
+	pub pct_event: f64,
+	pub top_row_source: String,
+	pub pct_row_source: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct AWR {
 	pub file_name: String,
 	pub snap_info: SnapInfo,
@@ -233,6 +245,7 @@ pub struct AWR {
 	pub sql_io_time: HashMap<String, SQLIOTime>,
 	pub sql_gets: HashMap<String, SQLGets>,
 	pub sql_reads: HashMap<String, SQLReads>,
+	pub top_sql_with_top_events: HashMap<String, TopSQLWithTopEvents>,
 	pub key_instance_stats: Vec<KeyInstanceStats>,
 	pub dictionary_cache: Vec<DictionaryCache>,
 	pub io_stats_byfunc: HashMap<String,IOStats>,
@@ -305,6 +318,52 @@ fn sql_text(table: ElementRef) -> HashMap<String, String> {
 			let sql_text = sql_text[0].trim().to_string();
 
 			sqls.entry(sql_id).or_insert(sql_text);
+		}
+	}
+	sqls
+}
+
+fn top_sql_with_top_events(table: ElementRef) -> HashMap<String, TopSQLWithTopEvents> {
+	let mut sqls: HashMap<String, TopSQLWithTopEvents> = HashMap::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() > 8 {
+			let sql_id: Vec<&str> =  columns[0].text().collect::<Vec<_>>();
+			let sql_id = sql_id[0].trim().to_string();
+
+			let plan_hash_value: Vec<&str> =  columns[1].text().collect::<Vec<_>>();
+			let plan_hash_value = u64::from_str(&plan_hash_value[0].trim().replace(",","")).unwrap_or(0);
+
+			let executions: Vec<&str> =  columns[2].text().collect::<Vec<_>>();
+			let executions = u64::from_str(&executions[0].trim().replace(",","")).unwrap_or(0);
+
+			let pct_activity: Vec<&str> =  columns[3].text().collect::<Vec<_>>();
+			let pct_activity = f64::from_str(&pct_activity[0].trim().replace(",","")).unwrap_or(0.0);
+
+			let event_name: Vec<&str> =  columns[4].text().collect::<Vec<_>>();
+			let event_name = event_name[0].trim().to_string();
+
+			let pct_event: Vec<&str> =  columns[5].text().collect::<Vec<_>>();
+			let pct_event = f64::from_str(&pct_event[0].trim().replace(",","")).unwrap_or(0.0);
+
+
+			let top_row_source: Vec<&str> =  columns[6].text().collect::<Vec<_>>();
+			let top_row_source = top_row_source[0].trim().to_string();
+
+			let pct_row_source: Vec<&str> =  columns[7].text().collect::<Vec<_>>();
+			let pct_row_source = f64::from_str(&pct_row_source[0].trim().replace(",","")).unwrap_or(0.0);
+
+			sqls.entry(sql_id.clone()).or_insert(TopSQLWithTopEvents { sql_id: sql_id, 
+																			plan_hash_value: plan_hash_value, 
+																			executions: executions, 
+																			pct_activity: pct_activity, 
+																			event_name: event_name, 
+																			pct_event: pct_event, 
+																			top_row_source: top_row_source, 
+																			pct_row_source: pct_row_source });
 		}
 	}
 	sqls
@@ -1815,6 +1874,8 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 				awr.segment_stats.insert("Global Cache Buffer Busy".to_string(), segment);
 			} else if args.security_level>=2 && element.value().attr("summary").unwrap().starts_with("This table displays the text of the SQL") {
 				 sqls_txt = sql_text(element);
+			} else if element.value().attr("summary").unwrap() == "This table displays the Top SQL by Top Wait Events" {
+				awr.top_sql_with_top_events = top_sql_with_top_events(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays total number of waits, and information about total wait time, for each wait event" {
 				let event_histogram = waitevent_histogram_ms(element);
 				if event_histogram.len() > 0 {
