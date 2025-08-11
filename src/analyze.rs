@@ -1612,6 +1612,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut y_user_rollbacks_s: Vec<u64> = Vec::new();
     let mut y_logical_reads_s: Vec<f64> = Vec::new();
     let mut y_block_changes_s: Vec<f64> = Vec::new();
+    let mut y_failed_parse_count: Vec<u64> = Vec::new();
 
     /*Variables used for statistics computations*/
     let mut y_vals_events_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
@@ -1804,13 +1805,16 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 let mut v: &mut Vec<f64> = instance_stats.get_mut(&activity.statname).unwrap();
                 v[x_vals.len()-1] = activity.total as f64;
 
-                // Plot additional stats if 'log file sync' is in top events
+                
                 if activity.statname == "user commits" {
                     y_user_commits_s.push(activity.total);
                 } else if activity.statname == "user rollbacks" {
                     y_user_rollbacks_s.push(activity.total);
-                };                    
-                    
+                } else if activity.statname == "parse count (failures)" {
+                    y_failed_parse_count.push(activity.total);
+                }
+                
+                // Plot additional stats if 'log file sync' is in top events
                 if is_logfilesync_high {
                 
                     if activity.statname == "user calls" {
@@ -2094,10 +2098,17 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                                                         .name("cleanouts only - consistent read gets")
                                                         .x_axis("x1")
                                                         .y_axis("y2");
+        let parse_failure_count = Scatter::new(x_vals.clone(), y_failed_parse_count)
+                                                        .mode(Mode::LinesText)
+                                                        .name("Failed Parses")
+                                                        .x_axis("x1")
+                                                        .y_axis("y2");
+        
         plot_main.add_trace(redo_switches);
         plot_main.add_trace(excessive_commits);
         plot_main.add_trace(cleanout_cr_only);
         plot_main.add_trace(cleanout_ktugct_calls);
+        plot_main.add_trace(parse_failure_count);
     }
     
     plot_main.add_trace(dbtime_trace);
