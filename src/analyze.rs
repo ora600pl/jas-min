@@ -1430,9 +1430,9 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir
         let mut segment_summary: BTreeMap<(i64, u64, u64), SegmentSummary> = BTreeMap::new();
 
         //build unique set od object_id, data_object_id from all objects in current section
-        let all_ids: HashSet<(u64,u64)> = objects
+        let all_ids: HashSet<(u64,u64, String)> = objects
                                       .iter()
-                                      .map(|s| (s.obj, s.objd ))
+                                      .map(|s| (s.obj, s.objd, s.object_name.clone()))
                                       .collect(); 
                 
         for id in all_ids { //iterate over each object id
@@ -1441,14 +1441,14 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir
             objects
             .iter()
             .for_each(|s| {
-                if s.obj == id.0 && s.objd == id.1 {
+                if s.obj == id.0 && s.objd == id.1 && s.object_name == id.2{
                     all_values.push(s.stat_vlalue);
                 }
             }); //build vector of statistic values 
 
             let segment_data = objects
                                          .iter()
-                                         .find(|s| s.obj == id.0 && s.objd == id.1)
+                                         .find(|s| s.obj == id.0 && s.objd == id.1 && s.object_name == id.2)
                                          .unwrap(); //get details of the given object id
 
             let avg = mean(all_values.clone()).unwrap();
@@ -2646,7 +2646,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, "{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}\n", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
         make_notes!(&logfile_name, args.quiet, "{: >35} {: <16.2} \tSTDDEV CPU by Exec: {:.2}\n", "--- AVG CPU by Exec:", avg_exec_t_cpu, stddev_exec_t_cpu);
         make_notes!(&logfile_name, args.quiet, "{: >36} {: <16.2} \tSTDDEV Ela Time   : {:.2}\n", "--- AVG Ela Time (s):", avg_exec_s, stddev_exec_s);
-        make_notes!(&logfile_name, args.quiet, "{: >36} {: <16.2} \tSTDDEV CPU Time   : {:.2}\n", "--- AVG Ela Time (s):", avg_exec_cpu, stddev_exec_cpu);
+        make_notes!(&logfile_name, args.quiet, "{: >36} {: <16.2} \tSTDDEV CPU Time   : {:.2}\n", "--- AVG CPU Time (s):", avg_exec_cpu, stddev_exec_cpu);
         make_notes!(&logfile_name, args.quiet, "{: >38} {: <14.2} \tSTDDEV No. executions:  {:.2}\n", "--- AVG No. executions:", avg_exec_n, stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >23} {} \n", "MODULE: ", top_stats.sqls.get(&sql_id).unwrap().blue());
         if !sql_type.is_empty() {

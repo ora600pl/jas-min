@@ -378,6 +378,12 @@ fn segment_stats(table: ElementRef, stat_name: &str, args: &Args) -> Vec<Segment
 		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
 		if columns.len() >= 7 {
 
+			let mut version_modificator = 0; 
+
+			if columns.len() == 7 { //this is for older AWR format (like 11g)
+				version_modificator=1;
+			}
+
 			let mut segment_name = "#".to_string();
 			if args.security_level > 0 {
 				let sname = columns[2].text().collect::<Vec<_>>();
@@ -387,13 +393,18 @@ fn segment_stats(table: ElementRef, stat_name: &str, args: &Args) -> Vec<Segment
 			let segment_type =  columns[4].text().collect::<Vec<_>>();
 			let segment_type = segment_type[0].trim().to_string();
 
-			let obj = columns[5].text().collect::<Vec<_>>();
-			let obj = u64::from_str(&obj[0].trim().replace(",","")).unwrap_or(0);
+			let mut obj = 0;
+			let mut objd = 0;
+			if version_modificator == 0 {
+				let vobj = columns[5].text().collect::<Vec<_>>();
+				obj = u64::from_str(&vobj[0].trim().replace(",","")).unwrap_or(0);
 
-			let objd = columns[6].text().collect::<Vec<_>>();
-			let objd = u64::from_str(&objd[0].trim().replace(",","")).unwrap_or(0);
+				let vobjd = columns[6].text().collect::<Vec<_>>();
+				objd = u64::from_str(&vobjd[0].trim().replace(",","")).unwrap_or(0);
 
-			let stat_value = columns[7].text().collect::<Vec<_>>();
+			}
+			
+			let stat_value = columns[7-version_modificator].text().collect::<Vec<_>>();
 			let stat_value = f64::from_str(&stat_value[0].trim().replace(",","")).unwrap_or(0.0);
 
 			segment_stats.push(SegmentStats {obj: obj, objd: objd, object_name: segment_name, object_type: segment_type, stat_name: stat_name.to_string(), stat_vlalue: stat_value});
