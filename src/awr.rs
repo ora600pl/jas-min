@@ -575,7 +575,7 @@ fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
 				sql_type = "INSERT";
 			} else if sql_txt.to_uppercase().starts_with("MERGE") {
 				sql_type = "MERGE";
-			} else if sql_txt.to_uppercase().starts_with("BEGIN") || sql_txt.to_uppercase().starts_with("DECLARE")  {
+			} else if sql_txt.to_uppercase().starts_with("BEGIN") || sql_txt.to_uppercase().starts_with("DECLARE") || sql_txt.to_uppercase().starts_with("CALL") {
 				sql_type = "PL/SQL";
 			}
 
