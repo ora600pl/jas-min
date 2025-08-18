@@ -2601,10 +2601,30 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let avg_exec_t: f64 = mean(x.clone()).unwrap();
         let stddev_exec_t: f64 = std_deviation(x.clone()).unwrap();
 
+        /* Calculate STDDEV and AVG for sqls CPU time per execution */
+        let x_c: Vec<f64> = collection.awrs.iter()
+                                      .flat_map(|s| s.sql_cpu_time.clone())
+                                      .filter(|sql| sql.0 == key.1.clone())
+                                      .map(|sqls| sqls.1.cpu_time_exec_s)
+                                      .collect();
+
+        let avg_exec_t_cpu: f64 = mean(x_c.clone()).unwrap_or(0.0);
+        let stddev_exec_t_cpu: f64 = std_deviation(x_c.clone()).unwrap_or(0.0);
+
         /* Calculate STDDEV and AVG for sqls time */
         let x_s: Vec<f64> = y_vals_sqls_exec_s.get(&key.1.clone()).unwrap().clone();
-        let avg_exec_s: f64 = mean(x_s.clone()).unwrap();
-        let stddev_exec_s: f64 = std_deviation(x_s).unwrap();
+        let avg_exec_s: f64 = mean(x_s.clone()).unwrap_or(0.0);
+        let stddev_exec_s: f64 = std_deviation(x_s).unwrap_or(0.0);
+
+        /* Calculate STDDEV and AVG for sqls cpu time */
+        let x_s: Vec<f64> = collection.awrs.iter()
+                                      .flat_map(|s| s.sql_cpu_time.clone())
+                                      .filter(|sql| sql.0 == key.1.clone())
+                                      .map(|sqls| sqls.1.cpu_time_s)
+                                      .collect();
+
+        let avg_exec_cpu: f64 = mean(x_s.clone()).unwrap_or(0.0);
+        let stddev_exec_cpu: f64 = std_deviation(x_s).unwrap_or(0.0);
 
         let sql_type = collection.awrs.iter()
                                                 .flat_map(|a| a.sql_elapsed_time.clone())
@@ -2613,7 +2633,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
 
         make_notes!(&logfile_name, args.quiet, "{: >24}{:.2}% of probes\n", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         make_notes!(&logfile_name, args.quiet, "{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}\n", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
+        make_notes!(&logfile_name, args.quiet, "{: >35} {: <16.2} \tSTDDEV CPU by Exec: {:.2}\n", "--- AVG CPU by Exec:", avg_exec_t_cpu, stddev_exec_t_cpu);
         make_notes!(&logfile_name, args.quiet, "{: >36} {: <16.2} \tSTDDEV Ela Time   : {:.2}\n", "--- AVG Ela Time (s):", avg_exec_s, stddev_exec_s);
+        make_notes!(&logfile_name, args.quiet, "{: >36} {: <16.2} \tSTDDEV CPU Time   : {:.2}\n", "--- AVG Ela Time (s):", avg_exec_cpu, stddev_exec_cpu);
         make_notes!(&logfile_name, args.quiet, "{: >38} {: <14.2} \tSTDDEV No. executions:  {:.2}\n", "--- AVG No. executions:", avg_exec_n, stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, "{: >23} {} \n", "MODULE: ", top_stats.sqls.get(&sql_id).unwrap().blue());
         if !sql_type.is_empty() {
@@ -2697,12 +2719,21 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
+                <td>{:.2}</td>
                 <td>{}</td>
             </tr>
             "#,
                 &sql_id, &sql_id,
-                avg_exec_t, stddev_exec_t,  // PCT of DB Time
-                avg_exec_n, stddev_exec_n,  // Execution times
+                avg_exec_t, stddev_exec_t,  //Time per exec
+                avg_exec_n, stddev_exec_n,  //Number of executions
+                avg_exec_s, stddev_exec_s,  //Total execution time
+                avg_exec_t_cpu, stddev_exec_t_cpu, //CPU Time by Exec 
+                avg_exec_cpu, stddev_exec_cpu, //Total CPU Time
                 corr,
                 (x.len() as f64 / x_vals.len() as f64 )* 100.0,
                 if anomalies_flag {
@@ -2881,9 +2912,15 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     <th onclick="sortTable('sqls-table',2)" style="cursor: pointer;">STDDEV Ela by Exec</th>
                     <th onclick="sortTable('sqls-table',3)" style="cursor: pointer;">AVG No. executions</th>
                     <th onclick="sortTable('sqls-table',4)" style="cursor: pointer;">STDDEV No. executions</th>
-                    <th onclick="sortTable('sqls-table',5)" style="cursor: pointer;">Correlation of DBTime</th>
-                    <th onclick="sortTable('sqls-table',6)" style="cursor: pointer;">TOP in % Probes</th>
-                    <th onclick="sortTable('sqls-table',7)" style="cursor: pointer;">Anomalies</th>
+                    <th onclick="sortTable('sqls-table',5)" style="cursor: pointer;">AVG Total Execution Time</th>
+                    <th onclick="sortTable('sqls-table',6)" style="cursor: pointer;">STDDEV Total Execution Time</th>
+                    <th onclick="sortTable('sqls-table',7)" style="cursor: pointer;">AVG CPU Time by Exec</th>
+                    <th onclick="sortTable('sqls-table',8)" style="cursor: pointer;">STDDEV CPU Time by Exec</th>
+                    <th onclick="sortTable('sqls-table',9)" style="cursor: pointer;">AVG Total CPU Time</th>
+                    <th onclick="sortTable('sqls-table',10)" style="cursor: pointer;">STDDEV Total CPU Time</th>
+                    <th onclick="sortTable('sqls-table',11)" style="cursor: pointer;">Correlation of DBTime</th>
+                    <th onclick="sortTable('sqls-table',12)" style="cursor: pointer;">TOP in % Probes</th>
+                    <th onclick="sortTable('sqls-table',13)" style="cursor: pointer;">Anomalies</th>
                 </tr>
             </thead>
             <tbody>
