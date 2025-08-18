@@ -233,17 +233,21 @@ fn merge_ash_sqls_to_events(ash_event_sql_map: HashMap<String, HashSet<String>>,
 
     for (event, sqls) in ash_event_sql_map {
         let filename = get_safe_event_filename(&dirpath, event.clone(), true);
-        let mut event_html_content = "<h2>SQL IDs found in ASH</h2><br /><ul>".to_string();
+        let mut event_html_content = format!(
+            r#"
+                <h4 style="color:blue;font-weight:bold;">Wait Event found in ASH for following SQL IDs:</h4>
+                <ul>
+            "#);
         for sqlid in sqls {
-            event_html_content = format!("{}<li><a href=sqlid_{}.html target=_blank>{}</a></li>", event_html_content, sqlid, sqlid);
+            event_html_content = format!("{}<li><a href=sqlid_{}.html target=_blank style=\"color: black;\">{}</a></li>", event_html_content, sqlid, sqlid);
         }
         event_html_content = format!("{}</ul>", event_html_content);
         if Path::new(&filename).exists() {
             let mut event_file: String = fs::read_to_string(&filename)
                                             .expect(&format!("Failed to read file: {}", filename));
             event_file = event_file.replace(
-                                    "<body>",
-                                    &format!("<body>\n{}\n",event_html_content));
+                                    "</h2>",
+                                    &format!("</h2>\n{}\n",event_html_content));
 
             if let Err(e) = fs::write(&filename, event_file) {
                 eprintln!("Error writing file {}: {}", filename, e);
@@ -440,7 +444,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         }
         
         let layout: Layout = Layout::new()
-            .title(&format!("'<b>{}</b>'", event))
+            //.title(&format!("'<b>{}</b>'", event))
             .height(1800)
             .bar_gap(0.0)
             .bar_mode(plotly::layout::BarMode::Overlay)
@@ -514,7 +518,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             )
             .y_axis6(
                 Axis::new()
-                    .domain(&[0.65, 0.83])
+                    .domain(&[0.67, 0.83])
                     .anchor("x3")
                     .range(vec![0.,]),
             )
@@ -534,6 +538,13 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         let path: &Path = Path::new(&file_name);
         //plot.save(path).expect("Failed to save plot to file");
         plot.write_html(path);
+        let mut event_file: String = fs::read_to_string(path).expect(&format!("Failed to read file: {}", file_name));
+        event_file = event_file.replace(
+            "<body>",
+            &format!("<style>\nbody {{ font-family: Arial, sans-serif; }}.content {{ font-size: 16px; }}\n</style>\n<body>\n\t<h2 style=\"width:100%;text-align:center;\">{}</h2>",event));
+        if let Err(e) = fs::write(&path, event_file) {
+            eprintln!("Error writing file {}: {}", file_name, e);
+        }
     }
     if is_fg {
         println!("Saved plots for Foreground events to '{}/fg_*'", dirpath);
@@ -2873,7 +2884,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             </head>
             <body>
                 <div class="content">
-                    <p><span style="font-size:20px;font-weight:bold;width:100%;text-align:center;">{sql_id}</span></p>
+                    <p><h2 style="width:100%;text-align:center;">{sql_id}</h2></p>
                     <p><span style="color:blue;font-weight:bold;">Module:<br></span>{module}</p>
                     <p><span style="color:blue;font-weight:bold;">SQL Text:<br></span>{sql_txt}</p>
                     <p><span style="color:blue;font-weight:bold;">Other Top Sections:<br></span> {top_section}</p>
@@ -4038,7 +4049,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             )
         }).collect::<Vec<String>>().join("\n"),
     );
-    // Inject HighLight section into Main HTML
+    // Inject Load Profile section into Main HTML
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
         &format!("{}{}{}\n\t\t</script>\n{}\n\t\t</script>\n\t</div>\n{}\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
