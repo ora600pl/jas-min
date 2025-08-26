@@ -1,5 +1,5 @@
     <style>
-        #events-table, #sqls-table, #bgevents-table, #anomalies-sum-table {
+        #events-table, #sqls-table, #bgevents-table, #anomalies-sum-table, #latchstat-table {
             display: none;
         }
         #iostat_RMAN-html-element, #iostat_DBWR-html-element, #iostat_LGWR-html-element, #iostat_ARCH-html-element,
