@@ -4,7 +4,7 @@ use axum::http::header;
 use execute::generic_array::typenum::True;
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap, Image};
-use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette};
+use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette, HoverInfo};
 use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
 use plotly::plotly_static::ImageFormat;
@@ -16,6 +16,7 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use colored::*;
 use open::*;
@@ -572,7 +573,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         phy_r_exec: Vec<Option<f64>>,       // Number of Physical Reads per Execution
         phy_r_pct_total: Vec<Option<f64>>  // Physical Reads as a percentage of Total Disk Reads
     }
-    let mut sqls_by_stats: HashMap<String, SQLStats> = HashMap::new();
+    //let mut sqls_by_stats: HashMap<String, SQLStats> = HashMap::new();
 
     let colors = vec![
         "#1f77b4", // strong blue
@@ -1373,6 +1374,116 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
     functions_to_plot
 }
 
+// Get Requests – popularność latcha (jak często był używany).
+// Pct Get Miss – jak często proces się “odbijał” od latcha (wskazuje kontencję).
+// Avg Slps/Miss – czy procesy musiały iść spać (jeśli > 0 → latch contention naprawdę boli).
+// Wait Time (s) – łączny koszt dla systemu (sumaryczna strata czasu).
+// NoWait Requests / Pct NoWait Miss – zwykle mniej krytyczne, ale czasem pokazują krótkie zatory.
+fn generate_latchstats_plotfiles(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &str) -> Table{
+    let (f_begin_snap,f_end_snap) = snap_range;
+    #[derive(Default)]
+    struct LatchAgg {
+        get_requests_sum: u64,
+        weighted_miss_pct: f64, // sum(get_requests * get_pct_miss)
+        occurrences: f64,
+        wait_time_sum: f64,
+    }
+
+    let mut latch_stat_rows = String::new(); //for HTML
+    let mut latches: Vec<String> = Vec::new();       //latch names
+    for lname in &awrs[0].latch_activity{
+        latches.push(lname.statname.clone());
+    }
+
+    let latch_activity: HashMap<String, LatchAgg> = latches.par_iter()
+        .map(|lname| {
+            let mut agg: LatchAgg = LatchAgg::default();
+            for awr in awrs{
+                if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
+                    for la in awr.latch_activity.iter().filter(|la| la.statname == *lname) {
+                        if la.get_requests > 0 { 
+                            agg.get_requests_sum = agg.get_requests_sum.saturating_add(la.get_requests);
+                            agg.weighted_miss_pct += (la.get_requests as f64) * la.get_pct_miss;
+                            agg.wait_time_sum += (la.get_requests as f64)*la.wait_time;
+                            agg.occurrences += 1.0; 
+                        }
+                    }
+                }
+            }
+            if agg.get_requests_sum > 0 {
+                agg.weighted_miss_pct = agg.weighted_miss_pct / (agg.get_requests_sum as f64);
+                agg.wait_time_sum = agg.wait_time_sum / (agg.get_requests_sum as f64);
+            } else {
+                agg.weighted_miss_pct = 0.0;
+                agg.wait_time_sum = 0.0;
+            }
+            (lname.clone(), agg)
+        }).collect();
+
+    let mut sorted_latches: Vec<(String, LatchAgg)> = latch_activity.into_iter().collect();
+    sorted_latches.sort_by(|a, b| b.1.weighted_miss_pct.partial_cmp(&a.1.weighted_miss_pct).unwrap());
+    
+    let mut latch_table: Table = Table::new();
+    latch_table.set_titles(Row::new(vec![
+        Cell::new("Latch").with_style(Attr::Bold),
+        Cell::new("Get Req avg").with_style(Attr::Bold),
+        Cell::new("Weighted Miss %").with_style(Attr::Bold),
+        Cell::new("Wait Time (s) wavg").with_style(Attr::Bold),
+        Cell::new("In AWR %").with_style(Attr::Bold),
+    ]));
+
+    for (lname, agg) in &sorted_latches {
+        if agg.weighted_miss_pct > 0.0 {
+            latch_table.add_row(Row::new(vec![
+                Cell::new(lname),
+                Cell::new(&format!("{:.2}",(agg.get_requests_sum as f64/agg.occurrences as f64))),
+                Cell::new(&format!("{:.4}",agg.weighted_miss_pct)),
+                Cell::new(&format!("{:.2}",agg.wait_time_sum)),
+                Cell::new(&format!("{:.2}",(agg.occurrences as f64*100.0/awrs.len() as f64))),
+            ]));
+            latch_stat_rows.push_str(&format!(
+                r#"<tr>
+                    <td>{}</td>
+                    <td>{:.2}</td>
+                    <td>{:.4}</td>
+                    <td>{:.2}</td>
+                    <td>{:.2}</td>
+                </tr>"#,
+                lname,(agg.get_requests_sum as f64/agg.occurrences as f64),agg.weighted_miss_pct,agg.wait_time_sum,(agg.occurrences as f64*100.0/awrs.len() as f64)
+            ));
+        }
+    }
+    let table_latch_stat: String = format!(
+        r#"
+        <table id="latchstat-table">
+            <thead>
+                <tr style="background-color: #f49758;">
+                    <th colspan="5" style="text-align: center; font-weight: bold; color: rgba(125, 0, 63, 10); font-size: 1.1em;">Latch Activity Summary</th>
+                </tr>
+                <tr style="background-color: #f49758;">
+                    <th onclick="sortTable('latchstat-table',0)" style="cursor: pointer;">Latch Name</th>
+                    <th onclick="sortTable('latchstat-table',1)" style="cursor: pointer;">Get Req avg</th>
+                    <th onclick="sortTable('latchstat-table',2)" style="cursor: pointer;">Weighted Miss %</th>
+                    <th onclick="sortTable('latchstat-table',3)" style="cursor: pointer;">Wait Time (s) wavg</th>
+                    <th onclick="sortTable('latchstat-table',4)" style="cursor: pointer;">In AWR %</th>
+                </tr>
+            </thead>
+            <tbody>
+            {}
+            </tbody>
+        </table>
+        "#,
+        latch_stat_rows
+    );
+    let latch_stats_filename: String = format!("{}/latchstats_activity.html", dirpath);
+    if let Err(e) = fs::write(&latch_stats_filename, table_latch_stat) {
+        eprintln!("Error writing file {}: {}", latch_stats_filename, e);
+    }
+    //println!("Saved plots for Latch Activity Stats to '{}/latchstats_activity.html'", dirpath);
+    //println!("{}\n", latch_table);
+    latch_table
+}
+
 fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir: &str) -> Vec<String> {
 
     //It will contain section name and vector for all segment stats from the whole AWR collection
@@ -1668,7 +1779,9 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false, &snap_range, &html_dir);
     generate_sqls_plotfiles(&collection.awrs, &top_stats, &snap_range, &html_dir);
     let iostats = generate_iostats_plotfile(&collection.awrs, &snap_range, &html_dir);
+    let table_latch: Table = generate_latchstats_plotfiles(&collection.awrs, &snap_range, &html_dir);
     let fname: String = format!("{}/jasmin_main.html", &html_dir); //new file name path for main report
+    
 
     /* ------ Preparing data ------ */
     println!("\n{}","==== PREPARING RESULTS ===".bright_cyan());
@@ -2946,57 +3059,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     if !ash_event_sql_map.is_empty() {
         merge_ash_sqls_to_events(ash_event_sql_map, &html_dir);
     }
-    
-
-    /* "IO Stats by Function" are goin into report */
-    make_notes!(&logfile_name, args.quiet,"\n\n{}\n",format!("IO STATS by Function - Summary").blue().underline());
-    // Create the table
-    let mut table_iostats = Table::new();
-
-    table_iostats.set_titles(Row::new(vec![
-        Cell::new("Function").with_style(Attr::Bold),
-        Cell::new("Statistic").with_style(Attr::Bold),
-        Cell::new("Mean").with_style(Attr::Bold),
-        Cell::new("Std Dev").with_style(Attr::Bold),
-    ]));
-    
-    // Function to convert metric names to readable format
-    fn format_metric_name(metric: &str) -> String {
-        match metric {
-            "reads_data" => "Read Data (MB)".to_string(),
-            "reads_req_s" => "Read Requests/sec".to_string(),
-            "reads_data_s" => "Read Data (MB)/sec".to_string(),
-            "writes_data" => "Write Data (MB)".to_string(),
-            "writes_req_s" => "Write Requests/sec".to_string(),
-            "writes_data_s" => "Write Data (MB)/sec".to_string(),
-            "waits_count" => "Wait Count".to_string(),
-            "avg_time" => "Wait Avg Time (ms)".to_string(),
-            _ => metric.to_string(), // fallback for unknown metrics
-        }
-    }
-    // Add data rows
-    for (function_name, stats) in &iostats {
-        if function_name == "zMAIN"{
-            continue;
-        }
-        let mut stat_metrics: Vec<String> = Vec::new();
-        let mut stat_mean: Vec<String> = Vec::new();
-        let mut stat_std_dev: Vec<String> = Vec::new();
-
-        for (metric_name, (mean, std_dev)) in stats {
-            stat_metrics.push(format_metric_name(&metric_name));
-            stat_mean.push(format!("{:.2}", mean));
-            stat_std_dev.push(format!("{:.2}", std_dev));
-        }
-        table_iostats.add_row(Row::new(vec![
-            Cell::new(&function_name),
-            Cell::new(&stat_metrics.join("\n")),
-            Cell::new(&stat_mean.join("\n")),
-            Cell::new(&stat_std_dev.join("\n")),
-        ]));
-    }
-    make_notes!(&logfile_name, args.quiet, "{}\n", table_iostats);
-
 
     /* Load Profile Anomalies detection and report */
     make_notes!(&logfile_name, args.quiet, "\nLoad Profile Anomalies detection using Median Absolute Deviation threshold: {}\n", args.mad_threshold);
@@ -3074,6 +3136,62 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // STATISTICS Correltation to DBTime
 
     println!("\n{}","Statistics");
+    /* "IO Stats by Function" are goin into report */
+    make_notes!(&logfile_name, args.quiet,"{}\n",format!("IO STATS by Function - Summary").bold().blue().underline());
+    // Create the table
+    let mut table_iostats = Table::new();
+
+    table_iostats.set_titles(Row::new(vec![
+        Cell::new("Function").with_style(Attr::Bold),
+        Cell::new("Statistic").with_style(Attr::Bold),
+        Cell::new("Mean").with_style(Attr::Bold),
+        Cell::new("Std Dev").with_style(Attr::Bold),
+    ]));
+    
+    // Function to convert metric names to readable format
+    fn format_metric_name(metric: &str) -> String {
+        match metric {
+            "reads_data" => "Read Data (MB)".to_string(),
+            "reads_req_s" => "Read Requests/sec".to_string(),
+            "reads_data_s" => "Read Data (MB)/sec".to_string(),
+            "writes_data" => "Write Data (MB)".to_string(),
+            "writes_req_s" => "Write Requests/sec".to_string(),
+            "writes_data_s" => "Write Data (MB)/sec".to_string(),
+            "waits_count" => "Wait Count".to_string(),
+            "avg_time" => "Wait Avg Time (ms)".to_string(),
+            _ => metric.to_string(), // fallback for unknown metrics
+        }
+    }
+    // Add data rows
+    for (function_name, stats) in &iostats {
+        if function_name == "zMAIN"{
+            continue;
+        }
+        let mut stat_metrics: Vec<String> = Vec::new();
+        let mut stat_mean: Vec<String> = Vec::new();
+        let mut stat_std_dev: Vec<String> = Vec::new();
+
+        for (metric_name, (mean, std_dev)) in stats {
+            stat_metrics.push(format_metric_name(&metric_name));
+            stat_mean.push(format!("{:.2}", mean));
+            stat_std_dev.push(format!("{:.2}", std_dev));
+        }
+        table_iostats.add_row(Row::new(vec![
+            Cell::new(&function_name),
+            Cell::new(&stat_metrics.join("\n")),
+            Cell::new(&stat_mean.join("\n")),
+            Cell::new(&stat_std_dev.join("\n")),
+        ]));
+    }
+    make_notes!(&logfile_name, args.quiet, "{}\n", table_iostats);
+
+    make_notes!(&logfile_name, args.quiet,"{}\n",format!("Latch Activity STATS - Summary").bold().blue().underline());
+    make_notes!(&logfile_name, args.quiet, "{}\n", table_latch);
+
+    /******** Report Segment Statistics Summary */
+    let segstats = report_segments_summary(&collection.awrs, &args, &logfile_name, &html_dir);
+    /********************************************/
+
     make_notes!(&logfile_name, args.quiet, "\n\n");
     make_notes!(&logfile_name, args.quiet, "-----------------------------------------------------------------------------------\n");
     make_notes!(&logfile_name, args.quiet, "Correlation of instance statatistics with DB Time for values >= 0.5 and <= -0.5\n\n\n");
@@ -3658,9 +3776,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                     .show_grid(false),
         );
 
-    /******** Report Segment Statistics Summary */
-    let segstats = report_segments_summary(&collection.awrs, &args, &logfile_name, &html_dir);
-    /********************************************/
+
     println!("{}","Generating Plots");
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
@@ -3924,6 +4040,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
             toggleElement('show-iostats-button','iostat_zMAIN-html-element','iocheckbox-container');
             toggleElement('show-segstats-button',null,'segcheckbox-container');
             toggleElement('show-lpmore-button','highlight2-html-element','');
+            toggleTable('show-latchstats-button','latchstat-table');
             const iocheckboxes = document.querySelectorAll('input[type="checkbox"][id$="-iocheckbox"]');
             iocheckboxes.forEach(checkbox => {{
                 const checkboxId = checkbox.id;
@@ -4026,10 +4143,11 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let explorer_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Stats Explorer</h4></div>\n";
     let insight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Performance Insight</h4></div>\n";
     let explorer_button = format!(
-        "\n\t{}\t{}\n\t<div id=\"iocheckbox-container\" style=\"margin-top: 10px; display: none;\">{}\n\t</div>
+        "\n\t{}\t{}\t{}\n\t<div id=\"iocheckbox-container\" style=\"margin-top: 10px; display: none;\">{}\n\t</div>
     <div id=\"segcheckbox-container\" style=\"margin-top: 10px; display: none;\">\n{}\n\t</div>\n",
         "<button id=\"show-iostats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">IO Stats</span><span>IO Stats</span></button>",
         "<button id=\"show-segstats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">SEGMENTS Stats</span><span>SEGMENTS Stats</span></button>",
+        "<button id=\"show-latchstats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">LATCH Stats</span><span>LATCH Stats</span></button>",
         iostats
             .keys()
             .filter(|&func| func != "zMAIN")
@@ -4089,6 +4207,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
                         stats_explorer_html)
                     );
     }
+
+    plotly_html = plotly_html.replace(
+        "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
+        &format!("{}\n\t\t\t\t</script><div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
+        fs::read_to_string(format!("{}/latchstats_activity.html", &html_dir)).expect("Failed to read iostats file"))
+    );
     
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
