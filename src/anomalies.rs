@@ -546,15 +546,10 @@ pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), 
         ));
     });
 
-    let anomalies_txt = format!(
-        "Anomalies summary for each date from all sections where anomaly was detected"
-    )
-    .blue()
-    .underline();
-
-    make_notes!(logfile_name, args.quiet, "\n\n{}\n", anomalies_txt);
+    make_notes!(logfile_name, args.quiet, 0, "\n\n");
+    make_notes!(logfile_name, false, 2, "{}\n", "Anomalies summary for each date from all sections where anomaly was detected".bold().yellow());
     for table_line in table.to_string().lines() {
-        make_notes!(logfile_name, args.quiet, "{}\n", table_line);
+        make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
     }
 
     html_table
