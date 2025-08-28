@@ -547,7 +547,7 @@ pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), 
     });
 
     make_notes!(logfile_name, args.quiet, 0, "\n\n");
-    make_notes!(logfile_name, false, 2, "{}\n", "Anomalies summary for each date from all sections where anomaly was detected".bold().yellow());
+    make_notes!(logfile_name, false, 2, "{}\n", "Anomalies summary for each date from all sections where anomaly was detected".yellow());
     for table_line in table.to_string().lines() {
         make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
     }
