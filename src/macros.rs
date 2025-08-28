@@ -20,7 +20,7 @@ macro_rules! make_notes {
         // Add Markdown heading if requested
         if $heading > 0 {
             let prefix = "#".repeat($heading as usize);
-            plain = format!("{} {}\n", prefix, plain.trim_end());
+            plain = format!("{} {}\n", prefix, plain.trim_start().trim_end());
         }
 
         // Append to file

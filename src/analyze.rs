@@ -1504,8 +1504,8 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir
     for (section, objects) in objects_in_section {
         sections_toplot.push(objects[0].stat_name.replace(" ","_"));
         let section_msg = format!("TOP 10 Segments by {} ordered by PCT of occuriance desc. Statstic values computed based on {}\n", section, objects[0].stat_name);
-        make_notes!(logfile_name, args.quiet, 0, "\n\n");
-        make_notes!(logfile_name, args.quiet, 2, "{}", section_msg.bold().yellow());
+        make_notes!(logfile_name, args.quiet, 0, "\n");
+        make_notes!(logfile_name, args.quiet, 2, "{}", section_msg.yellow());
         let mut table = Table::new();
         let mut segment_stat_rows = String::new();
 
@@ -1758,7 +1758,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut x_vals: Vec<String> = Vec::new();
     
     // === ANALYZING ===
-    println!("{}","\n==== ANALYZING ===".bright_cyan());
+    println!("{}","\n==== ANALYZING ===".bold().bright_cyan());
     let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, &snap_range, &logfile_name, &args);
     
     let mut is_logfilesync_high: bool = false;
@@ -1776,7 +1776,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         html_dir = format!("{}/{}_reports", &dir_path, &stripped_fname);
     }
     
-    println!("{}","\n==== CREATING PLOTS ===".bright_cyan());
+    println!("{}","\n==== CREATING PLOTS ===".bold().bright_cyan());
     fs::create_dir(&html_dir).unwrap_or_default();
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &snap_range, &html_dir);
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false, &snap_range, &html_dir);
@@ -1787,7 +1787,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     
 
     /* ------ Preparing data ------ */
-    println!("\n{}","==== PREPARING RESULTS ===".bright_cyan());
+    println!("\n{}","==== PREPARING RESULTS ===".bold().bright_cyan());
     for awr in &collection.awrs {
         let (f_begin_snap,f_end_snap) = snap_range;
 
@@ -2290,7 +2290,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut anomalies_summary: BTreeMap<(u64, String), BTreeMap<String, Vec<String>>> = BTreeMap::new();
 
     //println!("{}","Foreground Wait Events");
-    make_notes!(&logfile_name, false, 2, "{}\n","Foreground Wait Events".bold().yellow());
+    make_notes!(&logfile_name, false, 2, "\n{}\n","Foreground Wait Events".yellow());
     for (key, yv) in &y_vals_events_sorted {
         let event_trace = Scatter::new(x_vals.clone(), yv.clone())
                                                         .mode(Mode::LinesText)
@@ -2302,7 +2302,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         /* Correlation calc */
         let corr: f64 = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
-        make_notes!(&logfile_name, args.quiet, 0, "\t{: >5}\n", &event_name);
+        make_notes!(&logfile_name, args.quiet, 3, "\t{: >5}\n", &event_name.bold());
 
         let correlation_info: String = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
@@ -2340,7 +2340,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let mut anomalies_flag: bool = false;
 
         if let Some(anomalies) = top_stats.event_anomalies_mad.get(&key.1) {
-            let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
+            let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().red();
             anomalies_flag = true;
             make_notes!(&logfile_name, args.quiet, 0, "\t\t{}\n",  anomalies_detection_msg);
             
@@ -2493,7 +2493,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     );
 
     //println!("{}","Background Wait Events");
-    make_notes!(&logfile_name, false, 2, "{}\n","Background Wait Events".bold().yellow());
+    make_notes!(&logfile_name, false, 2, "{}\n","Background Wait Events".yellow());
     for (key, yv) in &y_vals_bgevents_sorted {
         let event_name: String = key.1.clone();
         /* Correlation calc */
@@ -2516,7 +2516,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let stddev_wait_per_exec_ms: f64 = (stddev_exec_s / stddev_exec_n) * 1000.0;
 
         //Print calculations
-        make_notes!(&logfile_name, args.quiet, 0, "\t{: >5}\n", &event_name);
+        make_notes!(&logfile_name, args.quiet, 3, "\t{: >5}\n", &event_name.bold());
 
         let correlation_info: String = format!("--- Correlation with DB Time: {:.2}", &corr);
         if corr >= 0.4 || corr <= -0.4 { 
@@ -2535,7 +2535,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let mut anomalies_flag: bool = false;
 
         if let Some(anomalies) = top_stats.bgevent_anomalies_mad.get(&key.1) {
-            let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
+            let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().red();
             anomalies_flag = true;
             make_notes!(&logfile_name, args.quiet, 0, "\t\t{}\n",  anomalies_detection_msg);
 
@@ -2687,7 +2687,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     );
 
     //println!("{}","SQLs");
-    make_notes!(&logfile_name, false, 2, "{}", "TOP SQLs by Elapsed time (SQL_ID or OLD_HASH_VALUE presented)".bold().yellow());
+    make_notes!(&logfile_name, false, 2, "{}", "TOP SQLs by Elapsed time (SQL_ID or OLD_HASH_VALUE presented)".yellow());
 
     let mut ash_event_sql_map: HashMap<String, HashSet<String>> = HashMap::new();
 
@@ -2704,9 +2704,8 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let corr: f64 = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
         let top_sections: HashMap<String, f64> = report_top_sql_sections(&sql_id, &collection.awrs);
-        make_notes!(&logfile_name, args.quiet, 0,
-            "\n\t{: >5} \t {}\n",
-            &sql_id.bold(),
+        make_notes!(&logfile_name, args.quiet, 3, "\n\t{: >5}", &sql_id.bold());
+        make_notes!(&logfile_name, args.quiet, 0, "\n\t {}\n",
             format!("Other Top Sections: {}",
                 &top_sections.iter().map(|(key, value)| format!("{} [{:.2}%]", key, value)).collect::<Vec<String>>().join(" | ")
             ).italic(),
@@ -2767,7 +2766,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         make_notes!(&logfile_name, args.quiet, 0, "{: >38} {: <14.2} \tSTDDEV No. executions:  {:.2}\n", "--- AVG No. executions:", avg_exec_n, stddev_exec_n);
         make_notes!(&logfile_name, args.quiet, 0, "{: >23} {} \n", "MODULE: ", top_stats.sqls.get(&sql_id).unwrap().blue());
         if !sql_type.is_empty() {
-            make_notes!(&logfile_name, args.quiet, 0, "{: >23} {} \n", "  TYPE: ", sql_type.green());
+            make_notes!(&logfile_name, args.quiet, 0, "{: >23} {}\n\n", "  TYPE: ", sql_type.green());
         }
 
         
@@ -2776,7 +2775,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let mut anomalies_flag: bool = false;
 
         if let Some(anomalies) = top_stats.sql_elapsed_time_anomalies_mad.get(&key.1) {
-            let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().bold().underline().blue();
+            let anomalies_detection_msg = "Detected anomalies using Median Absolute Deviation on the following dates:".to_string().red();
             anomalies_flag = true;
             make_notes!(&logfile_name, args.quiet, 0, "\t\t{}\n",  anomalies_detection_msg);
 
@@ -2946,7 +2945,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         let mut ash_events_html = String::new();
         if !ash_events.is_empty() {
             let sql_ash_txt_header = "Wait events actually found in ASH section of AWR reports:\n".to_string();
-            make_notes!(&logfile_name, args.quiet, 0, "\n\n\t\t{}", sql_ash_txt_header.bold().blue());
+            make_notes!(&logfile_name, args.quiet, 0, "\n\t\t{}", sql_ash_txt_header.bold().blue());
 
             
             let mut table = Table::new();
@@ -3072,7 +3071,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     //println!("\n{}","Statistics");
     make_notes!(&logfile_name, false, 0, "\n");
     /* "IO Stats by Function" are goin into report */
-    make_notes!(&logfile_name, false, 2,"{}\n",format!("IO Statistics by Function - Summary").bold().yellow());
+    make_notes!(&logfile_name, false, 2,"{}\n",format!("IO Statistics by Function - Summary").yellow());
     // Create the table
     let mut table_iostats = Table::new();
 
@@ -3120,7 +3119,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     }
     make_notes!(&logfile_name, args.quiet, 0, "{}\n", table_iostats);
 
-    make_notes!(&logfile_name, false, 2,"{}\n",format!("Latch Activity Statistics - Summary").bold().yellow());
+    make_notes!(&logfile_name, false, 2,"{}\n",format!("Latch Activity Statistics - Summary").yellow());
     make_notes!(&logfile_name, args.quiet, 0, "{}\n", table_latch);
 
     /******** Report Segment Statistics Summary */
@@ -3128,7 +3127,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     /********************************************/
 
     make_notes!(&logfile_name, args.quiet, 0, "\n\n");
-    make_notes!(&logfile_name, false, 2, "{}", "Instance Statistics: Correlation with DB Time for values >= 0.5 and <= -0.5".bold().yellow());
+    make_notes!(&logfile_name, false, 2, "{}", "Instance Statistics: Correlation with DB Time for values >= 0.5 and <= -0.5".yellow());
     make_notes!(&logfile_name, args.quiet, 0, "\n\n");
     let mut sorted_correlation = report_instance_stats_cor(instance_stats, y_vals_dbtime);
     let mut stats_table_rows = String::new();
@@ -3353,7 +3352,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     make_notes!(&logfile_name, false, 0, "\n\n");
     make_notes!(&logfile_name, false, 1, "{}\n", "ANOMALIES".bold().green());
      /* Load Profile Anomalies detection and report */
-    make_notes!(&logfile_name, false, 2, "{} {}\n", "Load Profile Anomalies detection using Median Absolute Deviation threshold:".bold().yellow(), args.mad_threshold);
+    make_notes!(&logfile_name, false, 2, "\n{} {}\n", "Load Profile Anomalies detection using Median Absolute Deviation threshold:".yellow(), args.mad_threshold);
     
     let all_loadprofile: HashSet<String> = collection.awrs
                                                 .iter()
@@ -3786,7 +3785,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
         );
 
 
-    println!("\n{}","==== GENERATING PLOTS ====");
+    println!("\n{}","==== GENERATING PLOTS ====".bold().bright_cyan());
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
     plot_highlight2.set_layout(layout_highlight2);
@@ -4232,7 +4231,7 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
         .expect("Failed to write updated Plotly HTML file");
-    println!("{}","\n==== DONE ===".bright_cyan());
+    println!("{}","\n==== DONE ===".bold().bright_cyan());
     println!("{}{}\n","JAS-MIN Report saved to: ",&fname);
 
     open::that(fname);
