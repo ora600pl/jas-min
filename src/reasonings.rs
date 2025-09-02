@@ -314,15 +314,13 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
 
     // build spell
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
-    if let Some(pr) = private_reasonings() {
-        spell = format!("{spell}\nImportnat is to use this as RAG: {pr}");
-    }
+    let rag_context = private_reasonings();
+
     if !args.url_context_file.is_empty() {
         if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
             spell = format!("{spell}\n{urls}");
         }
     }
-
     // encode images as data URLs (avoids separate upload step)
     fn png_to_data_url(path: &str) -> Option<String> {
         match fs::read(path) {
@@ -337,28 +335,61 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
     let dataurl_png2 = png_to_data_url(&load_profile2_png_name);
 
     // Build Responses API payload
-    let mut user_content = vec![
-        json!({"type": "input_text", "text": spell}),
-        json!({"type": "input_text", "text": log_content}),
+    
+    let mut input_messages = vec![
+        json!({
+            "role": "system",
+            "content": [
+                { "type": "input_text", "text": spell }
+            ]
+        }),
     ];
 
-    if let Some(url1) = dataurl_png1 {
-        user_content.push(json!({"type":"input_image", "image_url": url1}));
+    if let Some(rag) = rag_context {
+        input_messages.push(json!({
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text":
+                    format!(
+"### RAG CONTEXT (retrieved)    
+{rag}
+-- END RAG CONTEXT --"
+                    )
+                }
+            ]
+        }));
     }
-    if let Some(url2) = dataurl_png2 {
-        user_content.push(json!({"type":"input_image", "image_url": url2}));
+    
+    let mut log_and_images = vec![
+        json!({"type":"input_text", "text":
+            format!(
+"### ATTACHED REPORT
+{log_content}
+-- END ATTACHED REPORT --"
+            )
+        }),
+    ];
+
+    if let Some(u1) = dataurl_png1 {
+        log_and_images.push(json!({"type":"input_image", "image_url": u1}));
     }
+    if let Some(u2) = dataurl_png2 {
+        log_and_images.push(json!({"type":"input_image", "image_url": u2}));
+    }
+
+    input_messages.push(json!({
+        "role": "user",
+        "content": log_and_images
+    }));
+        
 
     // tune max_output_tokens
     let max_output_tokens = 8192 * token_count_factor;
 
     let payload = json!({
         "model": vendor_model_lang[1], // e.g., "gpt-5"
-        "input": [{
-            "role": "user",
-            "content": user_content
-        }],
-        "max_output_tokens": max_output_tokens
+        "input": input_messages,
+        "max_output_tokens": 8192 * token_count_factor,
     });
 
     let client = Client::new();
