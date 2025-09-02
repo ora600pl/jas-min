@@ -1,4 +1,5 @@
 use colored::Colorize;
+use base64::{engine::general_purpose, Engine as _};
 use reqwest::{Client, multipart};
 use reqwest::multipart::{Form, Part};
 use serde_json::json;
@@ -294,6 +295,137 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
     Ok(())
 }
 
+#[tokio::main]
+pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>, args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}{}{}", "=== Consulting OpenAI model: ".bright_cyan(), vendor_model_lang[1], " ===".bright_cyan());
+
+    let api_key = env::var("OPENAI_API_KEY")
+        .expect("You have to set OPENAI_API_KEY env variable");
+
+    // inputs
+    let log_content = fs::read_to_string(logfile_name)
+        .expect(&format!("Can't open file {}", logfile_name));
+
+    let stem = logfile_name.split('.').collect::<Vec<&str>>()[0];
+    let load_profile_png_name  = format!("{stem}.html_reports/jasmin_highlight.png");
+    let load_profile2_png_name = format!("{stem}.html_reports/jasmin_highlight2.png");
+
+    let response_file = format!("{}_gpt5.md", logfile_name);
+
+    // build spell
+    let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
+    if let Some(pr) = private_reasonings() {
+        spell = format!("{spell}\nImportnat is to use this as RAG: {pr}");
+    }
+    if !args.url_context_file.is_empty() {
+        if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
+            spell = format!("{spell}\n{urls}");
+        }
+    }
+
+    // encode images as data URLs (avoids separate upload step)
+    fn png_to_data_url(path: &str) -> Option<String> {
+        match fs::read(path) {
+            Ok(bytes) => {
+                let b64 = general_purpose::STANDARD.encode(bytes);
+                Some(format!("data:image/png;base64,{b64}"))
+            }
+            Err(_) => None,
+        }
+    }
+    let dataurl_png1 = png_to_data_url(&load_profile_png_name);
+    let dataurl_png2 = png_to_data_url(&load_profile2_png_name);
+
+    // Build Responses API payload
+    let mut user_content = vec![
+        json!({"type": "input_text", "text": spell}),
+        json!({"type": "input_text", "text": log_content}),
+    ];
+
+    if let Some(url1) = dataurl_png1 {
+        user_content.push(json!({"type":"input_image", "image_url": url1}));
+    }
+    if let Some(url2) = dataurl_png2 {
+        user_content.push(json!({"type":"input_image", "image_url": url2}));
+    }
+
+    // tune max_output_tokens
+    let max_output_tokens = 8192 * token_count_factor;
+
+    let payload = json!({
+        "model": vendor_model_lang[1], // e.g., "gpt-5"
+        "input": [{
+            "role": "user",
+            "content": user_content
+        }],
+        "max_output_tokens": max_output_tokens
+    });
+
+    let client = Client::new();
+
+    // spinner
+    let (tx, rx) = oneshot::channel();
+    let spinner = tokio::spawn(spinning_beer(rx));
+
+    let response = client
+        .post("https://api.openai.com/v1/responses")
+        .bearer_auth(api_key)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+
+    let _ = tx.send(()); // stop spinner
+    let _ = spinner.await;
+
+    if response.status().is_success() {
+        let json: Value = response.json().await?;
+
+        let full_text = if let Some(s) = json.get("output_text").and_then(|v| v.as_str()) {
+            s.to_string()
+        } else {
+            let mut seen = std::collections::HashSet::<String>::new();
+            let mut chunks: Vec<String> = vec![];
+            if let Some(output_arr) = json.get("output").and_then(|o| o.as_array()) {
+                for item in output_arr {
+                    if let Some(content_arr) = item.get("content").and_then(|c| c.as_array()) {
+                        for c in content_arr {
+                            if let Some(t) = c.get("text").and_then(|t| t.as_str()) {
+                                if seen.insert(t.to_string()) {
+                                    chunks.push(t.to_string());
+                                }
+                            // Some responses nest text as {"type":"output_text","text": "..."}
+                            } else if let Some(t) = c.get("output_text").and_then(|t| t.as_str()) {
+                                if seen.insert(t.to_string()) {
+                                    chunks.push(t.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            chunks.join("\n")
+        };
+
+        fs::write(&response_file, full_text.as_bytes())?;
+        println!("🧠 GPT-5 response written to file: {}", &response_file);
+
+        convert_md_to_html_file(&response_file, events_sqls);
+
+        // Best-effort token & finish info if present
+        if let Some(usage) = json.get("usage") {
+            println!("Total tokens (OpenAI): {}", usage);
+        }
+        if let Some(finish) = json.pointer("/output/0/finish_reason").or_else(|| json.get("finish_reason")) {
+            println!("Finish reason: {}", finish);
+        }
+    } else {
+        eprintln!("Error: {}", response.status());
+        eprintln!("{}", response.text().await.unwrap_or_default());
+    }
+
+    Ok(())
+}
 // ###########################
 // JASMIN Assistant Backend
 // ###########################
