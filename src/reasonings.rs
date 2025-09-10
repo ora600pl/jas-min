@@ -5,6 +5,7 @@ use reqwest::multipart::{Form, Part};
 use serde_json::json;
 use std::env::Args;
 use std::fmt::format;
+use std::borrow::Cow;
 use std::{env, fs, collections::HashMap, sync::Arc, path::Path, collections::HashSet};
 use axum::{routing::post, Router, Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,8 @@ static SPELL: &str =   "Your name is JAS-MIN. You are a sarcastic as shit Oracle
 You are analyzing report file containing summarized statistics from parsed AWR reports from long period of time. 
 Based on received input you can describe the current database performance profile, 
 spot potential bottlenecks, suggest the heaviest wait events impacting database performance, and identify SQL IDs that require further performance analysis. 
-Highlight which statistics are crucial to understanding the current performance situation. If you receive image file, containing load profile summary for the database, analyze it first and write comprehensive summary for all plots with as many statistical insights as possible.
+Highlight which statistics are crucial to understanding the current performance situation. 
+If you receive images, containing load profile summary plots for the database, analyze them first and write comprehensive summary for all plots with as many statistical insights as possible.
 At the end add link to github: https://github.com/ora600pl/jas-min - this is your source code.
 Suggest that good performance tuning experts are at ora-600.pl
 Write answer in language: ";
@@ -99,12 +101,12 @@ fn url_context(url_fname: &str, events_sqls: HashMap<&str, HashSet<String>>) -> 
     Some(url_context_msg)
 }
 
-async fn upload_png_file_gemini_from_path(api_key: &str, path: &str) -> Result<String, Box<dyn std::error::Error>> {
+async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &str, file_name: &str) -> Result<String, Box<dyn std::error::Error>> {
     let image_bytes = fs::read(path)?;
 
     let part = multipart::Part::bytes(image_bytes)
-        .file_name("load_profile.png")
-        .mime_str("image/png")?;
+        .file_name(Cow::Owned(file_name.to_string()))
+        .mime_str(file_type).unwrap();
 
     let form = multipart::Form::new().part("file", part);
 
@@ -192,8 +194,8 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
     let api_key = env::var("GEMINI_API_KEY").expect("You have to set GEMINI_API_KEY env variable");
 
     let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
-    let load_profile_png_name = format!("{}.html_reports/jasmin_highlight.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
-    let load_profile2_png_name = format!("{}.html_reports/jasmin_highlight2.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
+    let load_profile_name = format!("{}.html_reports/jasmin_highlight.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
+    let load_profile2_name = format!("{}.html_reports/jasmin_highlight2.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
 
     let response_file = format!("{}_gemini.md", logfile_name);
 
@@ -213,8 +215,8 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
     }
 
     let file_uri = upload_log_file_gemini(&api_key, log_content).await.unwrap();
-    let file_uri_png = upload_png_file_gemini_from_path(&api_key, &load_profile_png_name).await.unwrap();
-    let file_uri_png2 = upload_png_file_gemini_from_path(&api_key, &load_profile2_png_name).await.unwrap();
+    let file_uri_png = upload_file_to_gemini_from_path(&api_key, &load_profile_name, "image/png", "load_profile1.png").await.unwrap();
+    let file_uri_png2 = upload_file_to_gemini_from_path(&api_key, &load_profile2_name, "image/png", "load_profile2.png").await.unwrap();
 
     let payload = json!({
                     "contents": [{
