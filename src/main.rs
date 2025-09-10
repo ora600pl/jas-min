@@ -169,8 +169,8 @@ fn main() {
 	if !args.ai.is_empty() {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
         if vendor_model_lang[0] == "openai" {
-            //openai_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args).unwrap();
-			println!("For now only Google is supported vendor with this option :( Sorry for that. You can use OpenAI with backend assistant tho. We are waiting what GPT-5 will provide.");
+            openai_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args).unwrap();
+			//println!("For now only Google is supported vendor with this option :( Sorry for that. You can use OpenAI with backend assistant tho. We are waiting what GPT-5 will provide.");
         } else if vendor_model_lang[0] == "google" { 
             gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args).unwrap();
 		} else {
