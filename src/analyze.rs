@@ -7,7 +7,8 @@ use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap, Image};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette, HoverInfo};
 use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
-use plotly::plotly_static::ImageFormat;
+//use plotly::plotly_static::ImageFormat;
+use plotly_static::{StaticExporterBuilder, ImageFormat};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::format;
@@ -3789,14 +3790,36 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
     plot_highlight2.set_layout(layout_highlight2);
-    // plot_main.use_local_plotly();
-    // plot_highlight.use_local_plotly();
+
     plot_main.write_html(fname.clone());
     plot_highlight.write_html(format!("{}/jasmin_highlight.html", &html_dir));
     plot_highlight2.write_html(format!("{}/jasmin_highlight2.html", &html_dir));
-    plot_highlight.write_image(format!("{}/jasmin_highlight.png", &html_dir), ImageFormat::PNG, 1024, 768, 1.0);
-    plot_highlight2.write_image(format!("{}/jasmin_highlight2.png", &html_dir), ImageFormat::PNG, 1024, 768, 1.0);
+
+    // plot_highlight.write_image(format!("{}/jasmin_highlight.svg", &html_dir), ImageFormat::SVG, 1024, 768, 1.0).unwrap();
+    // plot_highlight2.write_image(format!("{}/jasmin_highlight2.svg", &html_dir), ImageFormat::SVG, 1024, 768, 1.0).unwrap();
+    let mut exporter = StaticExporterBuilder::default()
+                    .build()
+                    .expect("Failed to build StaticExporter 1");
     
+    exporter.write_fig(
+                Path::new(&format!("{}/jasmin_highlight.png", &html_dir)),
+                &serde_json::from_str(&plot_highlight.to_json()).unwrap(),
+                ImageFormat::PNG,
+                1024,
+                768,
+                1.0
+            ).expect("Failed to export plot jasmin_highlight.png");
+
+    exporter.write_fig(
+                Path::new(&format!("{}/jasmin_highlight2.png", &html_dir)),
+                &serde_json::from_str(&plot_highlight2.to_json()).unwrap(),
+                ImageFormat::PNG,
+                1024,
+                768,
+                1.0
+            ).expect("Failed to export plot jasmin_highlight2.png");
+
+    exporter.close();
     
     let first_snap_time: String = collection.awrs.first().unwrap().snap_info.begin_snap_time.clone();
     let last_snap_time: String = collection.awrs.last().unwrap().snap_info.end_snap_time.clone();
