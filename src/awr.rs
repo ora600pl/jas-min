@@ -2085,7 +2085,6 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
 			file_collection.push(fname.clone()); 
 		}
     }
-
 	let pb = ProgressBar::new(file_collection.len() as u64);
     pb.set_style(ProgressStyle::default_bar()
         .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%)")
@@ -2179,8 +2178,7 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
 	let mut f = fs::File::create(file).unwrap();
 		f.write_all(json_str.as_bytes()).unwrap();
     if args.plot > 0 {
-        let html_fname = format!("{}.html", &args.directory);
-        plot_to_file(collection, html_fname, args.clone());
+        plot_to_file(collection, args.clone());
     }
     //Ok(json_str)
 }
@@ -2216,7 +2214,7 @@ pub fn prarse_json_file(args: Args, events_sqls: &mut HashMap<&str, HashSet<Stri
 	collection.awrs.clone().sort_by_key(|a| a.snap_info.begin_snap_id);
 	println!("{} samples found",collection.awrs.len());
     let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
-    let html_fname = format!("{}.html", file_and_ext[0]);
+    //let html_fname = format!("{}.html", file_and_ext[0]);
 	let fg_events: HashSet<String> = collection.awrs
 										.iter()
 										.flat_map(|a| a.foreground_wait_events.clone())
@@ -2238,5 +2236,5 @@ pub fn prarse_json_file(args: Args, events_sqls: &mut HashMap<&str, HashSet<Stri
 	events_sqls.insert("FG", fg_events);
 	events_sqls.insert("BG", bg_events);
 	events_sqls.insert("SQL", sqls);
-	plot_to_file(collection, html_fname, args.clone());
+	plot_to_file(collection, args.clone());
 }
