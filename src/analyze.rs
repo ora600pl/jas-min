@@ -15,7 +15,7 @@ use std::fmt::format;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path,PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -1700,19 +1700,21 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir
     sections_toplot   
 }
 
-pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
+pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     let db_time_cpu_ratio: f64 = args.time_cpu_ratio;
     let filter_db_time: f64 = args.filter_db_time;
     let snap_range: (u64,u64) = parse_snap_range(&args.snap_range).expect("Invalid snap-range argument");
     
-    let file_len = fname.len();
-    let logfile_name: String = format!("{}.txt", &fname[0..file_len-5]); //cut .html from file name and add .txt
+    //Filenames and Paths used to save JAS-MIN files
+    let logfile_name = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
     let logfile_path = Path::new(&logfile_name);
     println!("Starting output capture to: {}", logfile_path.display() );
     if logfile_path.exists() { //remove logfile if it exists - the notes made by JAS-MIN has to be created each time
         fs::remove_file(&logfile_path).unwrap();
     }
-
+    let html_dir = PathBuf::from(&args.directory).with_extension("html_reports").to_string_lossy().into_owned();
+    
+    // Y-axis
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
@@ -1739,7 +1741,6 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut y_logical_reads_s: Vec<f64> = Vec::new();
     let mut y_block_changes_s: Vec<f64> = Vec::new();
     let mut y_failed_parse_count: Vec<u64> = Vec::new();
-
     /*Variables used for statistics computations*/
     let mut y_vals_events_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
     let mut y_vals_events_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
@@ -1750,32 +1751,14 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let mut y_vals_sqls_exec_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_exec_n: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_exec_s: BTreeMap<String, Vec<f64>> = BTreeMap::new(); //For Elapsed Time AVG STDDEV calculations
-     
-    /****************************************************/
     /*HashMap for calculating instance stats correlation*/
     let mut instance_stats: HashMap<String, Vec<f64>> = HashMap::new();
-    /****************************************************/
-
+    // X-axis -> snaps
     let mut x_vals: Vec<String> = Vec::new();
     
-    // === ANALYZING ===
     println!("{}","\n==== ANALYZING ===".bold().bright_cyan());
-    let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, &snap_range, &logfile_name, &args);
-    
+    let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, &snap_range, &logfile_name, &args);  
     let mut is_logfilesync_high: bool = false;
-    
-    // Extract the parent directory and generate FG Events html plots
-
-    //This will be empty if -d or -j specified without whole path
-    let dir_path: &str = Path::new(&fname).parent().unwrap_or(Path::new("")).to_str().unwrap_or("");
-    let mut html_dir: String = String::new(); //variable for html files directory
-    let mut stripped_fname: &str = fname.as_str(); //without whole path to a file this will be just a file name
-    if dir_path.len() == 0 {
-        html_dir = format!("{}_reports", &fname); 
-    } else { //if the whole path was specified we are extracting file name and seting html_dir properly 
-        stripped_fname = Path::new(&fname).file_name().unwrap().to_str().unwrap();
-        html_dir = format!("{}/{}_reports", &dir_path, &stripped_fname);
-    }
     
     println!("{}","\n==== CREATING PLOTS ===".bold().bright_cyan());
     fs::create_dir(&html_dir).unwrap_or_default();
@@ -1786,17 +1769,12 @@ pub fn plot_to_file(collection: AWRSCollection, fname: String, args: Args) {
     let table_latch: Table = generate_latchstats_plotfiles(&collection.awrs, &snap_range, &html_dir);
     let fname: String = format!("{}/jasmin_main.html", &html_dir); //new file name path for main report
     
-
-    /* ------ Preparing data ------ */
     println!("\n{}","==== PREPARING RESULTS ===".bold().bright_cyan());
     for awr in &collection.awrs {
         let (f_begin_snap,f_end_snap) = snap_range;
-
         if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
-
             let xval: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
             x_vals.push(xval.clone());
-
             //We have to fill the whole data traces for stats, wait events and SQLs with 0 to be sure that chart won't be moved to one side
             for (sql, _) in &top_stats.sqls {
                 y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
