@@ -154,17 +154,17 @@ fn main() {
 		let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
 		println!("{}", awr_doc);
 	} else if !args.directory.is_empty() {
-		let mut fname = format!("{}.json", &args.directory);
-		reportfile = format!("{}.txt", &args.directory);
+		let mut fname = PathBuf::from(&args.directory).with_extension("json").to_string_lossy().into_owned();
+		reportfile = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
 		if !args.outfile.is_empty() {
 			fname = args.outfile.clone();
 		}
-		 awr::parse_awr_dir(args.clone(), events_sqls, &fname);
+		awr::parse_awr_dir(args.clone(), events_sqls, &fname);
 		
 	} else if !args.json_file.is_empty() {
 		awr::prarse_json_file(args.clone(), events_sqls);
 		let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
-    reportfile = format!("{}.txt", file_and_ext[0]);
+    	reportfile = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
 	}
 	if !args.ai.is_empty() {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
