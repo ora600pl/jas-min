@@ -262,6 +262,40 @@ fn merge_ash_sqls_to_events(ash_event_sql_map: HashMap<String, HashSet<String>>,
 
 }
 
+//Add SQL_IDs found with strong correlation to event charts
+fn merge_correlated_sqls_to_events(crr_event_sql_map: HashMap<String, HashMap<String, f64>>, dirpath: &str) {
+
+    for (event, sqls) in crr_event_sql_map {
+        let filename = get_safe_event_filename(&dirpath, event.clone(), true);
+        let mut event_html_content = format!(
+            r#"
+                <h4 style="color:blue;font-weight:bold;">SQL IDs with strong correlation with this wait event:</h4>
+                <ul>
+            "#);
+
+        let mut vec_sqls: Vec<_> = sqls.into_iter().collect();
+        vec_sqls.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        for (sqlid, crr) in vec_sqls {
+            event_html_content = format!("{}<li><a href=sqlid_{}.html target=_blank style=\"color: black;\">{:.2} | {}</a></li>", event_html_content, sqlid, crr, sqlid);
+        }
+        event_html_content = format!("{}</ul>", event_html_content);
+        if Path::new(&filename).exists() {
+            let mut event_file: String = fs::read_to_string(&filename)
+                                            .expect(&format!("Failed to read file: {}", filename));
+            event_file = event_file.replace(
+                                    "</h2>",
+                                    &format!("</h2>\n{}\n",event_html_content));
+
+            if let Err(e) = fs::write(&filename, event_file) {
+                eprintln!("Error writing file {}: {}", filename, e);
+            }
+        }
+        
+    }
+
+}
+
 // Generate plots for top events
 fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>, is_fg: bool, snap_range: &(u64,u64), dirpath: &str) {
     let (f_begin_snap,f_end_snap) = snap_range;
@@ -1706,13 +1740,22 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     let snap_range: (u64,u64) = parse_snap_range(&args.snap_range).expect("Invalid snap-range argument");
     
     //Filenames and Paths used to save JAS-MIN files
-    let logfile_name = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
+    let mut logfile_name = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
+    if logfile_name.is_empty() && !&args.json_file.is_empty() {
+        let lname = args.json_file.split(".").collect::<Vec<&str>>()[0].to_string();
+        logfile_name = PathBuf::from(&lname).with_extension("txt").to_string_lossy().into_owned();
+    }
     let logfile_path = Path::new(&logfile_name);
     println!("Starting output capture to: {}", logfile_path.display() );
     if logfile_path.exists() { //remove logfile if it exists - the notes made by JAS-MIN has to be created each time
         fs::remove_file(&logfile_path).unwrap();
     }
-    let html_dir = PathBuf::from(&args.directory).with_extension("html_reports").to_string_lossy().into_owned();
+
+    let mut html_dir = PathBuf::from(&args.directory).with_extension("html_reports").to_string_lossy().into_owned();
+    if html_dir.is_empty() && !&args.json_file.is_empty() {
+        let lname = args.json_file.split(".").collect::<Vec<&str>>()[0].to_string();
+        html_dir = PathBuf::from(&lname).with_extension("html_reports").to_string_lossy().into_owned();
+    }
     
     // Y-axis
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
@@ -2666,9 +2709,10 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     );
 
     //println!("{}","SQLs");
-    make_notes!(&logfile_name, false, 2, "{}", "TOP SQLs by Elapsed time (SQL_ID or OLD_HASH_VALUE presented)".yellow());
+    make_notes!(&logfile_name, false, 2, "{}", "TOP SQLs by Elapsed time".yellow());
 
     let mut ash_event_sql_map: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut crr_event_sql_map: HashMap<String, HashMap<String, f64>> = HashMap::new();
 
     for (key,yv) in y_vals_sqls_sorted {
         let sql_trace = Scatter::new(x_vals.clone(), yv.clone())
@@ -2679,11 +2723,12 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         plot_main.add_trace(sql_trace);
         
         let sql_id: String = key.1.clone();
+        let sql_id_disp = format!("SQL_ID: {}", key.1.clone());
         /* Correlation calc */
         let corr: f64 = pearson_correlation_2v(&y_vals_dbtime, &yv);
         // Print Correlation considered high enough to mark it
         let top_sections: HashMap<String, f64> = report_top_sql_sections(&sql_id, &collection.awrs);
-        make_notes!(&logfile_name, args.quiet, 3, "\n\t{: >5}", &sql_id.bold());
+        make_notes!(&logfile_name, args.quiet, 3, "\n\t{: >5}", &sql_id_disp.bold());
         make_notes!(&logfile_name, args.quiet, 0, "\n\t {}\n",
             format!("Other Top Sections: {}",
                 &top_sections.iter().map(|(key, value)| format!("{} [{:.2}%]", key, value)).collect::<Vec<String>>().join(" | ")
@@ -2898,6 +2943,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                         c_corr_factor,
                  ]));
                  found_strong_events = true;
+                 crr_event_sql_map.entry(key.1.clone()).or_insert_with(HashMap::new).insert(sql_id.clone(), crr);
             }
         }
         
@@ -3042,7 +3088,9 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         merge_ash_sqls_to_events(ash_event_sql_map, &html_dir);
     }
 
-    
+    if !crr_event_sql_map.is_empty() {
+        merge_correlated_sqls_to_events(crr_event_sql_map, &html_dir);
+    }
 
 
     // STATISTICS Correltation to DBTime
