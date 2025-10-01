@@ -1742,8 +1742,9 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     //Filenames and Paths used to save JAS-MIN files
     let mut logfile_name = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
     if logfile_name.is_empty() && !&args.json_file.is_empty() {
-        let lname = args.json_file.split(".").collect::<Vec<&str>>()[0].to_string();
-        logfile_name = PathBuf::from(&lname).with_extension("txt").to_string_lossy().into_owned();
+        if let Some(stem) = PathBuf::from(&args.json_file).file_stem() {
+            logfile_name = PathBuf::from(stem).with_extension("txt").to_string_lossy().into_owned();
+        } 
     }
     let logfile_path = Path::new(&logfile_name);
     println!("Starting output capture to: {}", logfile_path.display() );
@@ -1753,8 +1754,9 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
 
     let mut html_dir = PathBuf::from(&args.directory).with_extension("html_reports").to_string_lossy().into_owned();
     if html_dir.is_empty() && !&args.json_file.is_empty() {
-        let lname = args.json_file.split(".").collect::<Vec<&str>>()[0].to_string();
-        html_dir = PathBuf::from(&lname).with_extension("html_reports").to_string_lossy().into_owned();
+        if let Some(stem) = PathBuf::from(&args.json_file).file_stem() {
+            html_dir = PathBuf::from(stem).with_extension("html_reports").to_string_lossy().into_owned();
+        } 
     }
     
     // Y-axis
