@@ -154,17 +154,32 @@ fn main() {
 		let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
 		println!("{}", awr_doc);
 	} else if !args.directory.is_empty() {
-		let mut fname = PathBuf::from(&args.directory).with_extension("json").to_string_lossy().into_owned();
-		reportfile = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
-		if !args.outfile.is_empty() {
-			fname = args.outfile.clone();
+		if PathBuf::from(&args.directory).exists(){
+			let mut fname = PathBuf::from(&args.directory).with_extension("json").to_string_lossy().into_owned();
+			reportfile = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
+			if !args.outfile.is_empty() {
+				fname = args.outfile.clone();
+			}
+			awr::parse_awr_dir(args.clone(), events_sqls, &fname);
+		} else {
+			eprintln!("ERROR: Directory: '{}' does not exists!",args.directory);
 		}
-		awr::parse_awr_dir(args.clone(), events_sqls, &fname);
 		
 	} else if !args.json_file.is_empty() {
-		awr::prarse_json_file(args.clone(), events_sqls);
-		let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
-    	reportfile = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
+		if PathBuf::from(&args.json_file).exists(){
+			awr::prarse_json_file(args.clone(), events_sqls);
+			//let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
+			reportfile = match PathBuf::from(&args.json_file).file_stem() {
+				Some(stem) => 
+					PathBuf::from(stem).with_extension("txt").to_string_lossy().into_owned(),
+				None => {
+					eprintln!("Invalid filename: {}", args.json_file);
+					std::process::exit(10);
+				}
+			};
+		} else {
+			eprintln!("ERROR: JSON file: '{}' does not exists!",args.json_file);
+		}
 	}
 	if !args.ai.is_empty() {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
@@ -193,7 +208,7 @@ fn main() {
 
 		println!("{}",r#"==== STARTING ASISTANT BACKEND ==="#.bright_cyan());
 		println!("🤖 Starting JAS-MIN Assistant Backend using: {}",args.backend_assistant);
-		println!("📁 Report File: {}",reportfile.clone());
+		println!("📁 Report File: {}",&reportfile);
         
 		backend_ai(reportfile, backend_type, model_name);
     }
