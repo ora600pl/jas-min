@@ -74,7 +74,7 @@ struct Args {
 	token_count_factor: usize,
 
 	///Launches the backend agent used by the JASMIN Assistant.
-	///-b <openai>|<gemini:model>
+	///-b <openai>|<google:model>
 	/// Configuration details such as API keys and the selected PORT number are loaded from the .env file
 	#[clap(short, long, default_value="")]
 	backend_assistant: String,

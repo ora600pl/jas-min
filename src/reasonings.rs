@@ -975,11 +975,11 @@ async fn chat_handler(
 pub fn parse_backend_type(args: &str) -> Result<BackendType, String> {
     let mut btype = args; 
     if args.contains(":") {
-        btype = args.split(":").collect::<Vec<&str>>()[0]; //for gemini you have to specify model - for example gemini:gemini-2.5-flash
+        btype = args.split(":").collect::<Vec<&str>>()[0]; //for google you have to specify model - for example google:gemini-2.5-flash
     }
     match btype {
         "openai" => Ok(BackendType::OpenAI),
-        "gemini" => Ok(BackendType::Gemini),
-        _ => Err(format!("Backend must be 'openai' or 'gemini' -> found: {}",args)),
+        "google" => Ok(BackendType::Gemini),
+        _ => Err(format!("Backend must be 'openai' or 'google' -> found: {}",args)),
     }
 }

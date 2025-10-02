@@ -16,14 +16,16 @@ Rdosław Kut <radek@ora-600.pl>
 
 
 ## Features:
-- Parses raw AWR (.html) and STATSPACK (.txt) reports
-- Generates an interactive, standalone HTML dashboard (Plotly-based)
-- Correlates wait events and instance statistics with DB time
-- Identifies top SQLs and background/foreground wait events
-- Includes AI Assistant — chat with your report!
+- Parse multiple raw AWR (.html) and STATSPACK (.txt) reports in parallel
+- Generate clean JSON output for further automation or logging
+- Identify TOP: SQLs, Background/Foreground wait events, IO Stats, Segments Stats, ...
+- Correlate Wait Events and Instance Statistics with DB Time using PCC (Pearson correlation coefficient)
+- Hunt for statistical Anomalies using MAD (Median Absolute Deviation)
+- Generate an interactive, standalone HTML dashboard that visualizes data
+- Run AI Assistant — chat with your report!
+- Generate database performance reports powered by AI
+- Choose the level of trust in terms of which sensitive data can be inlcuded
 - CLI-based, friendly to scripting or pipeline integration
-- Clean JSON output for further automation or logging
-
 
 ## State of Development:
 - **This tool is in active development and evolving fast.**
@@ -47,6 +49,12 @@ USAGE:
 
 OPTIONS:
 
+    -a, --ai <AI>
+          Use AI model to interpret collected statistics and describe them. Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL) [default: ]
+   
+    -b, --backend-assistant <BACKEND_ASSISTANT>
+          Launches the backend agent used by the JASMIN Assistant. -b <openai>|<google:model> Configuration details such as API keys and the selected PORT number are loaded from the .env file [default: ]
+          
     -d, --directory <DIRECTORY>
             Parse whole directory of files [default: NO]
 
@@ -62,43 +70,40 @@ OPTIONS:
     -j, --json-file <JSON_FILE>
             Analyze provided JSON file [default: NO]
 
+    -m, --mad-threshold <MAD_THRESHOLD>
+          Threshold for detecting anomalies using MAD [default: 7] 
+
     -o, --outfile <OUTFILE>
             Write output to nondefault file? Default is directory_name.json [default: NO]
 
     -p, --plot <PLOT>
             Draw a plot? [default: 1]
 
-    -s, --snap-range <SNAP_RANGE>
-            Filter snapshots, based on dates in format BEGIN-END [default: 0-666666666]
-
-    -t, --time-cpu-ratio <TIME_CPU_RATIO>
-            Ratio of DB CPU / DB TIME [default: 0.666]
+    -P, --parallel <PARALLEL>
+          Parallelism level [default: 4]
 
     -q, --quiet
           Should I be quiet? This mode suppresses terminal output but still writes to log file
 
-    -T, --token-count-factor <TOKEN_COUNT_FACTOR>
-          Base output token count is 8192 - you can update maximum number of output tokens by this factor [default: 8]
-
-    -b, --backend-assistant <BACKEND_ASSISTANT>
-          Launches the backend agent used by the JASMIN Assistant. -b <openai>|<gemini:model> Configuration details such as API keys and the selected PORT number are loaded from the .env file [default: ]
-
-    -m, --mad-threshold <MAD_THRESHOLD>
-          Threshold for detecting anomalies using MAD [default: 7] 
-
-    -W, --mad-window-size <MAD_WINDOW_SIZE>
-          Window size for detecting anomalies using MAD for local sliding window specified as % of probes [default: 100]
+    -s, --snap-range <SNAP_RANGE>
+            Filter snapshots, based on dates in format BEGIN-END [default: 0-666666666]
 
     -S, --security-level <LEVEL>
           Controls JAS-MIN to include sensitive infromations when generating report:
           0 - default (no sensitive data)
           1 - include objects and segments names
 
-    -P, --parallel <PARALLEL>
-          Parallelism level [default: 4]
+    -t, --time-cpu-ratio <TIME_CPU_RATIO>
+            Ratio of DB CPU / DB TIME [default: 0.666]
+
+    -T, --token-count-factor <TOKEN_COUNT_FACTOR>
+          Base output token count is 8192 - you can update maximum number of output tokens by this factor [default: 8]
 
     -V, --version
             Print version information
+
+    -W, --mad-window-size <MAD_WINDOW_SIZE>
+          Window size for detecting anomalies using MAD for local sliding window specified as % of probes [default: 100]
     
 
 If you choose to plot a chart, you will see a basic distribution of DB Time vs DB CPU, distribution TOP 5 wait events from the times, when DB CPU was less then 66.6% of DB Time plus some TOP SQLs by Elapsed Time, sorted by amount of occuriance.  
