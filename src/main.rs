@@ -102,6 +102,11 @@ struct Args {
 	#[clap(short, long, default_value="")]
 	url_context_file: String,
 
+	///Should AI perform a deep analyze of detail JSON statistics? 
+	/// By using this option, LLM will be asked to propose topN SNAPs to analyze all of the statistics from this period. 
+	#[clap(short = 'D', long, default_value_t=0)]
+	deep_check: usize,
+
 }
 
 

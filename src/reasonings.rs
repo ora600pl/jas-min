@@ -17,14 +17,17 @@ use tokio::sync::oneshot;
 use std::io::{stdout, Write};
 use std::error::Error;
 use crate::tools::*;
+use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR};
+use std::str::FromStr;
 
 
 static SPELL: &str =   "Your name is JAS-MIN. You are a sarcastic as shit Oracle Database performance tuning expert and assistant but don't mention it.
 You are analyzing report file containing summarized statistics from parsed AWR reports from long period of time. 
 Based on received input you can describe the current database performance profile, 
 spot potential bottlenecks, suggest the heaviest wait events impacting database performance, and identify SQL IDs that require further performance analysis. 
-Highlight which statistics are crucial to understanding the current performance situation. 
+Highlight which statistics are crucial for understanding the current performance situation. 
 If you receive images, containing load profile summary plots for the database, analyze them first and write comprehensive summary for all plots with as many statistical insights as possible.
+Always show both: SNAP_ID and SNAP_DATE when you mention problematic periods.
 At the end add link to github: https://github.com/ora600pl/jas-min - this is your source code.
 Suggest that good performance tuning experts are at ora-600.pl
 Write answer in language: ";
@@ -187,6 +190,165 @@ async fn spinning_beer(mut done: oneshot::Receiver<()>) {
     println!("\r✅ Got response!");
 }
 
+async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: Vec<&str>, token_count_factor: usize, first_response: String, api_key: &str, events_sqls: HashMap<&str, HashSet<String>>,) {
+    println!("{}{}{}","=== Starting deep dive with Google Gemini model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
+    let mut json_file = args.json_file.clone();
+    if json_file.is_empty() {
+        json_file = format!("{}.json", args.directory);
+    }
+
+    let client = Client::new();
+
+    let file_uri = upload_log_file_gemini(&api_key, first_response).await.unwrap();
+    let spell = format!("You were given a detailed performance analyze of Oracle database. Your task is to answear ONLY with a list of TOP {} SNAP_IDs that should be analyzed in more detail. Anwear only with those numbers representing SNAP_ID - one number in a line.", args.deep_check);
+
+    let payload = json!({
+                    "contents": [{
+                        "parts": [
+                            { "text": spell }, 
+                            {
+                                "fileData": {
+                                    "mimeType": "text/plain",
+                                    "fileUri": file_uri
+                                }
+                            }
+                        ]
+                    }],
+                    "generationConfig": {
+                        "maxOutputTokens": 8192 * token_count_factor,
+                        "thinkingConfig": {
+                            "thinkingBudget": -1
+                        }
+                    }
+                });
+
+    let (tx, rx) = oneshot::channel();
+    let spinner = tokio::spawn(spinning_beer(rx));
+
+    let response = client
+            .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await.unwrap();
+    
+    let _ = tx.send(()); //stop spinner
+    let _ = spinner.await;
+
+    if response.status().is_success() {
+        let json: Value = response.json().await.unwrap();
+
+        // Integrate all parts, keeping only first unique occurrences
+        let parts = &json["candidates"][0]["content"]["parts"];
+        let mut seen = HashSet::new();
+        let full_text = parts
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .filter(|text| seen.insert(text.to_string()))
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        println!("🍻 Gemini will analyze further the following SNP_ID:\n{}", &full_text);
+        
+        let s_json = fs::read_to_string(&json_file).expect(&format!("Something wrong with a file {} ", &args.json_file));
+        let mut collection: AWRSCollection = serde_json::from_str(&s_json).expect(&format!("Wrong JSON format {}", &json_file));
+        //println!("Total amount of tokens drank by Google: {}\nFinished reason was: {}\n", &json["usageMetadata"]["totalTokenCount"], &json["candidates"][0]["finishReason"]);
+        let awrs: Vec<AWR> = collection.awrs;
+        let mut snap_ids: HashSet<u64> = HashSet::new();
+        for snap_id in full_text.split("\n") {
+            let id = u64::from_str(snap_id).unwrap();
+            snap_ids.insert(id);
+        }
+
+        let mut deep_stats: Vec<AWR> = Vec::new();
+        for awr in awrs {
+            if snap_ids.contains(&awr.snap_info.begin_snap_id) {
+                deep_stats.push(awr);
+            }
+        }
+        let deep_stats_json = serde_json::to_string_pretty(&deep_stats).unwrap();
+        let file_uri_stats = upload_log_file_gemini(&api_key, deep_stats_json).await.unwrap();
+        let spell = format!("You were given a detailed performance report of Oracle database and JSON file containing TOP {} periods with the detailed statistics. 
+        Perform a deep analyzes of those statistics. Return a detailed report in markdown format, showing what you have found. 
+        Suggest performance improvments. Detect impactfull statistics and latches.
+        Investigate all SQL sections and crosscheck SQL_IDs to find patterns of bad SQL executions.
+
+        Write answer in language: {}", args.deep_check, vendor_model_lang[2]);
+
+        let payload = json!({
+                    "contents": [{
+                        "parts": [
+                            { "text": spell }, 
+                            {
+                                "fileData": {
+                                    "mimeType": "text/plain",
+                                    "fileUri": file_uri
+                                },
+                                "fileData": {
+                                    "mimeType": "text/plain",
+                                    "fileUri": file_uri_stats
+                                }
+                            }
+                        ]
+                    }],
+                    "generationConfig": {
+                        "maxOutputTokens": 8192 * token_count_factor,
+                        "thinkingConfig": {
+                            "thinkingBudget": -1
+                        }
+                    }
+                });
+
+    let (tx, rx) = oneshot::channel();
+    let spinner = tokio::spawn(spinning_beer(rx));
+
+    let response = client
+            .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await.unwrap();
+    
+    let _ = tx.send(()); //stop spinner
+    let _ = spinner.await;
+
+    if response.status().is_success() {
+        let json: Value = response.json().await.unwrap();
+
+        // Integrate all parts, keeping only first unique occurrences
+        let parts = &json["candidates"][0]["content"]["parts"];
+        let mut seen = HashSet::new();
+        let full_text = parts
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .filter(|text| seen.insert(text.to_string()))
+            .collect::<Vec<&str>>()
+            .join("\n");
+
+        let response_file = format!("{}_gemini2.md", logfile_name);
+        fs::write(&response_file, full_text.as_bytes()).unwrap();
+        println!("🍻 Gemini response written to file: {}", &response_file);
+        convert_md_to_html_file(&response_file, events_sqls.clone());
+        //println!("{}", full_text);
+
+    } else {
+        eprintln!("Error: {}", response.status());
+        eprintln!("{}", response.text().await.unwrap());
+    }
+
+
+    } else {
+        eprintln!("Error: {}", response.status());
+        eprintln!("{}", response.text().await.unwrap());
+    }
+
+
+}
+
 #[tokio::main]
 pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>, args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
 
@@ -285,10 +447,13 @@ pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_coun
 
         fs::write(&response_file, full_text.as_bytes()).unwrap();
         println!("🍻 Gemini response written to file: {}", &response_file);
-        convert_md_to_html_file(&response_file, events_sqls);
+        convert_md_to_html_file(&response_file, events_sqls.clone());
         //let rsp = serde_json::to_string_pretty(&json).unwrap();
         println!("Total amount of tokens drank by Google: {}\nFinished reason was: {}\n", &json["usageMetadata"]["totalTokenCount"], &json["candidates"][0]["finishReason"]);
 
+        if args.deep_check > 0 {
+            gemini_deep(logfile_name, &args, vendor_model_lang, token_count_factor, full_text, &api_key, events_sqls.clone()).await;
+        }
     } else {
         eprintln!("Error: {}", response.status());
         eprintln!("{}", response.text().await.unwrap());
