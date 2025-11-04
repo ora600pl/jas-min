@@ -13,8 +13,7 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 execute = "0.2.11"
 clap = { version = "4.5.31", features = ["derive"] }
-plotly = { version = "0.13", features = ["static_export_default"] }
-plotly_static = { version = "0.1", features = ["geckodriver", "webdriver_download"] }
+plotly = { version = "0.13.5", features = ["plotly_static","static_export_default"]}
 regex = "1.11.1"
 ndarray = "0.16"
 ndarray-stats = "0.6.0"
