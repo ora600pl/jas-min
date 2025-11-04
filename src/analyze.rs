@@ -3,12 +3,12 @@ use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLG
 use axum::http::header;
 use execute::generic_array::typenum::True;
 use plotly::color::NamedColor;
-use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap, Image};
+use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap};
 use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette, HoverInfo};
 use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
-//use plotly::plotly_static::ImageFormat;
-use plotly_static::{StaticExporterBuilder, ImageFormat};
+use plotly::plotly_static::ImageFormat;
+//use plotly_static::{StaticExporterBuilder};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::format;
@@ -2075,7 +2075,37 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                                                     .mode(Mode::LinesText)
                                                     .name("Hard Parses")
                                                     .x_axis("x1")
-                                                    .y_axis("y2");                                                 
+                                                    .y_axis("y2");
+    let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("Hard Parses")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let blockchanges_trace = Scatter::new(x_vals.clone(), y_block_changes_s.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("Block changes")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let redosize_trace = Scatter::new(x_vals.clone(), y_vals_redosize.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("Redo MB")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let logicalread_trace = Scatter::new(x_vals.clone(), y_logical_reads_s.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("Logical Read MB")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let phyread_trace = Scatter::new(x_vals.clone(), y_read_mb.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("Physical Read MB")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let phywrite_trace = Scatter::new(x_vals.clone(), y_write_mb.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("Physical Write MB")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
     let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
                                                     .mode(Mode::LinesText)
                                                     .name("CPU User")
@@ -2271,6 +2301,11 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     plot_main.add_trace(exec_trace);
     plot_highlight.add_trace(exec_box_plot);
     plot_highlight.add_trace(trans_box_plot);
+    plot_main.add_trace(blockchanges_trace);
+    plot_main.add_trace(redosize_trace);
+    plot_main.add_trace(logicalread_trace);
+    plot_main.add_trace(phyread_trace);
+    plot_main.add_trace(phywrite_trace);
     plot_main.add_trace(parses_trace);
     plot_main.add_trace(hparses_trace);
     plot_main.add_trace(cpu_user);
@@ -3563,7 +3598,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
             .anchor("x1")
             .domain(&[0.155, 0.305])
             .range(vec![0.,])
-            .title("#")
+            .title("#/s")
             .zero_line(true)
             .range_mode(RangeMode::ToZero)
         )
@@ -3821,11 +3856,18 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
 
     plot_main.write_html(fname.clone());
     plot_highlight.write_html(format!("{}/jasmin_highlight.html", &html_dir));
+    plot_highlight
+        .write_image(format!("{}/jasmin_highlight.png", html_dir), ImageFormat::PNG, 1024, 768, 1.0)
+        .expect("Failed to export plot jasmin_highlight.png");
+
     plot_highlight2.write_html(format!("{}/jasmin_highlight2.html", &html_dir));
+    plot_highlight2
+        .write_image(format!("{}/jasmin_highlight2.png", html_dir), ImageFormat::PNG, 1024, 768, 1.0)
+        .expect("Failed to export plot jasmin_highlight2.png");
 
     // plot_highlight.write_image(format!("{}/jasmin_highlight.svg", &html_dir), ImageFormat::SVG, 1024, 768, 1.0).unwrap();
     // plot_highlight2.write_image(format!("{}/jasmin_highlight2.svg", &html_dir), ImageFormat::SVG, 1024, 768, 1.0).unwrap();
-    let mut exporter = StaticExporterBuilder::default()
+    /*let mut exporter = StaticExporterBuilder::default()
                     .build()
                     .expect("Failed to build StaticExporter 1");
     
@@ -3847,7 +3889,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                 1.0
             ).expect("Failed to export plot jasmin_highlight2.png");
 
-    exporter.close();
+    exporter.close();*/
     
     let first_snap_time: String = collection.awrs.first().unwrap().snap_info.begin_snap_time.clone();
     let last_snap_time: String = collection.awrs.last().unwrap().snap_info.end_snap_time.clone();

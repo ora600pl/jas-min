@@ -1103,7 +1103,10 @@ pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_nam
     
     // Initialize backend with file
     let mut backend_mut = backend;
-    backend_mut.initialize(reportfile).await?;
+    if let Err(e) = backend_mut.initialize(reportfile).await {
+        eprintln!("❌ Backend initialization failed: {:?}", e);
+        return Err(e);
+    }
     
     let state = Arc::new(AppState {
         backend: Arc::new(Mutex::new(backend_mut)),
