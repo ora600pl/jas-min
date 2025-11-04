@@ -12,6 +12,7 @@
 *.txt 
 *.html
 *.pyc
+*.swp
 .rustc_info.json
 /target/
 
