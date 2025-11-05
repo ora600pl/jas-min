@@ -311,23 +311,22 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         "#8A2BE2", "#1E90FF"
     ];
     // Group Events by Name and by needed data (ename(db_time, total_wait, waits,histogram values by bucket, heatmap)
-    struct HeatmapEntry { //Group Events by Snap Time and histograms
-        snap_time: String,
-        histogram: BTreeMap<String, f32>,
-    }
+    let mut snap_time: Vec<String> = Vec::new();
     struct EventStats {
-        pct_dbtime: Vec<f64>,
-        total_wait_time_s: Vec<f64>,
-        waits: Vec<u64>,
-        histogram_by_bucket: BTreeMap<String, Vec<f32>>,
-        histogram_heatmap: Vec<HeatmapEntry>
+        pct_dbtime: Vec<Option<f64>>,
+        total_wait_time_s: Vec<Option<f64>>,
+        waits: Vec<Option<u64>>,
+        histogram_by_bucket: BTreeMap<String, Vec<Option<f32>>>,
+        heatmap: Vec<Option<BTreeMap<String,f32>>>
     }
+
     let mut data_by_event: HashMap<String, EventStats> = HashMap::new();
     let mut buckets_found: bool = false;
+
     // Let's gather all needed data
     for awr in awrs {
         if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
-            let snap_time: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
+            snap_time.push(format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id));
         
             let events = if is_fg {
                 &awr.foreground_wait_events
@@ -336,6 +335,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             };
 
             if events.is_empty(){
+                println!("   WARNING: generate_events_plotfiles found empty events {}",awr.snap_info.begin_snap_id);
                 continue;
             } else{
                 if !buckets_found{
@@ -348,34 +348,48 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
                     }
                     buckets_found = true;
                 }
-                for event in events {
-                    if !top_events.contains_key(&event.event) {
-                        continue;
+                for top_event in top_events {
+                    if let Some(event) = events.iter().find(|e| &e.event == top_event.0) {
+                        // Initilize events map
+                        let entry = data_by_event
+                            .entry(top_event.0.clone())
+                            .or_insert_with(|| EventStats {
+                                pct_dbtime: Vec::new(),
+                                total_wait_time_s: Vec::new(),
+                                waits: Vec::new(),
+                                histogram_by_bucket: BTreeMap::new(),
+                                heatmap: Vec::new()
+                            });
+                        // Gather data by Event Name
+                        entry.pct_dbtime.push(Some(event.pct_dbtime));
+                        entry.total_wait_time_s.push(Some(event.total_wait_time_s));
+                        entry.waits.push(Some(event.waits));
+                        for (bucket, value) in &event.waitevent_histogram_ms {
+                            entry.histogram_by_bucket
+                                .entry(bucket.clone())
+                                .or_insert_with(Vec::new)
+                                .push(Some(*value));
+                        }
+                        entry.heatmap.push(Some(event.waitevent_histogram_ms.clone()))
+                    } else { // Event does NOT exist in this snapshot → push gaps
+                        let entry = data_by_event
+                            .entry(top_event.0.clone())
+                            .or_insert_with(|| EventStats {
+                                pct_dbtime: Vec::new(),
+                                total_wait_time_s: Vec::new(),
+                                waits: Vec::new(),
+                                histogram_by_bucket: BTreeMap::new(),
+                                heatmap: Vec::new(),
+                            });
+
+                        entry.pct_dbtime.push(None);
+                        entry.total_wait_time_s.push(None);
+                        entry.waits.push(None);
+                        for vals in entry.histogram_by_bucket.values_mut() {
+                            vals.push(None);
+                        }
+                        entry.heatmap.push(None);
                     }
-                    // Initilize events map
-                    let entry = data_by_event
-                        .entry(event.event.clone())
-                        .or_insert_with(|| EventStats {
-                            pct_dbtime: Vec::new(),
-                            total_wait_time_s: Vec::new(),
-                            waits: Vec::new(),
-                            histogram_by_bucket: BTreeMap::new(),
-                            histogram_heatmap: Vec::new(),
-                        });
-                    // Gather data by Event Name
-                    entry.pct_dbtime.push(event.pct_dbtime);
-                    entry.total_wait_time_s.push(event.total_wait_time_s);
-                    entry.waits.push(event.waits);
-                    for (bucket, value) in &event.waitevent_histogram_ms {
-                        entry.histogram_by_bucket
-                            .entry(bucket.clone())
-                            .or_insert_with(Vec::new)
-                            .push(*value);
-                    }
-                    entry.histogram_heatmap.push(HeatmapEntry {
-                        snap_time: snap_time.clone(),
-                        histogram: event.waitevent_histogram_ms.clone(),
-                    });
                 }
             }
         }
@@ -386,49 +400,52 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         let mut plot: Plot = Plot::new();
         let event_name = format!("{}", &event);
     
-        // Add HeatMap plot (from embedded heatmap entries)
-        if !entry.histogram_heatmap.is_empty() {
-            let x_labels: Vec<String> = entry.histogram_heatmap.iter().map(|e| e.snap_time.clone()).collect();
-    
-            let mut z_matrix: Vec<Vec<f32>> = Vec::new();
-            for bucket in &hist_buckets {
-                let row: Vec<f32> = entry.histogram_heatmap
-                    .iter()
-                    .map(|h| *h.histogram.get(bucket).unwrap_or(&0.0))
-                    .collect();
-                z_matrix.push(row);
-            }
-    
-            let heatmap = HeatMap::new(x_labels.clone(), hist_buckets.clone(), z_matrix)
-                .x_axis("x1")
-                .y_axis("y1")
-                .hover_on_gaps(true)
-                .show_legend(false)
-                .show_scale(false)
-                .color_scale(ColorScale::Palette(ColorScalePalette::Electric))
-                .reverse_scale(true)
-                .name("%");
-    
-            plot.add_trace(heatmap);
-        
-            //Add Total Wait Time trace
-            let event_total_wait = Scatter::new(x_labels.clone(), entry.total_wait_time_s.clone())
-                .mode(Mode::Lines)
-                .name("Total Wait Time (s)")
-                .x_axis("x1")
-                .y_axis("y2");
-
-            plot.add_trace(event_total_wait);
-
-            // Add Wait Count trace
-            let event_wait_count = Scatter::new(x_labels.clone(), entry.waits.clone())
-                .mode(Mode::Lines)
-                .name("Wait Count")
-                .x_axis("x1")
-                .y_axis("y3");
-
-            plot.add_trace(event_wait_count);
+        let mut z_matrix: Vec<Vec<Option<f32>>> = Vec::new();
+        for bucket in &hist_buckets {
+            let row: Vec<Option<f32>> = entry.heatmap
+                .iter()
+                .map(|snap_opt| {
+                    // For each snapshot, extract this bucket's value
+                    match snap_opt {
+                        Some(histogram) => {
+                            histogram.get(bucket).copied() // Snapshot has data
+                        }
+                        None => None, // Snapshot missing - no data for any bucket
+                    }
+                })
+                .collect();
+            z_matrix.push(row);
         }
+
+        let heatmap = HeatMap::new(snap_time.clone(), hist_buckets.clone(), z_matrix)
+            .x_axis("x1")
+            .y_axis("y1")
+            .hover_on_gaps(true)
+            .show_legend(false)
+            .show_scale(false)
+            .color_scale(ColorScale::Palette(ColorScalePalette::Electric))
+            .reverse_scale(true)
+            .name("%");
+
+        plot.add_trace(heatmap);
+    
+        //Add Total Wait Time trace
+        let event_total_wait = Scatter::new(snap_time.clone(), entry.total_wait_time_s.clone())
+            .mode(Mode::Lines)
+            .name("Total Wait Time (s)")
+            .x_axis("x1")
+            .y_axis("y2");
+
+        plot.add_trace(event_total_wait);
+
+        // Add Wait Count trace
+        let event_wait_count = Scatter::new(snap_time.clone(), entry.waits.clone())
+            .mode(Mode::Lines)
+            .name("Wait Count")
+            .x_axis("x1")
+            .y_axis("y3");
+
+        plot.add_trace(event_wait_count);
 
         //Add Event DBTime distribution
         let dbt_histogram = Histogram::new(entry.pct_dbtime.clone())
@@ -3859,37 +3876,10 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     plot_highlight
         .write_image(format!("{}/jasmin_highlight.png", html_dir), ImageFormat::PNG, 1024, 768, 1.0)
         .expect("Failed to export plot jasmin_highlight.png");
-
     plot_highlight2.write_html(format!("{}/jasmin_highlight2.html", &html_dir));
     plot_highlight2
         .write_image(format!("{}/jasmin_highlight2.png", html_dir), ImageFormat::PNG, 1024, 768, 1.0)
         .expect("Failed to export plot jasmin_highlight2.png");
-
-    // plot_highlight.write_image(format!("{}/jasmin_highlight.svg", &html_dir), ImageFormat::SVG, 1024, 768, 1.0).unwrap();
-    // plot_highlight2.write_image(format!("{}/jasmin_highlight2.svg", &html_dir), ImageFormat::SVG, 1024, 768, 1.0).unwrap();
-    /*let mut exporter = StaticExporterBuilder::default()
-                    .build()
-                    .expect("Failed to build StaticExporter 1");
-    
-    exporter.write_fig(
-                Path::new(&format!("{}/jasmin_highlight.png", &html_dir)),
-                &serde_json::from_str(&plot_highlight.to_json()).unwrap(),
-                ImageFormat::PNG,
-                1024,
-                768,
-                1.0
-            ).expect("Failed to export plot jasmin_highlight.png");
-
-    exporter.write_fig(
-                Path::new(&format!("{}/jasmin_highlight2.png", &html_dir)),
-                &serde_json::from_str(&plot_highlight2.to_json()).unwrap(),
-                ImageFormat::PNG,
-                1024,
-                768,
-                1.0
-            ).expect("Failed to export plot jasmin_highlight2.png");
-
-    exporter.close();*/
     
     let first_snap_time: String = collection.awrs.first().unwrap().snap_info.begin_snap_time.clone();
     let last_snap_time: String = collection.awrs.last().unwrap().snap_info.end_snap_time.clone();
