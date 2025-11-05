@@ -1675,6 +1675,19 @@ fn instance_info(table: ElementRef, table_type: &str) -> Option<DBInstance> {
 					return Some(dbi);
 				}
 			}
+		} else if headers.len() == 7 {
+			if let Some(data_row) = table.select(&tr_selector).nth(1) {
+				let cols: Vec<String> = data_row.select(&td_selector).map(|td| td.text().collect::<String>().trim().to_string()).collect();
+				if cols.len() >= 7 {
+					let mut dbi = DBInstance::default();
+					dbi.db_id = u64::from_str(&cols[1]).unwrap_or(0);
+					dbi.instance_num = u8::from_str(&cols[3]).unwrap_or(0);
+					dbi.startup_time = cols[4].clone();
+					dbi.release = cols[5].clone();
+					dbi.rac = cols[6].clone();
+					return Some(dbi);
+				}
+			}
 		}
 	} else if table_type == "Details" {
 		if headers.len() == 5 {
@@ -1782,6 +1795,10 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
 						db_instance_information.db_block_size = block_size.db_block_size;
 					}
 				} else if summary == "This table displays name and value of the initialization parametersmodified by the current container" {
+					if let Some(block_size) = instance_info(table,"db_block_size") {
+						db_instance_information.db_block_size = block_size.db_block_size;
+					}
+				} else if summary == "This table displays name and value of init.ora parameters" {
 					if let Some(block_size) = instance_info(table,"db_block_size") {
 						db_instance_information.db_block_size = block_size.db_block_size;
 					}
