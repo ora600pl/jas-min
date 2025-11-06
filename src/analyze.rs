@@ -1782,7 +1782,8 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_bgevents: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut y_vals_logons: Vec<f64> = Vec::new();
+    let mut y_vals_logons: Vec<u64> = Vec::new();
+    let mut y_vals_logouts: Vec<u64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
     let mut y_vals_execs: Vec<f64> = Vec::new();
     let mut y_vals_trans: Vec<f64> = Vec::new();
@@ -1924,8 +1925,6 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                         y_vals_dbcpu.push(lp.per_second);
                     } else if lp.stat_name.starts_with("User calls") {
                         y_vals_calls.push(lp.per_second);
-                    } else if lp.stat_name.starts_with("User logons") || (is_statspack && lp.stat_name.starts_with("Logons")) {
-                        y_vals_logons.push(lp.per_second*60.0*60.0);
                     } else if lp.stat_name.starts_with("Executes") {
                         y_vals_execs.push(lp.per_second);
                     } else if lp.stat_name.starts_with("Transactions") {
@@ -1948,8 +1947,6 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
             }
 
             // IO Stats data gathering and preparing them for plotting
-
-
             // ----- Host CPU
             if awr.host_cpu.pct_user < 0.0 {
                 y_vals_cpu_user.push(0.0);
@@ -1980,6 +1977,10 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                     y_user_rollbacks_s.push(activity.total);
                 } else if activity.statname == "parse count (failures)" {
                     y_failed_parse_count.push(activity.total);
+                } else if activity.statname == "user logons cumulative" {
+                    y_vals_logons.push(activity.total);
+                } else if activity.statname == "user logouts cumulative"{
+                    y_vals_logouts.push(activity.total);
                 }
                 
                 // Plot additional stats if 'log file sync' is in top events
@@ -2075,9 +2076,14 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                                                     .y_axis("y2");
     let logons_trace = Scatter::new(x_vals.clone(), y_vals_logons)
                                                     .mode(Mode::LinesText)
-                                                    .name("Logons")
+                                                    .name("User Logons")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
+    let logouts_trace = Scatter::new(x_vals.clone(), y_vals_logouts)
+                                                    .mode(Mode::LinesText)
+                                                    .name("User Logouts")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");                                            
     let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("Executes")
@@ -2315,6 +2321,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     plot_main.add_trace(dbcpu_trace);
     plot_main.add_trace(calls_trace);
     plot_main.add_trace(logons_trace);
+    plot_main.add_trace(logouts_trace);
     plot_main.add_trace(exec_trace);
     plot_highlight.add_trace(exec_box_plot);
     plot_highlight.add_trace(trans_box_plot);
