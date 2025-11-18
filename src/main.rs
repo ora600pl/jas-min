@@ -51,6 +51,11 @@ struct Args {
 	#[clap(short, long, default_value_t=0.0)]
 	filter_db_time: f64,
 
+	///Include indicated SQL_IDs as TOP SQL in fomrat SQL_ID1, SQL_ID2,...
+	///This is experimental function
+	#[clap(short, long, default_value="")]
+	id_sqls: String,
+
 	///Analyze provided JSON file
 	#[clap(short, long, default_value="")]
 	json_file: String,
