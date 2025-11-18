@@ -144,7 +144,7 @@ fn get_statistics_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
     //Create list of all statistics
     let all_stats: HashSet<String> = awrs
                     .iter()
-                    .flat_map(|awr| awr.key_instance_stats.iter())
+                    .flat_map(|awr| awr.instance_stats.iter())
                     .map(|l| l.statname.clone())
                     .collect();
     
@@ -160,7 +160,7 @@ fn get_statistics_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
         let mut snapshot_map: HashMap<&String, f64> = HashMap::new();
 
         snapshot_map = awr
-                        .key_instance_stats
+                        .instance_stats
                         .iter()
                         .map(|l| (&l.statname, l.total as f64))
                         .collect();

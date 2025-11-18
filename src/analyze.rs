@@ -1,14 +1,12 @@
-use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR};
+use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR, GetStats};
 
-use axum::http::header;
+//use axum::http::header;
 use execute::generic_array::typenum::True;
 use plotly::color::NamedColor;
 use plotly::{Plot, Histogram, BoxPlot, Scatter, HeatMap};
-use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette, HoverInfo};
+use plotly::common::{ColorBar, Mode, Title, Visible, Line, Orientation, Anchor, Marker, ColorScale, ColorScalePalette, HoverInfo, MarkerSymbol};
 use plotly::box_plot::{BoxMean,BoxPoints};
 use plotly::layout::{Axis, GridPattern, Layout, LayoutGrid, Legend, RowOrder, TraceOrder, ModeBar, HoverMode, RangeMode};
-use plotly::plotly_static::ImageFormat;
-//use plotly_static::{StaticExporterBuilder};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::format;
@@ -25,6 +23,7 @@ use open::*;
 use regex::*;
 use crate::{anomalies, Args};
 use crate::anomalies::*;
+use crate::tools::get_statistics;
 
 use crate::make_notes;
 use prettytable::{Table, Row, Cell, format, Attr};
@@ -133,7 +132,7 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
                     }
                 }
             }
-            for stats in &awr.key_instance_stats {
+            for stats in &awr.instance_stats {
                 stat_names.entry(stats.statname.clone()).or_insert(1);
             }
         }
@@ -158,6 +157,14 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
         sql_ids.entry(a.0.to_string()).or_insert(String::new());
     }
 
+    if !args.id_sqls.is_empty(){
+        let sqlids: Vec<String> = args.id_sqls.split(',').map(|s| s.trim().to_string()).collect();
+        println!("Additional SQLs ID considered: {:?}", sqlids.clone());
+        for s in sqlids{
+            sql_ids.entry(s).or_insert(String::new());
+        }
+    }
+    
     let top: TopStats = TopStats {events: event_names, 
                                   bgevents: bgevent_names, 
                                   sqls: sql_ids, 
@@ -236,25 +243,26 @@ fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_v
 fn merge_ash_sqls_to_events(ash_event_sql_map: HashMap<String, HashSet<String>>, dirpath: &str) {
 
     for (event, sqls) in ash_event_sql_map {
-        let filename = get_safe_event_filename(&dirpath, event.clone(), true);
+        let filename = get_safe_filename(event.clone(), "fg".to_string());
+        let path = Path::new(&dirpath).join(&filename);
         let mut event_html_content = format!(
             r#"
                 <h4 style="color:blue;font-weight:bold;">Wait Event found in ASH for following SQL IDs:</h4>
                 <ul>
             "#);
         for sqlid in sqls {
-            event_html_content = format!("{}<li><a href=sqlid_{}.html target=_blank style=\"color: black;\">{}</a></li>", event_html_content, sqlid, sqlid);
+            event_html_content = format!("{}<li><a href=sqlid/sqlid_{}.html target=_blank style=\"color: black;\">{}</a></li>", event_html_content, sqlid, sqlid);
         }
         event_html_content = format!("{}</ul>", event_html_content);
-        if Path::new(&filename).exists() {
-            let mut event_file: String = fs::read_to_string(&filename)
-                                            .expect(&format!("Failed to read file: {}", filename));
+        if path.exists() {
+            let mut event_file: String = fs::read_to_string(&path)
+                                            .expect(&format!("Failed to read file: {}", &path.to_string_lossy()));
             event_file = event_file.replace(
                                     "</h2>",
                                     &format!("</h2>\n{}\n",event_html_content));
 
-            if let Err(e) = fs::write(&filename, event_file) {
-                eprintln!("Error writing file {}: {}", filename, e);
+            if let Err(e) = fs::write(&path, event_file) {
+                eprintln!("Error writing file {}: {}", &path.to_string_lossy(), e);
             }
         }
         
@@ -266,7 +274,8 @@ fn merge_ash_sqls_to_events(ash_event_sql_map: HashMap<String, HashSet<String>>,
 fn merge_correlated_sqls_to_events(crr_event_sql_map: HashMap<String, HashMap<String, f64>>, dirpath: &str) {
 
     for (event, sqls) in crr_event_sql_map {
-        let filename = get_safe_event_filename(&dirpath, event.clone(), true);
+        let filename = get_safe_filename( event.clone(), "fg".to_string());
+        let path = Path::new(&dirpath).join(&filename);
         let mut event_html_content = format!(
             r#"
                 <h4 style="color:blue;font-weight:bold;">SQL IDs with strong correlation with this wait event:</h4>
@@ -277,18 +286,18 @@ fn merge_correlated_sqls_to_events(crr_event_sql_map: HashMap<String, HashMap<St
         vec_sqls.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
         for (sqlid, crr) in vec_sqls {
-            event_html_content = format!("{}<li><a href=sqlid_{}.html target=_blank style=\"color: black;\">{:.2} | {}</a></li>", event_html_content, sqlid, crr, sqlid);
+            event_html_content = format!("{}<li><a href=sqlid/sqlid_{}.html target=_blank style=\"color: black;\">{:.2} | {}</a></li>", event_html_content, sqlid, crr, sqlid);
         }
         event_html_content = format!("{}</ul>", event_html_content);
-        if Path::new(&filename).exists() {
-            let mut event_file: String = fs::read_to_string(&filename)
-                                            .expect(&format!("Failed to read file: {}", filename));
+        if path.exists() {
+            let mut event_file: String = fs::read_to_string(&path)
+                                            .expect(&format!("Failed to read file: {}", &path.to_string_lossy()));
             event_file = event_file.replace(
                                     "</h2>",
                                     &format!("</h2>\n{}\n",event_html_content));
 
-            if let Err(e) = fs::write(&filename, event_file) {
-                eprintln!("Error writing file {}: {}", filename, e);
+            if let Err(e) = fs::write(&path, event_file) {
+                eprintln!("Error writing file {}: {}", &path.to_string_lossy(), e);
             }
         }
         
@@ -323,7 +332,6 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
     let mut data_by_event: HashMap<String, EventStats> = HashMap::new();
     let mut buckets_found: bool = false;
 
-    // Let's gather all needed data
     for awr in awrs {
         if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
             snap_time.push(format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id));
@@ -431,7 +439,8 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
     
         //Add Total Wait Time trace
         let event_total_wait = Scatter::new(snap_time.clone(), entry.total_wait_time_s.clone())
-            .mode(Mode::Lines)
+            .mode(Mode::LinesMarkers)
+            .marker(Marker::new().opacity(0.5))
             .name("Total Wait Time (s)")
             .x_axis("x1")
             .y_axis("y2");
@@ -440,7 +449,8 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
 
         // Add Wait Count trace
         let event_wait_count = Scatter::new(snap_time.clone(), entry.waits.clone())
-            .mode(Mode::Lines)
+            .mode(Mode::LinesMarkers)
+            .marker(Marker::new().opacity(0.5))
             .name("Wait Count")
             .x_axis("x1")
             .y_axis("y3");
@@ -587,13 +597,13 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
             );
             plot.set_layout(layout);
         
-        let file_name = get_safe_event_filename(&dirpath, event.clone(), is_fg);
+        let file_name = get_safe_filename(event.clone(), if is_fg{"fg".to_string()}else{"bg".to_string()});
 
         // Save the plot as an HTML file
-        let path: &Path = Path::new(&file_name);
+        let path = Path::new(&dirpath).join(if is_fg{"fg".to_string()}else{"bg".to_string()}).join(&file_name);
         //plot.save(path).expect("Failed to save plot to file");
-        plot.write_html(path);
-        let mut event_file: String = fs::read_to_string(path).expect(&format!("Failed to read file: {}", file_name));
+        plot.write_html(&path);
+        let mut event_file: String = fs::read_to_string(&path).expect(&format!("Failed to read file: {}", file_name));
         event_file = event_file.replace(
             "<body>",
             &format!("<style>\nbody {{ font-family: Arial, sans-serif; }}.content {{ font-size: 16px; }}\n</style>\n<body>\n\t<h2 style=\"width:100%;text-align:center;\">{}</h2>",event));
@@ -602,9 +612,9 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         }
     }
     if is_fg {
-        println!("Saved plots for Foreground events to '{}/fg_*'", dirpath);
+        println!("Saved plots for Foreground events to '{}/fg/fg_*'", &dirpath);
     } else {
-        println!("Saved plots for Background events to '{}/bg_*'", dirpath);
+        println!("Saved plots for Background events to '{}/bg/bg_*'", &dirpath);
     }
 }
 
@@ -766,7 +776,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         let sql_gets_per_exec = Scatter::new(x_vals.clone(), stats.gets_per_exec.clone())
             .mode(Mode::Markers)
             .name("# Buffer Gets")
-            .marker(Marker::new().color(colors[12]))
+            .marker(Marker::new().color(colors[12]).symbol(MarkerSymbol::StarDiamond).opacity(0.7))
             .x_axis("x1")
             .y_axis("y4")
             .visible(Visible::LegendOnly);
@@ -775,33 +785,33 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         let sql_phy_r_exec = Scatter::new(x_vals.clone(), stats.phy_r_exec.clone())
             .mode(Mode::Markers)
             .name("# Physical Reads")
-            .marker(Marker::new().color(colors[11]))
+            .marker(Marker::new().color(colors[11]).symbol(MarkerSymbol::DiamondTall).opacity(0.7))
             .x_axis("x1")
             .y_axis("y4")
             .visible(Visible::LegendOnly);
         sql_plot.add_trace(sql_phy_r_exec);
 
         let sql_ela_pct_total = Scatter::new(x_vals.clone(), stats.ela_pct_total.clone())
-            .mode(Mode::Lines)
+            .mode(Mode::LinesMarkers)
             .name("% Ela Time as DB Time")
-            .marker(Marker::new().color(colors[10]))
+            .marker(Marker::new().color(colors[10]).opacity(0.5))
             .x_axis("x1")
             .y_axis("y3");
         sql_plot.add_trace(sql_ela_pct_total);
 
         let sql_pct_cpu = Scatter::new(x_vals.clone(), stats.pct_cpu.clone())
-            .mode(Mode::Lines)
+            .mode(Mode::LinesMarkers)
             .name("% CPU of Ela")
-            .marker(Marker::new().color(colors[9]))
+            .marker(Marker::new().color(colors[9]).opacity(0.5))
             .x_axis("x1")
             .y_axis("y3");
         sql_plot.add_trace(sql_pct_cpu);
 
         // IO % of Ela
         let sql_pct_io = Scatter::new(x_vals.clone(), stats.pct_io.clone())
-            .mode(Mode::Lines)
+            .mode(Mode::LinesMarkers)
             .name("% IO of Ela")
-            .marker(Marker::new().color(colors[8]))
+            .marker(Marker::new().color(colors[8]).opacity(0.5))
             .x_axis("x1")
             .y_axis("y3");
         sql_plot.add_trace(sql_pct_io);
@@ -810,7 +820,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         let sql_cpu_t_pct_total = Scatter::new(x_vals.clone(), stats.cpu_t_pct_total.clone())
             .mode(Mode::Markers)
             .name("% CPU Time as DB CPU")
-            .marker(Marker::new().color(colors[7]))
+            .marker(Marker::new().color(colors[7]).symbol(MarkerSymbol::DiamondTall).opacity(0.7))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -820,7 +830,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         let sql_io_pct_total = Scatter::new(x_vals.clone(), stats.io_pct_total.clone())
             .mode(Mode::Markers)
             .name("% IO Time as DB IO Wait")
-            .marker(Marker::new().color(colors[6]))
+            .marker(Marker::new().color(colors[6]).symbol(MarkerSymbol::StarDiamond).opacity(0.7))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -830,7 +840,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         let sql_gets_pct_total = Scatter::new(x_vals.clone(), stats.gets_pct_total.clone())
             .mode(Mode::Markers)
             .name("% Gets as Total Gets")
-            .marker(Marker::new().color(colors[5]))
+            .marker(Marker::new().color(colors[5]).symbol(MarkerSymbol::Diamond).opacity(0.7))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
@@ -840,16 +850,16 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         let sql_phy_r_pct_total = Scatter::new(x_vals.clone(), stats.phy_r_pct_total.clone())
             .mode(Mode::Markers)
             .name("% Phys Reads as Total Disk Reads")
-            .marker(Marker::new().color(colors[4]))
+            .marker(Marker::new().color(colors[4]).symbol(MarkerSymbol::Square).opacity(0.7))
             .x_axis("x1")
             .y_axis("y3")
             .visible(Visible::LegendOnly);
         sql_plot.add_trace(sql_phy_r_pct_total);
 
         let sql_ela_exec_s = Scatter::new(x_vals.clone(), stats.ela_exec_s.clone())
-            .mode(Mode::Lines)
+            .mode(Mode::LinesMarkers)
             .name("(s) Elapsed Time per Exec")
-            .marker(Marker::new().color(colors[3]))
+            .marker(Marker::new().color(colors[3]).opacity(0.5))
             .x_axis("x1")
             .y_axis("y2");
         sql_plot.add_trace(sql_ela_exec_s);
@@ -857,7 +867,7 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         let sql_cpu_time_exec_s = Scatter::new(x_vals.clone(), stats.cpu_time_exec_s.clone())
             .mode(Mode::Markers)
             .name("(s) CPU Time")
-            .marker(Marker::new().color(colors[2]))
+            .marker(Marker::new().color(colors[2]).symbol(MarkerSymbol::DiamondTall).opacity(0.7))
             .x_axis("x1")
             .y_axis("y2")
             .visible(Visible::LegendOnly);
@@ -866,16 +876,16 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         let sql_io_time_exec_s = Scatter::new(x_vals.clone(), stats.io_time_exec_s.clone())
             .mode(Mode::Markers)
             .name("(s) User I/O Wait Time")
-            .marker(Marker::new().color(colors[1]))
+            .marker(Marker::new().color(colors[1]).symbol(MarkerSymbol::StarDiamond).opacity(0.7))
             .x_axis("x1")
             .y_axis("y2")
             .visible(Visible::LegendOnly);
         sql_plot.add_trace(sql_io_time_exec_s);
         
         let sql_exec = Scatter::new(x_vals.clone(), stats.execs.clone())
-            .mode(Mode::Lines)
+            .mode(Mode::LinesMarkers)
             .name("# Executions")
-            .marker(Marker::new().color(colors[0]))
+            .marker(Marker::new().color(colors[0]).opacity(0.5))
             .x_axis("x1")
             .y_axis("y1");
         sql_plot.add_trace(sql_exec);
@@ -933,11 +943,272 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
                     .range_mode(RangeMode::ToZero)
             );
             sql_plot.set_layout(sql_layout);
-            let file_name: String = format!("{}/sqlid_{}.html", dirpath, &sql);
+            let file_name: String = format!("{}/sqlid/sqlid_{}.html", dirpath, &sql);
             let path: &Path = Path::new(&file_name);
             sql_plot.write_html(path);
     }
-    println!("Saved plots for SQLs to '{}/sqlid_*'", dirpath);
+    println!("Saved plots for SQLs to '{}/sqlid/sqlid_*'", dirpath);
+
+}
+
+// Generate HTML for Instance Efficiency
+fn generate_instance_efficiency_plot(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &str) -> String {    
+    let (f_begin_snap,f_end_snap) = snap_range;
+    struct InstEffStats{
+        stat_name: String,
+        stat_pct: Vec<Option<f32>>
+    }
+    let mut ie_stats_names: Vec<String> = awrs[0]
+            .instance_efficiency
+            .iter()
+            .map(|s| s.eff_stat.clone())
+            .collect();
+
+    let mut x_vals: Vec<String> = awrs
+            .iter()
+            .filter(|awr| awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap)
+            .map(|awr| format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id))
+            .collect();
+
+    let inst_eff_stats: Vec<InstEffStats> = ie_stats_names.par_iter()
+        .map(|ie_name|{
+            // Collect values across all matching AWRs in range
+            let mut values: Vec<Option<f32>> = Vec::new();
+            for awr in awrs {
+                if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap{
+                    for ie in &awr.instance_efficiency {
+                        if ie.eff_stat == *ie_name {
+                            values.push(ie.eff_pct);
+                        }
+                    }
+                }
+            }
+            InstEffStats {
+                stat_name: ie_name.clone(),
+                stat_pct: values,
+            }
+        }).collect();
+
+    // === Create the instance efficiency plot ===
+    let mut plot_instance_efficiency = Plot::new();
+    let color_palette = vec![
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+        "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+        "#bcbd22", "#17becf",
+        ];
+    for (i,ieplot) in inst_eff_stats.iter().enumerate() {
+        let color = color_palette[i % color_palette.len()];
+        let trace = Scatter::new(x_vals.clone(), ieplot.stat_pct.clone())
+            .mode(Mode::Lines)
+            .name(ieplot.stat_name.clone())
+            .x_axis("x1")
+            .y_axis("y1")
+            .marker(Marker::new().color(color))
+            .legend_group(&ieplot.stat_name)
+            .show_legend(false);
+        plot_instance_efficiency.add_trace(trace);
+
+        let histogram = Histogram::new(ieplot.stat_pct.clone())
+            .name(ieplot.stat_name.clone())
+            .x_axis("x2")
+            .y_axis("y2")
+            .legend_group(&ieplot.stat_name)
+            .marker(Marker::new().color(color).opacity(0.7))
+            .show_legend(true);
+        plot_instance_efficiency.add_trace(histogram);
+
+        let box_plot = BoxPlot::new_xy(ieplot.stat_pct.clone(),vec![ieplot.stat_name.clone();ieplot.stat_pct.clone().len()])
+            .name("")
+            .x_axis("x2")
+            .y_axis("y3")
+            .orientation(Orientation::Horizontal)
+            .legend_group(&ieplot.stat_name)
+            .box_mean(BoxMean::True)
+            .marker(Marker::new().color(color).opacity(0.7))
+            .show_legend(false);
+        plot_instance_efficiency.add_trace(box_plot);
+    }
+
+    // Add layout
+    let layout = Layout::new()
+        .title("Instance Efficiency %")
+        .height(1000)
+        .bar_gap(0.0)
+        .bar_mode(plotly::layout::BarMode::Overlay)
+        .hover_mode(HoverMode::X)
+        .grid(
+            LayoutGrid::new()
+                .rows(3)
+                .columns(1),
+        )
+        .x_axis(
+            Axis::new()
+                .domain(&[0.0, 1.0])
+                .anchor("y1")
+                .range(vec![0.,])
+                .show_grid(true)
+        )
+        .y_axis(
+            Axis::new()
+                .title("Efficiency (%)")
+                .domain(&[0.0, 0.3])
+                .anchor("x1")
+                .range(vec![0.,])
+                .zero_line(true)
+                .range_mode(RangeMode::ToZero)
+        )
+        .x_axis2(
+            Axis::new()
+                .title("Hit %")
+                .domain(&[0.0, 1.0])
+                .anchor("y2")
+                .range(vec![0.,])
+                .show_grid(true)
+        )
+        .y_axis2(
+            Axis::new()
+                .domain(&[0.35, 0.75])
+                .anchor("x2")
+                .range(vec![0.,]),
+        )
+        .y_axis3(
+            Axis::new()
+                .domain(&[0.8, 1.0])
+                .anchor("x2")
+                .range(vec![0.,])
+                .show_tick_labels(false),
+        );
+
+    plot_instance_efficiency.set_layout(layout);
+    plot_instance_efficiency.to_inline_html(Some("instance-efficiency-plot"))
+}
+
+fn generate_instance_stats_plotfiles(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &str){    
+    let (f_begin_snap,f_end_snap) = snap_range;
+    struct InstStats{
+        stat_name: String,
+        stat_total: Vec<Option<u64>>
+    }
+    let mut i_stats_names: Vec<String> = awrs[0]
+            .instance_stats
+            .iter()
+            .map(|s| s.statname.clone())
+            .collect();
+
+    let mut x_vals: Vec<String> = awrs
+            .iter()
+            .filter(|awr| awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap)
+            .map(|awr| format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id))
+            .collect();
+
+    let inst_stats: Vec<InstStats> = i_stats_names.par_iter()
+        .map(|i_name|{
+            // Collect values across all matching AWRs in range
+            let mut values: Vec<Option<u64>> = Vec::new();
+            for awr in awrs {
+                if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap{
+                    for i in &awr.instance_stats {
+                        if i.statname == *i_name {
+                            values.push(Some(i.total));
+                        }
+                    }
+                }
+            }
+            InstStats {
+                stat_name: i_name.clone(),
+                stat_total: values,
+            }
+        }).collect();
+
+    // === Create the instance stats plots ===
+    for (i,iplot) in inst_stats.iter().enumerate() {
+        let mut plot_instance_stat = Plot::new();
+        let trace = Scatter::new(x_vals.clone(), iplot.stat_total.clone())
+            .mode(Mode::Lines)
+            .name(iplot.stat_name.clone())
+            .x_axis("x1")
+            .y_axis("y1")
+            .legend_group(&iplot.stat_name)
+            .show_legend(false);
+        plot_instance_stat.add_trace(trace);
+
+        let histogram = Histogram::new(iplot.stat_total.clone())
+            .name(iplot.stat_name.clone())
+            .x_axis("x2")
+            .y_axis("y2")
+            .legend_group(&iplot.stat_name)
+            .marker(Marker::new().opacity(0.7))
+            .show_legend(true);
+        plot_instance_stat.add_trace(histogram);
+
+        let box_plot = BoxPlot::new_xy(iplot.stat_total.clone(),vec![iplot.stat_name.clone();iplot.stat_total.clone().len()])
+            .name("")
+            .x_axis("x2")
+            .y_axis("y3")
+            .orientation(Orientation::Horizontal)
+            .legend_group(&iplot.stat_name)
+            .box_mean(BoxMean::True)
+            .marker(Marker::new().opacity(0.7))
+            .show_legend(false);
+        plot_instance_stat.add_trace(box_plot);
+
+        // Add layout
+        let layout = Layout::new()
+            .title(&iplot.stat_name)
+            .height(800)
+            .bar_gap(0.0)
+            .bar_mode(plotly::layout::BarMode::Overlay)
+            .hover_mode(HoverMode::X)
+            .grid(
+                LayoutGrid::new()
+                    .rows(3)
+                    .columns(1),
+            )
+            .x_axis(
+                Axis::new()
+                    .domain(&[0.0, 1.0])
+                    .anchor("y1")
+                    .range(vec![0.,])
+                    .show_grid(true)
+            )
+            .y_axis(
+                Axis::new()
+                    .title("Total Number")
+                    .domain(&[0.0, 0.3])
+                    .anchor("x1")
+                    .range(vec![0.,])
+                    .zero_line(true)
+                    .range_mode(RangeMode::ToZero)
+            )
+            .x_axis2(
+                Axis::new()
+                    .title("Total Number")
+                    .domain(&[0.0, 1.0])
+                    .anchor("y2")
+                    .range(vec![0.,])
+                    .show_grid(true)
+            )
+            .y_axis2(
+                Axis::new()
+                    .domain(&[0.35, 0.75])
+                    .anchor("x2")
+                    .range(vec![0.,]),
+            )
+            .y_axis3(
+                Axis::new()
+                    .domain(&[0.8, 1.0])
+                    .anchor("x2")
+                    .range(vec![0.,])
+                    .show_tick_labels(false),
+            );
+
+        plot_instance_stat.set_layout(layout);
+        // Save to HTML
+        let file_name = get_safe_filename(iplot.stat_name.clone(),"inst_stat".to_string());
+        let path = Path::new(&dirpath).join("stats").join(&file_name);
+        plot_instance_stat.write_html(path);
+    }
+    println!("Saved plots for Instance Stats to '{}/stats/stats_*'", &dirpath);
 
 }
 
@@ -1353,7 +1624,7 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
             );
         plot_iostats.set_layout(layout_iostats);
         let func_name = func.replace(" ","_");
-        let file_name: String = format!("{}/iostats_{}.html", dirpath,func_name);
+        let file_name: String = format!("{}/iostats/iostats_{}.html", dirpath,func_name);
         let path: &Path = Path::new(&file_name);
         plot_iostats.write_html(path);
     }
@@ -1419,11 +1690,11 @@ fn generate_iostats_plotfile(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpath: &
                     .range_mode(RangeMode::ToZero)
             );
             plot_iostats_main.set_layout(layout_io_stats_main);
-            let file_name: String = format!("{}/iostats_zMAIN.html", dirpath);
+            let file_name: String = format!("{}/iostats/iostats_zMAIN.html", dirpath);
             let path: &Path = Path::new(&file_name);
             plot_iostats_main.write_html(path);
 
-    println!("Saved plots for IO Stats to '{}/iostats_*'", dirpath);
+    println!("Saving plots for IO Stats to '{}/iostats_*'", dirpath);
     functions_to_plot.insert("zMAIN".to_string(),BTreeMap::new());
     functions_to_plot
 }
@@ -1529,7 +1800,7 @@ fn generate_latchstats_plotfiles(awrs: &Vec<AWR>, snap_range: &(u64,u64), dirpat
         "#,
         latch_stat_rows
     );
-    let latch_stats_filename: String = format!("{}/latchstats_activity.html", dirpath);
+    let latch_stats_filename: String = format!("{}/latches/latchstats_activity.html", dirpath);
     if let Err(e) = fs::write(&latch_stats_filename, table_latch_stat) {
         eprintln!("Error writing file {}: {}", latch_stats_filename, e);
     }
@@ -1713,7 +1984,7 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir
                 idname = objects[0].stat_name.replace(" ","_"),
                 rows = segment_stat_rows
             );
-            let segment_stats_filename: String = format!("{}/segstats_{}.html", dir, objects[0].stat_name.replace(" ","_"),);
+            let segment_stats_filename: String = format!("{}/segstats/segstats_{}.html", dir, objects[0].stat_name.replace(" ","_"),);
             if let Err(e) = fs::write(&segment_stats_filename, table_segment_stat) {
                 eprintln!("Error writing file {}: {}", segment_stats_filename, e);
             }
@@ -1742,7 +2013,7 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir
                 idname = objects[0].stat_name.replace(" ","_"),
                 rows = segment_stat_rows
             );
-            let segment_stats_filename: String = format!("{}/segstats_{}.html", dir, objects[0].stat_name.replace(" ","_"),);
+            let segment_stats_filename: String = format!("{}/segstats/segstats_{}.html", dir, objects[0].stat_name.replace(" ","_"),);
             if let Err(e) = fs::write(&segment_stats_filename, table_segment_stat) {
                 eprintln!("Error writing file {}: {}", segment_stats_filename, e);
             }
@@ -1752,6 +2023,11 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir
 }
 
 pub fn plot_to_file(collection: AWRSCollection, args: Args) {
+    let mut plot_main: Plot = Plot::new();
+    let mut plot_highlight: Plot = Plot::new();
+    let mut plot_highlight2: Plot = Plot::new();
+    let mut global_statistics = BTreeMap::<String, Option<GetStats>>::new();
+    
     let db_time_cpu_ratio: f64 = args.time_cpu_ratio;
     let filter_db_time: f64 = args.filter_db_time;
     let snap_range: (u64,u64) = parse_snap_range(&args.snap_range).expect("Invalid snap-range argument");
@@ -1774,6 +2050,18 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         if let Some(stem) = PathBuf::from(&args.json_file).file_stem() {
             html_dir = PathBuf::from(stem).with_extension("html_reports").to_string_lossy().into_owned();
         } 
+    }
+    // Create main <PATH>.html_reports folder
+    if let Err(e) = fs::create_dir_all(&html_dir) {
+        eprintln!("⚠️ Failed to create base directory {:?}: {}", html_dir, e);
+    }
+    // Create all required subdirectories under html
+    let subdirs = ["fg", "bg", "latches", "iostats", "segstats", "sqlid", "stats"];
+    for sub in subdirs {
+        let path = Path::new(&html_dir).join(sub);
+        if let Err(e) = fs::create_dir_all(&path) {
+            eprintln!("⚠️ Failed to create directory {:?}: {}", path, e);
+        }
     }
     
     // Y-axis
@@ -1799,8 +2087,8 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     let mut y_cleanout_cr: Vec<f64> = Vec::new();
     let mut y_read_mb: Vec<f64> = Vec::new();
     let mut y_write_mb: Vec<f64> = Vec::new();
-    let mut y_user_commits_s: Vec<u64> = Vec::new();
-    let mut y_user_rollbacks_s: Vec<u64> = Vec::new();
+    let mut y_user_commits: Vec<u64> = Vec::new();
+    let mut y_user_rollbacks: Vec<u64> = Vec::new();
     let mut y_logical_reads_s: Vec<f64> = Vec::new();
     let mut y_block_changes_s: Vec<f64> = Vec::new();
     let mut y_failed_parse_count: Vec<u64> = Vec::new();
@@ -1823,22 +2111,25 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, &snap_range, &logfile_name, &args);  
     let mut is_logfilesync_high: bool = false;
     
-    println!("{}","\n==== CREATING PLOTS ===".bold().bright_cyan());
-    fs::create_dir(&html_dir).unwrap_or_default();
+    println!("{}","\n==== CREATING PLOTS ===".bold().bright_cyan()); 
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &snap_range, &html_dir);
     generate_events_plotfiles(&collection.awrs, &top_stats.bgevents, false, &snap_range, &html_dir);
     generate_sqls_plotfiles(&collection.awrs, &top_stats, &snap_range, &html_dir);
+    let instance_eff_plot: String = generate_instance_efficiency_plot(&collection.awrs, &snap_range, &html_dir);
+    generate_instance_stats_plotfiles(&collection.awrs, &snap_range, &html_dir);
     let iostats = generate_iostats_plotfile(&collection.awrs, &snap_range, &html_dir);
     let table_latch: Table = generate_latchstats_plotfiles(&collection.awrs, &snap_range, &html_dir);
     let fname: String = format!("{}/jasmin_main.html", &html_dir); //new file name path for main report
     
     println!("\n{}","==== PREPARING RESULTS ===".bold().bright_cyan());
+
     for awr in &collection.awrs {
         let (f_begin_snap,f_end_snap) = snap_range;
         if awr.snap_info.begin_snap_id >= f_begin_snap && awr.snap_info.end_snap_id <= f_end_snap {
             let xval: String = format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id);
             x_vals.push(xval.clone());
             //We have to fill the whole data traces for stats, wait events and SQLs with 0 to be sure that chart won't be moved to one side
+            
             for (sql, _) in &top_stats.sqls {
                 y_vals_sqls.entry(sql.to_string()).or_insert(Vec::new());
                 y_vals_sqls_exec_t.entry(sql.to_string()).or_insert(Vec::new());
@@ -1966,15 +2257,15 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
             let mut cleanout_cr: u64 = 0;
             let mut excessive_commit: f64 = 0.0;
 
-            for activity in &awr.key_instance_stats {
+            for activity in &awr.instance_stats {
                 let mut v: &mut Vec<f64> = instance_stats.get_mut(&activity.statname).unwrap();
                 v[x_vals.len()-1] = activity.total as f64;
 
                 
                 if activity.statname == "user commits" {
-                    y_user_commits_s.push(activity.total);
+                    y_user_commits.push(activity.total);
                 } else if activity.statname == "user rollbacks" {
-                    y_user_rollbacks_s.push(activity.total);
+                    y_user_rollbacks.push(activity.total);
                 } else if activity.statname == "parse count (failures)" {
                     y_failed_parse_count.push(activity.total);
                 } else if activity.statname == "user logons cumulative" {
@@ -2050,14 +2341,26 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         y_vals_sqls_sorted.insert((occuriance, sqlid.clone()), yv.clone());
         
     }
-
+    //Get Global Stats for Lod Profile
+    global_statistics.insert("CPU Load".to_string(), get_statistics(y_vals_cpu_load.clone()));
+    global_statistics.insert("AAS".to_string(), get_statistics(y_vals_dbtime.clone()));
+    global_statistics.insert("Executions/s".to_string(), get_statistics(y_vals_execs.clone()));
+    global_statistics.insert("Transactions/s".to_string(), get_statistics(y_vals_trans.clone()));
+    global_statistics.insert("Physical Reads MB/s".to_string(), get_statistics(y_read_mb.clone()));
+    global_statistics.insert("Physical Writes MB/s".to_string(), get_statistics(y_write_mb.clone()));
+    global_statistics.insert("Redo MB/s".to_string(), get_statistics(y_vals_redosize.clone()));
+    global_statistics.insert("User Commits/snap".to_string(), get_statistics(y_user_commits.iter().map(|v| *v as f64).collect()));
+    global_statistics.insert("User Rollbacks/snap".to_string(),get_statistics(y_user_rollbacks.iter().map(|v| *v as f64).collect()));
+    global_statistics.insert("Parses/s".to_string(), get_statistics(y_vals_parses.clone()));
+    global_statistics.insert("Hard Parses/s".to_string(), get_statistics(y_vals_hparses.clone()));
+    global_statistics.insert("Logical Reads MB/s".to_string(), get_statistics(y_logical_reads_s.clone()));
+    global_statistics.insert("Block Changes/s".to_string(), get_statistics(y_block_changes_s.clone()));
+    global_statistics.insert("User Calls/s".to_string(), get_statistics(y_vals_calls.clone()));
+    fs::write(format!("{}/stats/global_statistics.json",&html_dir),serde_json::to_string_pretty(&global_statistics).unwrap());
+    
     // ------ Ploting and reporting starts ----------
     make_notes!(&logfile_name, args.quiet, 0, "\n\n");
     make_notes!(&logfile_name, false, 1, "{}\n","STATISTICAL COMPUTATION RESULTS".bold().green());
-
-    let mut plot_main: Plot = Plot::new();
-    let mut plot_highlight: Plot = Plot::new();
-    let mut plot_highlight2: Plot = Plot::new();
 
     let dbtime_trace = Scatter::new(x_vals.clone(), y_vals_dbtime.clone())
                                                     .mode(Mode::LinesText)
@@ -2071,7 +2374,12 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                                                     .y_axis("y1");
     let calls_trace = Scatter::new(x_vals.clone(), y_vals_calls.clone())
                                                     .mode(Mode::LinesText)
-                                                    .name("User Calls")
+                                                    .name("User Calls/s")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let transactions_trace = Scatter::new(x_vals.clone(), y_vals_trans.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("Transactions/s")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
     let logons_trace = Scatter::new(x_vals.clone(), y_vals_logons)
@@ -2084,49 +2392,54 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                                                     .name("User Logouts")
                                                     .x_axis("x1")
                                                     .y_axis("y2");                                            
+    let commits_trace = Scatter::new(x_vals.clone(), y_user_commits.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("User Commits")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
+    let rollbacks_trace = Scatter::new(x_vals.clone(), y_user_rollbacks.clone())
+                                                    .mode(Mode::LinesText)
+                                                    .name("User Rollbacks")
+                                                    .x_axis("x1")
+                                                    .y_axis("y2");
     let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs.clone())
                                                     .mode(Mode::LinesText)
-                                                    .name("Executes")
+                                                    .name("Executes/s")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
     let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses.clone())
                                                     .mode(Mode::LinesText)
-                                                    .name("Parses")
+                                                    .name("Parses/s")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
     let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses.clone())
                                                     .mode(Mode::LinesText)
-                                                    .name("Hard Parses")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Hard Parses")
+                                                    .name("Hard Parses/s")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
     let blockchanges_trace = Scatter::new(x_vals.clone(), y_block_changes_s.clone())
                                                     .mode(Mode::LinesText)
-                                                    .name("Block changes")
+                                                    .name("Block changes/s")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
     let redosize_trace = Scatter::new(x_vals.clone(), y_vals_redosize.clone())
                                                     .mode(Mode::LinesText)
-                                                    .name("Redo MB")
+                                                    .name("Redo MB/s")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
     let logicalread_trace = Scatter::new(x_vals.clone(), y_logical_reads_s.clone())
                                                     .mode(Mode::LinesText)
-                                                    .name("Logical Read MB")
+                                                    .name("Logical Read MB/s")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
     let phyread_trace = Scatter::new(x_vals.clone(), y_read_mb.clone())
                                                     .mode(Mode::LinesText)
-                                                    .name("Physical Read MB")
+                                                    .name("Physical Read MB/s")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
     let phywrite_trace = Scatter::new(x_vals.clone(), y_write_mb.clone())
                                                     .mode(Mode::LinesText)
-                                                    .name("Physical Write MB")
+                                                    .name("Physical Write MB/s")
                                                     .x_axis("x1")
                                                     .y_axis("y2");
     let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
@@ -2211,7 +2524,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
                                                 .marker(Marker::new().color("#ad247a".to_string()).opacity(0.7).size(2));
-    let user_commits_box_plot  = BoxPlot::new(y_user_commits_s)
+    let user_commits_box_plot  = BoxPlot::new(y_user_commits)
                                                 //.mode(Mode::LinesText)
                                                 .name("User Commits/snap")
                                                 .x_axis("x1")
@@ -2221,7 +2534,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                                                 .box_points(BoxPoints::All)
                                                 .whisker_width(0.2)
                                                 .marker(Marker::new().color("#fa3434".to_string()).opacity(0.7).size(2));
-    let user_rollbacks_box_plot  = BoxPlot::new(y_user_rollbacks_s)
+    let user_rollbacks_box_plot  = BoxPlot::new(y_user_rollbacks)
                                             //.mode(Mode::LinesText)
                                                 .name("User Rollbacks/snap")
                                                 .x_axis("x2")
@@ -2320,8 +2633,11 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     plot_highlight.add_trace(aas_box_plot);
     plot_main.add_trace(dbcpu_trace);
     plot_main.add_trace(calls_trace);
+    plot_main.add_trace(transactions_trace);
     plot_main.add_trace(logons_trace);
     plot_main.add_trace(logouts_trace);
+    plot_main.add_trace(commits_trace);
+    plot_main.add_trace(rollbacks_trace);
     plot_main.add_trace(exec_trace);
     plot_highlight.add_trace(exec_box_plot);
     plot_highlight.add_trace(trans_box_plot);
@@ -2491,7 +2807,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         table_events.push_str(&format!(
             r#"
             <tr>
-                <td><a href="fg_{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
+                <td><a href="fg/fg_{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
@@ -2686,7 +3002,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         table_bgevents.push_str(&format!(
             r#"
             <tr>
-                <td><a href="bg_{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
+                <td><a href="bg/bg_{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
@@ -2924,7 +3240,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         table_sqls.push_str(&format!(
             r#"
             <tr>
-                <td><a href="sqlid_{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
+                <td><a href="sqlid/sqlid_{}.html" target="_blank" class="nav-link" style="font-weight: bold">{}</a></td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
                 <td>{:.2}</td>
@@ -3103,7 +3419,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         );
 
         // Insert this into already existing sqlid_*.html file
-        let filename: String = format!("{}/sqlid_{}.html", &html_dir,sql_id);
+        let filename: String = format!("{}/sqlid/sqlid_{}.html", &html_dir,sql_id);
         let mut sql_file: String = fs::read_to_string(&filename)
             .expect(&format!("Failed to read file: {}", filename));
         sql_file = sql_file.replace(
@@ -3306,7 +3622,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     );
 
     // Write to the file
-    let stats_corr_filename: String = format!("{}/statistics_corr.html", &html_dir);
+    let stats_corr_filename: String = format!("{}/stats/statistics_corr.html", &html_dir);
     if let Err(e) = fs::write(&stats_corr_filename, table_stat_corr) {
         eprintln!("Error writing file {}: {}", stats_corr_filename, e);
     }
@@ -3622,7 +3938,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
             .anchor("x1")
             .domain(&[0.155, 0.305])
             .range(vec![0.,])
-            .title("#/s")
+            .title("#")
             .zero_line(true)
             .range_mode(RangeMode::ToZero)
         )
@@ -3877,16 +4193,9 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     plot_main.set_layout(layout_main);
     plot_highlight.set_layout(layout_highlight);
     plot_highlight2.set_layout(layout_highlight2);
-
     plot_main.write_html(fname.clone());
-    plot_highlight.write_html(format!("{}/jasmin_highlight.html", &html_dir));
-    plot_highlight
-        .write_image(format!("{}/jasmin_highlight.png", html_dir), ImageFormat::PNG, 1024, 768, 1.0)
-        .expect("Failed to export plot jasmin_highlight.png");
-    plot_highlight2.write_html(format!("{}/jasmin_highlight2.html", &html_dir));
-    plot_highlight2
-        .write_image(format!("{}/jasmin_highlight2.png", html_dir), ImageFormat::PNG, 1024, 768, 1.0)
-        .expect("Failed to export plot jasmin_highlight2.png");
+    plot_highlight.write_html(format!("{}/stats/jasmin_highlight.html", &html_dir));
+    plot_highlight2.write_html(format!("{}/stats/jasmin_highlight2.html", &html_dir));
     
     let first_snap_time: String = collection.awrs.first().unwrap().snap_info.begin_snap_time.clone();
     let last_snap_time: String = collection.awrs.last().unwrap().snap_info.end_snap_time.clone();
@@ -4137,6 +4446,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         document.addEventListener('DOMContentLoaded', function() {{
             toggleElement('show-iostats-button','iostat_zMAIN-html-element','iocheckbox-container');
             toggleElement('show-segstats-button',null,'segcheckbox-container');
+            toggleElement('show-insteff-button','instance-efficiency-plot','');
             toggleElement('show-lpmore-button','highlight2-html-element','');
             toggleTable('show-latchstats-button','latchstat-table');
             const iocheckboxes = document.querySelectorAll('input[type="checkbox"][id$="-iocheckbox"]');
@@ -4179,30 +4489,8 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     );
     // Open plot_main HTML to inject Additional sections - Buttons, Tables, etc
     let mut plotly_html: String = fs::read_to_string(&fname)
-        .expect("Failed to read Main JAS-MIN HTML file");
-    let mut highlight_html: String = fs::read_to_string(format!("{}/jasmin_highlight.html", &html_dir))
-        .expect("Failed to read HighLight JAS-MIN HTML file");
-    let mut highlight2_html: String = fs::read_to_string(format!("{}/jasmin_highlight2.html", &html_dir))
-        .expect("Failed to read HighLight JAS-MIN HTML file");
+        .expect("Failed to read jasmin-html file");
     
-    //Prepare HighLight Section to be pasted into Main HTML file
-    highlight_html = highlight_html.replace("plotly-html-element","highlight-html-element");
-    fs::write(format!("{}/jasmin_highlight.html", &html_dir),&highlight_html);
-    highlight_html = highlight_html
-                    .lines() // Iterate over lines
-                    .skip_while(|line| !line.contains("<div id=\"highlight-html-element\"")) // Skip lines until found
-                    .take_while(|line| !line.contains("</script>")) // Keep only lines before `</script>`
-                    .collect::<Vec<&str>>() // Collect remaining lines into a Vec
-                    .join("\n"); // Convert back into a String
-    highlight2_html = highlight2_html.replace("plotly-html-element","highlight2-html-element");
-    fs::write(format!("{}/jasmin_highlight2.html", &html_dir),&highlight2_html);
-    highlight2_html = highlight2_html
-                    .lines() // Iterate over lines
-                    .skip_while(|line| !line.contains("<div id=\"highlight2-html-element\"")) // Skip lines until found
-                    .take_while(|line| !line.contains("</script>")) // Keep only lines before `</script>`
-                    .collect::<Vec<&str>>() // Collect remaining lines into a Vec
-                    .join("\n"); // Convert back into a String
-    // Inject CSS styles into Main HTML
     const STYLE_CSS: &str = include_str!("../src/style.css");
     plotly_html = plotly_html.replace(
         "<head>",
@@ -4224,7 +4512,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
             format!(
                 "<a href=\"{}\" target=\"_blank\" style=\"text-decoration: none;\">
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">STATS Correlation</span><span>STATS Correlation</span></button>
-                </a>", "statistics_corr.html"
+                </a>", "stats/statistics_corr.html"
             ),
             if !args.backend_assistant.is_empty() { 
                 format!("{}","<button id=\"show-JASMINAI-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">JAS-MIN Assistant</span><span>JAS-MIN Assistant</span></button>")
@@ -4241,11 +4529,12 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     let explorer_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Stats Explorer</h4></div>\n";
     let insight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Performance Insight</h4></div>\n";
     let explorer_button = format!(
-        "\n\t{}\t{}\t{}\n\t<div id=\"iocheckbox-container\" style=\"margin-top: 10px; display: none;\">{}\n\t</div>
+        "\n\t{}\t{}\t{}\t{}\n\t<div id=\"iocheckbox-container\" style=\"margin-top: 10px; display: none;\">{}\n\t</div>
     <div id=\"segcheckbox-container\" style=\"margin-top: 10px; display: none;\">\n{}\n\t</div>\n",
         "<button id=\"show-iostats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">IO Stats</span><span>IO Stats</span></button>",
         "<button id=\"show-segstats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">SEGMENTS Stats</span><span>SEGMENTS Stats</span></button>",
         "<button id=\"show-latchstats-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">LATCH Stats</span><span>LATCH Stats</span></button>",
+        "<button id=\"show-insteff-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">INSTANCE Efficiency</span><span>INSTANCE Efficiency</span></button>",
         iostats
             .keys()
             .filter(|&func| func != "zMAIN")
@@ -4271,8 +4560,8 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
         &format!("{}{}{}\n\t\t</script>\n{}\n\t\t</script>\n\t</div>\n{}\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
         highlight_title, 
         "<button id=\"show-lpmore-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">LP More</span><span>LP More</span></button>",
-        highlight_html,
-        highlight2_html,
+        plot_highlight.to_inline_html(Some("highlight-html-element")),
+        plot_highlight2.to_inline_html(Some("highlight2-html-element")),
         explorer_title,
         explorer_button)
     );
@@ -4280,10 +4569,10 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     // Inject Explorer Sections into Main HTML
     for func in iostats.keys(){
         let func_name = func.replace(" ","_");
-        let mut stats_explorer_html: String = fs::read_to_string(format!("{}/iostats_{}.html", &html_dir,func_name))
+        let mut stats_explorer_html: String = fs::read_to_string(format!("{}/iostats/iostats_{}.html", &html_dir,func_name))
             .expect("Failed to read iostats file");
         stats_explorer_html = stats_explorer_html.replace("plotly-html-element",&format!("iostat_{}-html-element",func_name));
-        fs::write(format!("{}/iostats_{}.html", &html_dir,func_name),&stats_explorer_html);
+        fs::write(format!("{}/iostats/iostats_{}.html", &html_dir,func_name),&stats_explorer_html);
         stats_explorer_html = stats_explorer_html
                         .lines() // Iterate over lines
                         .skip_while(|line| !line.contains(&format!("<div id=\"iostat_{}-html-element\"",func_name))) // Skip lines until found
@@ -4297,7 +4586,7 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
                     );
     }
     for func in segstats {
-        let mut stats_explorer_html: String = fs::read_to_string(format!("{}/segstats_{}.html", &html_dir,func))
+        let mut stats_explorer_html: String = fs::read_to_string(format!("{}/segstats/segstats_{}.html", &html_dir,func))
             .expect("Failed to read iostats file");
         plotly_html = plotly_html.replace(
                         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
@@ -4309,7 +4598,13 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
         &format!("{}\n\t\t\t\t</script><div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
-        fs::read_to_string(format!("{}/latchstats_activity.html", &html_dir)).expect("Failed to read iostats file"))
+        fs::read_to_string(format!("{}/latches/latchstats_activity.html", &html_dir)).expect("Failed to read iostats file"))
+    );
+
+    plotly_html = plotly_html.replace(
+        "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
+        &format!("{}\n\t\t\t\t</script><div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
+        instance_eff_plot)
     );
     
     plotly_html = plotly_html.replace(
