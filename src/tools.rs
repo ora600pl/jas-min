@@ -1,13 +1,16 @@
-use pulldown_cmark::{html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use html_escape::encode_text;
 use std::{env, fs, collections::HashMap, path::Path, collections::HashSet};
-use ndarray::{iter, Array2};
-use ndarray_stats::CorrelationExt;
-use ndarray_stats::histogram::Grid;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter};
-use prettytable::{Table, Row, Cell};
 use std::fmt::Write;
+use std::io::{BufRead, BufReader, BufWriter};
+use ndarray::{iter, Array1, Array2};
+use ndarray_stats::{CorrelationExt, QuantileExt};
+use ndarray_stats::histogram::Grid;
+use ndarray_stats::interpolate::Linear;
+use noisy_float::types::N64;
+use prettytable::{Table, Row, Cell};
+use html_escape::encode_text;
+use pulldown_cmark::{html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use crate::awr::GetStats;
 
 pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> String {
     let mut html = String::new();
@@ -37,7 +40,6 @@ pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> Str
     html.push_str("  </tbody>\n</table>\n");
     html
 }
-
 
 /// Converts Markdown input into a full HTML document with:
 /// - CSS styling
@@ -141,9 +143,9 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
     // Render HTML from modified parser stream
     html::push_html(&mut html_output, parser_with_ids.into_iter());
 
-    let load_profile = format!("{}/jasmin_highlight.html", html_dir);
-    let load_profile2 = format!("{}/jasmin_highlight2.html", html_dir);
     let jasmin_main = format!("{}/jasmin_main.html", html_dir);
+    let load_profile = format!("{}/stats/jasmin_highlight.html", html_dir);
+    let load_profile2 = format!("{}/stats/jasmin_highlight2.html", html_dir);
 
     // Wrap the result in a complete HTML template
     format!(
@@ -203,7 +205,7 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
 {toc}
 <iframe src="{lp}" width="100%" height="400px" style="border: none;"></iframe>
 <iframe src="{lp2}" width="100%" height="400px" style="border: none;"></iframe>
-<a href="{jm}" target="_blank">ALL CHARTS</a>
+<a href="{jm}" target="_blank">JASMIN MAIN</a>
 {content}
 <p align="center"><a href="https://www.ora-600.pl" target="_blank">
         <img src="https://raw.githubusercontent.com/ora600pl/jas-min/main/img/ora-600.png" width="150" alt="ORA-600" onerror="this.style.display='none';"/>
@@ -236,15 +238,15 @@ fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, 
     for (name_type, names) in events_sqls { //first deal with Forground events and SQLIDs
         for name in names {
             if name_type == "FG" {
-                let file_name = get_safe_event_filename(&html_dir, name.clone(), true);
-                let path = Path::new(&file_name);
+                let file_name = get_safe_filename(name.clone(), "fg".to_string());
+                let path = Path::new(&html_dir).join("fg").join(&file_name);
                 if path.exists() {
-                    let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
+                    let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
                     let from_name = format!("<code>{}</code>", &name);
                     html_with_links = html_with_links.replace(&from_name, &link_txt);
                 }
             } else if name_type == "SQL" {
-                let file_name = format!("{}/sqlid_{}.html", html_dir, &name);
+                let file_name = format!("{}/sqlid/sqlid_{}.html", html_dir, &name);
                 let path = Path::new(&file_name);
                 if path.exists() {
                     let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
@@ -253,12 +255,11 @@ fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, 
             }
         }
     }
-    
     for name in bgevents { //then check what's left for Background Events
-        let file_name = get_safe_event_filename(&html_dir, name.clone(), false);
-        let path = Path::new(&file_name);
+        let file_name = get_safe_filename(name.clone(), "bg".to_string());
+        let path = Path::new(&html_dir).join("bg").join(&file_name);
         if path.exists() {
-            let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
+            let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
             let from_name = format!("<code>{}</code>", &name);
             html_with_links = html_with_links.replace(&from_name, &link_txt);
         }
@@ -343,14 +344,88 @@ pub fn mad(data: &[f64], med: f64) -> f64 {
     median(&deviations)
 }
 
-pub fn get_safe_event_filename(dirpath: &str, event: String, is_fg: bool ) -> String {
+pub fn get_safe_filename(name: String, category: String ) -> String {
     // Replace invalid characters for filenames (e.g., slashes or spaces)
-    let safe_event_name: String = event.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
+    let safe_event_name: String = name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
     let mut file_name: String = String::new();
-    if is_fg {
-        file_name = format!("{}/fg_{}.html", dirpath, safe_event_name);
-    } else {
-        file_name = format!("{}/bg_{}.html", dirpath, safe_event_name);
+    if category == "fg".to_string(){
+        file_name = format!("fg_{}.html", safe_event_name);
+    } else if category == "bg".to_string(){
+        file_name = format!("bg_{}.html", safe_event_name);
+    } else if category == "inst_stat".to_string(){
+        file_name = format!("stat_{}.html", safe_event_name);
     }
     file_name
+}
+
+pub fn get_statistics(data: Vec<f64>) -> Option<GetStats> {
+    if data.is_empty() {
+        return None;
+    }
+
+    let samples = data.len() as u64;
+    let arr = Array1::from(data);
+    
+    // Calculate basic stats using ndarray methods
+    let min = *arr.min().unwrap();
+    let max = *arr.max().unwrap();
+    let mean = arr.mean().unwrap();
+    let variance = arr.var(0.0);
+    let std_dev = arr.std(0.0);
+    
+    // Convert to noisy_float for quantile calculations
+    let mut arr_n64: Array1<N64> = arr.mapv(N64::new);
+    
+    // Calculate quartiles
+    let q1 = arr_n64.quantile_axis_mut(
+        ndarray::Axis(0), 
+        N64::new(0.25), 
+        &Linear
+    ).unwrap().into_scalar().raw();
+    
+    let median = arr_n64.quantile_axis_mut(
+        ndarray::Axis(0), 
+        N64::new(0.5), 
+        &Linear
+    ).unwrap().into_scalar().raw();
+    
+    let q3 = arr_n64.quantile_axis_mut(
+        ndarray::Axis(0), 
+        N64::new(0.75), 
+        &Linear
+    ).unwrap().into_scalar().raw();
+    
+    // Calculate theoretical fence boundaries
+    let iqr = q3 - q1;
+    let lower_fence_boundary = q1 - 1.5 * iqr;
+    let upper_fence_boundary = q3 + 1.5 * iqr;
+    
+    // Match Plotly's behavior: fences are the min/max data points within boundaries
+    let lower_fence = arr.iter()
+        .filter(|&&x| x >= lower_fence_boundary)
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .copied()
+        .unwrap_or(min);
+    
+    let upper_fence = arr.iter()
+        .filter(|&&x| x <= upper_fence_boundary)
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .copied()
+        .unwrap_or(max);
+    
+    let round2 = |x: f64| (x * 100.0).round() / 100.0;
+    
+    Some(GetStats {
+        samples,
+        min: round2(min),
+        lower_fence: round2(lower_fence),
+        q1: round2(q1),
+        mean: round2(mean),
+        median: round2(median),
+        q3: round2(q3),
+        upper_fence: round2(upper_fence),
+        max: round2(max),
+        variance: round2(variance),
+        std_dev: round2(std_dev)
+    })
 }
