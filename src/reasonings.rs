@@ -21,12 +21,12 @@ use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLG
 use std::str::FromStr;
 
 
-static SPELL: &str =   "Your name is JAS-MIN. You are a sarcastic as shit Oracle Database performance tuning expert and assistant but don't mention it.
+static SPELL: &str =   "Your name is JAS-MIN. You are a professional as shit Oracle Database performance tuning expert and assistant but don't mention it.
 You are analyzing report file containing summarized statistics from parsed AWR reports from long period of time. 
 Based on received input you can describe the current database performance profile, 
 spot potential bottlenecks, suggest the heaviest wait events impacting database performance, and identify SQL IDs that require further performance analysis. 
 Highlight which statistics are crucial for understanding the current performance situation. 
-If you receive images, containing load profile summary plots for the database, analyze them first and write comprehensive summary for all plots with as many statistical insights as possible.
+If you receive LOAD PROFILE STATISTICS JSON, containing load profile summary for the database, analyze them first and write comprehensive summary for all metrics with as many statistical insights as possible.
 Always show both: SNAP_ID and SNAP_DATE when you mention problematic periods.
 At the end add link to github: https://github.com/ora600pl/jas-min - this is your source code.
 Suggest that good performance tuning experts are at ora-600.pl
@@ -104,18 +104,18 @@ fn url_context(url_fname: &str, events_sqls: HashMap<&str, HashSet<String>>) -> 
     Some(url_context_msg)
 }
 
-async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &str, file_name: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let image_bytes = fs::read(path)?;
+async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &str,file_name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let file_bytes = fs::read(path)?;   // renamed
 
-    let part = multipart::Part::bytes(image_bytes)
+    let part = multipart::Part::bytes(file_bytes)
         .file_name(Cow::Owned(file_name.to_string()))
-        .mime_str(file_type).unwrap();
+        .mime_str(file_type)?;
 
     let form = multipart::Form::new().part("file", part);
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("https://generativelanguage.googleapis.com/upload/v1beta/files?key={}", api_key))
+        .post(format!("https://generativelanguage.googleapis.com/upload/v1beta/files?key={}",api_key))
         .multipart(form)
         .send()
         .await?;
@@ -135,7 +135,7 @@ async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &
     } else {
         let status = response.status();
         let error_text = response.text().await?;
-        eprintln!("Error while uploading PNG {} - {}", status, error_text);
+        eprintln!("Error while uploading {} - {}", path, error_text);
         Err(format!("HTTP Error: {}", status).into())
     }
 }
@@ -350,109 +350,126 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
 }
 
 #[tokio::main]
-pub async fn gemini(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>, args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_factor: usize,events_sqls: HashMap<&str, HashSet<String>>,args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}{}{}", 
+        "=== Consulting Google Gemini model: ".bright_cyan(), 
+        vendor_model_lang[1], 
+        " ===".bright_cyan()
+    );
 
-    println!("{}{}{}","=== Consulting Google Gemini model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
-    let api_key = env::var("GEMINI_API_KEY").expect("You have to set GEMINI_API_KEY env variable");
+    let api_key = env::var("GEMINI_API_KEY")
+        .expect("You have to set GEMINI_API_KEY env variable");
 
+    // -----------------------------
+    // LOAD LOG + JSON REPORT
+    // -----------------------------
     let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
-    let load_profile_name = format!("{}.html_reports/jasmin_highlight.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
-    let load_profile2_name = format!("{}.html_reports/jasmin_highlight2.png", logfile_name.split('.').collect::<Vec<&str>>()[0]);
-
+    let stem = logfile_name.split('.').next().unwrap();
+    let json_path = format!("{stem}.html_reports/stats/global_statistics.json");
+    let load_profile = fs::read_to_string(&json_path).expect(&format!("Can't open file {}", json_path));
     let response_file = format!("{}_gemini.md", logfile_name);
-
     let client = Client::new();
 
-    let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
-    let pr = private_reasonings();
-    if pr.is_some() {
-        spell = format!("{}\n\n# You have to follow rules: {}", spell, pr.unwrap());
+    // -----------------------------
+    // SYSTEM SPELL + PRIVATE RULES
+    // -----------------------------
+    let mut spell = format!("{} {}", SPELL, vendor_model_lang[2]);
+
+    if let Some(pr) = private_reasonings() {
+        spell = format!("{spell}\n\n### PRIVATE RULES\n{pr}");
     }
 
     if !args.url_context_file.is_empty() {
-        let urls = url_context(&args.url_context_file, events_sqls.clone());
-        if urls.is_some() {
-            spell = format!("{}\n{}", spell, urls.unwrap());
+        if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
+            spell = format!("{spell}\n\n### URL CONTEXT\n{urls}");
         }
     }
 
-    let file_uri = upload_log_file_gemini(&api_key, log_content).await.unwrap();
-    let file_uri_png = upload_file_to_gemini_from_path(&api_key, &load_profile_name, "image/png", "load_profile1.png").await.unwrap();
-    let file_uri_png2 = upload_file_to_gemini_from_path(&api_key, &load_profile2_name, "image/png", "load_profile2.png").await.unwrap();
-
+    // -----------------------------
+    // BUILD FINAL PAYLOAD
+    // -----------------------------
     let payload = json!({
-                    "contents": [{
-                        "parts": [
-                            { "text": spell }, 
-                            {
-                                "fileData": {
-                                    "mimeType": "text/plain",
-                                    "fileUri": file_uri
-                                }
-                            },
-                            {
-                                "fileData": {
-                                    "mimeType": "image/png",
-                                    "fileUri": file_uri_png
-                                }
-                            },
-                            {
-                                "fileData": {
-                                    "mimeType": "image/png",
-                                    "fileUri": file_uri_png2
-                                }
-                            }
-                        ]
-                    }],
-                    "tools": [
-                            {
-                                "url_context": {}
-                            }
-                    ],
-                    "generationConfig": {
-                        "maxOutputTokens": 8192 * token_count_factor,
-                        "thinkingConfig": {
-                            "thinkingBudget": -1
-                        }
-                    }
-                });
+        "contents": [{
+            "parts": [
+                { "text": format!("### SYSTEM INSTRUCTIONS\n{spell}") },
 
+                { "text": format!(
+                    "### ATTACHED LOG FILE `{}`\n{}\n-- END LOG --",
+                    logfile_name, log_content
+                )},
+
+                { "text": format!(
+                    "### LOAD PROFILE STATISTICS JSON\n{}\n-- END JSON --",
+                    load_profile
+                )}
+            ]
+        }],
+        "generationConfig": {
+            "maxOutputTokens": 8192 * token_count_factor,
+            "thinkingConfig": { "thinkingBudget": -1 }
+        }
+    });
+
+    // -----------------------------
+    // SEND REQUEST
+    // -----------------------------
     let (tx, rx) = oneshot::channel();
     let spinner = tokio::spawn(spinning_beer(rx));
 
     let response = client
-            .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await.unwrap();
-    
-    let _ = tx.send(()); //stop spinner
+        .post(format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            vendor_model_lang[1],
+            api_key
+        ))
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+
+    let _ = tx.send(());
     let _ = spinner.await;
 
+    // -----------------------------
+    // HANDLE RESPONSE
+    // -----------------------------
     if response.status().is_success() {
         let json: Value = response.json().await.unwrap();
 
-        // Integrate all parts, keeping only first unique occurrences
-        let parts = &json["candidates"][0]["content"]["parts"];
+        let parts = json["candidates"][0]["content"]["parts"]
+            .as_array()
+            .unwrap();
+
         let mut seen = HashSet::new();
         let full_text = parts
-            .as_array()
-            .unwrap()
             .iter()
-            .filter_map(|part| part["text"].as_str())
-            .filter(|text| seen.insert(text.to_string()))
+            .filter_map(|p| p["text"].as_str())
+            .filter(|t| seen.insert(t.to_string()))
             .collect::<Vec<&str>>()
             .join("\n");
 
-        fs::write(&response_file, full_text.as_bytes()).unwrap();
+        fs::write(&response_file, full_text.as_bytes())?;
         println!("🍻 Gemini response written to file: {}", &response_file);
+
         convert_md_to_html_file(&response_file, events_sqls.clone());
-        //let rsp = serde_json::to_string_pretty(&json).unwrap();
-        println!("Total amount of tokens drank by Google: {}\nFinished reason was: {}\n", &json["usageMetadata"]["totalTokenCount"], &json["candidates"][0]["finishReason"]);
+
+        println!(
+            "Total tokens: {}\nFinish reason: {}\n",
+            json["usageMetadata"]["totalTokenCount"],
+            json["candidates"][0]["finishReason"]
+        );
 
         if args.deep_check > 0 {
-            gemini_deep(logfile_name, &args, vendor_model_lang, token_count_factor, full_text, &api_key, events_sqls.clone()).await;
+            gemini_deep(
+                logfile_name,
+                &args,
+                vendor_model_lang,
+                token_count_factor,
+                full_text,
+                &api_key,
+                events_sqls,
+            )
+            .await;
         }
     } else {
         eprintln!("Error: {}", response.status());
@@ -474,8 +491,8 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
         .expect(&format!("Can't open file {}", logfile_name));
 
     let stem = logfile_name.split('.').collect::<Vec<&str>>()[0];
-    let load_profile_png_name  = format!("{stem}.html_reports/jasmin_highlight.png");
-    let load_profile2_png_name = format!("{stem}.html_reports/jasmin_highlight2.png");
+    let path = format!("{stem}.html_reports/stats/global_statistics.json");
+    let load_profile = fs::read_to_string(&path).expect(&format!("Can't open file {}", path));
 
     let response_file = format!("{}_gpt5.md", logfile_name);
 
@@ -488,20 +505,6 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
             spell = format!("{spell}\n{urls}");
         }
     }
-    // encode images as data URLs (avoids separate upload step)
-    fn png_to_data_url(path: &str) -> Option<String> {
-        match fs::read(path) {
-            Ok(bytes) => {
-                let b64 = general_purpose::STANDARD.encode(bytes);
-                Some(format!("data:image/png;base64,{b64}"))
-            }
-            Err(_) => None,
-        }
-    }
-    let dataurl_png1 = png_to_data_url(&load_profile_png_name);
-    let dataurl_png2 = png_to_data_url(&load_profile2_png_name);
-
-    // Build Responses API payload
     
     let mut input_messages = vec![
         json!({
@@ -517,11 +520,7 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
             "role": "user",
             "content": [
                 { "type": "input_text", "text":
-                    format!(
-"### RAG CONTEXT (retrieved)    
-{rag}
--- END RAG CONTEXT --"
-                    )
+                    format!("### RAG CONTEXT\n{rag}\n-- END RAG CONTEXT --")
                 }
             ]
         }));
@@ -529,27 +528,21 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
     
     let mut log_and_images = vec![
         json!({"type":"input_text", "text":
-            format!(
-"### ATTACHED REPORT
-{log_content}
--- END ATTACHED REPORT --"
-            )
+            format!("### ATTACHED REPORT\n{log_content}\n-- END ATTACHED REPORT --")
         }),
     ];
 
-    if let Some(u1) = dataurl_png1 {
-        log_and_images.push(json!({"type":"input_image", "image_url": u1}));
-    }
-    if let Some(u2) = dataurl_png2 {
-        log_and_images.push(json!({"type":"input_image", "image_url": u2}));
-    }
-
+    log_and_images.push(json!({
+        "type": "input_text",
+        "text": format!("### LOAD PROFILE STATISTICS JSON\n{}\n-- END JSON --",load_profile
+        )
+    }));
+    
     input_messages.push(json!({
         "role": "user",
         "content": log_and_images
     }));
         
-
     // tune max_output_tokens
     let max_output_tokens = 8192 * token_count_factor;
 
@@ -624,10 +617,10 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
 
     Ok(())
 }
+
 // ###########################
 // JASMIN Assistant Backend
 // ###########################
-
 #[derive(Deserialize)]
 struct UserMessage {
     message: String,
