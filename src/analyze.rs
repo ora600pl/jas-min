@@ -251,7 +251,7 @@ fn merge_ash_sqls_to_events(ash_event_sql_map: HashMap<String, HashSet<String>>,
                 <ul>
             "#);
         for sqlid in sqls {
-            event_html_content = format!("{}<li><a href=sqlid/sqlid_{}.html target=_blank style=\"color: black;\">{}</a></li>", event_html_content, sqlid, sqlid);
+            event_html_content = format!("{}<li><a href=../sqlid/sqlid_{}.html target=_blank style=\"color: black;\">{}</a></li>", event_html_content, sqlid, sqlid);
         }
         event_html_content = format!("{}</ul>", event_html_content);
         if path.exists() {
@@ -286,7 +286,7 @@ fn merge_correlated_sqls_to_events(crr_event_sql_map: HashMap<String, HashMap<St
         vec_sqls.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
         for (sqlid, crr) in vec_sqls {
-            event_html_content = format!("{}<li><a href=sqlid/sqlid_{}.html target=_blank style=\"color: black;\">{:.2} | {}</a></li>", event_html_content, sqlid, crr, sqlid);
+            event_html_content = format!("{}<li><a href=../sqlid/sqlid_{}.html target=_blank style=\"color: black;\">{:.2} | {}</a></li>", event_html_content, sqlid, crr, sqlid);
         }
         event_html_content = format!("{}</ul>", event_html_content);
         if path.exists() {
@@ -600,7 +600,7 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
         let file_name = get_safe_filename(event.clone(), if is_fg{"fg".to_string()}else{"bg".to_string()});
 
         // Save the plot as an HTML file
-        let path = Path::new(&dirpath).join(if is_fg{"fg".to_string()}else{"bg".to_string()}).join(&file_name);
+        let path = Path::new(&dirpath).join(&file_name);
         //plot.save(path).expect("Failed to save plot to file");
         plot.write_html(&path);
         let mut event_file: String = fs::read_to_string(&path).expect(&format!("Failed to read file: {}", file_name));
@@ -1205,7 +1205,7 @@ fn generate_instance_stats_plotfiles(awrs: &Vec<AWR>, snap_range: &(u64,u64), di
         plot_instance_stat.set_layout(layout);
         // Save to HTML
         let file_name = get_safe_filename(iplot.stat_name.clone(),"inst_stat".to_string());
-        let path = Path::new(&dirpath).join("stats").join(&file_name);
+        let path = Path::new(&dirpath).join(&file_name);
         plot_instance_stat.write_html(path);
     }
     println!("Saved plots for Instance Stats to '{}/stats/stats_*'", &dirpath);

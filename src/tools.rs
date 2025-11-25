@@ -349,11 +349,11 @@ pub fn get_safe_filename(name: String, category: String ) -> String {
     let safe_event_name: String = name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
     let mut file_name: String = String::new();
     if category == "fg".to_string(){
-        file_name = format!("fg_{}.html", safe_event_name);
+        file_name = format!("fg/fg_{}.html", safe_event_name);
     } else if category == "bg".to_string(){
-        file_name = format!("bg_{}.html", safe_event_name);
+        file_name = format!("bg/bg_{}.html", safe_event_name);
     } else if category == "inst_stat".to_string(){
-        file_name = format!("stat_{}.html", safe_event_name);
+        file_name = format!("stats/stat_{}.html", safe_event_name);
     }
     file_name
 }
