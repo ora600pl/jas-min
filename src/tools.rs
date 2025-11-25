@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::{env, fs, collections::HashMap, path::Path, collections::HashSet};
 use std::fs::File;
 use std::fmt::Write;
@@ -239,11 +240,15 @@ fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, 
         for name in names {
             if name_type == "FG" {
                 let file_name = get_safe_filename(name.clone(), "fg".to_string());
-                let path = Path::new(&html_dir).join("fg").join(&file_name);
+                let path = Path::new(&html_dir).join(&file_name);
                 if path.exists() {
                     let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
+                    let link_txt2 = format!(r#"<strong><a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
                     let from_name = format!("<code>{}</code>", &name);
+                    let from_name2 = format!("<strong>{}", &name);
                     html_with_links = html_with_links.replace(&from_name, &link_txt);
+                    html_with_links = html_with_links.replace(&from_name2, &link_txt2);
+                    //println!("added link for: {}", &name);
                 }
             } else if name_type == "SQL" {
                 let file_name = format!("{}/sqlid/sqlid_{}.html", html_dir, &name);
@@ -257,11 +262,14 @@ fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, 
     }
     for name in bgevents { //then check what's left for Background Events
         let file_name = get_safe_filename(name.clone(), "bg".to_string());
-        let path = Path::new(&html_dir).join("bg").join(&file_name);
+        let path = Path::new(&html_dir).join(&file_name);
         if path.exists() {
             let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
+            let link_txt2 = format!(r#"<strong><a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
             let from_name = format!("<code>{}</code>", &name);
+            let from_name2 = format!("<strong>{}", &name);
             html_with_links = html_with_links.replace(&from_name, &link_txt);
+            html_with_links = html_with_links.replace(&from_name2, &link_txt2);
         }
     }
     html_with_links

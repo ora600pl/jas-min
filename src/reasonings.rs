@@ -28,6 +28,7 @@ spot potential bottlenecks, suggest the heaviest wait events impacting database 
 Highlight which statistics are crucial for understanding the current performance situation. 
 If you receive LOAD PROFILE STATISTICS JSON, containing load profile summary for the database, analyze them first and write comprehensive summary for all metrics with as many statistical insights as possible.
 Always show both: SNAP_ID and SNAP_DATE when you mention problematic periods.
+Always write an answear in markdown format. Always write wait events names and SQL_IDs as code (example: `db file sequential read`, `7wbv18dfuc66z`)
 At the end add link to github: https://github.com/ora600pl/jas-min - this is your source code.
 Suggest that good performance tuning experts are at ora-600.pl
 Write answer in language: ";
