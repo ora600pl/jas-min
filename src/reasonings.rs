@@ -277,78 +277,86 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
                 deep_stats.push(awr);
             }
         }
-        let deep_stats_json = serde_json::to_string_pretty(&deep_stats).unwrap();
-        let file_uri_stats = upload_log_file_gemini(&api_key, deep_stats_json).await.unwrap();
-        let spell = format!("You were given a detailed performance report of Oracle database and JSON file containing TOP {} periods with the detailed statistics. 
+        
+        let spell = format!("You were given a detailed performance report of Oracle database and JSON file containing one of the TOP periods with the detailed statistics. 
         Perform a deep analyzes of those statistics. Return a detailed report in markdown format, showing what you have found. 
         Suggest performance improvments. Detect impactfull statistics and latches.
         Investigate all SQL sections and crosscheck SQL_IDs to find patterns of bad SQL executions.
+        Highlight SQL_IDs that are reported in many different sections.
+        Write answer in language: {}", vendor_model_lang[2]);
 
-        Write answer in language: {}", args.deep_check, vendor_model_lang[2]);
+        for ds in deep_stats {
 
-        let payload = json!({
-                    "contents": [{
-                        "parts": [
-                            { "text": spell }, 
-                            {
-                                "fileData": {
-                                    "mimeType": "text/plain",
-                                    "fileUri": file_uri
-                                },
-                                "fileData": {
-                                    "mimeType": "text/plain",
-                                    "fileUri": file_uri_stats
+            let deep_stats_json = serde_json::to_string_pretty(&ds).unwrap();
+            let file_uri_stats = upload_log_file_gemini(&api_key, deep_stats_json).await.unwrap();
+
+            let payload = json!({
+                        "contents": [{
+                            "parts": [
+                                { "text": spell }, 
+                                {
+                                    "fileData": {
+                                        "mimeType": "text/plain",
+                                        "fileUri": file_uri
+                                    },
+                                    "fileData": {
+                                        "mimeType": "text/plain",
+                                        "fileUri": file_uri_stats
+                                    }
                                 }
+                            ]
+                        }],
+                        "generationConfig": {
+                            "maxOutputTokens": 8192 * token_count_factor,
+                            "thinkingConfig": {
+                                "thinkingBudget": -1
                             }
-                        ]
-                    }],
-                    "generationConfig": {
-                        "maxOutputTokens": 8192 * token_count_factor,
-                        "thinkingConfig": {
-                            "thinkingBudget": -1
                         }
-                    }
-                });
+                    });
 
-    let (tx, rx) = oneshot::channel();
-    let spinner = tokio::spawn(spinning_beer(rx));
+            let (tx, rx) = oneshot::channel();
+            let spinner = tokio::spawn(spinning_beer(rx));
 
-    let response = client
-            .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await.unwrap();
-    
-    let _ = tx.send(()); //stop spinner
-    let _ = spinner.await;
+            let response = client
+                    .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&payload)
+                    .send()
+                    .await.unwrap();
+            
+            let _ = tx.send(()); //stop spinner
+            let _ = spinner.await;
 
-    if response.status().is_success() {
-        let json: Value = response.json().await.unwrap();
+            if response.status().is_success() {
+                let json: Value = response.json().await.unwrap();
 
-        // Integrate all parts, keeping only first unique occurrences
-        let parts = &json["candidates"][0]["content"]["parts"];
-        let mut seen = HashSet::new();
-        let full_text = parts
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|part| part["text"].as_str())
-            .filter(|text| seen.insert(text.to_string()))
-            .collect::<Vec<&str>>()
-            .join("\n");
+                // Integrate all parts, keeping only first unique occurrences
+                let parts = &json["candidates"][0]["content"]["parts"];
+                let mut seen = HashSet::new();
+                let full_text = parts
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .filter(|text| seen.insert(text.to_string()))
+                    .collect::<Vec<&str>>()
+                    .join("\n");
 
-        let response_file = format!("{}_gemini2.md", logfile_name);
-        fs::write(&response_file, full_text.as_bytes()).unwrap();
-        println!("🍻 Gemini response written to file: {}", &response_file);
-        convert_md_to_html_file(&response_file, events_sqls.clone());
-        //println!("{}", full_text);
+                let stem = logfile_name.split('.').next().unwrap();
+                let response_file = format!("{stem}.html_reports/{}_gemini_deep_{}.md", logfile_name, &ds.snap_info.begin_snap_id);
+                fs::write(&response_file, full_text.as_bytes()).unwrap();
 
-    } else {
-        eprintln!("Error: {}", response.status());
-        eprintln!("{}", response.text().await.unwrap());
-    }
+                println!("🍻 Gemini response written to file: {}", &response_file);
+                convert_md_to_html_file(&response_file, events_sqls.clone());
+                //println!("{}", full_text);
 
+            } else {
+                eprintln!("Error: {}", response.status());
+                eprintln!("{}", response.text().await.unwrap());
+            }
+
+        }
+        
 
     } else {
         eprintln!("Error: {}", response.status());

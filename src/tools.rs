@@ -144,9 +144,9 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
     // Render HTML from modified parser stream
     html::push_html(&mut html_output, parser_with_ids.into_iter());
 
-    let jasmin_main = format!("{}/jasmin_main.html", html_dir);
-    let load_profile = format!("{}/stats/jasmin_highlight.html", html_dir);
-    let load_profile2 = format!("{}/stats/jasmin_highlight2.html", html_dir);
+    let jasmin_main = format!("{}/jasmin_main.html", &html_dir);
+    let load_profile = format!("{}/stats/jasmin_highlight.html", &html_dir);
+    let load_profile2 = format!("{}/stats/jasmin_highlight2.html", &html_dir);
 
     // Wrap the result in a complete HTML template
     format!(
@@ -280,7 +280,10 @@ pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, Hash
     let markdown = fs::read_to_string(input_path)
         .unwrap_or_else(|_| panic!("Could not read file '{}'", input_path));
 
-    let html_dir = format!("{}.html_reports", input_path.split('.').collect::<Vec<&str>>()[0]);
+    let mut html_dir = format!("{}.html_reports", input_path.split('.').collect::<Vec<&str>>()[0]);
+    if input_path.contains("_deep_") {
+        html_dir = ".".to_string();
+    }
     let html_plain = markdown_to_html_with_toc(&markdown, &html_dir);
     let html = add_links_to_html(html_plain, events_sqls, html_dir);
 
