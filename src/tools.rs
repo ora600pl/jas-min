@@ -233,7 +233,7 @@ fn heading_level_to_int(level: &HeadingLevel) -> usize {
     }
 }
 
-fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, html_dir: String) -> String {
+fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, html_dir: String, html_absolute_dir: String) -> String {
     let mut html_with_links: String = html;
     let bgevents = events_sqls.get("BG").unwrap().clone();
     for (name_type, names) in events_sqls { //first deal with Forground events and SQLIDs
@@ -241,7 +241,8 @@ fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, 
             if name_type == "FG" {
                 let file_name = get_safe_filename(name.clone(), "fg".to_string());
                 let path = Path::new(&html_dir).join(&file_name);
-                if path.exists() {
+                let absolute_path = Path::new(&html_absolute_dir).join(&file_name);
+                if absolute_path.exists() {
                     let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
                     let link_txt2 = format!(r#"<strong><a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
                     let from_name = format!("<code>{}</code>", &name);
@@ -252,7 +253,8 @@ fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, 
                 }
             } else if name_type == "SQL" {
                 let file_name = format!("{}/sqlid/sqlid_{}.html", html_dir, &name);
-                let path = Path::new(&file_name);
+                let absolute_file_name= format!("{}/sqlid/sqlid_{}.html", html_absolute_dir, &name);
+                let path = Path::new(&absolute_file_name);
                 if path.exists() {
                     let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
                     html_with_links = html_with_links.replace(&name, &link_txt);
@@ -263,7 +265,8 @@ fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, 
     for name in bgevents { //then check what's left for Background Events
         let file_name = get_safe_filename(name.clone(), "bg".to_string());
         let path = Path::new(&html_dir).join(&file_name);
-        if path.exists() {
+        let absolute_path = Path::new(&html_absolute_dir).join(&file_name);
+        if absolute_path.exists() {
             let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
             let link_txt2 = format!(r#"<strong><a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
             let from_name = format!("<code>{}</code>", &name);
@@ -281,11 +284,12 @@ pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, Hash
         .unwrap_or_else(|_| panic!("Could not read file '{}'", input_path));
 
     let mut html_dir = format!("{}.html_reports", input_path.split('.').collect::<Vec<&str>>()[0]);
+    let html_absolute_dir = html_dir.clone();
     if input_path.contains("_deep_") {
         html_dir = ".".to_string();
     }
     let html_plain = markdown_to_html_with_toc(&markdown, &html_dir);
-    let html = add_links_to_html(html_plain, events_sqls, html_dir);
+    let html = add_links_to_html(html_plain, events_sqls, html_dir, html_absolute_dir);
 
     let output_path = Path::new(input_path).with_extension("html");
 

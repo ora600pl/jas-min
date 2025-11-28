@@ -262,6 +262,9 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
             let id = u64::from_str(snap_id);
             if id.is_ok() {
                 snap_ids.insert(id.unwrap());
+            } else if snap_id.contains("_") {
+                let s_id = snap_id.split("_").next().unwrap();
+                snap_ids.insert(u64::from_str(s_id).unwrap());
             } else { //if id is not ok it means that model returned data instead of SNAP_ID as a number, so we have match date to snap_id
                 let id = awrs.iter()
                                            .find(|a| &a.snap_info.begin_snap_time == snap_id).unwrap()

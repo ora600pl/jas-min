@@ -3121,13 +3121,13 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
 
         /* Calculate STDDEV and AVG for sqls executions number */
         let x: Vec<f64> = y_vals_sqls_exec_n.get(&key.1.clone()).unwrap().clone();
-        let avg_exec_n: f64 = mean(x.clone()).unwrap();
-        let stddev_exec_n: f64 = std_deviation(x).unwrap();
+        let avg_exec_n: f64 = mean(x.clone()).unwrap_or(0.0);
+        let stddev_exec_n: f64 = std_deviation(x).unwrap_or(0.0);
 
         /* Calculate STDDEV and AVG for sqls time per execution */
         let x: Vec<f64> = y_vals_sqls_exec_t.get(&key.1.clone()).unwrap().clone();
-        let avg_exec_t: f64 = mean(x.clone()).unwrap();
-        let stddev_exec_t: f64 = std_deviation(x.clone()).unwrap();
+        let avg_exec_t: f64 = mean(x.clone()).unwrap_or(0.0);
+        let stddev_exec_t: f64 = std_deviation(x.clone()).unwrap_or(0.0);
 
         /* Calculate STDDEV and AVG for sqls CPU time per execution */
         let x_c: Vec<f64> = collection.awrs.iter()
@@ -3153,11 +3153,13 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
 
         let avg_exec_cpu: f64 = mean(x_s.clone()).unwrap_or(0.0);
         let stddev_exec_cpu: f64 = std_deviation(x_s).unwrap_or(0.0);
-
-        let sql_type = collection.awrs.iter()
-                                                .flat_map(|a| a.sql_elapsed_time.clone())
-                                                .find(|s| s.sql_id == sql_id)
-                                                .unwrap().sql_type;
+        let mut sql_type = "?".to_string();
+        let s = collection.awrs.iter()
+                                .flat_map(|a| a.sql_elapsed_time.clone())
+                                .find(|s| s.sql_id == sql_id);
+        if s.is_some() {
+            sql_type = s.unwrap().sql_type;
+        }
 
         make_notes!(&logfile_name, args.quiet, 0, "{: >24}{:.2}% of probes\n", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         make_notes!(&logfile_name, args.quiet, 0, "{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}\n", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
