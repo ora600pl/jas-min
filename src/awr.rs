@@ -1862,12 +1862,12 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
 	} else if fname.ends_with("txt") {
 		let awr_rep = fs::read_to_string(&fname).expect(&format!("Couldn't open awr file {}", fname));
     	let awr_lines = awr_rep.split("\n").collect::<Vec<&str>>();
-		let block_size = awr_lines.iter().find(|line| line.starts_with("db_block_size")).unwrap().split_whitespace().last().unwrap();
+		let block_size = awr_lines.iter().find(|line| line.starts_with("db_block_size")).and_then(|line| line.split_whitespace().last()).and_then(|val| val.parse::<u16>().ok()).unwrap_or(8192u16);   // default to 8192
 		let mut instance_info = find_section_boundries(awr_lines.clone(), "Database    DB Id", "Snapshot       Snap Id",&fname, None);
 		let mut instance_info_lines: Vec<&str> = Vec::new();
 		instance_info_lines.extend_from_slice(&awr_lines[instance_info.begin+2..instance_info.end]);
 		db_instance_information = instance_info_txt(instance_info_lines);
-		db_instance_information.db_block_size = block_size.parse().unwrap();
+		db_instance_information.db_block_size = block_size;
 	}
 	db_instance_information
 }

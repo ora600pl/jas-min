@@ -1,4 +1,7 @@
 use std::collections::{HashMap, HashSet, BTreeMap};
+use std::path::Path;
+use std::fs::File;
+use std::io::{self, Write};
 use crate::awr::{WaitEvents, HostCPU, LoadProfile, SQLCPUTime, SQLIOTime, SQLGets, SQLReads, AWR, AWRSCollection};
 use crate::Args;
 use prettytable::{Table, Row, Cell, format, Attr};
@@ -499,6 +502,125 @@ pub fn anomalies_join(
         .push(anomaly_detail.into());
 }
 
+pub fn save_anomalies_to_csv(
+    anomalies_summary: &BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>,
+    output_dir: impl AsRef<Path>,
+    ) -> io::Result<()> {
+
+    /*
+     Saves anomalies summary data to CSV files.
+     
+     Creates:
+     1. A summary CSV with snap_id, snap_date, and total count
+     2. Individual detailed CSVs for each snap_id with full anomaly information
+    
+     # Arguments
+     * `anomalies_summary` - The map containing anomaly data
+     * `output_dir` - Directory where CSV files will be saved
+    
+     # Returns
+     Result indicating success or error
+     */
+
+    let output_dir = output_dir.as_ref();
+    
+    // Path to subdirectory for anomalies CSV files
+    let dirpath = output_dir.with_extension("html_reports").join("jasmin/anomalies");
+
+    // Create the subdirectory if it doesn't exist
+    std::fs::create_dir_all(&dirpath)?;
+
+    // Save the summary CSV file
+    save_summary_csv(anomalies_summary, &dirpath)?;
+
+    // Save individual detailed CSV files for each snap_id
+    save_detailed_csv_files(anomalies_summary, &dirpath)?;
+    println!("Detailed CSV files for {} anomalies saved successfully",anomalies_summary.len());
+
+    Ok(())
+}
+
+
+fn save_summary_csv(
+    anomalies_summary: &BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>,
+    output_dir: &Path,
+    ) -> io::Result<()> {
+    ///
+    /// Saves a summary CSV containing snap_id, snap_date, and total anomaly count
+    /// 
+    let summary_path = output_dir.join("anomalies_reference.csv");
+    let mut file = File::create(summary_path)?;
+
+    // Write CSV header
+    writeln!(file, "BEGIN_SNAP_ID,BEGIN_SNAP_DATE,COUNT")?;
+
+    // Write data rows
+    for ((snap_id, snap_date), anomalies_map) in anomalies_summary {
+        // Calculate total count of anomalies for this snapshot
+        let total_count: usize = anomalies_map
+            .values()
+            .map(|details| details.len())
+            .sum();
+
+        writeln!(file, "{},{},{}", snap_id, snap_date, total_count)?;
+    }
+
+    Ok(())
+}
+
+
+fn save_detailed_csv_files(
+    anomalies_summary: &BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>,
+    output_dir: &Path,
+    ) -> io::Result<()> {
+    ///
+    /// Saves detailed CSV files, one per snap_id, containing all anomaly details
+    /// 
+    for ((snap_id, snap_date), anomalies_map) in anomalies_summary {
+        let filename = format!("{}.csv", snap_id);
+        let detail_path = output_dir.join(filename);
+        let mut file = File::create(detail_path)?;
+
+        // Write CSV header
+        writeln!(file, "BEGIN_SNAP_ID,BEGIN_SNAP_DATE,COUNT,ANOMALY_SUMMARY")?;
+
+        // Collect all anomaly lines for this snapshot
+        let mut anomaly_lines: Vec<String> = Vec::new();
+        for (anomaly_type, details) in anomalies_map {
+            for detail in details {
+                // Escape the detail string for CSV format
+                let escaped_detail = escape_csv_field(&format!("{}: {}", anomaly_type, detail));
+                anomaly_lines.push(escaped_detail);
+            }
+        }
+
+        // Write one row per anomaly
+        for anomaly_line in &anomaly_lines {
+            writeln!(
+                file,
+                "{},{},{},{}",
+                snap_id,
+                snap_date,
+                anomaly_lines.len(),
+                anomaly_line
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Escapes a CSV field by wrapping it in quotes if it contains special characters
+fn escape_csv_field(field: &str) -> String {
+    // If the field contains commas, quotes, or newlines, wrap it in quotes
+    // and escape any internal quotes by doubling them
+    if field.contains(',') || field.contains('"') || field.contains('\n') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
 pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>, args: &Args, logfile_name: &str) -> String {
     
     let mut table = Table::new();
@@ -545,11 +667,13 @@ pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), 
             all_lines.len()
         ));
     });
-
     make_notes!(logfile_name, args.quiet, 0, "\n\n");
     make_notes!(logfile_name, false, 2, "{}\n", "Anomalies summary for each date from all sections where anomaly was detected".yellow());
     for table_line in table.to_string().lines() {
         make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
+    }
+    if let Err(e) = save_anomalies_to_csv(anomalies_summary, &args.directory) {
+        eprintln!("Failed to save CSV files: {}", e);
     }
 
     html_table

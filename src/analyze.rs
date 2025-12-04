@@ -2055,8 +2055,8 @@ pub fn plot_to_file(collection: AWRSCollection, args: Args) {
     if let Err(e) = fs::create_dir_all(&html_dir) {
         eprintln!("⚠️ Failed to create base directory {:?}: {}", html_dir, e);
     }
-    // Create all required subdirectories under html
-    let subdirs = ["fg", "bg", "latches", "iostats", "segstats", "sqlid", "stats"];
+    // Create all required subdirectories dir tree under html
+    let subdirs = ["fg", "bg", "latches", "iostats", "segstats", "sqlid", "stats","jasmin/anomalies"];
     for sub in subdirs {
         let path = Path::new(&html_dir).join(sub);
         if let Err(e) = fs::create_dir_all(&path) {
