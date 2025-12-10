@@ -10,6 +10,8 @@ use dotenvy::from_path;
 use colored::*;
 use clap::Parser;
 use rayon::ThreadPoolBuilder;
+use serde::{Deserialize, Serialize};
+
 
 mod awr;
 mod analyze;
@@ -19,6 +21,10 @@ mod macros;
 mod anomalies;
 mod tools;
 use crate::reasonings::*;
+use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI,AppState};
+
+use toon::encode;
+
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
@@ -34,10 +40,6 @@ struct Args {
     ///Parse whole directory of files
 	#[clap(short, long, default_value="")]
     directory: String,
-
-	///Draw a plot? 
-	#[clap(short, long, default_value_t=1)]
-    plot: u8,
 
 	///Write output to nondefault file? Default is directory_name.json
 	#[clap(short, long, default_value="")]
@@ -151,6 +153,8 @@ fn main() {
 	let args = Args::parse(); 
 	println!("{}{} (Running with parallel degree: {})","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow(), args.parallel);
 
+	let mut report_for_ai = ReportForAI::default();
+
 	//This creates a global pool configuration for rayon to limit threads for par_iter
 	ThreadPoolBuilder::new()
         .num_threads(args.parallel)
@@ -170,14 +174,14 @@ fn main() {
 			if !args.outfile.is_empty() {
 				fname = args.outfile.clone();
 			}
-			awr::parse_awr_dir(args.clone(), events_sqls, &fname);
+			report_for_ai = awr::parse_awr_dir(args.clone(), events_sqls, &fname);
 		} else {
 			eprintln!("ERROR: Directory: '{}' does not exists!",args.directory);
 		}
 		
 	} else if !args.json_file.is_empty() {
 		if PathBuf::from(&args.json_file).exists(){
-			awr::prarse_json_file(args.clone(), events_sqls);
+			report_for_ai = awr::prarse_json_file(args.clone(), events_sqls);
 			//let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
 			reportfile = match PathBuf::from(&args.json_file).file_stem() {
 				Some(stem) => 
@@ -193,11 +197,15 @@ fn main() {
 	}
 	if !args.ai.is_empty() {
         let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
+		let j = serde_json::to_value(&report_for_ai).unwrap();
+		let toon_str = encode(&j, None);
+		// let mut f = fs::File::create("report_for_ai.toon").unwrap();
+		// f.write_all(toon_str.as_bytes()).unwrap();
         if vendor_model_lang[0] == "openai" {
-            openai_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args).unwrap();
+            openai_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
 			//println!("For now only Google is supported vendor with this option :( Sorry for that. You can use OpenAI with backend assistant tho. We are waiting what GPT-5 will provide.");
         } else if vendor_model_lang[0] == "google" { 
-            gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args).unwrap();
+            gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
 		} else {
             println!("Unrecognized vendor. Supported vendors: openai, google");
         }   
@@ -219,8 +227,9 @@ fn main() {
 		println!("{}",r#"==== STARTING ASISTANT BACKEND ==="#.bright_cyan());
 		println!("🤖 Starting JAS-MIN Assistant Backend using: {}",args.backend_assistant);
 		println!("📁 Report File: {}",&reportfile);
-        
-		backend_ai(reportfile, backend_type, model_name);
+        let j = serde_json::to_value(&report_for_ai).unwrap();
+		let toon_str = encode(&j, None);
+		backend_ai(reportfile, backend_type, model_name, toon_str);
     }
 	
 }

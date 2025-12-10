@@ -20,18 +20,366 @@ use crate::tools::*;
 use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR};
 use std::str::FromStr;
 
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct StatisticsDescription {
+    pub dbcpu_dbtime: String,
+    pub median_absolute_deviation: String, 
+}
 
-static SPELL: &str =   "Your name is JAS-MIN. You are a professional as shit Oracle Database performance tuning expert and assistant but don't mention it.
-You are analyzing report file containing summarized statistics from parsed AWR reports from long period of time. 
-Based on received input you can describe the current database performance profile, 
-spot potential bottlenecks, suggest the heaviest wait events impacting database performance, and identify SQL IDs that require further performance analysis. 
-Highlight which statistics are crucial for understanding the current performance situation. 
-If you receive LOAD PROFILE STATISTICS JSON, containing load profile summary for the database, analyze them first and write comprehensive summary for all metrics with as many statistical insights as possible.
-Always show both: SNAP_ID and SNAP_DATE when you mention problematic periods.
-Always write an answear in markdown format. Always write wait events names and SQL_IDs as code (example: `db file sequential read`, `7wbv18dfuc66z`)
-At the end add link to github: https://github.com/ora600pl/jas-min - this is your source code.
-Suggest that good performance tuning experts are at ora-600.pl
-Write answer in language: ";
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct TopPeaksSelected {
+    pub report_name: String,
+    pub report_date: String,
+    pub snap_id: u64,
+    pub db_time_value: f64,
+    pub db_cpu_value: f64,
+    pub dbcpu_dbtime_ratio: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct MadAnomaliesEvents {
+    pub anomaly_date: String,
+    pub mad_score: f64,
+    pub total_wait_s: f64,
+    pub number_of_waits: u64,
+    pub avg_wait_time_for_execution_ms: f64,
+    pub pct_of_db_time: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct MadAnomaliesSQL {
+    pub anomaly_date: String,
+    pub mad_score: f64,
+    pub elapsed_time_cumulative_s: f64,
+    pub number_of_executions: u64,
+    pub avg_exec_time_for_execution: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct TopForegroundWaitEvents {
+    pub event_name: String,
+    pub correlation_with_db_time: f64,
+    pub marked_as_top_in_pct_of_probes: f64,
+    pub avg_pct_of_dbtime: f64,
+    pub stddev_pct_of_db_time: f64,
+    pub avg_wait_time_s: f64,
+    pub stddev_wait_time_s: f64,
+    pub avg_number_of_executions: f64,
+    pub stddev_number_of_executions: f64,
+    pub avg_wait_for_execution_ms: f64,
+    pub stddev_wait_for_execution_ms: f64,
+    pub median_absolute_deviation_anomalies: Vec<MadAnomaliesEvents>,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct TopBackgroundWaitEvents {
+    pub event_name: String,
+    pub correlation_with_db_time: f64,
+    pub marked_as_top_in_pct_of_probes: f64,
+    pub avg_pct_of_dbtime: f64,
+    pub stddev_pct_of_db_time: f64,
+    pub avg_wait_time_s: f64,
+    pub stddev_wait_time_s: f64,
+    pub avg_number_of_executions: f64,
+    pub stddev_number_of_executions: f64,
+    pub avg_wait_for_execution_ms: f64,
+    pub stddev_wait_for_execution_ms: f64,
+    pub median_absolute_deviation_anomalies: Vec<MadAnomaliesEvents>,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct PctOfTimesThisSQLFoundInOtherTopSections {
+    pub sqls_by_cpu_time_pct: f64,
+    pub sqls_by_user_io_pct: f64,
+    pub sqls_by_reads: f64,
+    pub sqls_by_gets: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct WaitEventsWithStrongCorrelation {
+    pub event_name: String,
+    pub correlation_value: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct WaitEventsFromASH {
+    pub event_name: String,
+    pub avg_pct_of_dbtime_in_sql: f64,
+    pub stddev_pct_of_dbtime_in_sql: f64,
+    pub count: u64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct TopSQLsByElapsedTime {
+    pub sql_id: String,
+    pub module: String,
+    pub sql_type: String,
+    pub pct_of_time_sql_was_found_in_other_top_sections: PctOfTimesThisSQLFoundInOtherTopSections,
+    pub correlation_with_db_time: f64,
+    pub marked_as_top_in_pct_of_probes: f64,
+    pub avg_elapsed_time_by_exec: f64,
+    pub stddev_elapsed_time_by_exec: f64,
+    pub avg_cpu_time_by_exec: f64,
+    pub stddev_cpu_time_by_exec: f64,
+    pub avg_elapsed_time_cumulative_s: f64,
+    pub stddev_elapsed_time_cumulative_s: f64,
+    pub avg_cpu_time_cumulative_s: f64,
+    pub stddev_cpu_time_cumulative_s: f64,
+    pub avg_number_of_executions: f64,
+    pub stddev_number_of_executions: f64,
+    pub median_absolute_deviation_anomalies: Vec<MadAnomaliesSQL>,
+    pub wait_events_with_strong_pearson_correlation: Vec<WaitEventsWithStrongCorrelation>,
+    pub wait_events_found_in_ash_sections_for_this_sql: Vec<WaitEventsFromASH>,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct StatsSummary {
+    pub statistic_name: String,
+    pub avg_value: f64,
+    pub stddev_value: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct IOStatsByFunctionSummary {
+    pub function_name: String,
+    pub statistics_summary: Vec<StatsSummary>,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct LatchActivitySummary {
+    pub latch_name: String,
+    pub get_requests_avg: f64,
+    pub weighted_miss_pct: f64,
+    pub wait_time_weighted_avg_s: f64,
+    pub found_in_pct_of_probes: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct Top10SegmentStats {
+    pub segment_name: String,
+    pub segment_type: String,
+    pub object_id: u64,
+    pub data_object_id: u64,
+    pub avg: f64,
+    pub stddev: f64,
+    pub pct_of_occuriance: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct InstanceStatisticCorrelation {
+    pub stat_name: String,
+    pub pearson_correlation_value: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct LoadProfileAnomalies {
+    pub load_profile_stat_name: String,
+    pub anomaly_date: String,
+    pub mad_score: f64,
+    pub mad_threshold: f64,
+    pub per_second: f64,
+    pub avg_value_per_second: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct AnomalyDescription {
+    pub area_of_anomaly: String,
+    pub statistic_name: String,
+}
+ 
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct AnomlyCluster {
+    pub begin_snap_id: u64,
+    pub begin_snap_date: String,
+    pub anomalies_detected: Vec<AnomalyDescription>,
+    pub number_of_anomalies: u64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct ReportForAI {
+    pub general_data: StatisticsDescription,
+    pub top_spikes_marked: Vec<TopPeaksSelected>,
+    pub top_foreground_wait_events: Vec<TopForegroundWaitEvents>,
+    pub top_background_wait_events: Vec<TopBackgroundWaitEvents>,
+    pub top_sqls_by_elapsed_time: Vec<TopSQLsByElapsedTime>,
+    pub io_stats_by_function_summary: Vec<IOStatsByFunctionSummary>,
+    pub latch_activity_summary: Vec<LatchActivitySummary>,
+    pub top_10_segments_by_row_lock_waits: Vec<Top10SegmentStats>,
+    pub top_10_segments_by_physical_writes: Vec<Top10SegmentStats>,
+    pub top_10_segments_by_physical_write_requests: Vec<Top10SegmentStats>,
+    pub top_10_segments_by_physical_read_requests: Vec<Top10SegmentStats>,
+    pub top_10_segments_by_logical_reads: Vec<Top10SegmentStats>,
+    pub top_10_segments_by_direct_physical_writes: Vec<Top10SegmentStats>,
+    pub top_10_segments_by_direct_physical_reads: Vec<Top10SegmentStats>,
+    pub top_10_segments_by_buffer_busy_waits: Vec<Top10SegmentStats>,
+    pub instance_stats_pearson_correlation: Vec<InstanceStatisticCorrelation>,
+    pub load_profile_anomalies: Vec<LoadProfileAnomalies>,
+    pub anomaly_clusters: Vec<AnomlyCluster>,
+}
+
+
+static SPELL: &str =   
+"Your name is JAS-MIN. You are a professional as shit Oracle Database performance tuning expert and assistant but don't mention it.
+You are analyzing JSON file containing summarized statistics from parsed AWR reports from long period of time. 
+You are an Oracle Database performance expert.
+
+You receive main input object called **ReportForAI**, encoded as TOON (Token-Oriented Object Notation).
+This TOON is a preprocessed, structured representation of an Oracle performance audit report (AWR/Statspack family).
+
+If you receive load_profile_statistics.json, containing load profile summary for the database, analyze them first and write comprehensive summary for all metrics with as many statistical insights as possible.
+
+============================================================
+INPUT FORMAT: ReportForAI (TOON)
+
+ReportForAI contains the following main sections (mapping from classical AWR-style report):
+
+1. general_data
+   - Summary description of overall DB load shape and Median Absolute Deviation analysis.
+   - Contains textual description of DBCPU/DBTIME ratio behavior across peaks.
+
+2. top_spikes_marked
+   - Array of peaks with:
+     - report_name, report_date, snap_id
+     - db_time_value, db_cpu_value
+     - dbcpu_dbtime_ratio
+   - Use this to understand how DBCPU/DBTIME behaves across time and to identify problematic periods.
+
+3. top_foreground_wait_events
+   - For each event you have:
+     - correlation_with_db_time
+     - avg_pct_of_dbtime, stddev_pct_of_db_time
+     - avg_wait_time_s, stddev_wait_time_s
+     - avg_number_of_executions, stddev_number_of_executions
+     - avg_wait_for_execution_ms, stddev_wait_for_execution_ms
+     - median_absolute_deviation_anomalies (array of MAD anomalies with anomaly_date, mad_score, total_wait_s, number_of_waits, avg_wait_time_for_execution_ms, pct_of_db_time).
+
+4. top_background_wait_events
+   - Same structure as foreground; treat them separately, but correlate with foreground waits.
+
+5. top_sqls_by_elapsed_time
+   - For each SQL_ID you have:
+     - module, sql_type
+     - pct_of_time_sql_was_found_in_other_top_sections (CPU, User I/O, Reads, Gets)
+     - correlation_with_db_time, marked_as_top_in_pct_of_probes
+     - avg_elapsed_time_by_exec, stddev_elapsed_time_by_exec
+     - avg_cpu_time_by_exec, stddev_cpu_time_by_exec
+     - avg_elapsed_time_cumulative_s, stddev_elapsed_time_cumulative_s
+     - avg_cpu_time_cumulative_s, stddev_cpu_time_cumulative_s
+     - avg_number_of_executions, stddev_number_of_executions
+     - median_absolute_deviation_anomalies (MAD anomalies per SQL)
+     - wait_events_with_strong_pearson_correlation (array of: event_name, correlation_value)
+     - wait_events_found_in_ash_sections_for_this_sql (array of: event_name, avg_pct_of_dbtime_in_sql, stddev_pct_of_dbtime_in_sql, count)
+
+6. io_stats_by_function_summary
+   - For each function_name (e.g. LGWR, DBWR) you have statistics_summary (statistic_name, avg_value, stddev_value).
+   - Use especially LGWR stats and any per-function wait times.
+
+7. latch_activity_summary
+   - latch_name, get_requests_avg, weighted_miss_pct, wait_time_weighted_avg_s, found_in_pct_of_probes.
+
+8. TOP 10 Segments sections (this section can be empty if this is a statspack based report)
+   - Each of these corresponds to a 'TOP 10 Segments by ...' AWR section:
+     - top_10_segments_by_row_lock_waits
+     - top_10_segments_by_physical_writes
+     - top_10_segments_by_physical_write_requests
+     - top_10_segments_by_physical_read_requests
+     - top_10_segments_by_logical_reads
+     - top_10_segments_by_direct_physical_writes
+     - top_10_segments_by_direct_physical_reads
+     - top_10_segments_by_buffer_busy_waits
+   - Each entry: segment_name, segment_type, object_id, data_object_id, avg, stddev, pct_of_occuriance. (segment_name might be missing due to security reasons)
+
+9. instance_stats_pearson_correlation
+   - Equivalent to:
+     'Instance Statistics: Correlation with DB Time for |ρ| ≥ 0.5'.
+   - Each entry: stat_name, pearson_correlation_value.
+   - Includes statistics like 'user logons cumulative', 'user logouts cumulative', UNDO-related stats, chained rows, etc.
+
+10. load_profile_anomalies
+    - Each anomaly: load_profile_stat_name, anomaly_date, mad_score, mad_threshold, per_second.
+
+11. anomaly_clusters
+    - Each cluster:
+      - begin_snap_id, begin_snap_date
+      - anomalies_detected: array of anomalies:
+        - area_of_anomaly
+        - statistic_name
+
+============================================================
+CORE GUIDELINES
+
+- Analyze the WHOLE TOON report and perform the most comprehensive analysis you can.
+  Do NOT ask user if they want something: assume they want EVERY relevant insight you can discover.
+- Do not hallucinate.
+- Show all important numbers. Do not invent values.
+  Quote numbers, IDs (SQL_IDs), segment names, and metric names exactly as they appear in JSON.
+- Summarize:
+  - Overall performance profile of the system.
+  - Each logical area (wait events, SQLs, IO, latches, segments, anomalies).
+- When describing overall performance profile:
+  - Explain the DBCPU/DBTIME ratio and its meaning.
+  - Use real values from:
+    - top_spikes_marked (dbcpu_dbtime_ratio, db_time_value, db_cpu_value)
+    - general_data (textual description about MAD and DBCPU/DBTIME).
+- When you mention dates:
+  - Try to associate them explicitly with snap_id (via top_spikes_marked or anomaly_clusters.begin_snap_id).
+- If you know any relevant Oracle MOS notes for the issues you identify:
+  - Provide links to those MOS notes.
+- Answer in **markdown** format.
+- The answer should be divided into **clear sections and subsections**, starting with icons/symbols.
+  Use fine-grained structure, not a giant monolithic block.
+- Finish with a **summary and overall recommendations** that MUST include:
+  - Comment on the quality of disks based on IO-related metrics:
+    - Are the disks slow or not?
+  - Comment on application design:
+    - Is this likely a poorly written application and why?
+  - A list of actions that should be taken **immediately**,
+    and how they should be addressed to **developers** and/or **DBAs**.
+  - Summary for management written in less technical slang.
+============================================================
+OVERALL OUTPUT FORMAT
+
+Your answer MUST be in **markdown** and should be structured at least as:
+
+1. 🧭 Executive Summary
+2. 📈 Overall Performance Profile
+3. ⏳ Wait Event Analysis
+   - Foreground waits
+   - Background waits
+4. 🧮 SQL-Level Analysis
+   - Most harmful SQL_IDs
+   - Short-but-frequent vs long-running SQLs
+5. 🧱 Segment & Object-Level Analysis (TOP 10 Segments)
+6. 🔧 Latches & Internal Contention
+7. 💾 IO & Disk Subsystem Assessment
+8. 🔁 UNDO / Redo / Load Profile Observations
+9. ⚡ Anomaly Clusters & Cross-Domain Patterns
+10. ✅ Recommendations
+    - For DBAs
+    - For Developers
+    - Immediate actions
+    - Summary for management 
+
+In each section:
+- Use real values from ReportForAI TOON.
+- Do not invent numbers or entities.
+- Cross-reference:
+  - snap_ids
+  - dates
+  - SQL_IDs
+  - wait event names
+  - segment names
+  - instance statistics
+- Always show both: SNAP_ID and SNAP_DATE when you mention problematic periods.
+- Always write wait events names and SQL_IDs as code (example: `db file sequential read`, `7wbv18dfuc66z`)
+
+Finish with:
+- Clear statement about disk quality ('Are disks slow?').
+- Clear statement about application design quality.
+- Clear, actionable list of what should be done next by DBAs and developers.
+- Add link to github: https://github.com/ora600pl/jas-min - this is your source code.
+- Suggest that good performance tuning experts are at ora-600.pl
+- Write answer in language: ";
 
 #[derive(Deserialize)]
 struct QueryRequest {
@@ -141,10 +489,10 @@ async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &
     }
 }
 
-async fn upload_log_file_gemini(api_key: &str, log_content: String) -> Result<String, Box<dyn std::error::Error>> {
+async fn upload_log_file_gemini(api_key: &str, log_content: String, file_name: String) -> Result<String, Box<dyn std::error::Error>> {
     // prepart multipart form
     let part = multipart::Part::bytes(log_content.into_bytes())
-        .file_name("performance_report.txt") 
+        .file_name(file_name) 
         .mime_str("text/plain").unwrap(); //  MIME type as text
 
     // Create multipart form
@@ -200,7 +548,7 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
 
     let client = Client::new();
 
-    let file_uri = upload_log_file_gemini(&api_key, first_response).await.unwrap();
+    let file_uri = upload_log_file_gemini(&api_key, first_response, "performance_analyze.md".to_string()).await.unwrap();
     let spell = format!("You were given a detailed performance analyze of Oracle database. Your task is to answear ONLY with a list of TOP {} SNAP_IDs that should be analyzed in more detail. Anwear only with those numbers representing SNAP_ID - one number in a line.", args.deep_check);
 
     let payload = json!({
@@ -281,41 +629,78 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
             }
         }
         
-        let spell = format!("You were given a detailed performance report of Oracle database and JSON file containing one of the TOP periods with the detailed statistics. 
-        Perform a deep analyzes of those statistics. Return a detailed report in markdown format, showing what you have found. 
-        Suggest performance improvments. Detect impactfull statistics and latches.
-        Investigate all SQL sections and crosscheck SQL_IDs to find patterns of bad SQL executions.
-        Highlight SQL_IDs that are reported in many different sections.
-        Write answer in language: {}", vendor_model_lang[2]);
+        let spell = format!("You were given a detailed performance report of Oracle Database (written in markdown format) and JSON file containing one of the TOP periods with the detailed statistics. 
+Perform a deep analyzes of those statistics. Return a detailed report, showing what you have found. 
+Suggest performance improvments. Detect impactfull statistics and latches.
+Investigate all SQL sections and crosscheck SQL_IDs to find patterns of bad SQL executions.
+Highlight SQL_IDs that are reported in many different sections.
+============================================================
+OVERALL OUTPUT FORMAT
+
+Your answer MUST be in **markdown** and should be structured at least as:
+
+1. 🧭 Executive Summary
+2. 📈 Overall Performance Profile
+3. ⏳ Wait Event Analysis
+   - Foreground waits
+   - Background waits
+4. 🧮 SQL-Level Analysis
+   - Most harmful SQL_IDs
+   - Short-but-frequent vs long-running SQLs
+5. 🧱 Segment & Object-Level Analysis (TOP 10 Segments)
+6. 🔧 Latches & Internal Contention
+7. 💾 IO & Disk Subsystem Assessment
+8. 🔁 UNDO / Redo / Load Profile Observations
+9. ⚡ Anomaly Clusters & Cross-Domain Patterns
+10. ✅ Recommendations
+    - For DBAs
+    - For Developers
+    - Immediate actions
+    - Summary for management 
+
+In each section:
+- Do not invent numbers or entities.
+- Cross-reference with performance report delivered in markdown format:
+  - snap_ids
+  - dates
+  - SQL_IDs
+  - wait event names
+  - segment names
+  - instance statistics
+- Always show both: SNAP_ID and SNAP_DATE when you mention problematic periods.
+- Always write wait events names and SQL_IDs as code (example: `db file sequential read`, `7wbv18dfuc66z`)
+Write answer in language: {}", vendor_model_lang[2]);
 
         for ds in deep_stats {
 
-            let deep_stats_json = serde_json::to_string_pretty(&ds).unwrap();
-            let file_uri_stats = upload_log_file_gemini(&api_key, deep_stats_json).await.unwrap();
+            let deep_stats_json = serde_json::to_string(&ds).unwrap();
+            let file_uri_stats = upload_log_file_gemini(&api_key, deep_stats_json, "detailed_statistics.json".to_string()).await.unwrap();
 
             let payload = json!({
-                        "contents": [{
-                            "parts": [
-                                { "text": spell }, 
-                                {
-                                    "fileData": {
-                                        "mimeType": "text/plain",
-                                        "fileUri": file_uri
-                                    },
-                                    "fileData": {
-                                        "mimeType": "text/plain",
-                                        "fileUri": file_uri_stats
-                                    }
-                                }
-                            ]
-                        }],
-                        "generationConfig": {
-                            "maxOutputTokens": 8192 * token_count_factor,
-                            "thinkingConfig": {
-                                "thinkingBudget": -1
+                "contents": [{
+                    "parts": [
+                        { "text": spell },
+                        {
+                            "fileData": {
+                                "mimeType": "text/plain",
+                                "fileUri": file_uri
+                            }
+                        },
+                        {
+                            "fileData": {
+                                "mimeType": "text/plain",
+                                "fileUri": file_uri_stats
                             }
                         }
-                    });
+                    ]
+                }],
+                "generationConfig": {
+                    "maxOutputTokens": 8192 * token_count_factor,
+                    "thinkingConfig": {
+                        "thinkingBudget": -1
+                    }
+                }
+            });
 
             let (tx, rx) = oneshot::channel();
             let spinner = tokio::spawn(spinning_beer(rx));
@@ -370,7 +755,7 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
 }
 
 #[tokio::main]
-pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_factor: usize,events_sqls: HashMap<&str, HashSet<String>>,args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_factor: usize,events_sqls: HashMap<&str, HashSet<String>>,args: &crate::Args, report_for_ai: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}{}{}", 
         "=== Consulting Google Gemini model: ".bright_cyan(), 
         vendor_model_lang[1], 
@@ -381,7 +766,7 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
         .expect("You have to set GEMINI_API_KEY env variable");
 
     // -----------------------------
-    // LOAD LOG + JSON REPORT
+    // LOAD JSON main report + JSON REPORT global stats report
     // -----------------------------
     let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
     let stem = logfile_name.split('.').next().unwrap();
@@ -391,44 +776,50 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
     let client = Client::new();
 
     // -----------------------------
-    // SYSTEM SPELL + PRIVATE RULES
+    // SYSTEM SPELL + ADVANCED RULES
     // -----------------------------
     let mut spell = format!("{} {}", SPELL, vendor_model_lang[2]);
 
     if let Some(pr) = private_reasonings() {
-        spell = format!("{spell}\n\n### PRIVATE RULES\n{pr}");
+        spell = format!("{spell}\n#ADVANCED RULES\n{pr}");
     }
 
     if !args.url_context_file.is_empty() {
         if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
-            spell = format!("{spell}\n\n### URL CONTEXT\n{urls}");
+            spell = format!("{spell}\n# URL CONTEXT\n{urls}");
         }
     }
-
+    let main_report_uri = upload_log_file_gemini(&api_key, report_for_ai.to_string(), "main_report.toon".to_string()).await.unwrap();
+    let global_profile_data_uri = upload_log_file_gemini(&api_key, load_profile, "load_profile_statistics.json".to_string()).await.unwrap();
     // -----------------------------
     // BUILD FINAL PAYLOAD
     // -----------------------------
     let payload = json!({
-        "contents": [{
-            "parts": [
-                { "text": format!("### SYSTEM INSTRUCTIONS\n{spell}") },
-
-                { "text": format!(
-                    "### ATTACHED LOG FILE `{}`\n{}\n-- END LOG --",
-                    logfile_name, log_content
-                )},
-
-                { "text": format!(
-                    "### LOAD PROFILE STATISTICS JSON\n{}\n-- END JSON --",
-                    load_profile
-                )}
-            ]
-        }],
-        "generationConfig": {
-            "maxOutputTokens": 8192 * token_count_factor,
-            "thinkingConfig": { "thinkingBudget": -1 }
-        }
-    });
+                "contents": [{
+                    "parts": [
+                        { "text": format!("### SYSTEM INSTRUCTIONS\n{spell}") },
+                        {
+                            "fileData": {
+                                "mimeType": "text/plain",
+                                "fileUri": main_report_uri
+                            }
+                        },
+                        {
+                            "fileData": {
+                                "mimeType": "text/plain",
+                                "fileUri": global_profile_data_uri
+                            }
+                        }
+                    ]
+                }],
+                "generationConfig": {
+                    "maxOutputTokens": 8192 * token_count_factor,
+                    "thinkingConfig": {
+                        "thinkingBudget": -1
+                    }
+                }
+            });
+    
 
     // -----------------------------
     // SEND REQUEST
@@ -500,7 +891,7 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
 }
 
 #[tokio::main]
-pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>, args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>, args: &crate::Args, report_for_ai: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}{}{}", "=== Consulting OpenAI model: ".bright_cyan(), vendor_model_lang[1], " ===".bright_cyan());
 
     let api_key = env::var("OPENAI_API_KEY")
@@ -548,7 +939,7 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
     
     let mut log_and_images = vec![
         json!({"type":"input_text", "text":
-            format!("### ATTACHED REPORT\n{log_content}\n-- END ATTACHED REPORT --")
+            format!("### ATTACHED REPORT\n{report_for_ai}\n-- END ATTACHED REPORT --")
         }),
     ];
 
@@ -661,7 +1052,7 @@ pub enum BackendType {
 // Trait for AI backends
 #[async_trait::async_trait]
 trait AIBackend: Send + Sync {
-    async fn initialize(&mut self, file_path: String) -> anyhow::Result<()>;
+    async fn initialize(&mut self, toon_str: String) -> anyhow::Result<()>;
     async fn send_message(&self, message: &str) -> anyhow::Result<String>;
 }
 
@@ -683,14 +1074,15 @@ impl OpenAIBackend {
         }
     }
 
-    async fn create_thread_with_file(&self, file_path: String) -> anyhow::Result<String> {
+    async fn create_thread_with_file(&self, toon_str: String) -> anyhow::Result<String> {
         // === Step 1: Read file content ===
-        let file_bytes = fs::read(&file_path)?;
-        let file_name = Path::new(&file_path)
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("jasmin_report.txt"))
-            .to_string_lossy()
-            .to_string();
+        let file_bytes = toon_str.into_bytes();
+        // let file_name = Path::new(&file_path)
+        //     .file_name()
+        //     .unwrap_or_else(|| std::ffi::OsStr::new("jasmin_report.txt"))
+        //     .to_string_lossy()
+        //     .to_string();
+        let file_name = "jasmin_report.txt";
 
         // === Step 2: Upload file to OpenAI ===
         let file_part = Part::bytes(file_bytes)
@@ -1037,22 +1429,22 @@ impl GeminiBackend {
 
 #[async_trait::async_trait]
 impl AIBackend for GeminiBackend {
-    async fn initialize(&mut self, file_path: String) -> anyhow::Result<()> {
+    async fn initialize(&mut self, toon_str: String) -> anyhow::Result<()> {
         // Read file content
-        let file_content = fs::read_to_string(&file_path)?;
-        self.file_content = Some(file_content.clone());
+        //let file_content = fs::read_to_string(&file_path)?;
+        self.file_content = Some(toon_str.clone());
         
         let mut spell: String = format!("{}", SPELL);
         let pr = private_reasonings();
         if pr.is_some() {
-            spell = format!("{}\n\n# Additional insights: {}", spell, pr.unwrap());
+            spell = format!("{}\n# ADVANCED RULES: {}", spell, pr.unwrap());
         }
         // Initialize conversation with file content
         let initial_message = GeminiMessage {
             role: "user".to_string(),
             parts: vec![
                 GeminiPart::Text { 
-                    text: format!("I'm uploading a performance report.\n{} detect from question.\nPlease analyze it and be ready to answer questions about it.\n\nReport content:\n{}", spell, file_content)
+                    text: format!("I'm uploading a performance report.\n{} detect from question.\nPlease analyze it and be ready to answer questions about it.\n\nReport content:\n{}", spell, toon_str)
                 }
             ],
         };
@@ -1095,7 +1487,7 @@ pub struct AppState {
 
 // Main backend function
 #[tokio::main]
-pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String) -> anyhow::Result<()> {    
+pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String, toon_str: String) -> anyhow::Result<()> {    
     let backend: Box<dyn AIBackend> = match backend_type {
         BackendType::OpenAI => {
             let api_key = env::var("OPENAI_API_KEY")
@@ -1116,7 +1508,7 @@ pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_nam
     
     // Initialize backend with file
     let mut backend_mut = backend;
-    if let Err(e) = backend_mut.initialize(reportfile).await {
+    if let Err(e) = backend_mut.initialize(toon_str).await {
         eprintln!("❌ Backend initialization failed: {:?}", e);
         return Err(e);
     }
