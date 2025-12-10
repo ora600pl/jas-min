@@ -20,9 +20,10 @@ use std::thread;
 use std::time::Duration;
 use dashmap::DashMap;
 
-use crate::analyze::plot_to_file;
+use crate::analyze::main_report_builder;
 use crate::idleevents::is_idle;
 use crate::Args;
+use crate::reasonings::ReportForAI;
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct LoadProfile {
@@ -2142,7 +2143,7 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 
 
 
-pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>>, file: &str) {
+pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>>, file: &str) -> ReportForAI {
 	println!("{}","\n==== PARSING DIRECTORY DATA ===".bright_cyan());
 	//let mut awr_vec: Vec<AWR> = Vec::new();
 	let mut file_collection: Vec<String> = Vec::new();
@@ -2249,11 +2250,9 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
     };
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
 	let mut f = fs::File::create(file).unwrap();
-		f.write_all(json_str.as_bytes()).unwrap();
-    if args.plot > 0 {
-        plot_to_file(collection, args.clone());
-    }
-    //Ok(json_str)
+	f.write_all(json_str.as_bytes()).unwrap();
+    let report_for_ai = main_report_builder(collection, args.clone());
+    report_for_ai
 }
 
 pub fn parse_awr_report(data: &str, json_data: bool, args: &Args) -> Result<String, std::io::Error> {
@@ -2279,7 +2278,7 @@ pub fn parse_awr_report(data: &str, json_data: bool, args: &Args) -> Result<Stri
 	Ok(awr_doc)
 }
 
-pub fn prarse_json_file(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>>) {
+pub fn prarse_json_file(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>>) -> ReportForAI {
 	println!("{}","\n==== PARSING JSON DATA ===".bright_cyan());
 	//fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String
 	let json_file = fs::read_to_string(&args.json_file).expect(&format!("Something wrong with a file {} ", &args.json_file));
@@ -2309,5 +2308,6 @@ pub fn prarse_json_file(args: Args, events_sqls: &mut HashMap<&str, HashSet<Stri
 	events_sqls.insert("FG", fg_events);
 	events_sqls.insert("BG", bg_events);
 	events_sqls.insert("SQL", sqls);
-	plot_to_file(collection, args.clone());
+	let report_for_ai = main_report_builder(collection, args.clone());
+	report_for_ai
 }

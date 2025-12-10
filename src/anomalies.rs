@@ -10,6 +10,8 @@ use crate::make_notes;
 use colored::*;
 use open::*; 
 use crate::tools::*; 
+use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI,AppState};
+
 
 fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> HashMap<String, Vec<f64>> {
     //Create list of all events
@@ -621,7 +623,7 @@ fn escape_csv_field(field: &str) -> String {
     }
 }
 
-pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>, args: &Args, logfile_name: &str) -> String {
+pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>, args: &Args, logfile_name: &str, report_for_ai: &mut ReportForAI) -> String {
     
     let mut table = Table::new();
     table.set_titles(Row::new(vec![
@@ -635,10 +637,12 @@ pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), 
 
     anomalies_summary.iter().for_each(|((snap_id, snap_date), anomalies_map)| {
         let mut all_lines: Vec<String> = Vec::new();
+        let mut anomaly_data: Vec<AnomalyDescription> = Vec::new();
 
         for (anomaly_type, details) in anomalies_map {
             for detail in details {
                 all_lines.push(format!("{}: {}", anomaly_type, detail));
+                anomaly_data.push(AnomalyDescription {area_of_anomaly: anomaly_type.clone(), statistic_name: detail.clone()});
             }
         }
 
@@ -646,6 +650,11 @@ pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), 
         let c_begin_snap_date = Cell::new(snap_date);
         let c_anomalie_details = Cell::new(&all_lines.join("\n"));
         let c_anomalie_count = Cell::new(&all_lines.len().to_string());
+
+        report_for_ai.anomaly_clusters.push(AnomlyCluster { begin_snap_id: *snap_id, 
+                                                            begin_snap_date: snap_date.clone(), 
+                                                            anomalies_detected: anomaly_data, 
+                                                            number_of_anomalies: all_lines.len() as u64 });
 
         table.add_row(Row::new(vec![
             c_begin_snap_id,
