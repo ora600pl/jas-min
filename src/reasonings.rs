@@ -223,13 +223,13 @@ static SPELL: &str =
 You are analyzing JSON file containing summarized statistics from parsed AWR reports from long period of time. 
 You are an Oracle Database performance expert.
 
-You receive main input object called **ReportForAI**, encoded as TOON (Token-Oriented Object Notation).
-This TOON is a preprocessed, structured representation of an Oracle performance audit report (AWR/Statspack family).
+You receive main input object called **ReportForAI**, encoded as TOON (Token-Oriented Object Notation) or pure JSON.
+This TOON/JSON is a preprocessed, structured representation of an Oracle performance audit report (AWR/Statspack family).
 
 If you receive load_profile_statistics.json, containing load profile summary for the database, analyze them first and write comprehensive summary for all metrics with as many statistical insights as possible.
 
 ============================================================
-INPUT FORMAT: ReportForAI (TOON)
+INPUT FORMAT: ReportForAI (TOON or JSON)
 
 ReportForAI contains the following main sections (mapping from classical AWR-style report):
 
@@ -308,7 +308,7 @@ ReportForAI contains the following main sections (mapping from classical AWR-sty
 ============================================================
 CORE GUIDELINES
 
-- Analyze the WHOLE TOON report and perform the most comprehensive analysis you can.
+- Analyze the WHOLE TOON/JSON report and perform the most comprehensive analysis you can.
   Do NOT ask user if they want something: assume they want EVERY relevant insight you can discover.
 - Do not hallucinate.
 - Show all important numbers. Do not invent values.
@@ -361,7 +361,7 @@ Your answer MUST be in **markdown** and should be structured at least as:
     - Summary for management 
 
 In each section:
-- Use real values from ReportForAI TOON.
+- Use real values from ReportForAI TOON/JSON.
 - Do not invent numbers or entities.
 - Cross-reference:
   - snap_ids
@@ -885,6 +885,95 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
     } else {
         eprintln!("Error: {}", response.status());
         eprintln!("{}", response.text().await.unwrap());
+    }
+
+    Ok(())
+}
+
+#[tokio::main]
+pub async fn openrouter(
+    logfile_name: &str,
+    vendor_model_lang: Vec<&str>, // np. ["openrouter", "anthropic/claude-3.5-sonnet", "pl"]
+    token_count_factor: usize,
+    events_sqls: HashMap<&str, HashSet<String>>,
+    args: &crate::Args,
+    report_for_ai: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+
+    println!("=== Consulting OpenRouter model: {} ===", vendor_model_lang[1]);
+
+    let api_key = env::var("OPENROUTER_API_KEY")
+        .expect("You have to set OPENROUTER_API_KEY env variable");
+
+    let stem = logfile_name.split('.').next().unwrap();
+    let json_path = format!("{stem}.html_reports/stats/global_statistics.json");
+    let load_profile = fs::read_to_string(&json_path)
+        .expect(&format!("Can't open file {}", json_path));
+
+    let response_file = format!("{}_openrouter.md", logfile_name);
+    let client = Client::new();
+
+    // SYSTEM SPELL + ADVANCED RULES 
+    let mut spell = format!("{} {}", SPELL, vendor_model_lang[2]);
+    if let Some(pr) = private_reasonings() {
+        spell = format!("{spell}\n#ADVANCED RULES\n{pr}");
+    }
+    if !args.url_context_file.is_empty() {
+        if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
+            spell = format!("{spell}\n# URL CONTEXT\n{urls}");
+        }
+    }
+
+    // OpenRouter payload
+    let payload = json!({
+        "model": vendor_model_lang[1],
+        "messages": [
+            { "role": "system", "content": format!("### SYSTEM INSTRUCTIONS\n{spell}") },
+            { "role": "user", "content": format!(
+                "MAIN REPORT (toon/json-as-text):\n```\n{}\n```\n\nGLOBAL PROFILE:\n```json\n{}\n```",
+                report_for_ai, load_profile
+            )}
+        ],
+        "max_tokens": 8192 * token_count_factor,
+        "reasoning": { "effort": "high" },
+        "stream": false
+    });
+
+    let (tx, rx) = oneshot::channel();
+    let spinner = tokio::spawn(spinning_beer(rx));
+
+    let resp = client
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .header("X-Title", "jas-min")
+        .json(&payload)
+        .send()
+        .await?;
+
+    let _ = tx.send(());
+    let _ = spinner.await;
+
+    if resp.status().is_success() {
+        //println!("Processing response... [raw: {:?}]",  resp);
+        let json: Value = resp.json().await?;
+        let content = json["choices"][0]["message"]["content"]
+            .as_str().unwrap_or("")
+            .to_string();
+
+        fs::write(&response_file, content.as_bytes())?;
+        println!("🍻 OpenRouter response written to file: {}", &response_file);
+
+        convert_md_to_html_file(&response_file, events_sqls.clone());
+
+        println!(
+            "Total tokens: {}\nFinish reason: {}\n",
+            json["usage"]["total_tokens"],
+            json["choices"][0]["finish_reason"]
+        );
+    } else {
+        eprintln!("Error: {}", resp.status());
+        eprintln!("{}", resp.text().await.unwrap_or_default());
     }
 
     Ok(())
