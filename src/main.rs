@@ -203,11 +203,12 @@ fn main() {
 		f.write_all(toon_str.as_bytes()).unwrap();
         if vendor_model_lang[0] == "openai" {
             openai_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
-			//println!("For now only Google is supported vendor with this option :( Sorry for that. You can use OpenAI with backend assistant tho. We are waiting what GPT-5 will provide.");
         } else if vendor_model_lang[0] == "google" { 
             gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
+		} else if vendor_model_lang[0] == "openrouter" { 
+            openrouter(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
 		} else {
-            println!("Unrecognized vendor. Supported vendors: openai, google");
+            println!("Unrecognized vendor. Supported vendors: openai, google, openrouter");
         }   
     }
 	if !args.backend_assistant.is_empty() {
