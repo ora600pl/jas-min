@@ -955,8 +955,10 @@ pub async fn openrouter(
     let _ = spinner.await;
 
     if resp.status().is_success() {
-        //println!("Processing response... [raw: {:?}]",  resp);
-        let json: Value = resp.json().await?;
+        println!("Processing response... (it may take a bit)");
+        let body = resp.text().await?;
+
+        let json: Value = serde_json::from_str(&body)?;
         let content = json["choices"][0]["message"]["content"]
             .as_str().unwrap_or("")
             .to_string();
