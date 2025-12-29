@@ -20,8 +20,12 @@ mod reasonings;
 mod macros;
 mod anomalies;
 mod tools;
+mod reasonings_modular;
 use crate::reasonings::*;
 use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI,AppState};
+use crate::reasonings_modular::*;
+use crate::reasonings_modular::ModularLlmConfig;
+use crate::tools::*;
 
 use toon::encode;
 
@@ -113,6 +117,10 @@ struct Args {
 	/// By using this option, LLM will be asked to propose topN SNAPs to analyze all of the statistics from this period. 
 	#[clap(short = 'D', long, default_value_t=0)]
 	deep_check: usize,
+
+	///Budget for token - used by modular LLM analyzes to minimize the number of tokens used by the model
+	#[clap(short = 'B', long, default_value_t=80000)]
+	tokens_budget: usize,
 
 }
 
@@ -207,6 +215,70 @@ fn main() {
             gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
 		} else if vendor_model_lang[0] == "openrouter" { 
             openrouter(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
+		} else if vendor_model_lang[0] == "openroutersmall" { 
+            let cfg = ModularLlmConfig {
+					lang: vendor_model_lang[2].to_string(),
+					top_spikes_n: 64,
+					temperature: 0.2,
+					max_tokens_per_call: args.tokens_budget,
+					enable_reasoning_prompt: true,
+
+					waits_top_n: 64,
+					sqls_top_n: 64,
+					anomalies_top_n: 128,
+					mad_per_item_top_n: 128,
+
+					tokens_budget: (args.tokens_budget as f64 * 0.8) as usize,
+					use_openrouter: true,
+				};
+
+			
+			match analyze_report_modular_lmstudio(&report_for_ai, &cfg, vendor_model_lang[1]) {
+				Ok((notes, final_md)) => {
+					if let Err(e) = write_outputs(&reportfile, &final_md) {
+						eprintln!("❌ write_outputs failed: {e}");
+					} else {
+						convert_md_to_html_file(&format!("{reportfile}.final.md"), events_sqls.clone());
+					}
+				}
+				Err(e) => {
+					eprintln!("❌ modular analysis failed: {e}");
+					std::process::exit(1);
+				}
+			}
+
+		} else if vendor_model_lang[0] == "local" { 
+            let cfg = ModularLlmConfig {
+					lang: vendor_model_lang[2].to_string(),
+					top_spikes_n: 64,
+					temperature: 0.2,
+					max_tokens_per_call: args.tokens_budget,
+					enable_reasoning_prompt: true,
+
+					waits_top_n: 64,
+					sqls_top_n: 64,
+					anomalies_top_n: 128,
+					mad_per_item_top_n: 128,
+
+					tokens_budget: (args.tokens_budget as f64 * 0.8) as usize,
+					use_openrouter: false,
+				};
+
+			
+			match analyze_report_modular_lmstudio(&report_for_ai, &cfg, vendor_model_lang[1]) {
+				Ok((notes, final_md)) => {
+					if let Err(e) = write_outputs(&reportfile, &final_md) {
+						eprintln!("❌ write_outputs failed: {e}");
+					} else {
+						convert_md_to_html_file(&format!("{reportfile}.final.md"), events_sqls.clone());
+					}
+				}
+				Err(e) => {
+					eprintln!("❌ modular analysis failed: {e}");
+					std::process::exit(1);
+				}
+			}
+
 		} else {
             println!("Unrecognized vendor. Supported vendors: openai, google, openrouter");
         }   

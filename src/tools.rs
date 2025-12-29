@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::{env, fs, collections::HashMap, path::Path, collections::HashSet};
 use std::fs::File;
 use std::fmt::Write;
-use std::io::{BufRead, BufReader, BufWriter};
+use std::io::{BufRead, BufReader, BufWriter, stdout, Write as Write2};
 use ndarray::{iter, Array1, Array2};
 use ndarray_stats::{CorrelationExt, QuantileExt};
 use ndarray_stats::histogram::Grid;
@@ -12,6 +12,8 @@ use prettytable::{Table, Row, Cell};
 use html_escape::encode_text;
 use pulldown_cmark::{html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use crate::awr::GetStats;
+use tokio::sync::oneshot;
+
 
 pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> String {
     let mut html = String::new();
@@ -180,13 +182,13 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
         .toc li.level-3 {{ margin-left: 2em; }}
         .toc li.level-4 {{ margin-left: 3em; }}
         pre {{
-            background: #272822;
+            background: #c2cc91ff;
             color: #f8f8f2;
             padding: 1em;
             overflow-x: auto;
         }}
         code {{
-            background: #eee;
+            background: #c2cc91ff;
             padding: 0.2em 0.4em;
             border-radius: 4px;
         }}
@@ -443,4 +445,29 @@ pub fn get_statistics(data: Vec<f64>) -> Option<GetStats> {
         variance: round2(variance),
         std_dev: round2(std_dev)
     })
+}
+
+pub async fn spinning_beer(mut done: oneshot::Receiver<()>) {
+    let frames = ["🍺", "🍻", "🍺", "🍻"];
+    let mut i = 0;
+    while done.try_recv().is_err() {
+        print!("\r{}", frames[i % frames.len()]);
+        stdout().flush().unwrap();
+        i += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    println!("\r✅ Got response!");
+}
+
+/// Rough token estimate.
+/// Typical rule of thumb: ~4 characters per token for English-like text.
+/// For JSON with lots of numbers/keys it’s often in the same ballpark.
+pub fn estimate_tokens_from_str(s: &str) -> usize {
+    // Avoid zero and keep it conservative.
+    (s.chars().count() + 3) / 4
+}
+
+pub fn estimate_tokens_json(v: &serde_json::Value) -> usize {
+    let s = serde_json::to_string(v).unwrap_or_default();
+    estimate_tokens_from_str(&s)
 }

@@ -526,19 +526,6 @@ async fn upload_log_file_gemini(api_key: &str, log_content: String, file_name: S
     }
 }
 
-
-async fn spinning_beer(mut done: oneshot::Receiver<()>) {
-    let frames = ["🍺", "🍻", "🍺", "🍻"];
-    let mut i = 0;
-    while done.try_recv().is_err() {
-        print!("\r{}", frames[i % frames.len()]);
-        stdout().flush().unwrap();
-        i += 1;
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
-    println!("\r✅ Got response!");
-}
-
 async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: Vec<&str>, token_count_factor: usize, first_response: String, api_key: &str, events_sqls: HashMap<&str, HashSet<String>>,) {
     println!("{}{}{}","=== Starting deep dive with Google Gemini model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
     let mut json_file = args.json_file.clone();
