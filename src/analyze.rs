@@ -3740,7 +3740,8 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
         iostat_summary.push(iostat);
     }
     make_notes!(&logfile_name, args.quiet, 0, "{}\n", table_iostats);
-
+    report_for_ai.io_stats_by_function_summary = iostat_summary;
+    
     make_notes!(&logfile_name, false, 2,"{}\n",format!("Latch Activity Statistics - Summary").yellow());
     make_notes!(&logfile_name, args.quiet, 0, "{}\n", table_latch);
 
@@ -5019,6 +5020,8 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
             print_db_time_gradient_tables(section, false);
         }
     }
+
+    
 
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
