@@ -21,7 +21,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 
 use crate::analyze::main_report_builder;
-use crate::idleevents::is_idle;
+use crate::staticdata::is_idle;
 use crate::Args;
 use crate::reasonings::ReportForAI;
 

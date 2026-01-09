@@ -15,12 +15,14 @@ use serde::{Deserialize, Serialize};
 
 mod awr;
 mod analyze;
-mod idleevents;
+mod staticdata;
 mod reasonings;
 mod macros;
 mod anomalies;
 mod tools;
 mod reasonings_modular;
+mod gradient;
+
 use crate::reasonings::*;
 use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI,AppState};
 use crate::reasonings_modular::*;
@@ -81,7 +83,7 @@ struct Args {
 	ai: String,
 
 	///Base output token count is 8192 - you can update maximum number of output tokens by this factor
-	#[clap(short = 'T', long, default_value_t = 8)]
+	#[clap(short = 'C', long, default_value_t = 8)]
 	token_count_factor: usize,
 
 	///Launches the backend agent used by the JASMIN Assistant.
@@ -121,6 +123,28 @@ struct Args {
 	///Budget for token - used by modular LLM analyzes to minimize the number of tokens used by the model
 	#[clap(short = 'B', long, default_value_t=80000)]
 	tokens_budget: usize,
+
+	///For calculating gradient - ridge_lambda: L2 regularization strength (>= 0)
+	#[clap(short = 'R', long, default_value_t=50.0)]
+	ridge_lambda: f64,
+
+	///For calculating gradient - overall regularization strength for Elastic Net (>= 0)
+	#[clap(short = 'E', long, default_value_t=30.0)]
+	en_lambda: f64,
+
+	///For calculating gradient - mixing between L1 and L2 in Elastic Net:
+	///     alpha = 1.0 -> Lasso (pure L1)
+	///     alpha = 0.0 -> Ridge-like (pure L2)
+	#[clap(short = 'A', long, default_value_t=0.666)]
+	en_alpha: f64,
+
+	///Max iterations for coordinate descent in Elastic Net
+	#[clap(short = 'I', long, default_value_t=5000)]
+	en_max_iter: usize,
+
+	///Convergence tolerance for coefficient change in Elastic Net
+	#[clap(short = 'T', long, default_value_t=1e-6)]
+	en_tol: f64,
 
 }
 
@@ -228,7 +252,7 @@ fn main() {
 					anomalies_top_n: 128,
 					mad_per_item_top_n: 128,
 
-					tokens_budget: (args.tokens_budget as f64 * 0.8) as usize,
+					tokens_budget: (args.tokens_budget as f64 * 0.6) as usize,
 					use_openrouter: true,
 				};
 
@@ -260,7 +284,7 @@ fn main() {
 					anomalies_top_n: 128,
 					mad_per_item_top_n: 128,
 
-					tokens_budget: (args.tokens_budget as f64 * 0.8) as usize,
+					tokens_budget: (args.tokens_budget as f64 * 0.6) as usize,
 					use_openrouter: false,
 				};
 

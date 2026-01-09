@@ -1,3 +1,212 @@
+// Goal:
+// - Split V$SYSSTAT metrics into 3 groups for 3 separate gradients:
+//   1) time-based
+//   2) volume-based (bytes/blocks-like)
+//   3) count-based (counters)
+//
+// Matching approach:
+// - Normalize strings (trim + lowercase + collapse spaces)
+// - Prefer explicit constant lists for known important metrics
+// - Use simple heuristics as a fallback (suffix/pattern)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatUnitGroup {
+    Time,
+    Volume,
+    Counter,
+    Unknown,
+}
+
+/// TIME group: values represent time spent (elapsed time, wait time, write time, CPU time, etc.)
+pub const KEY_STATS_TIME: [&str; 12] = [
+    "application wait time",
+    "cluster wait time",
+    "concurrency wait time",
+    "file io wait time",
+    "user i/o wait time",
+
+    "parse time elapsed",
+    "parse time cpu",
+    "hard parse elapsed time",
+
+    "cpu used by this session",
+    "recursive cpu usage",
+
+    "redo write time",
+    "redo log space wait time",
+];
+
+
+/// VOLUME group: bytes/blocks/size-like.
+pub const KEY_STATS_VOLUME: [&str; 11] = [
+    "bytes received via sql*net from client",
+    "bytes sent via sql*net to client",
+    "bytes received via sql*net from dblink",
+    "bytes sent via sql*net to dblink",
+
+    "physical read bytes",
+    "physical read total bytes",
+    "physical write bytes",
+    "physical write total bytes",
+
+    "redo size",
+    "redo size for lost write detection",
+
+    "flashback log write bytes"
+];
+
+/// COUNTER group: counts of operations/events.
+pub const KEY_STATS_COUNTERS: [&str; 45] = [
+    // Logon storm / session churn  
+    "logons cumulative",
+    "logons current",
+
+    // Cursor churn  
+    "opened cursors cumulative",
+    "opened cursors current",
+
+    // Parse storm indicators  
+    "parse count (describe)",
+    "parse count (hard)",
+    "parse count (total)",
+    "execute count",
+
+    // “User calls” is great for spotting chatty apps / bad call patterns  
+    "user calls",
+    "recursive calls",
+
+    // Commit/rollback policy signals  
+    //"user commits",
+    //"user rollbacks",
+
+    // Commit/cleanout/rollback mechanics (more meaningful than raw "user rollbacks")  
+    "commit wait requested",
+    "commit cleanouts",
+    "commit cleanouts successfully completed",
+    "commit cleanout failures: block lost",
+    "cleanouts and rollbacks - consistent read gets",
+    "cleanouts only - consistent read gets",
+    "rollbacks only - consistent read gets",
+    "transaction tables consistent read rollbacks",
+    "rollback changes - undo records applied",
+    "transaction tables consistent reads - undo records applied",
+
+    // Buffer/cache pressure proxies  
+    "free buffer inspected",
+    "free buffer requested",
+    //"db block gets",
+    //"db block gets direct",
+    //"db block gets from cache",
+    //"consistent gets",
+    //"consistent gets direct",
+    //"consistent gets from cache",
+    //"session logical reads",
+
+    // Disk I/O request shape (efficiency signals)  
+    "physical read io requests",
+    "physical read total io requests",
+    "physical read total multi block requests",
+    "physical read requests optimized",
+    "physical write io requests",
+    "physical write total io requests",
+    "physical write total multi block requests",
+
+    // Direct path reads (bypass buffer cache)  
+    "physical reads",
+    "physical reads cache",
+    "physical reads cache prefetch",
+    "physical reads direct",
+    "physical reads direct (lob)",
+    "physical reads direct temporary tablespace",
+
+    // Sort/workarea spill signals  
+    "sorts (disk)",
+
+    // Redo/space pressure  
+    "redo log space requests",
+    "redo synch writes",
+    "redo writes",
+    "redo wastage",
+
+    // Enqueue activity (locks)  
+    "enqueue requests",
+    "enqueue releases",
+    "enqueue waits",
+    "enqueue timeouts",
+
+    // Index split noise can be a symptom of hot indexes / bad fillfactor (situational)  
+    "branch node splits",
+];
+
+pub fn classify_stat_unit_group(stat_name: &str) -> StatUnitGroup {
+    let name = normalize(stat_name);
+
+    if contains_normalized(&KEY_STATS_TIME, &name) {
+        return StatUnitGroup::Time;
+    }
+    if contains_normalized(&KEY_STATS_VOLUME, &name) {
+        return StatUnitGroup::Volume;
+    }
+    if contains_normalized(&KEY_STATS_COUNTERS, &name) {
+        return StatUnitGroup::Counter;
+    }
+
+    // Heuristic fallback (kept conservative)
+    // if name.ends_with(" wait time")
+    //     || name.ends_with(" elapsed time")
+    //     || name.ends_with(" write time")
+    //     || name.contains(" time ")
+    //     || name.ends_with(" time")
+    // {
+    //     return StatUnitGroup::Time;
+    // }
+
+    // if name.contains(" bytes") || name.ends_with(" bytes") || name.ends_with(" size") {
+    //     return StatUnitGroup::Volume;
+    // }
+
+    // // Most SYSSTAT entries are counters if not explicitly time/volume.
+    // StatUnitGroup::Counter
+    StatUnitGroup::Unknown
+}
+
+pub fn is_time_stat(stat_name: &str) -> bool {
+    classify_stat_unit_group(stat_name) == StatUnitGroup::Time
+}
+pub fn is_volume_stat(stat_name: &str) -> bool {
+    classify_stat_unit_group(stat_name) == StatUnitGroup::Volume
+}
+pub fn is_counter_stat(stat_name: &str) -> bool {
+    classify_stat_unit_group(stat_name) == StatUnitGroup::Counter
+}
+
+/* =========================================================================================
+   Internals
+   ========================================================================================= */
+
+fn contains_normalized(list: &[&str], normalized_name: &str) -> bool {
+    list.iter().any(|s| normalize(s) == normalized_name)
+}
+
+fn normalize(input: &str) -> String {
+    let trimmed = input.trim().to_lowercase();
+    let mut out = String::with_capacity(trimmed.len());
+    let mut prev_space = false;
+
+    for ch in trimmed.chars() {
+        if ch.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out
+}
+
 const IDLE:  [&str;172] = ["cached session",                                              
 "VKTM Logical Idle Wait",                                      
 "VKTM Init Wait for GSGA",                                     

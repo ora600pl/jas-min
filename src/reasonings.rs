@@ -196,6 +196,31 @@ pub struct AnomlyCluster {
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct GradientSettings {
+    pub ridge_lambda: f64,
+    pub elastic_net_lambda: f64,
+    pub elastic_net_alpha: f64,
+    pub elastic_net_max_iter: usize,
+    pub elastic_net_tol: f64,
+    pub input_wait_event_unit: String, // e.g. "ms_per_sample"
+    pub input_db_time_unit: String,     // e.g. "per_second"
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct GradientTopItem {
+    pub event_name: String,
+    pub gradient_coef: f64,
+    pub impact: f64,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+pub struct DbTimeGradientSection {
+    pub settings: GradientSettings,
+    pub ridge_top: Vec<GradientTopItem>,
+    pub elastic_net_top: Vec<GradientTopItem>,
+}
+
+#[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct ReportForAI {
     pub general_data: StatisticsDescription,
     pub top_spikes_marked: Vec<TopPeaksSelected>,
@@ -215,6 +240,10 @@ pub struct ReportForAI {
     pub instance_stats_pearson_correlation: Vec<InstanceStatisticCorrelation>,
     pub load_profile_anomalies: Vec<LoadProfileAnomalies>,
     pub anomaly_clusters: Vec<AnomlyCluster>,
+    pub db_time_gradient_fg_wait_events: Option<DbTimeGradientSection>,
+    pub db_time_gradient_instance_stats_counters: Option<DbTimeGradientSection>,
+    pub db_time_gradient_instance_stats_volumes: Option<DbTimeGradientSection>,
+    pub db_time_gradient_instance_stats_time: Option<DbTimeGradientSection>,
 }
 
 
@@ -227,6 +256,20 @@ You receive main input object called **ReportForAI**, encoded as TOON (Token-Ori
 This TOON/JSON is a preprocessed, structured representation of an Oracle performance audit report (AWR/Statspack family).
 
 If you receive load_profile_statistics.json, containing load profile summary for the database, analyze them first and write comprehensive summary for all metrics with as many statistical insights as possible.
+
+You may also receive a section called db_time_gradient_fg_wait_events and/or db_time_gradient_instance_stats.
+
+This section represents a numerical gradient of DB Time with respect to wait events and key instance statistics,
+estimated using linear regression on time deltas.
+
+Important interpretation rules:
+- Gradient coefficients represent local sensitivity, not global causality.
+- Ridge regression provides a stabilized, dense view of contributing wait events or statistics.
+- Elastic Net provides a sparse view, highlighting dominant or representative wait events or statistics.
+- Events or statistics appearing in both Ridge and Elastic Net rankings should be treated as strong contributors.
+- Absence from Elastic Net does NOT mean irrelevance; it may indicate correlation with other events.
+
+Use those sections to support, not replace, traditional AWR-based reasoning.
 
 ============================================================
 INPUT FORMAT: ReportForAI (TOON or JSON)
@@ -305,6 +348,62 @@ ReportForAI contains the following main sections (mapping from classical AWR-sty
         - area_of_anomaly
         - statistic_name
 
+12. db_time_gradient_fg_wait_events (optional):
+    - settings:
+        - ridge_lambda
+        - elastic_net_lambda
+        - elastic_net_alpha
+        - elastic_net_max_iter
+        - elastic_net_tol
+    - ridge_top:
+        - list of wait events ranked by impact using Ridge regression
+    - elastic_net_top:
+        - list of wait events ranked by impact using Elastic Net (may be sparse)
+
+    This section summarizes which wait events most strongly influence changes in DB Time.
+
+13. db_time_gradient_instance_stats_counters (optional):
+    - settings:
+        - ridge_lambda
+        - elastic_net_lambda
+        - elastic_net_alpha
+        - elastic_net_max_iter
+        - elastic_net_tol
+    - ridge_top:
+        - list of wait events ranked by impact using Ridge regression
+    - elastic_net_top:
+        - list of wait events ranked by impact using Elastic Net (may be sparse)
+
+    This section summarizes which key instance stats counters most strongly influence changes in DB Time.
+
+14. db_time_gradient_instance_stats_volumes (optional):
+    - settings:
+        - ridge_lambda
+        - elastic_net_lambda
+        - elastic_net_alpha
+        - elastic_net_max_iter
+        - elastic_net_tol
+    - ridge_top:
+        - list of wait events ranked by impact using Ridge regression
+    - elastic_net_top:
+        - list of wait events ranked by impact using Elastic Net (may be sparse)
+
+    This section summarizes which key instance stats (volume means here bytes, blocks, etc.) most strongly influence changes in DB Time.
+
+15. db_time_gradient_instance_stats_time (optional):
+    - settings:
+        - ridge_lambda
+        - elastic_net_lambda
+        - elastic_net_alpha
+        - elastic_net_max_iter
+        - elastic_net_tol
+    - ridge_top:
+        - list of wait events ranked by impact using Ridge regression
+    - elastic_net_top:
+        - list of wait events ranked by impact using Elastic Net (may be sparse)
+
+    This section summarizes which key instance stats time (like seconds, etc.) most strongly influence changes in DB Time.
+
 ============================================================
 CORE GUIDELINES
 
@@ -328,11 +427,17 @@ CORE GUIDELINES
 - Answer in **markdown** format.
 - The answer should be divided into **clear sections and subsections**, starting with icons/symbols.
   Use fine-grained structure, not a giant monolithic block.
+- When db_time_gradient_instance_stats_* and/or db_time_gradient_fg_wait_events is present:
+    - Cross-check gradient results with AWR wait event dominance.
+    - Highlight wait events that appear in both Ridge and Elastic Net rankings.
+    - Use gradient results to explain *why* DB Time increases, not only *what* increases.
+    - Prefer Elastic Net for short actionable lists, and Ridge for broader context.
 - Finish with a **summary and overall recommendations** that MUST include:
   - Comment on the quality of disks based on IO-related metrics:
     - Are the disks slow or not?
   - Comment on application design:
     - Is this likely a poorly written application and why?
+    - Is commit/rollback policy proper?
   - A list of actions that should be taken **immediately**,
     and how they should be addressed to **developers** and/or **DBAs**.
   - Summary for management written in less technical slang.
@@ -353,7 +458,7 @@ Your answer MUST be in **markdown** and should be structured at least as:
 6. 🔧 Latches & Internal Contention
 7. 💾 IO & Disk Subsystem Assessment
 8. 🔁 UNDO / Redo / Load Profile Observations
-9. ⚡ Anomaly Clusters & Cross-Domain Patterns
+9. ⚡ Anomaly Clusters, Cross-Domain Patterns & Gradient Analyzes
 10. ✅ Recommendations
     - For DBAs
     - For Developers
@@ -921,7 +1026,7 @@ pub async fn openrouter(
                 report_for_ai, load_profile
             )}
         ],
-        "max_tokens": 8192 * token_count_factor,
+        //"max_tokens": 8192 * token_count_factor,
         "reasoning": { "effort": "high" },
         "stream": false
     });
