@@ -1,4 +1,5 @@
 use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR, GetStats};
+use crate::staticdata::*;
 
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +32,37 @@ use prettytable::{Table, Row, Cell, format, Attr};
 use rayon::prelude::*;
 
 use crate::tools::*;
-use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI,AppState};
+use crate::reasonings::{StatisticsDescription,
+                        TopPeaksSelected,
+                        MadAnomaliesEvents,
+                        MadAnomaliesSQL,
+                        TopForegroundWaitEvents,
+                        TopBackgroundWaitEvents,
+                        PctOfTimesThisSQLFoundInOtherTopSections,
+                        WaitEventsWithStrongCorrelation,
+                        WaitEventsFromASH,
+                        TopSQLsByElapsedTime,
+                        StatsSummary,
+                        IOStatsByFunctionSummary,
+                        LatchActivitySummary,
+                        Top10SegmentStats,
+                        InstanceStatisticCorrelation,
+                        LoadProfileAnomalies,
+                        AnomalyDescription,
+                        AnomlyCluster,
+                        ReportForAI,
+                        AppState,
+                        GradientSettings,
+                        GradientTopItem,
+                        DbTimeGradientSection};
+
+use crate::gradient::*;
+use crate::gradient::{EventSeriesMap,
+                     EventScalarMap,
+                     EventImpact,
+                     DbTimeGradientResult};
+
+use crate::staticdata::StatUnitGroup;
 
 struct TopStats {
     events: BTreeMap<String, u8>,
@@ -2367,7 +2398,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
     //println!("{}","Load Profile and Top Stats");
     //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
-    for (evname, ev) in y_vals_events {
+    for (evname, ev) in y_vals_events.clone() {
         let mut wait_time = 0;
         for v in &ev {
             if *v > 0.0 {
@@ -3720,7 +3751,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
     make_notes!(&logfile_name, args.quiet, 0, "\n\n");
     make_notes!(&logfile_name, false, 2, "{}", "Instance Statistics: Correlation with DB Time for values >= 0.5 and <= -0.5".yellow());
     make_notes!(&logfile_name, args.quiet, 0, "\n\n");
-    let mut sorted_correlation = report_instance_stats_cor(instance_stats, y_vals_dbtime);
+    let mut sorted_correlation = report_instance_stats_cor(instance_stats.clone(), y_vals_dbtime.clone());
     let mut stats_table_rows = String::new();
     for ((score, key), value) in sorted_correlation.iter().rev() { // Sort in descending order
         stats_table_rows.push_str(&format!(
@@ -4810,6 +4841,185 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
         insight_title)
     );
 
+    let ridge_lambda = args.ridge_lambda;
+    let elastic_net_lambda = args.en_lambda;
+    let elastic_net_alpha = args.en_alpha;
+    let elastic_net_max_iter = args.en_max_iter;
+    let elastic_net_tol = args.en_tol;
+
+    // ---------------------------------------------------------------------
+    // Attach DB Time gradient vs wait events to ReportForAI (optional section)
+    // ---------------------------------------------------------------------
+    {
+        match build_db_time_gradient_section (
+            &y_vals_dbtime,
+            &y_vals_events, // BTreeMap<String, Vec<f64>> aligned & zero-filled
+            ridge_lambda,
+            elastic_net_lambda,
+            elastic_net_alpha,
+            elastic_net_max_iter,
+            elastic_net_tol,
+            "event_wait_s"
+        ) {
+            Ok(section) => {
+                report_for_ai.db_time_gradient_fg_wait_events = Some(section);
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "{}",
+                    "DB TIME GRADIENT for wait events attached to ReportForAI".bold().green()
+                );
+            }
+            Err(err) => {
+                // Don't kill report generation; just log and continue.
+                report_for_ai.db_time_gradient_fg_wait_events = None;
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "DB TIME GRADIENT skipped: {}",
+                    err
+                );
+            }
+        }
+        if let Some(section) = &report_for_ai.db_time_gradient_fg_wait_events {
+            print_db_time_gradient_tables(section, true);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Attach DB Time gradient vs instance statistic counters to ReportForAI (optional section)
+    // ---------------------------------------------------------------------
+    {
+        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
+                                                                         .filter(|i| classify_stat_unit_group(&i.0) == StatUnitGroup::Counter)
+                                                                         .collect();
+        match build_db_time_gradient_section (
+            &y_vals_dbtime,
+            &y_vals_statistics, // BTreeMap<String, Vec<f64>> aligned & zero-filled
+            ridge_lambda,
+            elastic_net_lambda,
+            elastic_net_alpha,
+            elastic_net_max_iter,
+            elastic_net_tol,
+            "statistic_values_counter"
+        ) {
+            Ok(section) => {
+                report_for_ai.db_time_gradient_instance_stats_counters = Some(section);
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "{}",
+                    "DB TIME GRADIENT for stats counters attached to ReportForAI".bold().green()
+                );
+            }
+            Err(err) => {
+                // Don't kill report generation; just log and continue.
+                report_for_ai.db_time_gradient_instance_stats_counters = None;
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "DB TIME GRADIENT for instance stats counters skipped: {}",
+                    err
+                );
+            }
+        }
+        if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_counters {
+            print_db_time_gradient_tables(section, false);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Attach DB Time gradient vs instance statistic volumes to ReportForAI (optional section)
+    // ---------------------------------------------------------------------
+    {
+        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
+                                                                         .filter(|i| classify_stat_unit_group(&i.0) == StatUnitGroup::Volume)
+                                                                         .collect();
+        match build_db_time_gradient_section (
+            &y_vals_dbtime,
+            &y_vals_statistics, // BTreeMap<String, Vec<f64>> aligned & zero-filled
+            ridge_lambda,
+            elastic_net_lambda,
+            elastic_net_alpha,
+            elastic_net_max_iter,
+            elastic_net_tol,
+            "statistic_values_volume"
+        ) {
+            Ok(section) => {
+                report_for_ai.db_time_gradient_instance_stats_volumes = Some(section);
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "{}",
+                    "DB TIME GRADIENT for stats attached to ReportForAI".bold().green()
+                );
+            }
+            Err(err) => {
+                // Don't kill report generation; just log and continue.
+                report_for_ai.db_time_gradient_instance_stats_volumes = None;
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "DB TIME GRADIENT for instance stats volumes skipped: {}",
+                    err
+                );
+            }
+        }
+        if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_volumes {
+            print_db_time_gradient_tables(section, false);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Attach DB Time gradient vs instance statistic time to ReportForAI (optional section)
+    // ---------------------------------------------------------------------
+    {
+        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.into_iter()
+                                                                         .filter(|i| classify_stat_unit_group(&i.0) == StatUnitGroup::Time)
+                                                                         .collect();
+        match build_db_time_gradient_section (
+            &y_vals_dbtime,
+            &y_vals_statistics, // BTreeMap<String, Vec<f64>> aligned & zero-filled
+            ridge_lambda,
+            elastic_net_lambda,
+            elastic_net_alpha,
+            elastic_net_max_iter,
+            elastic_net_tol,
+            "statistic_values_time"
+        ) {
+            Ok(section) => {
+                report_for_ai.db_time_gradient_instance_stats_time = Some(section);
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "{}",
+                    "DB TIME GRADIENT for stats time attached to ReportForAI".bold().green()
+                );
+            }
+            Err(err) => {
+                // Don't kill report generation; just log and continue.
+                report_for_ai.db_time_gradient_instance_stats_time = None;
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "DB TIME GRADIENT for instance stats time skipped: {}",
+                    err
+                );
+            }
+        }
+        if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_time {
+            print_db_time_gradient_tables(section, false);
+        }
+    }
+
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html)
         .expect("Failed to write updated Plotly HTML file");
@@ -4818,4 +5028,205 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
 
     open::that(fname);
     report_for_ai
+}
+
+
+/// Compute DB Time gradient section for ReportForAI.
+/// - Uses y_vals_dbtime as DB Time series (aligned to snaps)
+/// - Uses y_vals_events as wait-event series (aligned, zero-filled)
+/// - Converts wait series to ms per sample
+/// - Returns a compact Top10 summary for Ridge and Elastic Net
+///
+/// This function never exposes positional mapping for wait events.
+/// It only consumes/produces name-keyed maps or named lists.
+fn build_db_time_gradient_section (
+    db_time_series: &[f64],
+    event_series: &BTreeMap<String, Vec<f64>>,
+    ridge_lambda: f64,
+    elastic_net_lambda: f64,
+    elastic_net_alpha: f64,
+    elastic_net_max_iter: usize,
+    elastic_net_tol: f64,
+    units_desc: &str
+) -> Result<DbTimeGradientSection, String> {
+    // ------------------------------------------------------------
+    // 1) Validate aligned lengths (DB Time vs every wait event series)
+    // ------------------------------------------------------------
+    if db_time_series.len() < 3 {
+        return Err("Not enough DB Time samples (need >= 3).".into());
+    }
+    if event_series.is_empty() {
+        return Err("No events provided (empty map).".into());
+    }
+    let expected_len = db_time_series.len();
+
+    for (event_name, series) in event_series.iter() {
+        if series.len() != expected_len {
+            return Err(format!(
+                "Event '{}' length mismatch: got {}, expected {}.",
+                event_name,
+                series.len(),
+                expected_len
+            ));
+        }
+    }
+
+    // ------------------------------------------------------------
+    // 2) Run gradient estimation (Ridge + Elastic Net)
+    // ------------------------------------------------------------
+    let gradient_result = compute_db_time_gradient(
+        db_time_series,
+        &event_series,
+        ridge_lambda,
+        elastic_net_lambda,
+        elastic_net_alpha,
+        elastic_net_max_iter,
+        elastic_net_tol,
+    )?;
+
+    // ------------------------------------------------------------
+    // 3) Convert to compact AI section (Top50)
+    //    - Ridge: take Top50 by impact
+    //    - Elastic Net: skip zeros, then take Top50
+    // ------------------------------------------------------------
+    let ridge_top: Vec<GradientTopItem> = gradient_result
+        .ridge_ranking
+        .iter()
+        .take(50)
+        .map(|x| GradientTopItem {
+            event_name: x.event_name.clone(),
+            gradient_coef: x.gradient_coef,
+            impact: x.impact,
+        })
+        .collect();
+
+    let elastic_net_top: Vec<GradientTopItem> = gradient_result
+        .elastic_net_ranking
+        .iter()
+        .filter(|x| x.gradient_coef != 0.0) // avoid dumping zeros
+        .take(50)
+        .map(|x| GradientTopItem {
+            event_name: x.event_name.clone(),
+            gradient_coef: x.gradient_coef,
+            impact: x.impact,
+        })
+        .collect();
+
+    Ok(DbTimeGradientSection {
+        settings: GradientSettings {
+            ridge_lambda,
+            elastic_net_lambda,
+            elastic_net_alpha,
+            elastic_net_max_iter,
+            elastic_net_tol,
+            input_wait_event_unit: units_desc.to_string(),
+            input_db_time_unit: "db_time_per_second".to_string(),
+        },
+        ridge_top,
+        elastic_net_top,
+    })
+}
+
+/// Print DB Time gradient summary (Ridge + Elastic Net) in nice console tables.
+///
+/// This is intended for quick debugging / sanity-checking during report generation.
+/// It uses only name-keyed values (event_name), never positional indexing.
+///
+/// Expected input:
+/// - section.ridge_top / section.elastic_net_top: already TopN lists prepared for AI
+pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_settings: bool) {
+    println!("\n{} \n\t- {}", "==== DB TIME GRADIENT (Ridge / Elastic Net) ====".bold().bright_cyan(), section.settings.input_wait_event_unit);
+
+    // -----------------------------
+    // Settings table
+    // -----------------------------
+    if print_settings {
+        let mut settings_table = Table::new();
+        settings_table.set_titles(Row::new(vec![
+            Cell::new("Setting").with_style(Attr::Bold),
+            Cell::new("Value").with_style(Attr::Bold),
+        ]));
+
+        settings_table.add_row(Row::new(vec![
+            Cell::new("ridge_lambda"),
+            Cell::new(&format!("{:.6}", section.settings.ridge_lambda)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_lambda"),
+            Cell::new(&format!("{:.6}", section.settings.elastic_net_lambda)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_alpha"),
+            Cell::new(&format!("{:.6}", section.settings.elastic_net_alpha)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_max_iter"),
+            Cell::new(&format!("{}", section.settings.elastic_net_max_iter)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_tol"),
+            Cell::new(&format!("{:.6e}", section.settings.elastic_net_tol)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("input_event_unit"),
+            Cell::new(&section.settings.input_wait_event_unit),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("input_db_time_unit"),
+            Cell::new(&section.settings.input_db_time_unit),
+        ]));
+
+        println!("{}", "\n-- Settings --".bold().bright_white());
+        settings_table.printstd();
+    }
+
+    // -----------------------------
+    // Ridge TOP table
+    // -----------------------------
+    println!("{}", "\n-- Ridge TOP --".bold().bright_white());
+    print_top_items_table("Ridge", &section.ridge_top);
+
+    // -----------------------------
+    // Elastic Net TOP table
+    // -----------------------------
+    println!("{}", "\n-- Elastic Net TOP --".bold().bright_white());
+    // Elastic Net: in practice you usually want to hide zero coefficients
+    let en_nonzero: Vec<crate::reasonings::GradientTopItem> = section
+        .elastic_net_top
+        .iter()
+        .cloned()
+        .filter(|x| x.gradient_coef != 0.0)
+        .collect();
+
+    if en_nonzero.is_empty() {
+        println!("{}", "Elastic Net produced no non-zero coefficients (try smaller lambda or smaller alpha)."
+            .yellow());
+    } else {
+        print_top_items_table("ElasticNet", &en_nonzero);
+    }
+}
+
+/// Helper: prints Top-N list as a prettytable.
+/// Rows are rank-ordered as provided by the caller.
+fn print_top_items_table(title: &str, items: &[GradientTopItem]) {
+    let mut table = Table::new();
+    table.set_titles(Row::new(vec![
+        Cell::new("#").with_style(Attr::Bold),
+        Cell::new("Wait Event/Statistic").with_style(Attr::Bold),
+        Cell::new("Coef").with_style(Attr::Bold),
+        Cell::new("Impact").with_style(Attr::Bold),
+    ]));
+
+    for (idx, item) in items.iter().enumerate() {
+        table.add_row(Row::new(vec![
+            Cell::new(&format!("{}", idx + 1)),
+            Cell::new(&item.event_name),
+            Cell::new(&format!("{:+.6}", item.gradient_coef)),
+            Cell::new(&format!("{:.6}", item.impact)),
+        ]));
+    }
+
+    // Small title banner for clarity in logs
+    println!("{}", format!("{} table (Top {})", title, items.len()).bright_black());
+    table.printstd();
 }
