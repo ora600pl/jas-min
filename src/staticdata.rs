@@ -56,7 +56,7 @@ pub const KEY_STATS_VOLUME: [&str; 11] = [
 ];
 
 /// COUNTER group: counts of operations/events.
-pub const KEY_STATS_COUNTERS: [&str; 45] = [
+pub const KEY_STATS_COUNTERS: [&str; 47] = [
     // Logon storm / session churn  
     "logons cumulative",
     "logons current",
@@ -76,8 +76,8 @@ pub const KEY_STATS_COUNTERS: [&str; 45] = [
     "recursive calls",
 
     // Commit/rollback policy signals  
-    //"user commits",
-    //"user rollbacks",
+    "user commits",
+    "user rollbacks",
 
     // Commit/cleanout/rollback mechanics (more meaningful than raw "user rollbacks")  
     "commit wait requested",
