@@ -656,7 +656,7 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
     let client = Client::new();
 
     let file_uri = upload_log_file_gemini(&api_key, first_response, "performance_analyze.md".to_string()).await.unwrap();
-    let spell = format!("You were given a detailed performance analyze of Oracle database. Your task is to answear ONLY with a list of TOP {} SNAP_IDs that should be analyzed in more detail. Anwear only with those numbers representing SNAP_ID - one number in a line.", args.deep_check);
+    let spell = format!("You were given a detailed performance analyze of Oracle database. Your task is to answear ONLY with a list of TOP {} SNAP_IDs that should be analyzed in more detail. Choose half from night and half from day period. Anwear only with those numbers representing SNAP_ID - one number in a line.", args.deep_check);
 
     let payload = json!({
                     "contents": [{
