@@ -1,4 +1,33 @@
 use std::collections::BTreeMap;
+use crate::make_notes;
+use crate::Args;
+use crate::reasonings::{StatisticsDescription,
+                        TopPeaksSelected,
+                        MadAnomaliesEvents,
+                        MadAnomaliesSQL,
+                        TopForegroundWaitEvents,
+                        TopBackgroundWaitEvents,
+                        PctOfTimesThisSQLFoundInOtherTopSections,
+                        WaitEventsWithStrongCorrelation,
+                        WaitEventsFromASH,
+                        TopSQLsByElapsedTime,
+                        StatsSummary,
+                        IOStatsByFunctionSummary,
+                        LatchActivitySummary,
+                        Top10SegmentStats,
+                        InstanceStatisticCorrelation,
+                        LoadProfileAnomalies,
+                        AnomalyDescription,
+                        AnomlyCluster,
+                        ReportForAI,
+                        AppState,
+                        GradientSettings,
+                        GradientTopItem,
+                        DbTimeGradientSection};
+
+use prettytable::{Table, Row, Cell, format, Attr};
+use colored::*;
+
 
 /// Named time series: event_name/stat_name/sqlid -> Vec<sample_value>
 /// Each Vec must have the same length as DB Time series.
@@ -605,4 +634,210 @@ fn median_in_place(values: &mut [f64]) -> f64 {
             .fold(f64::NEG_INFINITY, f64::max);
         (lower_max + values[mid]) * 0.5
     }
+}
+
+
+/// Compute DB Time gradient section for ReportForAI.
+/// - Uses y_vals_dbtime as DB Time series (aligned to snaps)
+/// - Uses y_vals_events as wait-event series (aligned, zero-filled)
+/// - Converts wait series to ms per sample
+/// - Returns a compact Top10 summary for Ridge and Elastic Net
+///
+/// This function never exposes positional mapping for wait events.
+/// It only consumes/produces name-keyed maps or named lists.
+fn build_db_time_gradient_section (
+    db_time_series: &[f64],
+    event_series: &BTreeMap<String, Vec<f64>>,
+    ridge_lambda: f64,
+    elastic_net_lambda: f64,
+    elastic_net_alpha: f64,
+    elastic_net_max_iter: usize,
+    elastic_net_tol: f64,
+    units_desc: &str
+) -> Result<DbTimeGradientSection, String> {
+    // ------------------------------------------------------------
+    // 1) Validate aligned lengths (DB Time vs every wait event series)
+    // ------------------------------------------------------------
+    if db_time_series.len() < 3 {
+        return Err("Not enough DB Time samples (need >= 3).".into());
+    }
+    if event_series.is_empty() {
+        return Err("No events provided (empty map).".into());
+    }
+    let expected_len = db_time_series.len();
+
+    for (event_name, series) in event_series.iter() {
+        if series.len() != expected_len {
+            return Err(format!(
+                "Event '{}' length mismatch: got {}, expected {}.",
+                event_name,
+                series.len(),
+                expected_len
+            ));
+        }
+    }
+
+    // ------------------------------------------------------------
+    // 2) Run gradient estimation (Ridge + Elastic Net)
+    // ------------------------------------------------------------
+    let gradient_result = compute_db_time_gradient(
+        db_time_series,
+        &event_series,
+        ridge_lambda,
+        elastic_net_lambda,
+        elastic_net_alpha,
+        elastic_net_max_iter,
+        elastic_net_tol,
+    )?;
+
+    // ------------------------------------------------------------
+    // 3) Convert to compact AI section (Top50)
+    //    - Ridge: take Top50 by impact
+    //    - Elastic Net: skip zeros, then take Top50
+    // ------------------------------------------------------------
+    let ridge_top: Vec<GradientTopItem> = gradient_result
+        .ridge_ranking
+        .iter()
+        .take(50)
+        .map(|x| GradientTopItem {
+            event_name: x.event_name.clone(),
+            gradient_coef: x.gradient_coef,
+            impact: x.impact,
+        })
+        .collect();
+
+    let elastic_net_top: Vec<GradientTopItem> = gradient_result
+        .elastic_net_ranking
+        .iter()
+        .filter(|x| x.gradient_coef != 0.0) // avoid dumping zeros
+        .take(50)
+        .map(|x| GradientTopItem {
+            event_name: x.event_name.clone(),
+            gradient_coef: x.gradient_coef,
+            impact: x.impact,
+        })
+        .collect();
+
+    Ok(DbTimeGradientSection {
+        settings: GradientSettings {
+            ridge_lambda,
+            elastic_net_lambda,
+            elastic_net_alpha,
+            elastic_net_max_iter,
+            elastic_net_tol,
+            input_wait_event_unit: units_desc.to_string(),
+            input_db_time_unit: "db_time_per_second".to_string(),
+        },
+        ridge_top,
+        elastic_net_top,
+    })
+}
+
+/// Print DB Time gradient summary (Ridge + Elastic Net) in nice console tables.
+///
+/// This is intended for quick debugging / sanity-checking during report generation.
+/// It uses only name-keyed values (event_name), never positional indexing.
+///
+/// Expected input:
+/// - section.ridge_top / section.elastic_net_top: already TopN lists prepared for AI
+pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_settings: bool, logfile_name: &str, args: &Args) {
+    make_notes!(logfile_name, args.quiet, 0, "\n{} \n\t- {}", "==== DB TIME GRADIENT (Ridge / Elastic Net) ====".bold().bright_cyan(), section.settings.input_wait_event_unit);
+
+    // -----------------------------
+    // Settings table
+    // -----------------------------
+    if print_settings {
+        let mut settings_table = Table::new();
+        settings_table.set_titles(Row::new(vec![
+            Cell::new("Setting").with_style(Attr::Bold),
+            Cell::new("Value").with_style(Attr::Bold),
+        ]));
+
+        settings_table.add_row(Row::new(vec![
+            Cell::new("ridge_lambda"),
+            Cell::new(&format!("{:.6}", section.settings.ridge_lambda)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_lambda"),
+            Cell::new(&format!("{:.6}", section.settings.elastic_net_lambda)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_alpha"),
+            Cell::new(&format!("{:.6}", section.settings.elastic_net_alpha)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_max_iter"),
+            Cell::new(&format!("{}", section.settings.elastic_net_max_iter)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_tol"),
+            Cell::new(&format!("{:.6e}", section.settings.elastic_net_tol)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("input_event_unit"),
+            Cell::new(&section.settings.input_wait_event_unit),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("input_db_time_unit"),
+            Cell::new(&section.settings.input_db_time_unit),
+        ]));
+
+        make_notes!(logfile_name, args.quiet, 0, "{}", "\n-- Settings --".bold().bright_white());
+
+        for table_line in settings_table.to_string().lines() {
+            make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
+        }
+    }
+
+    // -----------------------------
+    // Ridge TOP table
+    // -----------------------------
+    make_notes!(logfile_name, args.quiet, 0, "{}", "\n-- Ridge TOP --\n".bold().bright_white());
+    print_top_items_table("Ridge", &section.ridge_top, logfile_name, args);
+
+    // -----------------------------
+    // Elastic Net TOP table
+    // -----------------------------
+    println!("{}", "\n-- Elastic Net TOP --\n".bold().bright_white());
+    // Elastic Net: in practice you usually want to hide zero coefficients
+    let en_nonzero: Vec<crate::reasonings::GradientTopItem> = section
+        .elastic_net_top
+        .iter()
+        .cloned()
+        .filter(|x| x.gradient_coef != 0.0)
+        .collect();
+
+    if en_nonzero.is_empty() {
+        make_notes!(logfile_name, args.quiet, 0, "{}", "Elastic Net produced no non-zero coefficients (try smaller lambda or smaller alpha)."
+            .yellow());
+    } else {
+        print_top_items_table("ElasticNet", &en_nonzero, logfile_name, args);
+    }
+}
+
+/// Helper: prints Top-N list as a prettytable.
+/// Rows are rank-ordered as provided by the caller.
+pub fn print_top_items_table(title: &str, items: &[GradientTopItem], logfile_name: &str, args: &Args) {
+    let mut table = Table::new();
+    table.set_titles(Row::new(vec![
+        Cell::new("#").with_style(Attr::Bold),
+        Cell::new("Wait Event/Statistic").with_style(Attr::Bold),
+        Cell::new("Coef").with_style(Attr::Bold),
+        Cell::new("Impact").with_style(Attr::Bold),
+    ]));
+
+    for (idx, item) in items.iter().enumerate() {
+        table.add_row(Row::new(vec![
+            Cell::new(&format!("{}", idx + 1)),
+            Cell::new(&item.event_name),
+            Cell::new(&format!("{:+.6}", item.gradient_coef)),
+            Cell::new(&format!("{:.6}", item.impact)),
+        ]));
+    }
+
+    // Small title banner for clarity in logs
+    make_notes!(logfile_name, args.quiet, 0, "{}", format!("{} table (Top {})\n", title, items.len()).bright_black());
+    for table_line in table.to_string().lines() {
+            make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
+        }
 }
