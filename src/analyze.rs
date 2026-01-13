@@ -2421,7 +2421,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
 
     //I want to sort SQL IDs by the number of times they showup in snapshots - for this purpose I'm using BTree with two index keys
     let mut y_vals_sqls_sorted = BTreeMap::new(); 
-    for (sqlid, yv) in y_vals_sqls {
+    for (sqlid, yv) in y_vals_sqls.clone() {
         let mut occuriance = 0;
         for v in &yv {
             if *v > 0.0 {
@@ -4869,7 +4869,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                     false,
                     1,
                     "{}",
-                    "DB TIME GRADIENT for wait events attached to ReportForAI".bold().green()
+                    "\n\nDB TIME GRADIENT for wait events attached to ReportForAI".bold().green()
                 );
             }
             Err(err) => {
@@ -4879,13 +4879,13 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                     &logfile_name,
                     false,
                     1,
-                    "DB TIME GRADIENT skipped: {}",
+                    "\n\nDB TIME GRADIENT skipped: {}",
                     err
                 );
             }
         }
         if let Some(section) = &report_for_ai.db_time_gradient_fg_wait_events {
-            print_db_time_gradient_tables(section, true);
+            print_db_time_gradient_tables(section, true, &logfile_name, &args);
         }
     }
 
@@ -4912,7 +4912,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                     &logfile_name,
                     false,
                     1,
-                    "{}",
+                    "\n\n{}",
                     "DB TIME GRADIENT for stats counters attached to ReportForAI".bold().green()
                 );
             }
@@ -4923,13 +4923,13 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                     &logfile_name,
                     false,
                     1,
-                    "DB TIME GRADIENT for instance stats counters skipped: {}",
+                    "\n\nDB TIME GRADIENT for instance stats counters skipped: {}",
                     err
                 );
             }
         }
         if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_counters {
-            print_db_time_gradient_tables(section, false);
+            print_db_time_gradient_tables(section, false, &logfile_name, &args);
         }
     }
 
@@ -4956,7 +4956,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                     &logfile_name,
                     false,
                     1,
-                    "{}",
+                    "\n\n{}",
                     "DB TIME GRADIENT for stats attached to ReportForAI".bold().green()
                 );
             }
@@ -4967,13 +4967,13 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                     &logfile_name,
                     false,
                     1,
-                    "DB TIME GRADIENT for instance stats volumes skipped: {}",
+                    "\n\nDB TIME GRADIENT for instance stats volumes skipped: {}",
                     err
                 );
             }
         }
         if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_volumes {
-            print_db_time_gradient_tables(section, false);
+            print_db_time_gradient_tables(section, false, &logfile_name, &args);
         }
     }
 
@@ -5001,7 +5001,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                     false,
                     1,
                     "{}",
-                    "DB TIME GRADIENT for stats time attached to ReportForAI".bold().green()
+                    "\n\nDB TIME GRADIENT for stats time attached to ReportForAI".bold().green()
                 );
             }
             Err(err) => {
@@ -5011,13 +5011,54 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                     &logfile_name,
                     false,
                     1,
-                    "DB TIME GRADIENT for instance stats time skipped: {}",
+                    "\n\nDB TIME GRADIENT for instance stats time skipped: {}",
                     err
                 );
             }
         }
         if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_time {
-            print_db_time_gradient_tables(section, false);
+            print_db_time_gradient_tables(section, false, &logfile_name, &args);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Attach DB Time gradient vs sql_id/old_hash_value elapsed time to ReportForAI (optional section)
+    // ---------------------------------------------------------------------
+    {
+        match build_db_time_gradient_section (
+            &y_vals_dbtime,
+            &y_vals_sqls, // BTreeMap<String, Vec<f64>> aligned & zero-filled
+            ridge_lambda,
+            elastic_net_lambda,
+            elastic_net_alpha,
+            elastic_net_max_iter,
+            elastic_net_tol,
+            "statistic_values_time"
+        ) {
+            Ok(section) => {
+                report_for_ai.db_time_gradient_sql_elapsed_time = Some(section);
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "\n\n{}",
+                    "DB TIME GRADIENT for SQL elapsed time attached to ReportForAI".bold().green()
+                );
+            }
+            Err(err) => {
+                // Don't kill report generation; just log and continue.
+                report_for_ai.db_time_gradient_sql_elapsed_time = None;
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "\n\nDB TIME GRADIENT for SQL elapsed time skipped: {}",
+                    err
+                );
+            }
+        }
+        if let Some(section) = &report_for_ai.db_time_gradient_sql_elapsed_time {
+            print_db_time_gradient_tables(section, false, &logfile_name, &args);
         }
     }
 
@@ -5137,8 +5178,8 @@ fn build_db_time_gradient_section (
 ///
 /// Expected input:
 /// - section.ridge_top / section.elastic_net_top: already TopN lists prepared for AI
-pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_settings: bool) {
-    println!("\n{} \n\t- {}", "==== DB TIME GRADIENT (Ridge / Elastic Net) ====".bold().bright_cyan(), section.settings.input_wait_event_unit);
+pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_settings: bool, logfile_name: &str, args: &Args) {
+    make_notes!(logfile_name, args.quiet, 0, "\n{} \n\t- {}", "==== DB TIME GRADIENT (Ridge / Elastic Net) ====".bold().bright_cyan(), section.settings.input_wait_event_unit);
 
     // -----------------------------
     // Settings table
@@ -5179,20 +5220,23 @@ pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_sett
             Cell::new(&section.settings.input_db_time_unit),
         ]));
 
-        println!("{}", "\n-- Settings --".bold().bright_white());
-        settings_table.printstd();
+        make_notes!(logfile_name, args.quiet, 0, "{}", "\n-- Settings --".bold().bright_white());
+
+        for table_line in settings_table.to_string().lines() {
+            make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
+        }
     }
 
     // -----------------------------
     // Ridge TOP table
     // -----------------------------
-    println!("{}", "\n-- Ridge TOP --".bold().bright_white());
-    print_top_items_table("Ridge", &section.ridge_top);
+    make_notes!(logfile_name, args.quiet, 0, "{}", "\n-- Ridge TOP --\n".bold().bright_white());
+    print_top_items_table("Ridge", &section.ridge_top, logfile_name, args);
 
     // -----------------------------
     // Elastic Net TOP table
     // -----------------------------
-    println!("{}", "\n-- Elastic Net TOP --".bold().bright_white());
+    println!("{}", "\n-- Elastic Net TOP --\n".bold().bright_white());
     // Elastic Net: in practice you usually want to hide zero coefficients
     let en_nonzero: Vec<crate::reasonings::GradientTopItem> = section
         .elastic_net_top
@@ -5202,16 +5246,16 @@ pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_sett
         .collect();
 
     if en_nonzero.is_empty() {
-        println!("{}", "Elastic Net produced no non-zero coefficients (try smaller lambda or smaller alpha)."
+        make_notes!(logfile_name, args.quiet, 0, "{}", "Elastic Net produced no non-zero coefficients (try smaller lambda or smaller alpha)."
             .yellow());
     } else {
-        print_top_items_table("ElasticNet", &en_nonzero);
+        print_top_items_table("ElasticNet", &en_nonzero, logfile_name, args);
     }
 }
 
 /// Helper: prints Top-N list as a prettytable.
 /// Rows are rank-ordered as provided by the caller.
-fn print_top_items_table(title: &str, items: &[GradientTopItem]) {
+fn print_top_items_table(title: &str, items: &[GradientTopItem], logfile_name: &str, args: &Args) {
     let mut table = Table::new();
     table.set_titles(Row::new(vec![
         Cell::new("#").with_style(Attr::Bold),
@@ -5230,6 +5274,8 @@ fn print_top_items_table(title: &str, items: &[GradientTopItem]) {
     }
 
     // Small title banner for clarity in logs
-    println!("{}", format!("{} table (Top {})", title, items.len()).bright_black());
-    table.printstd();
+    make_notes!(logfile_name, args.quiet, 0, "{}", format!("{} table (Top {})\n", title, items.len()).bright_black());
+    for table_line in table.to_string().lines() {
+            make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
+        }
 }
