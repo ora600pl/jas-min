@@ -645,7 +645,7 @@ fn median_in_place(values: &mut [f64]) -> f64 {
 ///
 /// This function never exposes positional mapping for wait events.
 /// It only consumes/produces name-keyed maps or named lists.
-fn build_db_time_gradient_section (
+pub fn build_db_time_gradient_section (
     db_time_series: &[f64],
     event_series: &BTreeMap<String, Vec<f64>>,
     ridge_lambda: f64,
