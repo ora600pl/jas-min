@@ -252,7 +252,7 @@ fn main() {
 					anomalies_top_n: 128,
 					mad_per_item_top_n: 128,
 
-					tokens_budget: (args.tokens_budget as f64 * 0.6) as usize,
+					tokens_budget: (args.tokens_budget as f64 * 0.5) as usize,
 					use_openrouter: true,
 				};
 
@@ -284,7 +284,7 @@ fn main() {
 					anomalies_top_n: 128,
 					mad_per_item_top_n: 128,
 
-					tokens_budget: (args.tokens_budget as f64 * 0.6) as usize,
+					tokens_budget: (args.tokens_budget as f64 * 0.5) as usize,
 					use_openrouter: false,
 				};
 
