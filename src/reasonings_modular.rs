@@ -110,6 +110,12 @@ pub enum Section {
     AnomalyClusters,
 
     ComposeFinal,
+
+    GradientWaitEvents,
+    GradientStatsCounters,
+    GradientStatsVolume,
+    GradientStatsTime,
+    GradientSQLs,
 }
 
 /// =====================
@@ -194,7 +200,7 @@ impl LocalOpenAiCompatClient {
                 {"role": "user", "content": user}
             ],
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            //"max_tokens": self.max_tokens,
             "stream": false
         });
 
@@ -626,6 +632,13 @@ Requirements:
         Section::SegmentsDirectPhysicalReads => segment_prompt("segments_direct_physical_reads", capsule_json, section_input_json),
         Section::SegmentsBufferBusyWaits => segment_prompt("segments_buffer_busy_waits", capsule_json, section_input_json),
 
+        //Gradient: same pattern, only data differs. 
+        Section::GradientWaitEvents => gradient_prompt("db_time_gradient_fg_wait_events", capsule_json, section_input_json),
+        Section::GradientStatsCounters => gradient_prompt("db_time_gradient_instance_stats_counters", capsule_json, section_input_json),
+        Section::GradientStatsVolume => gradient_prompt("db_time_gradient_instance_stats_volumes", capsule_json, section_input_json),
+        Section::GradientStatsTime => gradient_prompt("db_time_gradient_instance_stats_time", capsule_json, section_input_json),
+        Section::GradientSQLs => gradient_prompt("db_time_gradient_sql_elapsed_time", capsule_json, section_input_json),
+        
         Section::InstanceStatsCorrelation => format!(r#"
 Return SectionNotes JSON.
 
@@ -732,6 +745,30 @@ INPUT:
 {section_input_json}
 "#),
     }
+}
+
+/// Helper prompt template for gradient sections.
+fn gradient_prompt(section_name: &str, capsule_json: &str, section_input_json: &str) -> String {
+    format!(r#"
+Return SectionNotes JSON.
+
+Section: {section_name}
+
+CONTEXT CAPSULE (timeline anchor):
+{capsule_json}
+
+Analyze ONLY this section:
+INPUT:
+{section_input_json}
+
+Requirements:
+  - Interpret Ridge and Elastic Net regretion input data based on the following information:
+    - Gradient coefficients represent local sensitivity, not global causality.
+    - Ridge regression provides a stabilized, dense view of contributing wait events, sqls or statistics.
+    - Elastic Net provides a sparse view, highlighting dominant or representative wait events, sqls or statistics.
+    - Wait events, sqls or statistics. appearing in both Ridge and Elastic Net rankings should be treated as strong contributors.
+    - Absence from Elastic Net does NOT mean irrelevance; it may indicate correlation with other elements.
+"#)
 }
 
 /// Helper prompt template for segment sections.
@@ -843,6 +880,66 @@ fn trim_foreground_waits(mut v: Vec<TopForegroundWaitEvents>, waits_top_n: usize
     v
 }
 
+fn trim_foreground_waits_by_budget(
+    mut v: Vec<TopForegroundWaitEvents>,
+    base_user_prompt_str: &str,
+    capsule_json_str: &str,
+    budget_tokens: usize,
+) -> Vec<TopForegroundWaitEvents> {
+    // Sort by importance (same as before).
+    v.sort_by(|a, b| b.avg_pct_of_dbtime.partial_cmp(&a.avg_pct_of_dbtime).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Step A: for each event, trim MAD list to the maximum that still *could* fit reasonably.
+    // We do a local per-event trim using a mini-budget approach:
+    // - Build JSON with only this one event
+    // - Find max MAD prefix that fits inside budget when combined with prompt+capsule.
+    for e in &mut v {
+        e.median_absolute_deviation_anomalies
+            .sort_by(|a, b| b.mad_score.partial_cmp(&a.mad_score).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mad = &e.median_absolute_deviation_anomalies;
+
+        // Find max MAD anomalies for THIS event under overall budget.
+        // Wrap shape matches what your section sends.
+        let k = max_prefix_that_fits(
+            mad,
+            base_user_prompt_str,
+            capsule_json_str,
+            budget_tokens,
+            |slice| json!({
+                "top_foreground_wait_events": [{
+                    "event_name": e.event_name,
+                    "correlation_with_db_time": e.correlation_with_db_time,
+                    "marked_as_top_in_pct_of_probes": e.marked_as_top_in_pct_of_probes,
+                    "avg_pct_of_dbtime": e.avg_pct_of_dbtime,
+                    "stddev_pct_of_db_time": e.stddev_pct_of_db_time,
+                    "avg_wait_time_s": e.avg_wait_time_s,
+                    "stddev_wait_time_s": e.stddev_wait_time_s,
+                    "avg_number_of_executions": e.avg_number_of_executions,
+                    "stddev_number_of_executions": e.stddev_number_of_executions,
+                    "avg_wait_for_execution_ms": e.avg_wait_for_execution_ms,
+                    "stddev_wait_for_execution_ms": e.stddev_wait_for_execution_ms,
+                    "median_absolute_deviation_anomalies": slice
+                }]
+            })
+        );
+
+        e.median_absolute_deviation_anomalies.truncate(k);
+    }
+
+    // Step B: now pick maximum number of events (prefix) that fits.
+    let n = max_prefix_that_fits(
+        &v,
+        base_user_prompt_str,
+        capsule_json_str,
+        budget_tokens,
+        |slice| json!({ "top_foreground_wait_events": slice })
+    );
+
+    v.truncate(n);
+    v
+}
+
 fn trim_background_waits(mut v: Vec<TopBackgroundWaitEvents>, waits_top_n: usize, mad_top_n: usize) -> Vec<TopBackgroundWaitEvents> {
     v.sort_by(|a, b| b.avg_pct_of_dbtime.partial_cmp(&a.avg_pct_of_dbtime).unwrap_or(Ordering::Equal));
     v.truncate(waits_top_n);
@@ -852,6 +949,58 @@ fn trim_background_waits(mut v: Vec<TopBackgroundWaitEvents>, waits_top_n: usize
             .sort_by(|a, b| b.mad_score.partial_cmp(&a.mad_score).unwrap_or(Ordering::Equal));
         e.median_absolute_deviation_anomalies.truncate(mad_top_n);
     }
+    v
+}
+
+fn trim_background_waits_by_budget(
+    mut v: Vec<TopBackgroundWaitEvents>,
+    base_user_prompt_str: &str,
+    capsule_json_str: &str,
+    budget_tokens: usize,
+) -> Vec<TopBackgroundWaitEvents> {
+    v.sort_by(|a, b| b.avg_pct_of_dbtime.partial_cmp(&a.avg_pct_of_dbtime).unwrap_or(std::cmp::Ordering::Equal));
+
+    for e in &mut v {
+        e.median_absolute_deviation_anomalies
+            .sort_by(|a, b| b.mad_score.partial_cmp(&a.mad_score).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mad = &e.median_absolute_deviation_anomalies;
+
+        let k = max_prefix_that_fits(
+            mad,
+            base_user_prompt_str,
+            capsule_json_str,
+            budget_tokens,
+            |slice| json!({
+                "top_background_wait_events": [{
+                    "event_name": e.event_name,
+                    "correlation_with_db_time": e.correlation_with_db_time,
+                    "marked_as_top_in_pct_of_probes": e.marked_as_top_in_pct_of_probes,
+                    "avg_pct_of_dbtime": e.avg_pct_of_dbtime,
+                    "stddev_pct_of_db_time": e.stddev_pct_of_db_time,
+                    "avg_wait_time_s": e.avg_wait_time_s,
+                    "stddev_wait_time_s": e.stddev_wait_time_s,
+                    "avg_number_of_executions": e.avg_number_of_executions,
+                    "stddev_number_of_executions": e.stddev_number_of_executions,
+                    "avg_wait_for_execution_ms": e.avg_wait_for_execution_ms,
+                    "stddev_wait_for_execution_ms": e.stddev_wait_for_execution_ms,
+                    "median_absolute_deviation_anomalies": slice
+                }]
+            })
+        );
+
+        e.median_absolute_deviation_anomalies.truncate(k);
+    }
+
+    let n = max_prefix_that_fits(
+        &v,
+        base_user_prompt_str,
+        capsule_json_str,
+        budget_tokens,
+        |slice| json!({ "top_background_wait_events": slice })
+    );
+
+    v.truncate(n);
     v
 }
 
@@ -868,10 +1017,89 @@ fn trim_sqls(mut v: Vec<TopSQLsByElapsedTime>, sqls_top_n: usize, mad_top_n: usi
     v
 }
 
+fn trim_sqls_by_budget(
+    mut v: Vec<TopSQLsByElapsedTime>,
+    base_user_prompt_str: &str,
+    capsule_json_str: &str,
+    budget_tokens: usize,
+) -> Vec<TopSQLsByElapsedTime> {
+    v.sort_by(|a, b| b.avg_elapsed_time_cumulative_s.partial_cmp(&a.avg_elapsed_time_cumulative_s).unwrap_or(std::cmp::Ordering::Equal));
+
+    for s in &mut v {
+        s.median_absolute_deviation_anomalies
+            .sort_by(|a, b| b.mad_score.partial_cmp(&a.mad_score).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mad = &s.median_absolute_deviation_anomalies;
+
+        let k = max_prefix_that_fits(
+            mad,
+            base_user_prompt_str,
+            capsule_json_str,
+            budget_tokens,
+            |slice| json!({
+                "top_sqls_by_elapsed_time": [{
+                    "sql_id": s.sql_id,
+                    "module": s.module,
+                    "sql_type": s.sql_type,
+                    "pct_of_time_sql_was_found_in_other_top_sections": s.pct_of_time_sql_was_found_in_other_top_sections,
+                    "correlation_with_db_time": s.correlation_with_db_time,
+                    "marked_as_top_in_pct_of_probes": s.marked_as_top_in_pct_of_probes,
+                    "avg_elapsed_time_by_exec": s.avg_elapsed_time_by_exec,
+                    "stddev_elapsed_time_by_exec": s.stddev_elapsed_time_by_exec,
+                    "avg_cpu_time_by_exec": s.avg_cpu_time_by_exec,
+                    "stddev_cpu_time_by_exec": s.stddev_cpu_time_by_exec,
+                    "avg_elapsed_time_cumulative_s": s.avg_elapsed_time_cumulative_s,
+                    "stddev_elapsed_time_cumulative_s": s.stddev_elapsed_time_cumulative_s,
+                    "avg_cpu_time_cumulative_s": s.avg_cpu_time_cumulative_s,
+                    "stddev_cpu_time_cumulative_s": s.stddev_cpu_time_cumulative_s,
+                    "avg_number_of_executions": s.avg_number_of_executions,
+                    "stddev_number_of_executions": s.stddev_number_of_executions,
+                    "median_absolute_deviation_anomalies": slice,
+                    "wait_events_with_strong_pearson_correlation": s.wait_events_with_strong_pearson_correlation,
+                    "wait_events_found_in_ash_sections_for_this_sql": s.wait_events_found_in_ash_sections_for_this_sql
+                }]
+            })
+        );
+
+        s.median_absolute_deviation_anomalies.truncate(k);
+    }
+
+    let n = max_prefix_that_fits(
+        &v,
+        base_user_prompt_str,
+        capsule_json_str,
+        budget_tokens,
+        |slice| json!({ "top_sqls_by_elapsed_time": slice })
+    );
+
+    v.truncate(n);
+    v
+}
+
 /// Keep top N load profile anomalies by mad_score.
 fn trim_load_profile_anomalies(mut v: Vec<LoadProfileAnomalies>, top_n: usize) -> Vec<LoadProfileAnomalies> {
     v.sort_by(|a, b| b.mad_score.partial_cmp(&a.mad_score).unwrap_or(Ordering::Equal));
     v.truncate(top_n);
+    v
+}
+
+fn trim_load_profile_anomalies_by_budget(
+    mut v: Vec<LoadProfileAnomalies>,
+    base_user_prompt_str: &str,
+    capsule_json_str: &str,
+    budget_tokens: usize,
+) -> Vec<LoadProfileAnomalies> {
+    v.sort_by(|a, b| b.mad_score.partial_cmp(&a.mad_score).unwrap_or(std::cmp::Ordering::Equal));
+
+    let n = max_prefix_that_fits(
+        &v,
+        base_user_prompt_str,
+        capsule_json_str,
+        budget_tokens,
+        |slice| json!({ "load_profile_anomalies": slice })
+    );
+
+    v.truncate(n);
     v
 }
 
@@ -985,27 +1213,14 @@ fn section_name(section: Section) -> &'static str {
         Section::LoadProfileAnomalies => "load_profile_anomalies",
         Section::AnomalyClusters => "anomaly_clusters",
         Section::ComposeFinal => "compose_final",
+        Section::GradientWaitEvents => "db_time_gradient_fg_wait_events",
+        Section::GradientStatsCounters => "db_time_gradient_instance_stats_counters",
+        Section::GradientStatsVolume => "db_time_gradient_instance_stats_volumes",
+        Section::GradientStatsTime => "db_time_gradient_instance_stats_time",
+        Section::GradientSQLs => "db_time_gradient_sql_elapsed_time"
     }
 }
 
-/// A strict "repair" system prompt: model must return valid JSON only.
-fn json_repair_system_prompt() -> &'static str {
-    r#"You are a JSON repair tool.
-Return ONLY valid JSON. No markdown. No explanations.
-Do not change meaning, only fix syntax to be valid JSON.
-If multiple JSON objects exist, return the single JSON object that matches the intended schema."#
-}
-
-fn json_repair_user_prompt(schema_hint: &str, broken: &str) -> String {
-    format!(
-r#"Fix the following output into VALID JSON only.
-Schema hint: {schema_hint}
-
-BROKEN OUTPUT:
-{broken}
-"#
-    )
-}
 
 /// =====================
 /// Main modular pipeline
@@ -1075,21 +1290,26 @@ pub async fn analyze_report_modular_lmstudio(
     let mut notes: Vec<(Section, String)> = vec![(Section::Baseline, baseline_notes)];
 
     // 1) Foreground waits (trimmed)
-    let fg_waits = trim_foreground_waits(
+    let base_user_prompt_str = user_prompt_for_section(Section::WaitEventsForeground, &capsule_json, "{}");  
+    let fg_waits = trim_foreground_waits_by_budget(
         report.top_foreground_wait_events.clone(),
-        cfg.waits_top_n,
-        cfg.mad_per_item_top_n,
+        &base_user_prompt_str,
+        &capsule_json,
+        cfg.tokens_budget,
     );
+
     notes.push((Section::WaitEventsForeground,run_section(
         &client, &system, Section::WaitEventsForeground, &capsule_json,
         json!({ "top_foreground_wait_events": fg_waits })
     ).await?));
 
     // 2) Background waits (trimmed)
-    let bg_waits = trim_background_waits(
+    let base_user_prompt_str = user_prompt_for_section(Section::WaitEventsBackground, &capsule_json, "{}");  
+    let bg_waits = trim_background_waits_by_budget(
         report.top_background_wait_events.clone(),
-        cfg.waits_top_n,
-        cfg.mad_per_item_top_n,
+        &base_user_prompt_str,
+        &capsule_json,
+        cfg.tokens_budget,
     );
     notes.push((Section::WaitEventsBackground,run_section(
         &client, &system, Section::WaitEventsBackground, &capsule_json,
@@ -1097,10 +1317,12 @@ pub async fn analyze_report_modular_lmstudio(
     ).await?));
 
     // 3) SQLs (trimmed)
-    let sqls = trim_sqls(
+    let base_user_prompt_str = user_prompt_for_section(Section::SqlElapsedTime, &capsule_json, "{}");  
+    let sqls = trim_sqls_by_budget(
         report.top_sqls_by_elapsed_time.clone(),
-        cfg.sqls_top_n,
-        cfg.mad_per_item_top_n,
+        &base_user_prompt_str,
+        &capsule_json,
+        cfg.tokens_budget,
     );
     notes.push((Section::SqlElapsedTime,run_section(
         &client, &system, Section::SqlElapsedTime, &capsule_json,
@@ -1148,19 +1370,25 @@ pub async fn analyze_report_modular_lmstudio(
         json!({ "top_10_segments_by_direct_physical_reads": report.top_10_segments_by_direct_physical_reads })
     ).await?));
 
-    notes.push((Section::SegmentsDirectPhysicalReads,run_section(&client, &system, Section::SegmentsBufferBusyWaits, &capsule_json,
+    notes.push((Section::SegmentsBufferBusyWaits,run_section(&client, &system, Section::SegmentsBufferBusyWaits, &capsule_json,
         json!({ "top_10_segments_by_buffer_busy_waits": report.top_10_segments_by_buffer_busy_waits })
     ).await?));
 
     // 7) Instance correlation
-    notes.push((Section::SegmentsDirectPhysicalReads,run_section(
+    notes.push((Section::InstanceStatsCorrelation,run_section(
         &client, &system, Section::InstanceStatsCorrelation, &capsule_json,
         json!({ "instance_stats_pearson_correlation": report.instance_stats_pearson_correlation })
     ).await?));
 
     // 8) Load profile anomalies (trimmed)
-    let lp_anoms = trim_load_profile_anomalies(report.load_profile_anomalies.clone(), cfg.anomalies_top_n);
-    notes.push((Section::SegmentsDirectPhysicalReads,run_section(
+    let base_user_prompt_str = user_prompt_for_section(Section::LoadProfileAnomalies, &capsule_json, "{}");  
+    let lp_anoms = trim_load_profile_anomalies_by_budget(
+        report.load_profile_anomalies.clone(),
+        &base_user_prompt_str,
+        &capsule_json,
+        cfg.tokens_budget,
+    );
+    notes.push((Section::LoadProfileAnomalies,run_section(
         &client, &system, Section::LoadProfileAnomalies, &capsule_json,
         json!({ "load_profile_anomalies": lp_anoms })
     ).await?));
@@ -1190,6 +1418,32 @@ pub async fn analyze_report_modular_lmstudio(
     notes.push((Section::AnomalyClusters,run_section(
         &client, &system, Section::AnomalyClusters, capsule_json_str,
         serde_json::json!({ "anomaly_clusters": clusters_trimmed })
+    ).await?));
+
+    //Add gradient sections
+    notes.push((Section::GradientWaitEvents,run_section(
+        &client, &system, Section::GradientWaitEvents, capsule_json_str,
+        serde_json::json!({ "db_time_gradient_fg_wait_events": report.db_time_gradient_fg_wait_events })
+    ).await?));
+
+    notes.push((Section::GradientStatsCounters,run_section(
+        &client, &system, Section::GradientStatsCounters, capsule_json_str,
+        serde_json::json!({ "db_time_gradient_instance_stats_counters": report.db_time_gradient_instance_stats_counters })
+    ).await?));
+
+    notes.push((Section::GradientStatsVolume,run_section(
+        &client, &system, Section::GradientStatsVolume, capsule_json_str,
+        serde_json::json!({ "db_time_gradient_instance_stats_volumes": report.db_time_gradient_instance_stats_volumes })
+    ).await?));
+
+    notes.push((Section::GradientStatsTime,run_section(
+        &client, &system, Section::GradientStatsTime, capsule_json_str,
+        serde_json::json!({ "db_time_gradient_instance_stats_time": report.db_time_gradient_instance_stats_time })
+    ).await?));
+
+    notes.push((Section::GradientSQLs,run_section(
+        &client, &system, Section::GradientSQLs, capsule_json_str,
+        serde_json::json!({ "db_time_gradient_sql_elapsed_time": report.db_time_gradient_sql_elapsed_time })
     ).await?));
 
    // Build a single markdown bundle for the composer step.
