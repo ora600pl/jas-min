@@ -13,6 +13,8 @@ use html_escape::encode_text;
 use pulldown_cmark::{html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use crate::awr::GetStats;
 use tokio::sync::oneshot;
+use serde::Serialize;
+
 
 
 pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> String {
@@ -459,15 +461,54 @@ pub async fn spinning_beer(mut done: oneshot::Receiver<()>) {
     println!("\r✅ Got response!");
 }
 
-/// Rough token estimate.
-/// Typical rule of thumb: ~4 characters per token for English-like text.
-/// For JSON with lots of numbers/keys it’s often in the same ballpark.
+/// Rough token estimate: ~4 chars per token.
+/// Works fine as a budget guardrail for JSON-heavy prompts.
 pub fn estimate_tokens_from_str(s: &str) -> usize {
-    // Avoid zero and keep it conservative.
     (s.chars().count() + 3) / 4
 }
 
-pub fn estimate_tokens_json(v: &serde_json::Value) -> usize {
-    let s = serde_json::to_string(v).unwrap_or_default();
-    estimate_tokens_from_str(&s)
+/// Builds the "combined string" that we actually send (base prompt + capsule + input JSON).
+pub fn estimate_request_tokens(base_user_prompt_str: &str, capsule_json_str: &str, input_json: &serde_json::Value) -> usize {
+    let input_str = serde_json::to_string(input_json).unwrap_or_default();
+    let combined = format!(
+        "{}\n{}\nINPUT:\n{}",
+        base_user_prompt_str,
+        capsule_json_str,
+        input_str
+    );
+    estimate_tokens_from_str(&combined)
+}
+
+/// Generic helper: given a sorted Vec<T>, find the maximum prefix length that fits into budget.
+/// `wrap` is responsible for putting the slice into the JSON shape used by the section.
+pub fn max_prefix_that_fits<T: Serialize>(
+    items: &[T],
+    base_user_prompt_str: &str,
+    capsule_json_str: &str,
+    budget_tokens: usize,
+    wrap: impl Fn(&[T]) -> serde_json::Value,
+) -> usize {
+    if items.is_empty() || budget_tokens < 256 {
+        return 0;
+    }
+
+    let fits = |k: usize| -> bool {
+        if k == 0 { return true; }
+        let v = wrap(&items[..k]);
+        estimate_request_tokens(base_user_prompt_str, capsule_json_str, &v) <= budget_tokens
+    };
+
+    if !fits(1) {
+        return 0;
+    }
+
+    let mut lo = 1usize;
+    let mut hi = items.len();
+
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if fits(mid) { lo = mid; } else { hi = mid - 1; }
+    }
+
+    lo
 }
