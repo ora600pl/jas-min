@@ -1,4 +1,4 @@
-JAS-MIN
+# JAS-MIN
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="/img/jasmin_LOGO_black.png">
@@ -6,179 +6,267 @@ JAS-MIN
   <img alt="JAS-MIN logo" src="/img/jasmin_LOGO_white.png">
 </picture>
 
+## JSON AWR / STATSPACK Mining & Analysis Tool
 
-JSON AWR / STATSPACK Mining & Analysis Tool
+**JAS-MIN** is an Oracle performance analysis tool that parses **AWR** (`.html`) and **STATSPACK** (`.txt`) reports into structured JSON and runs statistical + numerical analysis focused on **DB Time**.
 
-JAS-MIN is an advanced Oracle performance analysis tool that parses AWR and STATSPACK reports into structured JSON and applies statistical, numerical and AI-assisted analysis to understand DB Time behavior.
+Instead of treating DB Time as a flat metric or trusting static *Top-N* lists, JAS-MIN models DB Time as a **multidimensional function** of many variables (waits, stats, SQL workload). To estimate “what moves DB Time the most”, it numerically estimates a **gradient-like sensitivity** using regularized regression:
 
-Instead of treating DB Time as a flat metric or relying on static Top-N lists, JAS-MIN models DB Time as a multidimensional function of waits, statistics and SQL workload — and analyzes it using:
-	•	numerical gradient estimation
-	•	regularized regression (Ridge, Elastic Net)
-	•	anomaly detection (MAD)
-	•	correlation analysis
-	•	optional LLM-based interpretation
+- **Ridge Regression** (stable, dense signal)
+- **Elastic Net Regression** (sparse / selective signal)
 
-The result is a data-driven ranking of what actually drives DB Time, not what merely looks busy.
+On top of that you get correlation, anomaly detection (MAD), snapshot filtering, and optional AI interpretation.
 
-Created for DBAs, SREs and performance engineers who are tired of superstition.
+---
 
-⸻
+## Features
 
-Key Capabilities
+- Parse multiple AWR/STATSPACK reports **in parallel**
+- Generate clean **JSON output** for automation / archiving / downstream analysis
+- Identify TOP: SQLs, Foreground/Background wait events, IO stats, Segment stats, and more
+- Correlate wait events & instance statistics with DB Time (Pearson correlation)
+- Detect anomalies using **MAD** (Median Absolute Deviation), optionally in a sliding window
+- Optional LLM-based assistant to interpret results (OpenAI / Gemini)
+- Configurable security levels for sensitive data handling
+- CLI-first, scripting/pipeline friendly
 
-Parsing & Data Model
-	•	Parse single AWR (.html) or STATSPACK (.txt) reports
-	•	Parse entire directories of reports in parallel
-	•	Normalize and aggregate data into structured JSON
-	•	Re-analyze previously generated JSON files
+---
 
-DB Time Analysis
-	•	Treat DB Time as a multidimensional function of:
-	•	Foreground wait events
-	•	System and instance statistics
-	•	I/O volumes and timings
-	•	SQL workload characteristics
-	•	Numerically estimate DB Time gradients using:
-	•	Ridge Regression (stable, dense signals)
-	•	Elastic Net Regression (sparse, selective signals)
+## Assumptions
 
-Statistical Techniques
-	•	Pearson correlation analysis against DB Time
-	•	Anomaly detection using Median Absolute Deviation (MAD)
-	•	Sliding-window anomaly detection
-	•	Snapshot range filtering
+- `.txt` files are treated as STATSPACK reports
+- `.html` files are treated as AWR reports
+- Best results come from analyzing **a sequence** of reports (directory), not a single snapshot
 
-SQL & Workload Insight
-	•	Identify TOP SQL by elapsed time
-	•	Optionally force inclusion of specific SQL_IDs
-	•	Correlate SQL activity with DB Time behavior
+---
 
-AI Assistance (Optional)
-	•	Use OpenRouter, OpenAI or Google Gemini models to:
-	•	Interpret performance data
-	•	Generate human-readable explanations
-	•	Perform deep analysis on selected snapshot ranges
-	•	Modular token budgeting to control cost
-	•	Optional URL-based context injection (Gemini)
+## Quick start guides (articles)
 
-Security & Privacy
-	•	Configurable security levels:
-	•	0 – no object names or SQL text stored
-	•	1 – include segment names
-	•	2 – include full SQL text
+- https://blog.struktuur.pl/blog/jasmin_part1/
+- https://blog.struktuur.pl/blog/jasmin_part2/
+- https://blog.ora-600.pl/2025/07/28/jas-min-and-ai/
 
-Automation Friendly
-	•	CLI-first design
-	•	Deterministic JSON output
-	•	Suitable for CI, pipelines and offline analysis
+---
 
-⸻
+## Installation
 
-Usage
+Build from source (example):
 
+```bash
+cargo build --release
+```
+
+Binary will be in:
+
+```bash
+./target/release/jas-min
+```
+
+---
+
+## Usage
+
+```bash
 jas-min [OPTIONS]
+```
 
-Input Selection
+### Options (full list)
 
-Option	Description
---file <FILE>	Parse a single AWR or STATSPACK file
--d, --directory <DIRECTORY>	Parse an entire directory of reports
--j, --json-file <JSON_FILE>	Analyze an existing JSON file
+> Below is the current CLI help output formatted for README, including descriptions and defaults.
 
-Output Control
+#### Input
 
-Option	Description
--o, --outfile <OUTFILE>	Custom output file name
--q, --quiet	Suppress terminal output (logs still written)
+- `--file <FILE>`  
+  Parse a single text or html file  
+  **Default:** empty
 
-Snapshot & Filtering
+- `-d, --directory <DIRECTORY>`  
+  Parse whole directory of files  
+  **Default:** empty
 
-Option	Description
--s, --snap-range <BEGIN-END>	Filter snapshots by SNAP ID range
--f, --filter-db-time <VALUE>	Ignore snapshots below DB Time threshold
+- `-j, --json-file <JSON_FILE>`  
+  Analyze provided JSON file  
+  **Default:** empty
 
-Performance Model Parameters
+#### Output
 
-Option	Description	Default
--t, --time-cpu-ratio	DB CPU / DB Time threshold	0.666
--R, --ridge-lambda	Ridge regularization strength	50
--E, --en-lambda	Elastic Net regularization strength	30
--A, --en-alpha	Elastic Net L1/L2 mix	0.666
--I, --en-max-iter	Elastic Net max iterations	5000
--T, --en-tol	Elastic Net convergence tolerance	1e-6
+- `-o, --outfile <OUTFILE>`  
+  Write output to nondefault file. Default is `directory_name.json`  
+  **Default:** empty
 
-Anomaly Detection
+- `-q, --quiet`  
+  Suppress terminal output (still writes to log file)
 
-Option	Description	Default
--m, --mad-threshold	MAD anomaly threshold	7
--W, --mad-window-size	Sliding window size (% of probes)	100
+#### Filters / ranges
 
-Parallelism
+- `-f, --filter-db-time <FILTER_DB_TIME>`  
+  Filter only for DBTIME greater than (0 disables the filter)  
+  **Default:** `0`
 
-Option	Description	Default
--P, --parallel	Parallelism level	4
+- `-s, --snap-range <SNAP_RANGE>`  
+  Filter snapshots by SNAP IDs in format `BEGIN_ID-END_ID`  
+  **Default:** `0-666666666`
 
-AI Integration
+- `-t, --time-cpu-ratio <TIME_CPU_RATIO>`  
+  Ratio of `DB CPU / DB TIME` used for certain heuristic selections  
+  **Default:** `0.666`
 
-Option	Description
--a, --ai <VENDOR:MODEL:LANG>	Enable AI interpretation
--b, --backend-assistant	Launch JAS-MIN backend AI agent
--C, --token-count-factor	Output token scaling factor
--B, --tokens-budget	Token budget for modular analysis
--D, --deep-check	Enable deep AI analysis mode
--u, --url-context-file	Gemini URL context support
+#### SQL selection
 
-Security
+- `-i, --id-sqls <ID_SQLS>`  
+  Include indicated SQL_IDs as TOP SQL in format `SQL_ID1,SQL_ID2,...` (experimental)  
+  **Default:** empty
 
-Option	Description	Default
--S, --security-level	Data sensitivity level (0–2)	0
+- `SQLsI (by elapsed time)`  
+  JAS-MIN ranks SQLs primarily by **Elapsed Time** unless your workflow overrides it.
 
+#### AI / Assistant
 
-⸻
+- `-a, --ai <AI>`  
+  Use an AI model to interpret collected statistics and describe them.  
+  Requires env var: `OPENAI_API_KEY` or `GEMINI_API_KEY`.  
+  Format: `VENDOR:MODEL_NAME:LANGUAGE_CODE`  
+  Example: `openai:gpt-4-turbo:PL` or `google:gemini-2.0-flash:PL`  
+  **Default:** empty
 
-AI Configuration
+- `-b, --backend-assistant <BACKEND_ASSISTANT>`  
+  Launch the backend agent used by the JASMIN Assistant.  
+  Value: `<openai>` or `<google:model>`  
+  Config (API keys, PORT, etc.) loaded from `.env`  
+  **Default:** empty
 
-To enable AI features, set one of the following environment variables:
-	•	OPENAI_API_KEY
-	•	GEMINI_API_KEY
-	•	OPENROUTER_API_KEY
+- `-u, --url-context-file <URL_CONTEXT_FILE>`  
+  (Gemini) Provide a file with URLs for Gemini URL context tool  
+  **Default:** empty
 
+- `-D, --deep-check <DEEP_CHECK>`  
+  Ask the AI to perform a deep analysis of detailed JSON statistics by proposing top-N SNAPs and analyzing all statistics from that period  
+  **Default:** `0`
 
+- `-B, --tokens-budget <TOKENS_BUDGET>`  
+  Token budget for modular LLM analysis (minimize token usage)  
+  **Default:** `80000`
 
-Example:
+- `-C, --token-count-factor <TOKEN_COUNT_FACTOR>`  
+  Base output token count is `8192`; multiply by this factor to set maximum output tokens  
+  **Default:** `8`
 
--a openai:gpt-4-turbo:EN
--a google:gemini-2.5-flash:PL
--a openrouter:anthropic/claude-sonnet-4.5:en
+#### Anomaly detection (MAD)
 
-Backend assistant configuration is loaded from .env.
+- `-m, --mad-threshold <MAD_THRESHOLD>`  
+  Threshold for detecting anomalies using MAD  
+  **Default:** `7`
 
-⸻
+- `-W, --mad-window-size <MAD_WINDOW_SIZE>`  
+  Window size for MAD local sliding window, specified as `% of probes`  
+  **Default:** `100`
 
-Assumptions
-	•	.html files are treated as AWR reports
-	•	.txt files are treated as STATSPACK reports
-	•	Snapshot ranges refer to SNAP IDs
+#### Parallelism
 
-⸻
+- `-P, --parallel <PARALLEL>`  
+  Parallelism level  
+  **Default:** `4`
 
-Documentation & Articles
-	•	https://blog.struktuur.pl/blog/jasmin_part1/
-	•	https://blog.struktuur.pl/blog/jasmin_part2/
-	•	https://blog.ora-600.pl/2025/07/28/jas-min-and-ai/
+#### Security / privacy
 
-⸻
+- `-S, --security-level <SECURITY_LEVEL>`  
+  Security level for sensitive data storage:  
+  - `0` – highest security: store no object names, database names, or other sensitive data  
+  - `1` – store `segment_names` from Segment Statistics  
+  - `2` – store full SQL Text from AWR reports  
+  **Default:** `0`
 
-Project Status
-	•	Actively developed
-	•	Used on real-world Oracle systems
-	•	APIs and output formats may evolve
+#### Gradient model parameters
 
-Expect sharp edges. They are intentional.
+- `-R, --ridge-lambda <RIDGE_LAMBDA>`  
+  L2 regularization strength for Ridge (>= 0)  
+  **Default:** `50`
 
-⸻
+- `-E, --en-lambda <EN_LAMBDA>`  
+  Overall regularization strength for Elastic Net (>= 0)  
+  **Default:** `30`
 
-Authors
-	•	Kamil Stawiarski kamil@ora-600.pl￼
-	•	Radosław Kut radek@ora-600.pl￼
+- `-A, --en-alpha <EN_ALPHA>`  
+  Elastic Net L1/L2 mixing:  
+  - `alpha = 1.0` → Lasso (pure L1)  
+  - `alpha = 0.0` → Ridge-like (pure L2)  
+  **Default:** `0.666`
+
+- `-I, --en-max-iter <EN_MAX_ITER>`  
+  Max iterations for coordinate descent in Elastic Net  
+  **Default:** `5000`
+
+- `-T, --en-tol <EN_TOL>`  
+  Convergence tolerance for coefficient change in Elastic Net  
+  **Default:** `0.000001`
+
+#### Misc
+
+- `-h, --help`  
+  Print help
+
+- `-V, --version`  
+  Print version
+
+---
+
+## Examples
+
+### Parse a directory of reports and write JSON
+
+```bash
+jas-min -d ./awr_dir -o output.json
+```
+
+### Filter by DB Time threshold
+
+```bash
+jas-min -d ./awr_dir -f 1000
+```
+
+### Restrict to a SNAP range
+
+```bash
+jas-min -d ./awr_dir -s 1200-1250
+```
+
+### Run with AI interpretation (OpenAI)
+
+```bash
+export OPENAI_API_KEY="..."
+jas-min -d ./awr_dir -a openai:gpt-4-turbo:PL
+```
+
+### Run with AI interpretation (Gemini + URL context)
+
+```bash
+export GEMINI_API_KEY="..."
+jas-min -d ./awr_dir -u urls.txt -a google:gemini-2.0-flash:PL
+```
+
+### Increase AI output budget (carefully)
+
+```bash
+jas-min -d ./awr_dir -a openai:gpt-4-turbo:EN -C 12 -B 120000
+```
+
+---
+
+## Notes
+
+- If you run analysis with plotting/HTML generation in your workflow, the output is typically an interactive dashboard based on Plotly (depending on build/features).
+- To read `reasonnings.txt` and `.env` from a directory other than the current working directory, set `JASMIN_HOME`.
+
+---
+
+## Project status
+
+Actively developed. Used on real-world systems. Expect sharp edges.
+
+---
+
+## Authors
+
+- **Kamil Stawiarski** <kamil@ora-600.pl>  
+- **Radosław Kut** <radek@ora-600.pl>
 
