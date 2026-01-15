@@ -171,15 +171,18 @@ pub struct LocalOpenAiCompatClient {
     model: String,    // from LOCAL_MODEL or hint
     temperature: f64,
     max_tokens: usize,
+    api_key: String,
 }
 
 impl LocalOpenAiCompatClient {
     pub fn from_env(model_hint: &str, temperature: f64, max_tokens: usize) -> Self {
         let base_url = env::var("LOCAL_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:1234/v1".to_string());
+            .unwrap_or_else(|_| "http://localhost:1234/v1/chat/completions".to_string());
 
         let model = env::var("LOCAL_MODEL")
             .unwrap_or_else(|_| model_hint.to_string());
+
+        let api_key = env::var("LOCAL_API_KEY").unwrap_or("X".to_string());
 
         Self {
             http: Client::new(),
@@ -187,11 +190,12 @@ impl LocalOpenAiCompatClient {
             model,
             temperature,
             max_tokens,
+            api_key,
         }
     }
 
     pub async fn chat_content(&self, system: &str, user: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let url =  self.base_url.trim_end_matches('/');
 
         let payload = json!({
             "model": self.model,
@@ -204,7 +208,16 @@ impl LocalOpenAiCompatClient {
             "stream": false
         });
 
-        let resp = self.http.post(url).json(&payload).send().await?;
+        //let resp = self.http.post(url).json(&payload).send().await?;
+        let resp = self.http
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .header("X-Title", "jas-min")
+            .json(&payload)
+            .send()
+            .await?;
+        
         let status = resp.status();
         let text = resp.text().await?;
 
