@@ -38,7 +38,7 @@ pub const KEY_STATS_TIME: [&str; 12] = [
 
 
 /// VOLUME group: bytes/blocks/size-like.
-pub const KEY_STATS_VOLUME: [&str; 11] = [
+pub const KEY_STATS_VOLUME: [&str; 12] = [
     "bytes received via sql*net from client",
     "bytes sent via sql*net to client",
     "bytes received via sql*net from dblink",
@@ -51,12 +51,13 @@ pub const KEY_STATS_VOLUME: [&str; 11] = [
 
     "redo size",
     "redo size for lost write detection",
+    "redo wastage",
 
     "flashback log write bytes"
 ];
 
 /// COUNTER group: counts of operations/events.
-pub const KEY_STATS_COUNTERS: [&str; 47] = [
+pub const KEY_STATS_COUNTERS: [&str; 46] = [
     // Logon storm / session churn  
     "logons cumulative",
     "logons current",
@@ -126,7 +127,6 @@ pub const KEY_STATS_COUNTERS: [&str; 47] = [
     "redo log space requests",
     "redo synch writes",
     "redo writes",
-    "redo wastage",
 
     // Enqueue activity (locks)  
     "enqueue requests",
