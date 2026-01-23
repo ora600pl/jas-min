@@ -1021,7 +1021,8 @@ pub async fn openrouter(
     let load_profile = fs::read_to_string(&json_path)
         .expect(&format!("Can't open file {}", json_path));
 
-    let response_file = format!("{}_openrouter.md", logfile_name);
+    let model_name = vendor_model_lang[1].replace("/", "_");
+    let response_file = format!("{}_{}.md", logfile_name, model_name);
     let client = Client::new();
 
     // SYSTEM SPELL + ADVANCED RULES 
@@ -1062,12 +1063,12 @@ pub async fn openrouter(
         .send()
         .await?;
 
-    let _ = tx.send(());
-    let _ = spinner.await;
-
     if resp.status().is_success() {
-        println!("Processing response... (it may take a bit)");
+        println!("Waiting for OpenRouter to stream full response - please wait...");
         let body = resp.text().await?;
+
+        let _ = tx.send(());
+        let _ = spinner.await;
 
         let json: Value = serde_json::from_str(&body)?;
         let content = json["choices"][0]["message"]["content"]
@@ -1107,7 +1108,7 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
     let path = format!("{stem}.html_reports/stats/global_statistics.json");
     let load_profile = fs::read_to_string(&path).expect(&format!("Can't open file {}", path));
 
-    let response_file = format!("{}_gpt5.md", logfile_name);
+    let response_file = format!("{}_{}.md", logfile_name, vendor_model_lang[1]);
 
     // build spell
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
@@ -1157,13 +1158,16 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
     }));
         
     // tune max_output_tokens
-    let max_output_tokens = 8192 * token_count_factor;
+    //let max_output_tokens = 8192 * token_count_factor;
 
     let payload = json!({
         "model": vendor_model_lang[1], // e.g., "gpt-5"
         "input": input_messages,
-        "max_output_tokens": 8192 * token_count_factor,
+        //"max_output_tokens": 8192 * token_count_factor,
     });
+
+    let payload_str = serde_json::to_string(&payload).unwrap();
+    println!("The whole estimated number of tokens is: {}", estimate_tokens_from_str(&payload_str));
 
     let client = Client::new();
 
@@ -1212,7 +1216,7 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
         };
 
         fs::write(&response_file, full_text.as_bytes())?;
-        println!("🧠 GPT-5 response written to file: {}", &response_file);
+        println!("🧠 OpenAI response written to file: {}", &response_file);
 
         convert_md_to_html_file(&response_file, events_sqls);
 

@@ -227,6 +227,15 @@ fn main() {
 			eprintln!("ERROR: JSON file: '{}' does not exists!",args.json_file);
 		}
 	}
+
+	let j = serde_json::to_value(&report_for_ai).unwrap();
+	let toon_str = encode(&j, None);
+	if toon_str.len() > 128 {
+		let mut f = fs::File::create("report_for_ai.toon").unwrap();
+		f.write_all(toon_str.as_bytes()).unwrap();
+		println!("\n🎲 The TOON file alone will consume around {} tokens. Take it under consideration if you want to use AI processing.", estimate_tokens_from_str(&toon_str));
+	}
+	
 	if !args.ai.is_empty() {
         let vendor_model_lang_parts = args.ai.split(":").collect::<Vec<&str>>();
 		let vendor_model_lang = if vendor_model_lang_parts.len() > 3 {
@@ -237,10 +246,7 @@ fn main() {
 		} else {
 			vendor_model_lang_parts
 		};
-		let j = serde_json::to_value(&report_for_ai).unwrap();
-		let toon_str = encode(&j, None);
-		let mut f = fs::File::create("report_for_ai.toon").unwrap();
-		f.write_all(toon_str.as_bytes()).unwrap();
+		
         if vendor_model_lang[0] == "openai" {
             openai_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
         } else if vendor_model_lang[0] == "google" { 
