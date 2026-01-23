@@ -228,7 +228,15 @@ fn main() {
 		}
 	}
 	if !args.ai.is_empty() {
-        let vendor_model_lang = args.ai.split(":").collect::<Vec<&str>>();
+        let vendor_model_lang_parts = args.ai.split(":").collect::<Vec<&str>>();
+		let vendor_model_lang = if vendor_model_lang_parts.len() > 3 {
+			let vendor = vendor_model_lang_parts[0];
+			let lang = vendor_model_lang_parts[vendor_model_lang_parts.len() - 1];
+			let model = &args.ai[vendor.len() + 1..args.ai.len() - lang.len() - 1];
+			vec![vendor, model, lang]
+		} else {
+			vendor_model_lang_parts
+		};
 		let j = serde_json::to_value(&report_for_ai).unwrap();
 		let toon_str = encode(&j, None);
 		let mut f = fs::File::create("report_for_ai.toon").unwrap();
