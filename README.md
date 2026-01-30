@@ -237,6 +237,13 @@ export OPENAI_API_KEY="..."
 jas-min -d ./awr_dir -a openai:gpt-4-turbo:PL
 ```
 
+### Run with AI interpretation (OpenRouter)
+
+```bash
+export OPENROUTER_API_KEY="..."
+jas-min -d ./awr_dir -a openrouter:anthropic/claude-sonnet-4.5:pl
+```
+
 ### Run with AI interpretation (Gemini + URL context)
 
 ```bash
@@ -248,6 +255,14 @@ jas-min -d ./awr_dir -u urls.txt -a google:gemini-2.0-flash:PL
 
 ```bash
 jas-min -d ./awr_dir -a openai:gpt-4-turbo:EN -C 12 -B 120000
+```
+
+### Run with AI interpretation (local model)
+
+```bash
+export LOCAL_API_KEY="..."
+export LOCAL_BASE_URL=https://internal_url/chat
+jas-min -d ./awr_dir --ai=local:openai/gpt-oss-120b:en --tokens-budget=4000
 ```
 
 ---

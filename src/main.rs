@@ -37,7 +37,7 @@ use toon::encode;
 /// It was tested only against 19c reports
 /// The tool is under development and it has a lot of bugs, so please test it and don't hasitate to suggest some code changes :)
 #[derive(Parser, Debug, Clone)]
-#[clap(author, version, about, long_about = None)]
+#[clap(author, version, about, long_about = None, verbatim_doc_comment)]
 struct Args {
     ///Parse a single text or html file
     #[clap(long, default_value="")]
@@ -61,7 +61,7 @@ struct Args {
 
 	///Include indicated SQL_IDs as TOP SQL in fomrat SQL_ID1, SQL_ID2,...
 	///This is experimental function
-	#[clap(short, long, default_value="")]
+	#[clap(short, long, default_value="",verbatim_doc_comment)]
 	id_sqls: String,
 
 	///Analyze provided JSON file
@@ -77,9 +77,15 @@ struct Args {
     quiet: bool,
 
 	///Use AI model to interpret collected statistics and describe them. 
-	///Environment variable [OPENAI_API_KEY | GEMINI_API_KEY] should be set to your personal API key 
+	///Environment variable [OPENAI_API_KEY | GEMINI_API_KEY | OPENROUTER_API_KEY | LOCAL_API_KEY] should be set to your personal API key 
 	///The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL)
-	#[clap(short, long, default_value="")]
+	/// Currently supported vendors are:
+	///		- openai 
+	///		- google 
+	///		- openrouter 
+	///		- openroutersmall - use this one if the model has small context window 
+	///		- local - for your local models compatible with OpenAI API
+	#[clap(short, long, default_value="", verbatim_doc_comment)]
 	ai: String,
 
 	///Base output token count is 8192 - you can update maximum number of output tokens by this factor
@@ -89,7 +95,7 @@ struct Args {
 	///Launches the backend agent used by the JASMIN Assistant.
 	///-b <openai>|<google:model>
 	/// Configuration details such as API keys and the selected PORT number are loaded from the .env file
-	#[clap(short, long, default_value="")]
+	#[clap(short, long, default_value="", verbatim_doc_comment)]
 	backend_assistant: String,
 
 	///Threshold for detecting anomalies using MAD
@@ -104,20 +110,21 @@ struct Args {
 	#[clap(short = 'P', long, default_value_t=4)]
     parallel: usize,
 
-	///Security level - highest security level is 0 - JAS-MIN will not store any object names, database names or any other sensitive data
-	///                                           1 - JAS-MIN will store segment_names from Segment Statistics section
-	/// 										  2 - JAS-MIN will store Full SQL Text from AWR reports
-	#[clap(short = 'S', long, default_value_t=0)]
+	///Security level: 
+	///		0 - JAS-MIN will not store any object names, database names or any other sensitive data
+	///		1 - JAS-MIN will store segment_names from Segment Statistics section
+	///		2 - JAS-MIN will store Full SQL Text from AWR reports
+	#[clap(short = 'S', long, default_value_t=0,verbatim_doc_comment)]
     security_level: usize,
 
 	///This can be used with Gemini models - Using the URL context tool, you can provide Gemini with URLs as additional context for your prompt. The model can then retrieve content from the URLs and use that content to inform and shape its response.
 	///Check Google Documentation for more info: https://ai.google.dev/gemini-api/docs/url-context
-	#[clap(short, long, default_value="")]
+	#[clap(short, long, default_value="",verbatim_doc_comment)]
 	url_context_file: String,
 
 	///Should AI perform a deep analyze of detail JSON statistics? 
 	/// By using this option, LLM will be asked to propose topN SNAPs to analyze all of the statistics from this period. 
-	#[clap(short = 'D', long, default_value_t=0)]
+	#[clap(short = 'D', long, default_value_t=0,verbatim_doc_comment)]
 	deep_check: usize,
 
 	///Budget for token - used by modular LLM analyzes to minimize the number of tokens used by the model
@@ -135,7 +142,7 @@ struct Args {
 	///For calculating gradient - mixing between L1 and L2 in Elastic Net:
 	///     alpha = 1.0 -> Lasso (pure L1)
 	///     alpha = 0.0 -> Ridge-like (pure L2)
-	#[clap(short = 'A', long, default_value_t=0.666)]
+	#[clap(short = 'A', long, default_value_t=0.666,verbatim_doc_comment)]
 	en_alpha: f64,
 
 	///Max iterations for coordinate descent in Elastic Net
