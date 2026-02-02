@@ -31,7 +31,6 @@ use crate::tools::*;
 
 use toon::encode;
 
-
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
 ///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
 /// It was tested only against 19c reports
@@ -213,6 +212,7 @@ fn main() {
 			if !args.outfile.is_empty() {
 				fname = args.outfile.clone();
 			}
+			debug_note!("Starting to parse directory: {}", &args.directory);
 			report_for_ai = awr::parse_awr_dir(args.clone(), events_sqls, &fname);
 		} else {
 			eprintln!("ERROR: Directory: '{}' does not exists!",args.directory);

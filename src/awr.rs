@@ -21,6 +21,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 
 use crate::analyze::main_report_builder;
+use crate::debug_note;
 use crate::staticdata::is_idle;
 use crate::Args;
 use crate::reasonings::ReportForAI;
@@ -1876,6 +1877,7 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
 fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, String>) {
 	let mut awr: AWR = AWR::default();
 	let mut sqls_txt: HashMap<String, String> = HashMap::new();
+	debug_note!("Parsing file: {}", fname);
 	if fname.ends_with("html") {
 
 		//println!("Parsing file {}", &fname);

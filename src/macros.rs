@@ -32,3 +32,39 @@ macro_rules! make_notes {
         write!(file, "{}", plain).expect("Unable to write to log file");
     }};
 }
+
+#[macro_export]
+macro_rules! debug_trace {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        use std::env;
+        use crate::tools::get_timestamp;
+
+        if let Ok(trace_file) = env::var("JASMIN_TRACE") {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(trace_file)
+                .expect("Can't create trace file - check JASMIN_TRACE variable");
+
+            writeln!(file, "{}", format_args!($($arg)*)).expect("Unable to write to trace file");
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! debug_note {
+    ($($arg:tt)*) => {{
+        use crate::tools::get_timestamp;
+        let time = get_timestamp();
+        let file = file!();
+        let line = line!();
+        $crate::debug_trace!(
+            "[{}] [{}:{}] {}",
+            time,
+            file,
+            line,
+            format_args!($($arg)*)
+        );
+    }};
+}

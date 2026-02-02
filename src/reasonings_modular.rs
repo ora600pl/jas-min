@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::{cmp::Ordering, env, fs};
 use reqwest::Client;
 use tokio::sync::oneshot;
-use crate::tools::*;
+use crate::{debug_note, tools::*};
 use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI,AppState};
 use toon::encode;
 
@@ -184,6 +184,8 @@ impl LocalOpenAiCompatClient {
 
         let api_key = env::var("LOCAL_API_KEY").unwrap_or("X".to_string());
 
+        debug_note!("Local client url: {} and key with len {} chars", base_url, api_key.len());
+
         Self {
             http: Client::new(),
             base_url,
@@ -208,6 +210,8 @@ impl LocalOpenAiCompatClient {
             "stream": false
         });
 
+        debug_note!("Payload for local client created - asking for response from url {}", url);
+
         //let resp = self.http.post(url).json(&payload).send().await?;
         let resp = self.http
             .post(url)
@@ -220,6 +224,8 @@ impl LocalOpenAiCompatClient {
         
         let status = resp.status();
         let text = resp.text().await?;
+
+        debug_note!("Response status: {}", status);
 
         if !status.is_success() {
             return Err(format!("Local LLM HTTP {}: {}", status, text).into());
@@ -249,6 +255,8 @@ impl OpenRouterClient {
         // Allow overriding model via env, else use hint passed by code.
         let model = env::var("OPENROUTER_MODEL").unwrap_or_else(|_| model_hint.to_string());
 
+        debug_note!("OpenRouter client with key len = {} chars", api_key.len());
+
         Ok(Self {
             http: Client::new(),
             api_key,
@@ -273,6 +281,8 @@ impl OpenRouterClient {
             // "reasoning": { "effort": "high" }
         });
 
+        debug_note!("Payload for OpenRouter client created - asking for response from url {}", url);
+
         let resp = self.http
             .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -284,6 +294,8 @@ impl OpenRouterClient {
 
         let status = resp.status();
         let text = resp.text().await?;
+
+        debug_note!("Response status: {}", status);
 
         if !status.is_success() {
             return Err(format!("OpenRouter HTTP {}: {}", status, text).into());
@@ -1247,7 +1259,7 @@ pub async fn analyze_report_modular_lmstudio(
 
     // Build client from env, using the configured max tokens/temperature.
     let client = ChatClient::new(cfg.use_openrouter, default_model_hint, cfg.temperature, cfg.max_tokens_per_call)?;
-
+    debug_note!("Created client object");
     // Full system prompt with all descriptions preserved.
     let system = format!(
         "{}{}",
