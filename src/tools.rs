@@ -14,8 +14,11 @@ use pulldown_cmark::{html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use crate::awr::GetStats;
 use tokio::sync::oneshot;
 use serde::Serialize;
+use chrono::Local;
 
-
+pub fn get_timestamp() -> String {
+    Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+}
 
 pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> String {
     let mut html = String::new();
