@@ -28,6 +28,7 @@ use crate::{anomalies, Args};
 use crate::anomalies::*;
 
 use crate::make_notes;
+use crate::debug_note;
 use prettytable::{Table, Row, Cell, format, Attr};
 use rayon::prelude::*;
 
@@ -3315,6 +3316,8 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
             sql_type = s.unwrap().sql_type;
         }
 
+        debug_note!("Len of X axis is: {}, while {} was marked as TOP in {} probes.", x_vals.len(), &key.1, x.len() );
+        
         make_notes!(&logfile_name, args.quiet, 0, "{: >24}{:.2}% of probes\n", "Marked as TOP in ", (x.len() as f64 / x_vals.len() as f64 )* 100.0);
         make_notes!(&logfile_name, args.quiet, 0, "{: >35} {: <16.2} \tSTDDEV Ela by Exec: {:.2}\n", "--- AVG Ela by Exec:", avg_exec_t, stddev_exec_t);
         make_notes!(&logfile_name, args.quiet, 0, "{: >35} {: <16.2} \tSTDDEV CPU by Exec: {:.2}\n", "--- AVG CPU by Exec:", avg_exec_t_cpu, stddev_exec_t_cpu);

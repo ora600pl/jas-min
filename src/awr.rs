@@ -625,6 +625,7 @@ fn sql_elapsed_time(table: ElementRef) -> Vec<SQLElapsedTime> {
 fn sql_ela_time_txt(sql_ela_section: Vec<&str>) -> Vec<SQLElapsedTime> {
 	let mut sql_ela_time: Vec<SQLElapsedTime> = Vec::new();
 	let mut sql_id_hash = String::new();
+	let mut seen_ids: HashSet<String> = HashSet::new();
 	for line in sql_ela_section {
 		let fields = line.split_whitespace().collect::<Vec<&str>>();
 		if fields.len()>=6 {
@@ -648,6 +649,12 @@ fn sql_ela_time_txt(sql_ela_section: Vec<&str>) -> Vec<SQLElapsedTime> {
 												elpased_time_exec_s: ela_exec, 
 												pct_total: pct_total, 
 												pct_cpu: -1.0, pct_io: -1.0, sql_module: "?".to_string(), sql_type: String::new()});
+				if seen_ids.contains(&sql_id_hash) {
+					debug_note!("That's wierd - I've already seen this ID: {}. Check if there are colisions of OLD_HASH_VALUE in statspack report", &sql_id_hash);
+				} else {
+					seen_ids.insert(sql_id_hash.clone());
+				}
+				
 			}
 		}
 		if line.starts_with("Module:") && !sql_id_hash.is_empty() {
@@ -2060,6 +2067,7 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 
 		let mut sql_ela: Vec<&str> = Vec::new();
 		sql_ela.extend_from_slice(&awr_lines[sql_ela_index.begin..sql_ela_index.end]);
+		debug_note!("Section boundries in {} for SQL ordered by Elapsed time are {}..{}", &fname, sql_ela_index.begin, sql_ela_index.end);
 		awr.sql_elapsed_time = sql_ela_time_txt(sql_ela);
 
 		let instance_activity_start = format!("{}{}", 12u8 as char, "Instance Activity Stats");
