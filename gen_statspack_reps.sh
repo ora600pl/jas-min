@@ -14,6 +14,8 @@ sed 's/topn\.old_hash_value,10/st\.sql_id,13/g' $ORACLE_HOME/rdbms/admin/sprepin
 mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
 sed 's/topn\.old_hash_value, 10/st\.sql_id,13/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
 mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
+sed 's/topn\.old_hash_value,11/st\.sql_id,14/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
+mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
 sed 's/topn\.module,80/topn\.module,83/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
 mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
 
