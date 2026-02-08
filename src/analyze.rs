@@ -272,20 +272,24 @@ fn report_top_sql_sections(sqlid: &str, awrs: &Vec<AWR>) -> HashMap<String, f64>
     top_sections
 }
 
-fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_vec: Vec<f64>) -> BTreeMap<(i64, String), f64> {
+fn report_instance_stats_cor(instance_stats: HashMap<String, Vec<f64>>, dbtime_vec: Vec<f64>) -> (BTreeMap<(i64, String), f64>,f64) {
     let mut sorted_correlation: BTreeMap<(i64, String), f64> = BTreeMap::new();
+    let num_stats = instance_stats.len();
+    let r_threshold = bonferroni_significance_threshold(num_stats, 0.05, dbtime_vec.len());
+    // Use max(0.5, r_threshold) 
+    let effective_threshold = r_threshold.max(0.5);
 
-    for (k,v) in instance_stats {
+    for (k,v) in &instance_stats {
         if v.len() == dbtime_vec.len() {
             let crr = pearson_correlation_2v(&v, &dbtime_vec);
-            if crr >= 0.5 || crr <= -0.5 {
+            if crr >= effective_threshold || crr <= effective_threshold*-1.0 {
                 sorted_correlation.insert(((crr * 1000.0) as i64 , k.clone()), crr);
             }
         } else {
             println!("Can't calculate correlation for {} - diff was {}", &k, dbtime_vec.len() - v.len());
         }
     }
-    sorted_correlation
+    (sorted_correlation,effective_threshold)
 }
 
 //Add SQL_IDs found in ASH to event charts
@@ -3749,12 +3753,14 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
     let segstats = report_segments_summary(&collection.awrs, &args, &logfile_name, &html_dir, &mut report_for_ai);
     /********************************************/
 
-    make_notes!(&logfile_name, args.quiet, 0, "\n\n");
-    make_notes!(&logfile_name, false, 2, "{}", "Instance Statistics: Correlation with DB Time for values >= 0.5 and <= -0.5".yellow());
-    make_notes!(&logfile_name, args.quiet, 0, "\n\n");
     let mut sorted_correlation = report_instance_stats_cor(instance_stats.clone(), y_vals_dbtime.clone());
+    let corr_txt = format!("Instance Statistics: Correlation with DB Time for values >= {} and <= -{}", sorted_correlation.1, sorted_correlation.1);
+    make_notes!(&logfile_name, args.quiet, 0, "\n\n");
+    make_notes!(&logfile_name, false, 2, "{}", corr_txt.yellow());
+    make_notes!(&logfile_name, args.quiet, 0, "\n\n");
+    
     let mut stats_table_rows = String::new();
-    for ((score, key), value) in sorted_correlation.iter().rev() { // Sort in descending order
+    for ((score, key), value) in sorted_correlation.0.iter().rev() { // Sort in descending order
         stats_table_rows.push_str(&format!(
             r#"<tr><td>{}</td><td>{:.3}</td></tr>"#,
             key,
@@ -3821,7 +3827,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                 <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
                 <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
                 </a></p>
-                <p><span style="font-size:20px;font-weight:bold;">Correlation of Instance Statistics with DB Time for Values >= 0.5 and <= -0.5</span></p>
+                <p><span style="font-size:20px;font-weight:bold;">Correlation of Instance Statistics with DB Time for Values >= {} and <= -{}</span></p>
                 <table id="stats_corr_table" >
                     <thead>
                         <tr>
@@ -3837,7 +3843,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
         </body>
         </html>
         "#,
-        stats_table_rows
+        stats_table_rows, sorted_correlation.1, sorted_correlation.1
     );
 
     // Write to the file
@@ -3845,7 +3851,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
     if let Err(e) = fs::write(&stats_corr_filename, table_stat_corr) {
         eprintln!("Error writing file {}: {}", stats_corr_filename, e);
     }
-    for (k,v) in sorted_correlation {
+    for (k,v) in sorted_correlation.0 {
         make_notes!(&logfile_name, args.quiet, 0, "\t{: >64} : {:.2}\n", &k.1, v);
         report_for_ai.instance_stats_pearson_correlation.push(InstanceStatisticCorrelation{stat_name: k.1.clone(), pearson_correlation_value: v});
     }

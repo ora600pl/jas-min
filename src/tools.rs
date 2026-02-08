@@ -307,6 +307,36 @@ pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, Hash
     open::that(output_path);
 }
 
+/// Adjust correlation significance threshold for multiple testing
+/// using Bonferroni correction
+pub fn bonferroni_significance_threshold(
+    num_tests: usize,
+    alpha: f64,      // desired overall significance level (e.g. 0.05)
+    sample_size: usize,
+) -> f64 {
+    // Critical correlation value at corrected α level
+    // Using Fisher z-transform approximation:
+    // z_critical for α/num_tests
+    let corrected_alpha = alpha / num_tests as f64;
+    let z = normal_quantile(1.0 - corrected_alpha / 2.0);
+    let r_critical = (z / (sample_size as f64 - 3.0).sqrt()).tanh();
+    r_critical
+}
+
+// Simple approximation of normal quantile (Abramowitz & Stegun)
+fn normal_quantile(p: f64) -> f64 {
+    if p <= 0.0 { return f64::NEG_INFINITY; }
+    if p >= 1.0 { return f64::INFINITY; }
+    let t = (-2.0 * (1.0 - p).ln()).sqrt();
+    let c0 = 2.515517;
+    let c1 = 0.802853;
+    let c2 = 0.010328;
+    let d1 = 1.432788;
+    let d2 = 0.189269;
+    let d3 = 0.001308;
+    t - (c0 + c1 * t + c2 * t * t) / (1.0 + d1 * t + d2 * t * t + d3 * t * t * t)
+}
+
 //Calculate pearson correlation of 2 vectors and return simple result
 pub fn pearson_correlation_2v(vec1: &Vec<f64>, vec2: &Vec<f64>) -> f64 {
     let rows: usize = 2;
