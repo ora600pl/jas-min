@@ -27,6 +27,7 @@ use crate::reasonings::{StatisticsDescription,
 
 use prettytable::{Table, Row, Cell, format, Attr};
 use colored::*;
+use crate::tools::*;
 
 
 /// Named time series: event_name/stat_name/sqlid -> Vec<sample_value>
@@ -740,7 +741,7 @@ pub fn build_db_time_gradient_section (
 ///
 /// Expected input:
 /// - section.ridge_top / section.elastic_net_top: already TopN lists prepared for AI
-pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_settings: bool, logfile_name: &str, args: &Args) {
+pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_settings: bool, logfile_name: &str, args: &Args) -> String {
     make_notes!(logfile_name, args.quiet, 0, "\n{} \n\t- {}", "==== DB TIME GRADIENT (Ridge / Elastic Net) ====".bold().bright_cyan(), section.settings.input_wait_event_unit);
 
     // -----------------------------
@@ -793,8 +794,7 @@ pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_sett
     // Ridge TOP table
     // -----------------------------
     make_notes!(logfile_name, args.quiet, 0, "{}", "\n-- Ridge TOP --\n".bold().bright_white());
-    print_top_items_table("Ridge", &section.ridge_top, logfile_name, args);
-
+    let mut gradient_html = print_top_items_table("Ridge", &section.ridge_top, logfile_name, args);
     // -----------------------------
     // Elastic Net TOP table
     // -----------------------------
@@ -811,13 +811,15 @@ pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_sett
         make_notes!(logfile_name, args.quiet, 0, "{}", "Elastic Net produced no non-zero coefficients (try smaller lambda or smaller alpha)."
             .yellow());
     } else {
-        print_top_items_table("ElasticNet", &en_nonzero, logfile_name, args);
+        let elastic = print_top_items_table("ElasticNet", &en_nonzero, logfile_name, args);
+        gradient_html = format!("{}<br />{}", gradient_html, elastic);
     }
+    gradient_html
 }
 
 /// Helper: prints Top-N list as a prettytable.
 /// Rows are rank-ordered as provided by the caller.
-pub fn print_top_items_table(title: &str, items: &[GradientTopItem], logfile_name: &str, args: &Args) {
+pub fn print_top_items_table(title: &str, items: &[GradientTopItem], logfile_name: &str, args: &Args) -> String {
     let mut table = Table::new();
     table.set_titles(Row::new(vec![
         Cell::new("#").with_style(Attr::Bold),
@@ -840,4 +842,7 @@ pub fn print_top_items_table(title: &str, items: &[GradientTopItem], logfile_nam
     for table_line in table.to_string().lines() {
             make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
         }
+    
+    let html_table = table_to_html_string(&table, title, &["#", "Wait Event/Statistic", "Coef", "Impact"]);
+    html_table
 }

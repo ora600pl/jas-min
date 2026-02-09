@@ -3843,7 +3843,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
         </body>
         </html>
         "#,
-        stats_table_rows, sorted_correlation.1, sorted_correlation.1
+        sorted_correlation.1, sorted_correlation.1, stats_table_rows
     );
 
     // Write to the file
@@ -4745,9 +4745,12 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
             "<button id=\"show-bgevents-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Backgrd Events</span><span>TOP Backgrd Events</span></button>",
             "<button id=\"show-anomalies-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">Anomalies Summary</span><span>Anomalies Summary</span></button>",
             format!(
-                "<a href=\"{}\" target=\"_blank\" style=\"text-decoration: none;\">
+                "<a href=\"stats/statistics_corr.html\" target=\"_blank\" style=\"text-decoration: none;\">
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">STATS Correlation</span><span>STATS Correlation</span></button>
-                </a>", "stats/statistics_corr.html"
+                </a>
+                <a href=\"stats/gradient.html\" target=\"_blank\" style=\"text-decoration: none;\">
+                    <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">Gradient Analyzes</span><span>Gradient Analyzes</span></button>
+                </a>"
             ),
             if !args.backend_assistant.is_empty() { 
                 format!("{}","<button id=\"show-JASMINAI-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">JAS-MIN Assistant</span><span>JAS-MIN Assistant</span></button>")
@@ -4854,6 +4857,14 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
     let elastic_net_max_iter = args.en_max_iter;
     let elastic_net_tol = args.en_tol;
 
+    /*HTML variables for tables*/
+    let mut gradient_events = String::new();
+    let mut gradient_stats_cnt = String::new();
+    let mut gradient_stats_volume = String::new();
+    let mut gradient_stats_time = String::new();
+    let mut gradient_sqls = String::new();
+    /* *********************** */
+
     // ---------------------------------------------------------------------
     // Attach DB Time gradient vs wait events to ReportForAI (optional section)
     // ---------------------------------------------------------------------
@@ -4891,7 +4902,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
             }
         }
         if let Some(section) = &report_for_ai.db_time_gradient_fg_wait_events {
-            print_db_time_gradient_tables(section, true, &logfile_name, &args);
+            gradient_events = print_db_time_gradient_tables(section, true, &logfile_name, &args);
         }
     }
 
@@ -4935,7 +4946,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
             }
         }
         if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_counters {
-            print_db_time_gradient_tables(section, false, &logfile_name, &args);
+            gradient_stats_cnt = print_db_time_gradient_tables(section, false, &logfile_name, &args);
         }
     }
 
@@ -4979,7 +4990,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
             }
         }
         if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_volumes {
-            print_db_time_gradient_tables(section, false, &logfile_name, &args);
+            gradient_stats_volume = print_db_time_gradient_tables(section, false, &logfile_name, &args);
         }
     }
 
@@ -5023,7 +5034,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
             }
         }
         if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_time {
-            print_db_time_gradient_tables(section, false, &logfile_name, &args);
+            gradient_stats_time = print_db_time_gradient_tables(section, false, &logfile_name, &args);
         }
     }
 
@@ -5064,8 +5075,67 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
             }
         }
         if let Some(section) = &report_for_ai.db_time_gradient_sql_elapsed_time {
-            print_db_time_gradient_tables(section, false, &logfile_name, &args);
+            gradient_sqls = print_db_time_gradient_tables(section, false, &logfile_name, &args);
         }
+    }
+
+    let gradient_html = format!(
+        r#"<!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Correlation of Instance Statistics with DB Time</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; }}
+                .content {{ font-size: 14px; }}
+                table {{
+                    width: 30%;
+                    border-collapse: collapse;
+                    margin-top: 20px;
+                }}
+                th, td {{ 
+                    border: 1px solid black;
+                    padding: 8px;
+                    text-align: center;
+                }}
+                th {{
+                    background-color: #632e4f;
+                    color: white;
+                }}
+                tr:nth-child(even) {{
+                    background-color: #f2f2f2;
+                }}
+                td:first-child {{
+                    text-align: right;
+                    font-weight: bold;
+                }}
+            </style>
+            </head>
+        <body>
+            <div class="content">
+                <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
+                <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
+                </a></p>
+                <p><span style="font-size:20px;font-weight:bold;">Gradient Analyzes</span></p>
+                <p><span style="font-size:15px;font-weight:bold;">DB Time vs Wait Events</span></p>
+                {gradient_events}
+                <p><span style="font-size:15px;font-weight:bold;">DB Time vs Statistic Counters</span></p>
+                {gradient_stats_cnt}
+                <p><span style="font-size:15px;font-weight:bold;">DB Time vs Statistic Volumes</span></p>
+                {gradient_stats_volume}
+                <p><span style="font-size:15px;font-weight:bold;">DB Time vs Statistic Time</span></p>
+                {gradient_stats_time}
+                <p><span style="font-size:15px;font-weight:bold;">DB Time vs SQLs</span></p>
+                {gradient_sqls}
+            </div>
+        </body>
+        </html>
+        "#
+    );
+    let gradient_filename: String = format!("{}/stats/gradient.html", &html_dir);
+    if let Err(e) = fs::write(&gradient_filename, gradient_html) {
+        eprintln!("Error writing file {}: {}", gradient_filename, e);
     }
 
     // Write the updated HTML back to the file
