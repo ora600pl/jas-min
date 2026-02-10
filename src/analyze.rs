@@ -120,9 +120,8 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
     stats_description.median_absolute_deviation = format!("MAD threshold = {}\nMAD window size={}% ({} of probes out of {})\n\n", args.mad_threshold, args.mad_window_size, full_window_size, awrs.len());
     
     let mut top_spikes: Vec<TopPeaksSelected> = Vec::new();
-
+    let (f_begin_snap,f_end_snap) = snap_range;
     for awr in awrs {
-        let (f_begin_snap,f_end_snap) = snap_range;
 
         if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
             let mut dbtime: f64 = 0.0;
@@ -188,6 +187,11 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
     } else {
         println!("\n****Detecting anamalies using MAD sliding window****\n");
     }
+    
+    let awrs: Vec<AWR> = awrs.clone().iter()
+                                  .filter(|a| a.snap_info.begin_snap_id>= *f_begin_snap && a.snap_info.end_snap_id<=*f_end_snap)
+                                  .cloned().collect();
+
     let event_anomalies = detect_event_anomalies_mad(&awrs, &args, "FOREGROUND");
     for a in &event_anomalies {
         event_names.entry(a.0.to_string()).or_insert(1);
