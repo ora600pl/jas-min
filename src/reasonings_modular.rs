@@ -331,8 +331,45 @@ Important interpretation rules:
 - Gradient coefficients represent local sensitivity, not global causality.
 - Ridge regression provides a stabilized, dense view of contributing wait events, sqls or statistics.
 - Elastic Net provides a sparse view, highlighting dominant or representative wait events, sqls or statistics.
-- Wait events, sqls or statistics. appearing in both Ridge and Elastic Net rankings should be treated as strong contributors.
+- Huber robust regression is resistant to outliers — it downweights extreme snapshots automatically.
+- Quantile 95 (Q95) regression models the WORST 5% of snapshots, revealing tail risk behavior.
+- Wait events, sqls or statistics appearing in both Ridge and Elastic Net rankings should be treated as strong contributors.
 - Absence from Elastic Net does NOT mean irrelevance; it may indicate correlation with other elements.
+
+CROSS-MODEL TRIANGULATION RULES (critical for interpretation):
+Each gradient section may contain a cross_model_classifications array. Each entry has:
+  - event_name, classification, description, in_ridge, in_elastic_net, in_huber, in_quantile95, priority
+
+Classification meanings:
+  - CONFIRMED_BOTTLENECK: Present in ALL 4 models (Ridge, ElasticNet, Huber, Q95). Highest confidence.
+    This is a systematic, robust bottleneck affecting both average and worst-case DB Time.
+    ALWAYS highlight these prominently in your analysis.
+  - STRONG_CONTRIBUTOR: In Ridge+EN+Huber but not Q95. Reliable systematic contributor, not especially dominant in tail scenarios.
+  - TAIL_RISK: In Q95 but NOT in Ridge. Usually fine, but causes catastrophic spikes in worst 5% of snapshots.
+    These are dangerous hidden problems — flag them with warnings about specific peak periods.
+  - OUTLIER_DRIVEN: In Ridge but NOT in Huber. Impact is driven by a few extreme snapshots, not systematic behavior.
+    Investigate those specific snapshots rather than treating as a general problem.
+  - SPARSE_DOMINANT: In ElasticNet but NOT in Ridge. A truly dominant factor selected by L1 sparsity.
+    May be correlated with others that Ridge distributes weight across.
+  - ROBUST_ONLY: Only in Huber. Stable background contributor visible when outliers are removed.
+  - SINGLE_MODEL: Low confidence — appeared in only one model.
+    - CONFIRMED_BOTTLENECK_EN_COLLINEAR: In Ridge+Huber+Q95 but NOT ElasticNet. Very high confidence.
+    ElasticNet's L1 penalty zeroed this event because it is correlated with another event that EN
+    selected instead. Treat as confirmed bottleneck. Check which correlated event EN chose — they
+    likely share a common root cause.
+  - STABLE_CONTRIBUTOR: In Ridge+Huber but not EN or Q95. Robust, steady contributor confirmed by
+    both OLS-like and outlier-resistant models, but not a tail-risk driver.
+  - TAIL_OUTLIER: In Ridge+Q95 but NOT Huber. Impact is concentrated in extreme snapshots that also
+    happen to be the worst-performing periods. High-severity outlier problem — the specific snapshots
+    driving this are both extreme AND represent worst-case behavior.
+  - MULTI_MODEL_MINOR: In at least 2 models but with no clear dominant pattern. Minor contributor.
+
+When analyzing gradient sections:
+  1. Start with CONFIRMED_BOTTLENECK items — these are your highest-priority findings.
+  2. Flag TAIL_RISK items as dangerous hidden problems that may not show up in average analysis.
+  3. For OUTLIER_DRIVEN items, cross-reference with anomaly_clusters to identify specific problematic snapshots.
+  4. Use SPARSE_DOMINANT items to identify the single most impactful factor among correlated group.
+  5. Present cross-model results in a summary table in your analysis.
 
 Use those sections to support, not replace, traditional AWR-based reasoning.
 
@@ -482,6 +519,18 @@ ReportForAI contains the following main sections (mapping from classical AWR-sty
         - list of SQL_IDs (elapsed time) ranked by impact using Elastic Net (may be sparse)
 
     This section summarizes which SQL_IDs most strongly influence changes in DB Time.
+
+17. Each db_time_gradient_* section now additionally contains:
+    - huber_top:
+        - list ranked by impact using Huber robust regression (resistant to outlier snapshots)
+        - Compare with ridge_top: items ranking high in Ridge but LOW in Huber are outlier-driven
+    - quantile95_top:
+        - list ranked by impact using Quantile Regression at tau=0.95 (models worst 5% of snapshots)
+        - Items high in Q95 but NOT in Ridge are TAIL RISK — they cause catastrophic spikes rarely
+    - cross_model_classifications:
+        - Pre-computed cross-model triangulation with classification labels
+        - Each item: event_name, classification, description, in_ridge, in_elastic_net, in_huber, in_quantile95
+        - Use these classifications directly in your analysis — they are the highest-value findings
 
 ============================================================
 CORE GUIDELINES
