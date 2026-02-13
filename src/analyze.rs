@@ -2117,7 +2117,7 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir
     sections_toplot   
 }
 
-pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForAI {
+pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: HashMap<&str, HashSet<String>>) -> ReportForAI {
     let mut plot_main: Plot = Plot::new();
     let mut plot_highlight: Plot = Plot::new();
     let mut plot_highlight2: Plot = Plot::new();
@@ -5089,7 +5089,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Correlation of Instance Statistics with DB Time</title>
+            <title>Gradient Analyzes</title>
             <style>
                 body {{ font-family: Arial, sans-serif; }}
                 .content {{ font-size: 14px; }}
@@ -5114,6 +5114,25 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
                     text-align: right;
                     font-weight: bold;
                 }}
+                .tables-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+                    gap: 20px;
+                    align-items: start;
+                }}
+                .tables-grid table {{
+                    width: 100%;
+                    margin-top: 0;
+                }}
+                .cross-model table {{
+                    width: 100%;
+                    margin-top: 20px;
+                    }}
+                .cross-model p {{
+                    font-weight: bold;
+                    font-size: 16px;
+                    margin-top: 40px;
+                    }}
             </style>
             </head>
         <body>
@@ -5137,6 +5156,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args) -> ReportForA
         </html>
         "#
     );
+    let gradient_html = add_links_to_html(gradient_html, events_sqls, "..".to_string(), html_dir.clone());
     let gradient_filename: String = format!("{}/stats/gradient.html", &html_dir);
     if let Err(e) = fs::write(&gradient_filename, gradient_html) {
         eprintln!("Error writing file {}: {}", gradient_filename, e);

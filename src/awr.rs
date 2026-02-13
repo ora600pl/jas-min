@@ -2261,7 +2261,7 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
 	let mut f = fs::File::create(file).unwrap();
 	f.write_all(json_str.as_bytes()).unwrap();
-    let report_for_ai = main_report_builder(collection, args.clone());
+    let report_for_ai = main_report_builder(collection, args.clone(), events_sqls.clone());
     report_for_ai
 }
 
@@ -2318,6 +2318,6 @@ pub fn prarse_json_file(args: Args, events_sqls: &mut HashMap<&str, HashSet<Stri
 	events_sqls.insert("FG", fg_events);
 	events_sqls.insert("BG", bg_events);
 	events_sqls.insert("SQL", sqls);
-	let report_for_ai = main_report_builder(collection, args.clone());
+	let report_for_ai = main_report_builder(collection, args.clone(), events_sqls.clone());
 	report_for_ai
 }
