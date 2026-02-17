@@ -14,128 +14,296 @@ pub enum StatUnitGroup {
     Time,
     Volume,
     Counter,
+    CPU,
     Unknown,
 }
 
-/// TIME group: values represent time spent (elapsed time, wait time, write time, CPU time, etc.)
-pub const KEY_STATS_TIME: [&str; 12] = [
+// ─────────────────────────────────────────────────────────────────────────────
+// TIME — time stats for DB Time
+// ─────────────────────────────────────────────────────────────────────────────
+pub const KEY_STATS_TIME: [&str; 24] = [
+    // Top-level time
+    "db time",
+    "cpu used by this session",
+    "recursive cpu usage",
+
+    // Wait class rollups
+    "user i/o wait time",
+    "concurrency wait time",
     "application wait time",
     "cluster wait time",
-    "concurrency wait time",
-    "file io wait time",
-    "user i/o wait time",
+    "scheduler wait time",
+    "non-idle wait time",
 
+    // Parse time
     "parse time elapsed",
     "parse time cpu",
     "hard parse elapsed time",
 
-    "cpu used by this session",
-    "recursive cpu usage",
-
+    // Redo / commit path time
     "redo write time",
+    "redo write total time",
     "redo log space wait time",
+    "redo synch time",
+    "redo synch time (usec)",
+
+    // File I/O service
+    "file io service time",
+    "file io wait time",
+    "effective io time",
+
+    // Context / lifecycle
+    "session connect time",
+    "process last non-idle time",
+    "in call idle wait time",
+    "db time of lwts for this session",
 ];
 
-
-/// VOLUME group: bytes/blocks/size-like.
-pub const KEY_STATS_VOLUME: [&str; 12] = [
-    "bytes received via sql*net from client",
+// ─────────────────────────────────────────────────────────────────────────────
+// VOLUME — (bytes)
+// ─────────────────────────────────────────────────────────────────────────────
+pub const KEY_STATS_VOLUME: [&str; 22] = [
+    // SQL*Net bytes
     "bytes sent via sql*net to client",
-    "bytes received via sql*net from dblink",
+    "bytes received via sql*net from client",
     "bytes sent via sql*net to dblink",
+    "bytes received via sql*net from dblink",
 
+    // Logical cache volume
+    "logical read bytes from cache",
+
+    // Physical I/O bytes
     "physical read bytes",
     "physical read total bytes",
+    "physical read total bytes optimized",
     "physical write bytes",
     "physical write total bytes",
+    "physical write total bytes optimized",
 
+    // Redo / undo / temp
     "redo size",
-    "redo size for lost write detection",
-    "redo wastage",
+    "redo size for direct writes",
+    "undo change vector size",
+    "temp space allocated (bytes)",
 
-    "flashback log write bytes"
+    // Flashback
+    "flashback log write bytes",
+
+    // Exadata (safe if absent)
+    "cell physical io interconnect bytes",
+    "cell physical io interconnect bytes returned by smart scan",
+    "cell physical io bytes eligible for predicate offload",
+    "cell physical io bytes eligible for smart ios",
+    "cell physical io bytes saved by storage index",
+    "cell physical io bytes saved by columnar cache",
 ];
 
-/// COUNTER group: counts of operations/events.
-pub const KEY_STATS_COUNTERS: [&str; 46] = [
-    // Logon storm / session churn  
+// ─────────────────────────────────────────────────────────────────────────────
+// COUNTERS — liczniki opisujące zachowanie i obciążenie
+// ─────────────────────────────────────────────────────────────────────────────
+pub const KEY_STATS_COUNTERS: [&str; 103] = [
+    // Session / cursor churn
     "logons cumulative",
     "logons current",
-
-    // Cursor churn  
+    "user logons cumulative",
     "opened cursors cumulative",
     "opened cursors current",
+    "pinned cursors current",
+    "session cursor cache hits",
+    "cursor reload failures",
 
-    // Parse storm indicators  
-    "parse count (describe)",
-    "parse count (hard)",
+    // Parse / execute
     "parse count (total)",
+    "parse count (hard)",
+    "parse count (failures)",
     "execute count",
-
-    // “User calls” is great for spotting chatty apps / bad call patterns  
     "user calls",
     "recursive calls",
 
-    // Commit/rollback policy signals  
+    // Transactions
     "user commits",
     "user rollbacks",
+    "transaction rollbacks",
 
-    // Commit/cleanout/rollback mechanics (more meaningful than raw "user rollbacks")  
-    "commit wait requested",
-    "commit cleanouts",
-    "commit cleanouts successfully completed",
-    "commit cleanout failures: block lost",
-    "cleanouts and rollbacks - consistent read gets",
-    "cleanouts only - consistent read gets",
-    "rollbacks only - consistent read gets",
-    "transaction tables consistent read rollbacks",
-    "rollback changes - undo records applied",
-    "transaction tables consistent reads - undo records applied",
+    // Logical I/O
+    "session logical reads",
+    "db block gets",
+    "db block gets from cache",
+    "db block gets direct",
+    "consistent gets",
+    "consistent gets from cache",
+    "consistent gets direct",
+    "db block changes",
+    "consistent changes",
+    "cr blocks created",
 
-    // Buffer/cache pressure proxies  
-    "free buffer inspected",
-    "free buffer requested",
-    //"db block gets",
-    //"db block gets direct",
-    //"db block gets from cache",
-    //"consistent gets",
-    //"consistent gets direct",
-    //"consistent gets from cache",
-    //"session logical reads",
-
-    // Disk I/O request shape (efficiency signals)  
-    "physical read io requests",
-    "physical read total io requests",
-    "physical read total multi block requests",
-    "physical read requests optimized",
-    "physical write io requests",
-    "physical write total io requests",
-    "physical write total multi block requests",
-
-    // Direct path reads (bypass buffer cache)  
+    // Physical I/O
     "physical reads",
     "physical reads cache",
     "physical reads cache prefetch",
     "physical reads direct",
     "physical reads direct (lob)",
     "physical reads direct temporary tablespace",
+    "physical read io requests",
+    "physical read total io requests",
+    "physical read total multi block requests",
+    "physical read requests optimized",
 
-    // Sort/workarea spill signals  
-    "sorts (disk)",
+    "physical writes",
+    "physical writes from cache",
+    "physical writes direct",
+    "physical writes direct (lob)",
+    "physical writes direct temporary tablespace",
+    "physical write io requests",
+    "physical write total io requests",
+    "physical write total multi block requests",
+    "physical write requests optimized",
+    "physical writes non checkpoint",
 
-    // Redo/space pressure  
+    // Buffer cache pressure
+    "free buffer requested",
+    "free buffer inspected",
+    "dirty buffers inspected",
+    "pinned buffers inspected",
+    "hot buffers moved to head of lru",
+
+    // DBWR / checkpoint
+    "dbwr checkpoint buffers written",
+    "dbwr checkpoints",
+    "dbwr lru scans",
+    "background checkpoints started",
+    "background checkpoints completed",
+
+    // Redo operational
+    "redo entries",
+    "redo buffer allocation retries",
+    "redo writes",
+    "redo blocks written",
     "redo log space requests",
     "redo synch writes",
-    "redo writes",
+    "redo synch polls",
+    "redo synch poll writes",
+    "flashback log writes",
 
-    // Enqueue activity (locks)  
+    // Sort / workarea
+    "sorts (memory)",
+    "sorts (disk)",
+    "sorts (rows)",
+    "workarea executions - optimal",
+    "workarea executions - onepass",
+    "workarea executions - multipass",
+
+    // Enqueue / locking
     "enqueue requests",
     "enqueue releases",
     "enqueue waits",
     "enqueue timeouts",
+    "enqueue deadlocks",
+    "enqueue conversions",
 
-    // Index split noise can be a symptom of hot indexes / bad fillfactor (situational)  
+    // Access paths
+    "table scans (short tables)",
+    "table scans (long tables)",
+    "table scans (direct read)",
+    "table fetch by rowid",
+    "table fetch continued row",
+    "index range scans",
+    "index fast full scans (full)",
+    "index fast full scans (direct read)",
+    "index fetch by key",
+    "leaf node splits",
     "branch node splits",
+
+    // SQL*Net latency amplifier
+    "sql*net roundtrips to/from client",
+    "sql*net roundtrips to/from dblink",
+
+    // RAC / GC (safe if absent)
+    "gc cr blocks served",
+    "gc cr blocks received",
+    "gc cr blocks flushed",
+    "gc cr blocks built",
+    "gc current blocks served",
+    "gc current blocks received",
+    "gc current blocks flushed",
+    "gc current blocks pinned",
+    "gc read waits",
+
+    // Exadata cache signals
+    "cell flash cache read hits",
+    "physical read flash cache hits",
+    "cell ram cache read hits",
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CPU — statystyki najlepiej tłumaczące zużycie DB CPU
+// (do budowy gradientu DB CPU, NIE DB Time)
+// ─────────────────────────────────────────────────────────────────────────────
+pub const KEY_STATS_CPU: [&str;  45] = [
+    // ── CPU time (direct) ────────────────────────────────────────────
+    "cpu used by this session",
+    "cpu used when call started",
+    "recursive cpu usage",
+    "ipc cpu used by this session",
+    "global enqueue cpu used by this session",
+    "cpu used by lwts for this session",
+
+    // ── Call / execution pressure ───────────────────────────────────
+    "user calls",
+    "execute count",
+    "recursive calls",
+    "recursive system api invocations",
+
+    // ── Parse pressure (pure CPU work) ──────────────────────────────
+    "parse count (total)",
+    "parse count (hard)",
+    "parse count (failures)",
+    "parse time cpu",
+
+    // ── Logical I/O (CPU-heavy cache work) ───────────────────────────
+    "session logical reads",
+    "db block gets",
+    "db block gets from cache",
+    "db block gets direct",
+    "consistent gets",
+    "consistent gets from cache",
+    "consistent gets direct",
+    "consistent gets pin",
+    "consistent gets examination",
+    "cr blocks created",
+
+    // ── Buffer / cache churn (CPU work, not waits) ───────────────────
+    "free buffer inspected",
+    "dirty buffers inspected",
+    "pinned buffers inspected",
+    "hot buffers moved to head of lru",
+
+    // ── Row / block processing intensity ────────────────────────────
+    "db block changes",
+    "consistent changes",
+
+    // ── Sorts & workareas (CPU-heavy when memory-resident) ───────────
+    "sorts (memory)",
+    "sorts (rows)",
+    "workarea executions - optimal",
+    "workarea executions - onepass",
+
+    // ── SQL engine complexity indicators ─────────────────────────────
+    "table fetch by rowid",
+    "table fetch continued row",
+    "index fetch by key",
+    "index range scans",
+    "index fast full scans (full)",
+
+    // ── PL/SQL & procedural amplification ───────────────────────────
+    "plsql execution elapsed time",      // if present in your stats list
+    "plsql compilation elapsed time",    // optional, version-dependent
+
+    // ── Cursor & library cache churn (CPU tax) ───────────────────────
+    "opened cursors cumulative",
+    "opened cursors current",
+    "session cursor cache hits",
+    "cursor reload failures",
 ];
 
 pub fn classify_stat_unit_group(stat_name: &str) -> StatUnitGroup {
@@ -149,6 +317,9 @@ pub fn classify_stat_unit_group(stat_name: &str) -> StatUnitGroup {
     }
     if contains_normalized(&KEY_STATS_COUNTERS, &name) {
         return StatUnitGroup::Counter;
+    }
+    if contains_normalized(&KEY_STATS_CPU, &name) {
+        return StatUnitGroup::CPU;
     }
 
     // Heuristic fallback (kept conservative)
@@ -180,6 +351,10 @@ pub fn is_counter_stat(stat_name: &str) -> bool {
     classify_stat_unit_group(stat_name) == StatUnitGroup::Counter
 }
 
+pub fn is_cpu_stat(stat_name: &str) -> bool {
+    classify_stat_unit_group(stat_name) == StatUnitGroup::CPU
+}
+
 /* =========================================================================================
    Internals
    ========================================================================================= */
@@ -190,21 +365,21 @@ fn contains_normalized(list: &[&str], normalized_name: &str) -> bool {
 
 fn normalize(input: &str) -> String {
     let trimmed = input.trim().to_lowercase();
-    let mut out = String::with_capacity(trimmed.len());
-    let mut prev_space = false;
+    // let mut out = String::with_capacity(trimmed.len());
+    // let mut prev_space = false;
 
-    for ch in trimmed.chars() {
-        if ch.is_whitespace() {
-            if !prev_space {
-                out.push(' ');
-                prev_space = true;
-            }
-        } else {
-            out.push(ch);
-            prev_space = false;
-        }
-    }
-    out
+    // for ch in trimmed.chars() {
+    //     if ch.is_whitespace() {
+    //         if !prev_space {
+    //             out.push(' ');
+    //             prev_space = true;
+    //         }
+    //     } else {
+    //         out.push(ch);
+    //         prev_space = false;
+    //     }
+    // }
+    trimmed
 }
 
 const IDLE:  [&str;172] = ["cached session",                                              
