@@ -664,25 +664,25 @@ pub fn cross_model_classify(
 ) -> Vec<CrossModelClassification> {
     let ridge_set: HashSet<String> = section.ridge_top.iter()
         .take(top_n)
-        .filter(|i| i.impact > 0.0)
+        .filter(|i| i.impact > 0.0 && i.gradient_coef > 0.0)
         .map(|i| i.event_name.clone())
         .collect();
 
     let en_set: HashSet<String> = section.elastic_net_top.iter()
         .take(top_n)
-        .filter(|i| i.gradient_coef != 0.0)
+        .filter(|i| i.impact > 0.0 && i.gradient_coef > 0.0)
         .map(|i| i.event_name.clone())
         .collect();
 
     let huber_set: HashSet<String> = section.huber_top.iter()
         .take(top_n)
-        .filter(|i| i.impact > 0.0)
+        .filter(|i| i.impact > 0.0 && i.gradient_coef > 0.0)
         .map(|i| i.event_name.clone())
         .collect();
 
     let q95_set: HashSet<String> = section.quantile95_top.iter()
         .take(top_n)
-        .filter(|i| i.impact > 0.0)
+        .filter(|i| i.impact > 0.0 && i.gradient_coef > 0.0)
         .map(|i| i.event_name.clone())
         .collect();
 
@@ -786,7 +786,7 @@ pub fn cross_model_classify(
         results.push(CrossModelClassification {
             event_name: event.clone(),
             classification: classification.to_string(),
-            description: description.to_string(),
+            description: Some(description.to_string()),
             in_ridge,
             in_elastic_net: in_en,
             in_huber,
@@ -822,15 +822,18 @@ pub fn print_cross_model_table(
 
     for c in classifications {
         let yn = |b: bool| -> &str { if b { "Yes" } else { "-" } };
-        table.add_row(Row::new(vec![
+        if let Some(desc) = c.description.clone() {
+            table.add_row(Row::new(vec![
             Cell::new(&c.event_name),
             Cell::new(&c.classification),
             Cell::new(yn(c.in_ridge)),
             Cell::new(yn(c.in_elastic_net)),
             Cell::new(yn(c.in_huber)),
             Cell::new(yn(c.in_quantile95)),
-            Cell::new(&c.description),
+            Cell::new(&desc),
         ]));
+        }
+        
     }
 
     for table_line in table.to_string().lines() {
@@ -886,6 +889,7 @@ pub fn build_db_time_gradient_section(
     elastic_net_tol: f64,
     units_desc: &str,
 ) -> Result<DbTimeGradientSection, String> {
+    println!("\n\nBuilding gradient for {units_desc} - {} stats", event_series.len());
     if db_time_series.len() < 3 {
         return Err("Not enough DB Time samples (need >= 3).".into());
     }

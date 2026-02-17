@@ -55,7 +55,8 @@ use crate::reasonings::{StatisticsDescription,
                         AppState,
                         GradientSettings,
                         GradientTopItem,
-                        DbTimeGradientSection};
+                        DbTimeGradientSection,
+                        strip_gradient_descriptions};
 
 use crate::gradient::*;
 use crate::gradient::{EventSeriesMap,
@@ -2466,7 +2467,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
                                                     .name("DB Time (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
-    let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu)
+    let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("DB CPU (s/s)")
                                                     .x_axis("x1")
@@ -4753,7 +4754,10 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">STATS Correlation</span><span>STATS Correlation</span></button>
                 </a>
                 <a href=\"stats/gradient.html\" target=\"_blank\" style=\"text-decoration: none;\">
-                    <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">Gradient Analyzes</span><span>Gradient Analyzes</span></button>
+                    <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">DB Time Gradient Analyzes</span><span>DB Time Gradient Analyzes</span></button>
+                </a>
+                <a href=\"stats/gradient_cpu.html\" target=\"_blank\" style=\"text-decoration: none;\">
+                    <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">DB CPU Gradient Analyzes</span><span>DB CPU Gradient Analyzes</span></button>
                 </a>"
             ),
             if !args.backend_assistant.is_empty() { 
@@ -4867,6 +4871,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     let mut gradient_stats_volume = String::new();
     let mut gradient_stats_time = String::new();
     let mut gradient_sqls = String::new();
+    let mut gradient_cpu_stats_all = String::new();
     /* *********************** */
 
     // ---------------------------------------------------------------------
@@ -5002,7 +5007,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     // Attach DB Time gradient vs instance statistic time to ReportForAI (optional section)
     // ---------------------------------------------------------------------
     {
-        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.into_iter()
+        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
                                                                          .filter(|i| classify_stat_unit_group(&i.0) == StatUnitGroup::Time)
                                                                          .collect();
         match build_db_time_gradient_section (
@@ -5156,8 +5161,124 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
         </html>
         "#
     );
-    let gradient_html = add_links_to_html(gradient_html, events_sqls, "..".to_string(), html_dir.clone());
+    let gradient_html = add_links_to_html(gradient_html, events_sqls.clone(), "..".to_string(), html_dir.clone());
     let gradient_filename: String = format!("{}/stats/gradient.html", &html_dir);
+    if let Err(e) = fs::write(&gradient_filename, gradient_html) {
+        eprintln!("Error writing file {}: {}", gradient_filename, e);
+    }
+
+
+    // ---------------------------------------------------------------------
+    // Attach CPU Time gradient vs instance statistic all to ReportForAI (optional section)
+    // ---------------------------------------------------------------------
+    {
+        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
+                                                                         .filter(|i| classify_stat_unit_group(&i.0) == StatUnitGroup::CPU)
+                                                                         .collect();
+        match build_db_time_gradient_section (
+            &y_vals_dbcpu,
+            &y_vals_statistics, // BTreeMap<String, Vec<f64>> aligned & zero-filled
+            ridge_lambda,
+            elastic_net_lambda,
+            elastic_net_alpha,
+            elastic_net_max_iter,
+            elastic_net_tol,
+            "statistic_values_cpu"
+        ) {
+            Ok(section) => {
+                report_for_ai.db_cpu_gradient_instance_stats = Some(section);
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "{}",
+                    "\n\nCPU TIME GRADIENT for stats attached to ReportForAI".bold().green()
+                );
+            }
+            Err(err) => {
+                // Don't kill report generation; just log and continue.
+                report_for_ai.db_cpu_gradient_instance_stats = None;
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "\n\nCPU TIME GRADIENT for instance stats time skipped: {}",
+                    err
+                );
+            }
+        }
+        if let Some(section) = &report_for_ai.db_cpu_gradient_instance_stats {
+            gradient_cpu_stats_all = print_db_time_gradient_tables(section, false, &logfile_name, &args);
+        }
+    }
+
+    let gradient_html = format!(
+        r#"<!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Gradient Analyzes</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; }}
+                .content {{ font-size: 14px; }}
+                table {{
+                    width: 30%;
+                    border-collapse: collapse;
+                    margin-top: 20px;
+                }}
+                th, td {{ 
+                    border: 1px solid black;
+                    padding: 8px;
+                    text-align: center;
+                }}
+                th {{
+                    background-color: #632e4f;
+                    color: white;
+                }}
+                tr:nth-child(even) {{
+                    background-color: #f2f2f2;
+                }}
+                td:first-child {{
+                    text-align: right;
+                    font-weight: bold;
+                }}
+                .tables-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+                    gap: 20px;
+                    align-items: start;
+                }}
+                .tables-grid table {{
+                    width: 100%;
+                    margin-top: 0;
+                }}
+                .cross-model table {{
+                    width: 100%;
+                    margin-top: 20px;
+                    }}
+                .cross-model p {{
+                    font-weight: bold;
+                    font-size: 16px;
+                    margin-top: 40px;
+                    }}
+            </style>
+            </head>
+        <body>
+            <div class="content">
+                <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
+                <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
+                </a></p>
+                <p><span style="font-size:20px;font-weight:bold;">Gradient Analyzes</span></p>
+                <p><span style="font-size:15px;font-weight:bold;">DB CPU vs Instance Statistics</span></p>
+                {gradient_cpu_stats_all}
+            </div>
+        </body>
+        </html>
+        "#
+    );
+    let gradient_html = add_links_to_html(gradient_html, events_sqls, "..".to_string(), html_dir.clone());
+    let gradient_filename: String = format!("{}/stats/gradient_cpu.html", &html_dir);
     if let Err(e) = fs::write(&gradient_filename, gradient_html) {
         eprintln!("Error writing file {}: {}", gradient_filename, e);
     }
@@ -5169,5 +5290,10 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     println!("{}{}\n","JAS-MIN Report saved to: ",&fname);
 
     open::that(fname);
+
+    /* Clear gradient description to minimalyze token usage */
+    strip_gradient_descriptions(&mut report_for_ai);
+    /* ***************************************************** */
+
     report_for_ai
 }

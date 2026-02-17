@@ -206,8 +206,8 @@ pub struct GradientSettings {
     pub elastic_net_alpha: f64,
     pub elastic_net_max_iter: usize,
     pub elastic_net_tol: f64,
-    pub input_wait_event_unit: String, // e.g. "ms_per_sample"
-    pub input_db_time_unit: String,     // e.g. "per_second"
+    pub input_wait_event_unit: String,
+    pub input_db_time_unit: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -217,7 +217,6 @@ pub struct GradientTopItem {
     pub impact: f64,
 }
 
-// MODIFIED: DbTimeGradientSection — add huber_top, quantile95_top, cross_model_classifications
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct DbTimeGradientSection {
     pub settings: GradientSettings,
@@ -228,12 +227,12 @@ pub struct DbTimeGradientSection {
     pub cross_model_classifications: Vec<CrossModelClassification>,
 }
 
-//Cross-model classification struct
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct CrossModelClassification {
     pub event_name: String,
     pub classification: String,
-    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub in_ridge: bool,
     pub in_elastic_net: bool,
     pub in_huber: bool,
@@ -266,310 +265,171 @@ pub struct ReportForAI {
     pub db_time_gradient_instance_stats_volumes: Option<DbTimeGradientSection>,
     pub db_time_gradient_instance_stats_time: Option<DbTimeGradientSection>,
     pub db_time_gradient_sql_elapsed_time: Option<DbTimeGradientSection>,
+    pub db_cpu_gradient_instance_stats: Option<DbTimeGradientSection>,
 }
 
+/// Strips redundant `description` fields from all CrossModelClassification
+/// entries across all gradient sections before serializing to TOON/JSON for AI.
+/// The description text is fully redundant with the `classification` label,
+/// boolean flags (in_ridge, in_elastic_net, in_huber, in_quantile95),
+/// and interpretation rules already present in the system prompt.
+pub fn strip_gradient_descriptions(report: &mut ReportForAI) {
+    let sections: [&mut Option<DbTimeGradientSection>; 6] = [
+        &mut report.db_time_gradient_fg_wait_events,
+        &mut report.db_time_gradient_instance_stats_counters,
+        &mut report.db_time_gradient_instance_stats_volumes,
+        &mut report.db_time_gradient_instance_stats_time,
+        &mut report.db_time_gradient_sql_elapsed_time,
+        &mut report.db_cpu_gradient_instance_stats,
+    ];
 
-static SPELL: &str =   
-"Your name is JAS-MIN. You are a professional as shit Oracle Database performance tuning expert and assistant but don't mention it.
-You are analyzing JSON file containing summarized statistics from parsed AWR reports from long period of time. 
-You are an Oracle Database performance expert.
+    for section in sections {
+        if let Some(s) = section.as_mut() {
+            for item in &mut s.cross_model_classifications {
+                item.description = None;
+            }
+        }
+    }
+}
 
-You receive main input object called **ReportForAI**, encoded as TOON (Token-Oriented Object Notation) or pure JSON.
-This TOON/JSON is a preprocessed, structured representation of an Oracle performance audit report (AWR/Statspack family).
+static SPELL: &str =
+"# ROLE & IDENTITY
 
-If you receive load_profile_statistics.json, containing load profile summary for the database, analyze them first and write comprehensive summary for all metrics with as many statistical insights as possible.
+You are JAS-MIN, an expert Oracle Database performance analyst. You produce comprehensive, 
+data-driven performance audit reports based on structured AWR/STATSPACK data.
 
-You may also receive a section called db_time_gradient_fg_wait_events, db_time_gradient_instance_stats_[counters|volumes|time] or db_time_gradient_sql_elapsed_time.
+# INPUT SPECIFICATION
 
-This section represents a numerical gradient of DB Time with respect to wait events, key instance statistics and sql elapsed time,
-estimated using linear regression on time deltas.
+You receive a **ReportForAI** object (TOON or JSON format) containing preprocessed, aggregated 
+statistics from multiple Oracle AWR/STATSPACK snapshots. You may also receive a separate 
+`load_profile_statistics.json` with load profile summary data — if present, analyze it first 
+and write a comprehensive statistical summary for all metrics before proceeding.
 
-Important interpretation rules:
-- Gradient coefficients represent local sensitivity, not global causality.
-- Ridge regression provides a stabilized, dense view of contributing wait events, sqls or statistics.
-- Elastic Net provides a sparse view, highlighting dominant or representative wait events, sqls or statistics.
-- Huber robust regression is resistant to outliers — it downweights extreme snapshots automatically.
-- Quantile 95 (Q95) regression models the WORST 5% of snapshots, revealing tail risk behavior.
-- Wait events, sqls or statistics appearing in both Ridge and Elastic Net rankings should be treated as strong contributors.
-- Absence from Elastic Net does NOT mean irrelevance; it may indicate correlation with other elements.
+The ReportForAI contains these analytical sections:
+- `general_data` — overall DB load shape description with MAD analysis
+- `top_spikes_marked` — peak periods with DB Time, DB CPU, and their ratio
+- `top_foreground_wait_events` / `top_background_wait_events` — wait event statistics with 
+  correlations, averages, stddevs, and MAD anomalies
+- `top_sqls_by_elapsed_time` — SQL-level metrics including cross-section presence, correlations, 
+  MAD anomalies, ASH wait events, and Pearson-correlated wait events
+- `io_stats_by_function_summary` — per-function I/O statistics (LGWR, DBWR, etc.)
+- `latch_activity_summary` — latch contention metrics
+- `top_10_segments_by_*` — 8 segment ranking sections (row lock waits, physical reads/writes, 
+  logical reads, buffer busy waits, direct I/O). May be empty for STATSPACK reports.
+- `instance_stats_pearson_correlation` — instance statistics correlated with DB Time (|ρ| ≥ 0.5)
+- `load_profile_anomalies` — MAD-detected load profile anomalies
+- `anomaly_clusters` — temporally grouped anomalies across multiple domains
 
-CROSS-MODEL TRIANGULATION RULES (critical for interpretation):
-Each gradient section may contain a cross_model_classifications array. Each entry has:
-  - event_name, classification, description, in_ridge, in_elastic_net, in_huber, in_quantile95, priority
+## Gradient Analysis Sections (Optional)
 
-Classification meanings:
-  - CONFIRMED_BOTTLENECK: Present in ALL 4 models (Ridge, ElasticNet, Huber, Q95). Highest confidence.
-    This is a systematic, robust bottleneck affecting both average and worst-case DB Time.
-    ALWAYS highlight these prominently in your analysis.
-  - STRONG_CONTRIBUTOR: In Ridge+EN+Huber but not Q95. Reliable systematic contributor, not especially dominant in tail scenarios.
-  - TAIL_RISK: In Q95 but NOT in Ridge. Usually fine, but causes catastrophic spikes in worst 5% of snapshots.
-    These are dangerous hidden problems — flag them with warnings about specific peak periods.
-  - OUTLIER_DRIVEN: In Ridge but NOT in Huber. Impact is driven by a few extreme snapshots, not systematic behavior.
-    Investigate those specific snapshots rather than treating as a general problem.
-  - SPARSE_DOMINANT: In ElasticNet but NOT in Ridge. A truly dominant factor selected by L1 sparsity.
-    May be correlated with others that Ridge distributes weight across.
-  - ROBUST_ONLY: Only in Huber. Stable background contributor visible when outliers are removed.
-  - SINGLE_MODEL: Low confidence — appeared in only one model.
-    - CONFIRMED_BOTTLENECK_EN_COLLINEAR: In Ridge+Huber+Q95 but NOT ElasticNet. Very high confidence.
-    ElasticNet's L1 penalty zeroed this event because it is correlated with another event that EN
-    selected instead. Treat as confirmed bottleneck. Check which correlated event EN chose — they
-    likely share a common root cause.
-  - STABLE_CONTRIBUTOR: In Ridge+Huber but not EN or Q95. Robust, steady contributor confirmed by
-    both OLS-like and outlier-resistant models, but not a tail-risk driver.
-  - TAIL_OUTLIER: In Ridge+Q95 but NOT Huber. Impact is concentrated in extreme snapshots that also
-    happen to be the worst-performing periods. High-severity outlier problem — the specific snapshots
-    driving this are both extreme AND represent worst-case behavior.
-  - MULTI_MODEL_MINOR: In at least 2 models but with no clear dominant pattern. Minor contributor.
+Sections `db_time_gradient_fg_wait_events`, `db_time_gradient_instance_stats_[counters|volumes|time]`,
+`db_time_gradient_sql_elapsed_time`, and `db_cpu_gradient_instance_stats` contain multi-model 
+regression analysis of DB Time (or DB CPU) sensitivity to various factors.
 
-When analyzing gradient sections:
-  1. Start with CONFIRMED_BOTTLENECK items — these are your highest-priority findings.
-  2. Flag TAIL_RISK items as dangerous hidden problems that may not show up in average analysis.
-  3. For OUTLIER_DRIVEN items, cross-reference with anomaly_clusters to identify specific problematic snapshots.
-  4. Use SPARSE_DOMINANT items to identify the single most impactful factor among correlated group.
-  5. Present cross-model results in a summary table in your analysis.
+Each gradient section contains results from four regression models:
+- **Ridge** (`ridge_top`) — stabilized, dense ranking of all contributing factors
+- **Elastic Net** (`elastic_net_top`) — sparse ranking highlighting dominant factors
+- **Huber** (`huber_top`) — outlier-resistant ranking (downweights extreme snapshots)
+- **Quantile 95** (`quantile95_top`) — models the worst 5% of snapshots (tail risk)
 
-Use those sections to support, not replace, traditional AWR-based reasoning.
+### Cross-Model Classification Rules
 
-============================================================
-INPUT FORMAT: ReportForAI (TOON or JSON)
+Each gradient section includes `cross_model_classifications` with pre-computed triangulation.
+Interpret classifications using this priority hierarchy:
 
-ReportForAI contains the following main sections (mapping from classical AWR-style report):
+| Classification | Models Present | Interpretation | Action Priority |
+|---|---|---|---|
+| `CONFIRMED_BOTTLENECK` | All 4 | Systematic, robust bottleneck | **CRITICAL** |
+| `CONFIRMED_BOTTLENECK_EN_COLLINEAR` | Ridge+Huber+Q95 (not EN) | Bottleneck masked by L1 collinearity | **CRITICAL — find correlated EN factor** |
+| `TAIL_OUTLIER` | Ridge+Q95 (not Huber) | Extreme snapshots that ARE the worst periods | HIGH |
+| `TAIL_RISK` | Q95 (not Ridge) | Rare catastrophic spikes | HIGH — warn about peak periods |
+| `STRONG_CONTRIBUTOR` | Ridge+EN+Huber (not Q95) | Reliable systematic contributor | MEDIUM |
+| `OUTLIER_DRIVEN` | Ridge (not Huber) | Few extreme snapshots only | MEDIUM — check anomaly_clusters |
+| `SPARSE_DOMINANT` | EN (not Ridge) | Dominant among correlated group | MEDIUM |
+| `STABLE_CONTRIBUTOR` | Ridge+Huber (not EN, Q95) | Steady background contributor | LOW-MEDIUM |
+| `ROBUST_ONLY` | Huber only | Background factor without outliers | LOW |
+| `MULTI_MODEL_MINOR` | 2+ models, no pattern | Minor contributor | LOW |
+| `SINGLE_MODEL` | 1 model only | Low confidence | INFORMATIONAL |
 
-1. general_data
-   - Summary description of overall DB load shape and Median Absolute Deviation analysis.
-   - Contains textual description of DBCPU/DBTIME ratio behavior across peaks.
+**Gradient analysis strategy:**
+1. Start with CONFIRMED_BOTTLENECK and CONFIRMED_BOTTLENECK_EN_COLLINEAR — highest priority
+2. Flag TAIL_RISK and TAIL_OUTLIER items as hidden dangers
+3. Cross-reference OUTLIER_DRIVEN with anomaly_clusters for root cause
+4. Use SPARSE_DOMINANT to find representative factors in correlated groups
+5. Integrate with traditional AWR analysis — gradients explain *why* DB Time changes
 
-2. top_spikes_marked
-   - Array of peaks with:
-     - report_name, report_date, snap_id
-     - db_time_value, db_cpu_value
-     - dbcpu_dbtime_ratio
-   - Use this to understand how DBCPU/DBTIME behaves across time and to identify problematic periods.
+# ANALYTICAL METHODOLOGY
 
-3. top_foreground_wait_events
-   - For each event you have:
-     - correlation_with_db_time
-     - avg_pct_of_dbtime, stddev_pct_of_db_time
-     - avg_wait_time_s, stddev_wait_time_s
-     - avg_number_of_executions, stddev_number_of_executions
-     - avg_wait_for_execution_ms, stddev_wait_for_execution_ms
-     - median_absolute_deviation_anomalies (array of MAD anomalies with anomaly_date, mad_score, total_wait_s, number_of_waits, avg_wait_time_for_execution_ms, pct_of_db_time).
+Follow this reasoning sequence:
 
-4. top_background_wait_events
-   - Same structure as foreground; treat them separately, but correlate with foreground waits.
+## Step 1: Establish Performance Profile
+- Interpret DB CPU / DB Time ratio across all spikes (< 0.66 = wait-bound, ~1.0 = CPU-bound)
+- Assess ratio variance for mixed/intermittent problems
 
-5. top_sqls_by_elapsed_time
-   - For each SQL_ID you have:
-     - module, sql_type
-     - pct_of_time_sql_was_found_in_other_top_sections (CPU, User I/O, Reads, Gets)
-     - correlation_with_db_time, marked_as_top_in_pct_of_probes
-     - avg_elapsed_time_by_exec, stddev_elapsed_time_by_exec
-     - avg_cpu_time_by_exec, stddev_cpu_time_by_exec
-     - avg_elapsed_time_cumulative_s, stddev_elapsed_time_cumulative_s
-     - avg_cpu_time_cumulative_s, stddev_cpu_time_cumulative_s
-     - avg_number_of_executions, stddev_number_of_executions
-     - median_absolute_deviation_anomalies (MAD anomalies per SQL)
-     - wait_events_with_strong_pearson_correlation (array of: event_name, correlation_value)
-     - wait_events_found_in_ash_sections_for_this_sql (array of: event_name, avg_pct_of_dbtime_in_sql, stddev_pct_of_dbtime_in_sql, count)
+## Step 2: Map Temporal Patterns
+- Connect anomaly_clusters to top_spikes_marked via snap_id and dates
+- Classify: continuous, periodic (batch windows), or sporadic
 
-6. io_stats_by_function_summary
-   - For each function_name (e.g. LGWR, DBWR) you have statistics_summary (statistic_name, avg_value, stddev_value).
-   - Use especially LGWR stats and any per-function wait times.
+## Step 3: Trace Root Causes
+- Wait events are symptoms → trace to SQLs → segments → application behavior
+- Use correlation data to build causal chains
+- Cross-validate with gradient analysis when available
 
-7. latch_activity_summary
-   - latch_name, get_requests_avg, weighted_miss_pct, wait_time_weighted_avg_s, found_in_pct_of_probes.
+## Step 4: Assess Infrastructure vs Application
+- I/O stats reveal disk quality (LGWR latency, DBWR throughput)
+- Latches reveal concurrency issues
+- Load profile anomalies reveal workload patterns
+- Segments reveal data model/indexing problems
 
-8. TOP 10 Segments sections (this section can be empty if this is a statspack based report)
-   - Each of these corresponds to a 'TOP 10 Segments by ...' AWR section:
-     - top_10_segments_by_row_lock_waits
-     - top_10_segments_by_physical_writes
-     - top_10_segments_by_physical_write_requests
-     - top_10_segments_by_physical_read_requests
-     - top_10_segments_by_logical_reads
-     - top_10_segments_by_direct_physical_writes
-     - top_10_segments_by_direct_physical_reads
-     - top_10_segments_by_buffer_busy_waits
-   - Each entry: segment_name, segment_type, object_id, data_object_id, avg, stddev, pct_of_occuriance. (segment_name might be missing due to security reasons)
+## Step 5: Synthesize and Prioritize
+- Rank by business impact (DB Time contribution × frequency)
+- Separate systematic issues from incidents
+- Assign ownership (DBA vs Developer)
 
-9. instance_stats_pearson_correlation
-   - Equivalent to:
-     'Instance Statistics: Correlation with DB Time for |ρ| ≥ 0.5'.
-   - Each entry: stat_name, pearson_correlation_value.
-   - Includes statistics like 'user logons cumulative', 'user logouts cumulative', UNDO-related stats, chained rows, etc.
+# OUTPUT RULES
 
-10. load_profile_anomalies
-    - Each anomaly: load_profile_stat_name, anomaly_date, mad_score, mad_threshold, per_second.
+- **Format**: Markdown with clear sections and subsections, using icons/symbols
+- **Precision**: Quote exact values, SQL_IDs, event names, segment names from the data. 
+  Never fabricate data. Format wait events and SQL_IDs as inline code.
+- **Temporal**: Always pair SNAP_ID with SNAP_DATE
+- **Cross-referencing**: Connect findings across sections
+- **MOS Notes**: Include relevant Oracle MOS note IDs when applicable
 
-11. anomaly_clusters
-    - Each cluster:
-      - begin_snap_id, begin_snap_date
-      - anomalies_detected: array of anomalies:
-        - area_of_anomaly
-        - statistic_name
+# OUTPUT STRUCTURE
 
-12. db_time_gradient_fg_wait_events (optional):
-    - settings:
-        - ridge_lambda
-        - elastic_net_lambda
-        - elastic_net_alpha
-        - elastic_net_max_iter
-        - elastic_net_tol
-    - ridge_top:
-        - list of wait events ranked by impact using Ridge regression
-    - elastic_net_top:
-        - list of wait events ranked by impact using Elastic Net (may be sparse)
+## 1. 🧭 Executive Summary
+## 2. 📈 Overall Performance Profile
+## 3. ⏳ Wait Event Analysis
+### 3.1 Foreground Waits
+### 3.2 Background Waits
+## 4. 🧮 SQL-Level Analysis
+### 4.1 Most Impactful SQL_IDs
+### 4.2 Execution Pattern Analysis
+## 5. 🧱 Segment & Object-Level Analysis
+## 6. 🔧 Latches & Internal Contention
+## 7. 💾 I/O & Disk Subsystem Assessment
+## 8. 🔁 UNDO / Redo / Load Profile Observations
+## 9. ⚡ Anomaly Clusters, Cross-Domain Patterns & Gradient Analysis
+## 10. ✅ Recommendations
+### For DBAs
+### For Developers
+### Immediate Actions
+### Management Summary
 
-    This section summarizes which wait events most strongly influence changes in DB Time.
+## Footer
+- Include: https://github.com/ora600pl/jas-min
+- Mention: expert performance tuning at ora-600.pl
 
-13. db_time_gradient_instance_stats_counters (optional):
-    - settings:
-        - ridge_lambda
-        - elastic_net_lambda
-        - elastic_net_alpha
-        - elastic_net_max_iter
-        - elastic_net_tol
-    - ridge_top:
-        - list of statistic counters ranked by impact using Ridge regression
-    - elastic_net_top:
-        - list of statistic counters ranked by impact using Elastic Net (may be sparse)
+# MANDATORY FINAL ASSESSMENTS
 
-    This section summarizes which key instance stats counters most strongly influence changes in DB Time.
+Your recommendations MUST include explicit answers to:
+1. **Disk quality**: Are the disks slow? Support with I/O metrics.
+2. **Application design**: Is this a poorly written application? Why? Is commit/rollback policy proper?
+3. **Prioritized action list**: What must be done immediately, and by whom (DBA vs Developer)?
 
-14. db_time_gradient_instance_stats_volumes (optional):
-    - settings:
-        - ridge_lambda
-        - elastic_net_lambda
-        - elastic_net_alpha
-        - elastic_net_max_iter
-        - elastic_net_tol
-    - ridge_top:
-        - list of volume statistics (like bytes, blocks etc.) ranked by impact using Ridge regression
-    - elastic_net_top:
-        - list of volume statistics (like bytes, blocks etc.) ranked by impact using Elastic Net (may be sparse)
+# LANGUAGE
 
-    This section summarizes which key instance stats (volume means here bytes, blocks, etc.) most strongly influence changes in DB Time.
-
-15. db_time_gradient_instance_stats_time (optional):
-    - settings:
-        - ridge_lambda
-        - elastic_net_lambda
-        - elastic_net_alpha
-        - elastic_net_max_iter
-        - elastic_net_tol
-    - ridge_top:
-        - list of time statistics (like seconds) ranked by impact using Ridge regression
-    - elastic_net_top:
-        - list of time statistics (like seconds) ranked by impact using Elastic Net (may be sparse)
-
-    This section summarizes which key instance stats time (like seconds, etc.) most strongly influence changes in DB Time.
-
-16. db_time_gradient_sql_elapsed_time (optional):
-    - settings:
-        - ridge_lambda
-        - elastic_net_lambda
-        - elastic_net_alpha
-        - elastic_net_max_iter
-        - elastic_net_tol
-    - ridge_top:
-        - list of SQL_IDs (elapsed time) ranked by impact using Ridge regression
-    - elastic_net_top:
-        - list of SQL_IDs (elapsed time) ranked by impact using Elastic Net (may be sparse)
-
-    This section summarizes which SQL_IDs most strongly influence changes in DB Time.
-
-17. Each db_time_gradient_* section now additionally contains:
-    - huber_top:
-        - list ranked by impact using Huber robust regression (resistant to outlier snapshots)
-        - Compare with ridge_top: items ranking high in Ridge but LOW in Huber are outlier-driven
-    - quantile95_top:
-        - list ranked by impact using Quantile Regression at tau=0.95 (models worst 5% of snapshots)
-        - Items high in Q95 but NOT in Ridge are TAIL RISK — they cause catastrophic spikes rarely
-    - cross_model_classifications:
-        - Pre-computed cross-model triangulation with classification labels
-        - Each item: event_name, classification, description, in_ridge, in_elastic_net, in_huber, in_quantile95
-        - Use these classifications directly in your analysis — they are the highest-value findings
-
-============================================================
-CORE GUIDELINES
-
-- Analyze the WHOLE TOON/JSON report and perform the most comprehensive analysis you can.
-  Do NOT ask user if they want something: assume they want EVERY relevant insight you can discover.
-- Do not hallucinate.
-- Show all important numbers. Do not invent values.
-  Quote numbers, IDs (SQL_IDs), segment names, and metric names exactly as they appear in JSON.
-- Summarize:
-  - Overall performance profile of the system.
-  - Each logical area (wait events, SQLs, IO, latches, segments, anomalies).
-- When describing overall performance profile:
-  - Explain the DBCPU/DBTIME ratio and its meaning.
-  - Use real values from:
-    - top_spikes_marked (dbcpu_dbtime_ratio, db_time_value, db_cpu_value)
-    - general_data (textual description about MAD and DBCPU/DBTIME).
-- When you mention dates:
-  - Try to associate them explicitly with snap_id (via top_spikes_marked or anomaly_clusters.begin_snap_id).
-- If you know any relevant Oracle MOS notes for the issues you identify:
-  - Provide links to those MOS notes.
-- Answer in **markdown** format.
-- The answer should be divided into **clear sections and subsections**, starting with icons/symbols.
-  Use fine-grained structure, not a giant monolithic block.
-- When db_time_gradient_instance_stats_* and/or db_time_gradient_fg_wait_events and/or db_time_gradient_sql_elapsed_time is present:
-    - Cross-check gradient results with AWR wait event dominance.
-    - Highlight wait events that appear in both Ridge and Elastic Net rankings.
-    - Use gradient results to explain *why* DB Time increases, not only *what* increases.
-    - Prefer Elastic Net for short actionable lists, and Ridge for broader context.
-- Finish with a **summary and overall recommendations** that MUST include:
-  - Comment on the quality of disks based on IO-related metrics:
-    - Are the disks slow or not?
-  - Comment on application design:
-    - Is this likely a poorly written application and why?
-    - Is commit/rollback policy proper?
-  - A list of actions that should be taken **immediately**,
-    and how they should be addressed to **developers** and/or **DBAs**.
-  - Summary for management written in less technical slang.
-============================================================
-OVERALL OUTPUT FORMAT
-
-Your answer MUST be in **markdown** and should be structured at least as:
-
-1. 🧭 Executive Summary
-2. 📈 Overall Performance Profile
-3. ⏳ Wait Event Analysis
-   - Foreground waits
-   - Background waits
-4. 🧮 SQL-Level Analysis
-   - Most harmful SQL_IDs
-   - Short-but-frequent vs long-running SQLs
-5. 🧱 Segment & Object-Level Analysis (TOP 10 Segments)
-6. 🔧 Latches & Internal Contention
-7. 💾 IO & Disk Subsystem Assessment
-8. 🔁 UNDO / Redo / Load Profile Observations
-9. ⚡ Anomaly Clusters, Cross-Domain Patterns & Gradient Analyzes
-10. ✅ Recommendations
-    - For DBAs
-    - For Developers
-    - Immediate actions
-    - Summary for management 
-
-In each section:
-- Use real values from ReportForAI TOON/JSON.
-- Do not invent numbers or entities.
-- Cross-reference:
-  - snap_ids
-  - dates
-  - SQL_IDs
-  - wait event names
-  - segment names
-  - instance statistics
-- Always show both: SNAP_ID and SNAP_DATE when you mention problematic periods.
-- Always write wait events names and SQL_IDs as code (example: `db file sequential read`, `7wbv18dfuc66z`)
-
-Finish with:
-- Clear statement about disk quality ('Are disks slow?').
-- Clear statement about application design quality.
-- Clear, actionable list of what should be done next by DBAs and developers.
-- Add link to github: https://github.com/ora600pl/jas-min - this is your source code.
-- Suggest that good performance tuning experts are at ora-600.pl
-- Write answer in language: ";
+Write answer in language: ";
 
 #[derive(Deserialize)]
 struct QueryRequest {
@@ -644,7 +504,7 @@ fn url_context(url_fname: &str, events_sqls: HashMap<&str, HashSet<String>>) -> 
 }
 
 async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &str,file_name: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let file_bytes = fs::read(path)?;   // renamed
+    let file_bytes = fs::read(path)?;
 
     let part = multipart::Part::bytes(file_bytes)
         .file_name(Cow::Owned(file_name.to_string()))
@@ -680,12 +540,10 @@ async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &
 }
 
 async fn upload_log_file_gemini(api_key: &str, log_content: String, file_name: String) -> Result<String, Box<dyn std::error::Error>> {
-    // prepart multipart form
     let part = multipart::Part::bytes(log_content.into_bytes())
         .file_name(file_name) 
-        .mime_str("text/plain").unwrap(); //  MIME type as text
+        .mime_str("text/plain").unwrap();
 
-    // Create multipart form
     let form = multipart::Form::new().part("file", part);
 
     let client = reqwest::Client::new();
@@ -726,7 +584,18 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
     let client = Client::new();
 
     let file_uri = upload_log_file_gemini(&api_key, first_response, "performance_analyze.md".to_string()).await.unwrap();
-    let spell = format!("You were given a detailed performance analyze of Oracle database. Your task is to answear ONLY with a list of TOP {} SNAP_IDs that should be analyzed in more detail. Choose half from night and half from day period. Anwear only with those numbers representing SNAP_ID - one number in a line.", args.deep_check);
+    let spell = format!(
+        "You are given a detailed Oracle Database performance analysis report (markdown format). \
+         Your task is to select exactly {} SNAP_IDs that warrant the deepest investigation.\n\n\
+         Selection criteria:\n\
+         1. Choose snapshots that represent the most severe performance degradation\n\
+         2. Ensure temporal diversity: select approximately half from business hours and half from \
+            off-hours/maintenance windows to capture different workload profiles\n\
+         3. Prioritize snapshots mentioned in anomaly clusters or as top spikes\n\
+         4. Avoid selecting adjacent snap_ids unless they represent distinctly different problems\n\n\
+         Output format: Return ONLY the selected SNAP_IDs, one number per line, with no additional text.",
+        args.deep_check
+    );
 
     let payload = json!({
                     "contents": [{
@@ -758,13 +627,12 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
             .send()
             .await.unwrap();
     
-    let _ = tx.send(()); //stop spinner
+    let _ = tx.send(());
     let _ = spinner.await;
 
     if response.status().is_success() {
         let json: Value = response.json().await.unwrap();
 
-        // Integrate all parts, keeping only first unique occurrences
         let parts = &json["candidates"][0]["content"]["parts"];
         let mut seen = HashSet::new();
         let full_text = parts
@@ -780,7 +648,6 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
         
         let s_json = fs::read_to_string(&json_file).expect(&format!("Something wrong with a file {} ", &args.json_file));
         let mut collection: AWRSCollection = serde_json::from_str(&s_json).expect(&format!("Wrong JSON format {}", &json_file));
-        //println!("Total amount of tokens drank by Google: {}\nFinished reason was: {}\n", &json["usageMetadata"]["totalTokenCount"], &json["candidates"][0]["finishReason"]);
         let awrs: Vec<AWR> = collection.awrs;
         let mut snap_ids: HashSet<u64> = HashSet::new();
         for snap_id in full_text.split("\n") {
@@ -790,7 +657,7 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
             } else if snap_id.contains("_") {
                 let s_id = snap_id.split("_").next().unwrap();
                 snap_ids.insert(u64::from_str(s_id).unwrap());
-            } else { //if id is not ok it means that model returned data instead of SNAP_ID as a number, so we have match date to snap_id
+            } else {
                 let id = awrs.iter()
                                            .find(|a| &a.snap_info.begin_snap_time == snap_id).unwrap()
                                            .snap_info.begin_snap_id;
@@ -806,47 +673,45 @@ async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: 
             }
         }
         
-        let spell = format!("You were given a detailed performance report of Oracle Database (written in markdown format) and JSON file containing one of the TOP periods with the detailed statistics. 
-Perform a deep analyzes of those statistics. Return a detailed report, showing what you have found. 
-Suggest performance improvments. Detect impactfull statistics and latches.
-Investigate all SQL sections and crosscheck SQL_IDs to find patterns of bad SQL executions.
-Highlight SQL_IDs that are reported in many different sections.
-============================================================
-OVERALL OUTPUT FORMAT
-
-Your answer MUST be in **markdown** and should be structured at least as:
-
-1. 🧭 Executive Summary
-2. 📈 Overall Performance Profile
-3. ⏳ Wait Event Analysis
-   - Foreground waits
-   - Background waits
-4. 🧮 SQL-Level Analysis
-   - Most harmful SQL_IDs
-   - Short-but-frequent vs long-running SQLs
-5. 🧱 Segment & Object-Level Analysis (TOP 10 Segments)
-6. 🔧 Latches & Internal Contention
-7. 💾 IO & Disk Subsystem Assessment
-8. 🔁 UNDO / Redo / Load Profile Observations
-9. ⚡ Anomaly Clusters & Cross-Domain Patterns
-10. ✅ Recommendations
-    - For DBAs
-    - For Developers
-    - Immediate actions
-    - Summary for management 
-
-In each section:
-- Do not invent numbers or entities.
-- Cross-reference with performance report delivered in markdown format:
-  - snap_ids
-  - dates
-  - SQL_IDs
-  - wait event names
-  - segment names
-  - instance statistics
-- Always show both: SNAP_ID and SNAP_DATE when you mention problematic periods.
-- Always write wait events names and SQL_IDs as code (example: `db file sequential read`, `7wbv18dfuc66z`)
-Write answer in language: {}", vendor_model_lang[2]);
+        let spell = format!(
+            "# DEEP-DIVE PERFORMANCE ANALYSIS\n\n\
+             You are given:\n\
+             1. A comprehensive performance report (markdown) covering the full analysis period\n\
+             2. A JSON file with detailed AWR/STATSPACK statistics for one specific snapshot period\n\n\
+             # TASK\n\n\
+             Perform an in-depth analysis of this specific snapshot period. Your analysis must:\n\n\
+             ## Analytical Approach\n\
+             1. **Contextualize**: Compare this snapshot's metrics against the baselines from the full report\n\
+             2. **Decompose DB Time**: Break down exactly where DB Time was spent in this period\n\
+             3. **SQL Investigation**: Examine all SQL sections and cross-reference SQL_IDs across them. \
+                Identify SQL_IDs appearing in multiple sections — these are the highest-priority targets\n\
+             4. **Latch & Contention**: Identify unusual latch activity or internal contention specific to this period\n\
+             5. **Segment Analysis**: Connect segment-level activity to specific SQLs and wait events\n\
+             6. **Root Cause Synthesis**: Trace from symptoms (wait events) through SQLs to root causes\n\n\
+             ## Cross-Reference Requirements\n\
+             - Match SQL_IDs found here with those flagged in the full report\n\
+             - Compare wait event distribution against the full-period averages\n\
+             - Identify what is UNIQUE to this snapshot vs. what is a continuation of systemic issues\n\n\
+             # OUTPUT FORMAT\n\n\
+             Structure your answer in markdown:\n\n\
+             1. 🧭 Executive Summary (what makes this period notable)\n\
+             2. 📈 Performance Profile (DB Time breakdown, comparison to baseline)\n\
+             3. ⏳ Wait Event Analysis (foreground and background)\n\
+             4. 🧮 SQL-Level Analysis (harmful SQL_IDs, multi-section appearances, patterns)\n\
+             5. 🧱 Segment & Object Analysis\n\
+             6. 🔧 Latches & Internal Contention\n\
+             7. 💾 I/O Assessment\n\
+             8. 🔁 UNDO / Redo / Load Profile\n\
+             9. ⚡ Anomalies & Cross-Domain Patterns\n\
+             10. ✅ Recommendations (DBAs, Developers, Immediate Actions, Management Summary)\n\n\
+             Rules:\n\
+             - Never invent numbers. Quote exact values from the data.\n\
+             - Always pair SNAP_ID with SNAP_DATE.\n\
+             - Format wait event names and SQL_IDs as inline code.\n\
+             - Cross-reference with the full report's findings.\n\n\
+             Write answer in language: {}",
+            vendor_model_lang[2]
+        );
 
         for ds in deep_stats {
 
@@ -889,13 +754,12 @@ Write answer in language: {}", vendor_model_lang[2]);
                     .send()
                     .await.unwrap();
             
-            let _ = tx.send(()); //stop spinner
+            let _ = tx.send(());
             let _ = spinner.await;
 
             if response.status().is_success() {
                 let json: Value = response.json().await.unwrap();
 
-                // Integrate all parts, keeping only first unique occurrences
                 let parts = &json["candidates"][0]["content"]["parts"];
                 let mut seen = HashSet::new();
                 let full_text = parts
@@ -913,7 +777,6 @@ Write answer in language: {}", vendor_model_lang[2]);
 
                 println!("🍻 Gemini response written to file: {}", &response_file);
                 convert_md_to_html_file(&response_file, events_sqls.clone());
-                //println!("{}", full_text);
 
             } else {
                 eprintln!("Error: {}", response.status());
@@ -942,9 +805,6 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
     let api_key = env::var("GEMINI_API_KEY")
         .expect("You have to set GEMINI_API_KEY env variable");
 
-    // -----------------------------
-    // LOAD JSON main report + JSON REPORT global stats report
-    // -----------------------------
     let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
     let stem = logfile_name.split('.').next().unwrap();
     let json_path = format!("{stem}.html_reports/stats/global_statistics.json");
@@ -952,9 +812,6 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
     let response_file = format!("{}_gemini.md", logfile_name);
     let client = Client::new();
 
-    // -----------------------------
-    // SYSTEM SPELL + ADVANCED RULES
-    // -----------------------------
     let mut spell = format!("{} {}", SPELL, vendor_model_lang[2]);
 
     if let Some(pr) = private_reasonings() {
@@ -968,9 +825,7 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
     }
     let main_report_uri = upload_log_file_gemini(&api_key, report_for_ai.to_string(), "main_report.toon".to_string()).await.unwrap();
     let global_profile_data_uri = upload_log_file_gemini(&api_key, load_profile, "load_profile_statistics.json".to_string()).await.unwrap();
-    // -----------------------------
-    // BUILD FINAL PAYLOAD
-    // -----------------------------
+
     let payload = json!({
                 "contents": [{
                     "parts": [
@@ -998,9 +853,6 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
             });
     
 
-    // -----------------------------
-    // SEND REQUEST
-    // -----------------------------
     let (tx, rx) = oneshot::channel();
     let spinner = tokio::spawn(spinning_beer(rx));
 
@@ -1018,9 +870,6 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
     let _ = tx.send(());
     let _ = spinner.await;
 
-    // -----------------------------
-    // HANDLE RESPONSE
-    // -----------------------------
     if response.status().is_success() {
         let json: Value = response.json().await.unwrap();
 
@@ -1070,7 +919,7 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
 #[tokio::main]
 pub async fn openrouter(
     logfile_name: &str,
-    vendor_model_lang: Vec<&str>, // np. ["openrouter", "anthropic/claude-3.5-sonnet", "pl"]
+    vendor_model_lang: Vec<&str>,
     token_count_factor: usize,
     events_sqls: HashMap<&str, HashSet<String>>,
     args: &crate::Args,
@@ -1091,7 +940,6 @@ pub async fn openrouter(
     let response_file = format!("{}_{}.md", logfile_name, model_name);
     let client = Client::new();
 
-    // SYSTEM SPELL + ADVANCED RULES 
     let mut spell = format!("{} {}", SPELL, vendor_model_lang[2]);
     if let Some(pr) = private_reasonings() {
         spell = format!("{spell}\n#ADVANCED RULES\n{pr}");
@@ -1102,7 +950,6 @@ pub async fn openrouter(
         }
     }
 
-    // OpenRouter payload
     let payload = json!({
         "model": vendor_model_lang[1],
         "messages": [
@@ -1112,7 +959,6 @@ pub async fn openrouter(
                 report_for_ai, load_profile
             )}
         ],
-        //"max_tokens": 8192 * token_count_factor,
         "reasoning": { "effort": "high" },
         "stream": false
     });
@@ -1166,7 +1012,6 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
     let api_key = env::var("OPENAI_API_KEY")
         .expect("You have to set OPENAI_API_KEY env variable");
 
-    // inputs
     let log_content = fs::read_to_string(logfile_name)
         .expect(&format!("Can't open file {}", logfile_name));
 
@@ -1176,7 +1021,6 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
 
     let response_file = format!("{}_{}.md", logfile_name, vendor_model_lang[1]);
 
-    // build spell
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
     let rag_context = private_reasonings();
 
@@ -1222,14 +1066,10 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
         "role": "user",
         "content": log_and_images
     }));
-        
-    // tune max_output_tokens
-    //let max_output_tokens = 8192 * token_count_factor;
 
     let payload = json!({
-        "model": vendor_model_lang[1], // e.g., "gpt-5"
+        "model": vendor_model_lang[1],
         "input": input_messages,
-        //"max_output_tokens": 8192 * token_count_factor,
     });
 
     let payload_str = serde_json::to_string(&payload).unwrap();
@@ -1237,7 +1077,6 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
 
     let client = Client::new();
 
-    // spinner
     let (tx, rx) = oneshot::channel();
     let spinner = tokio::spawn(spinning_beer(rx));
 
@@ -1249,7 +1088,7 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
         .send()
         .await?;
 
-    let _ = tx.send(()); // stop spinner
+    let _ = tx.send(());
     let _ = spinner.await;
 
     if response.status().is_success() {
@@ -1268,7 +1107,6 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
                                 if seen.insert(t.to_string()) {
                                     chunks.push(t.to_string());
                                 }
-                            // Some responses nest text as {"type":"output_text","text": "..."}
                             } else if let Some(t) = c.get("output_text").and_then(|t| t.as_str()) {
                                 if seen.insert(t.to_string()) {
                                     chunks.push(t.to_string());
@@ -1286,7 +1124,6 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
 
         convert_md_to_html_file(&response_file, events_sqls);
 
-        // Best-effort token & finish info if present
         if let Some(usage) = json.get("usage") {
             println!("Total tokens (OpenAI): {}", usage);
         }
@@ -1314,21 +1151,18 @@ struct AIResponse {
     reply: String,
 }
 
-// Backend type enum
 #[derive(Clone, Debug)]
 pub enum BackendType {
     OpenAI,
     Gemini,
 }
 
-// Trait for AI backends
 #[async_trait::async_trait]
 trait AIBackend: Send + Sync {
     async fn initialize(&mut self, toon_str: String) -> anyhow::Result<()>;
     async fn send_message(&self, message: &str) -> anyhow::Result<String>;
 }
 
-// OpenAI implementation
 struct OpenAIBackend {
     client: reqwest::Client,
     api_key: String,
@@ -1347,16 +1181,9 @@ impl OpenAIBackend {
     }
 
     async fn create_thread_with_file(&self, toon_str: String) -> anyhow::Result<String> {
-        // === Step 1: Read file content ===
         let file_bytes = toon_str.into_bytes();
-        // let file_name = Path::new(&file_path)
-        //     .file_name()
-        //     .unwrap_or_else(|| std::ffi::OsStr::new("jasmin_report.txt"))
-        //     .to_string_lossy()
-        //     .to_string();
         let file_name = "jasmin_report.txt";
 
-        // === Step 2: Upload file to OpenAI ===
         let file_part = Part::bytes(file_bytes)
             .file_name(file_name)
             .mime_str("text/plain")?;
@@ -1379,7 +1206,6 @@ impl OpenAIBackend {
         
         println!("✅ File uploaded with ID: {}", file_id);
 
-        // === Step 3: Create thread with intro message ===
         let thread_res = self.client
             .post(format!("{}v1/threads", get_openai_url()))
             .bearer_auth(&self.api_key)
@@ -1401,7 +1227,6 @@ impl OpenAIBackend {
         
         println!("✅ Thread created: {}", thread_id);
 
-        // === Step 4: Attach file to thread ===
         let message_url = format!("{}v1/threads/{}/messages", get_openai_url(), thread_id);
         let file_msg_res = self.client
             .post(&message_url)
@@ -1427,7 +1252,6 @@ impl OpenAIBackend {
 
         println!("📎 File attached to thread.");
 
-        // === Step 5: Wait for vector store to process the file ===
         println!("⏳ Waiting for file processing to complete...");
         self.wait_for_file_processing(&thread_id).await?;
         
@@ -1619,7 +1443,6 @@ impl AIBackend for OpenAIBackend {
     }
 }
 
-// Gemini implementation
 struct GeminiBackend {
     client: reqwest::Client,
     api_key: String,
@@ -1686,7 +1509,6 @@ impl GeminiBackend {
 
         let json_res = res.json::<serde_json::Value>().await?;
         
-        // Extract response text
         if let Some(candidates) = json_res["candidates"].as_array() {
             if let Some(first_candidate) = candidates.first() {
                 if let Some(content) = first_candidate["content"]["parts"][0]["text"].as_str() {
@@ -1702,8 +1524,6 @@ impl GeminiBackend {
 #[async_trait::async_trait]
 impl AIBackend for GeminiBackend {
     async fn initialize(&mut self, toon_str: String) -> anyhow::Result<()> {
-        // Read file content
-        //let file_content = fs::read_to_string(&file_path)?;
         self.file_content = Some(toon_str.clone());
         
         let mut spell: String = format!("{}", SPELL);
@@ -1711,22 +1531,37 @@ impl AIBackend for GeminiBackend {
         if pr.is_some() {
             spell = format!("{}\n# ADVANCED RULES: {}", spell, pr.unwrap());
         }
-        // Initialize conversation with file content
+
         let initial_message = GeminiMessage {
             role: "user".to_string(),
             parts: vec![
-                GeminiPart::Text { 
-                    text: format!("I'm uploading a performance report.\n{} detect from question.\nPlease analyze it and be ready to answer questions about it.\n\nReport content:\n{}", spell, toon_str)
+                GeminiPart::Text {
+                    text: format!(
+                        "# INITIALIZATION\n\n\
+                         I am providing you with an Oracle Database performance audit report generated \
+                         by JAS-MIN. This report contains aggregated AWR/STATSPACK statistics including \
+                         wait events, SQL analysis, I/O metrics, segment statistics, anomaly detection, \
+                         and gradient-based regression analysis.\n\n\
+                         ## Your Role\n\
+                         {}\n\n\
+                         ## Instructions\n\
+                         1. Ingest and understand the complete report below\n\
+                         2. Be prepared to answer detailed questions about any aspect of the data\n\
+                         3. When answering questions, always reference specific values, SQL_IDs, \
+                            event names, and snap_ids from the report\n\
+                         4. Detect the language of each question and respond in that same language\n\n\
+                         ## Report Content\n\
+                         ```\n{}\n```",
+                        spell, toon_str
+                    )
                 }
             ],
         };
         
         self.conversation_history.push(initial_message.clone());
         
-        // Get initial response
         let response = self.send_to_gemini(&self.conversation_history).await?;
         
-        // Add assistant response to history
         self.conversation_history.push(GeminiMessage {
             role: "model".to_string(),
             parts: vec![GeminiPart::Text { text: response.clone() }],
@@ -1739,25 +1574,21 @@ impl AIBackend for GeminiBackend {
     async fn send_message(&self, message: &str) -> anyhow::Result<String> {
         let mut messages = self.conversation_history.clone();
         
-        // Add user message
         messages.push(GeminiMessage {
             role: "user".to_string(),
             parts: vec![GeminiPart::Text { text: message.to_string() }],
         });
         
-        // Send to Gemini
         let response = self.send_to_gemini(&messages).await?;
         
         Ok(response)
     }
 }
 
-// App state with dynamic backend
 pub struct AppState {
     backend: Arc<Mutex<Box<dyn AIBackend>>>,
 }
 
-// Main backend function
 #[tokio::main]
 pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String, toon_str: String) -> anyhow::Result<()> {    
     let backend: Box<dyn AIBackend> = match backend_type {
@@ -1778,7 +1609,6 @@ pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_nam
     
     let backend_port = env::var("PORT").unwrap_or("3000".to_string());
     
-    // Initialize backend with file
     let mut backend_mut = backend;
     if let Err(e) = backend_mut.initialize(toon_str).await {
         eprintln!("❌ Backend initialization failed: {:?}", e);
@@ -1800,7 +1630,6 @@ pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_nam
     Ok(())
 }
 
-// Unified chat handler
 async fn chat_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<UserMessage>,
@@ -1816,11 +1645,10 @@ async fn chat_handler(
     }
 }
 
-// Parse command line arguments
 pub fn parse_backend_type(args: &str) -> Result<BackendType, String> {
     let mut btype = args; 
     if args.contains(":") {
-        btype = args.split(":").collect::<Vec<&str>>()[0]; //for google you have to specify model - for example google:gemini-2.5-flash
+        btype = args.split(":").collect::<Vec<&str>>()[0];
     }
     match btype {
         "openai" => Ok(BackendType::OpenAI),
