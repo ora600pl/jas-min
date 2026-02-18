@@ -266,6 +266,7 @@ pub struct ReportForAI {
     pub db_time_gradient_instance_stats_time: Option<DbTimeGradientSection>,
     pub db_time_gradient_sql_elapsed_time: Option<DbTimeGradientSection>,
     pub db_cpu_gradient_instance_stats: Option<DbTimeGradientSection>,
+    pub initialization_parameters: HashMap<String, String>,
 }
 
 /// Strips redundant `description` fields from all CrossModelClassification
@@ -319,6 +320,8 @@ The ReportForAI contains these analytical sections:
 - `instance_stats_pearson_correlation` — instance statistics correlated with DB Time (|ρ| ≥ 0.5)
 - `load_profile_anomalies` — MAD-detected load profile anomalies
 - `anomaly_clusters` — temporally grouped anomalies across multiple domains
+- `initialization_parameters` — Oracle instance initialization parameters (name-value pairs). 
+  Contains both explicit (user-set) and default parameter values from the analyzed instance.
 
 ## Gradient Analysis Sections (Optional)
 
@@ -381,8 +384,27 @@ Follow this reasoning sequence:
 - Load profile anomalies reveal workload patterns
 - Segments reveal data model/indexing problems
 
-## Step 5: Synthesize and Prioritize
-- Rank by business impact (DB Time contribution × frequency)
+## Step 5: Evaluate Initialization Parameters
+- Review initialization_parameters in the context of ALL performance findings
+  from Steps 1-4. For each parameter that is relevant to an identified problem:
+  - State the current value
+  - Explain whether it contributes to, worsens, or is unrelated to the observed issues
+  - If the value is suboptimal, recommend a specific change with justification
+- Additionally, scan ALL parameters for known risks, anti-patterns, and deprecated 
+  settings regardless of whether they directly relate to current symptoms:
+  - Dangerous underscore parameters (_%) that may cause instability
+  - Parameters set to values that contradict Oracle best practices for the workload type
+  - Deprecated or removed parameters carried over from older Oracle versions
+  - Parameters that disable important features (e.g., AMM/ASMM misconfiguration, 
+    optimizer features disabled, security features turned off)
+- For every parameter finding, provide at least one reference source:
+  - Oracle documentation link (docs.oracle.com)
+  - MOS note ID (e.g., MOS Note 2148845.1)
+  - Oracle blog or white paper reference
+  - Known community references (e.g., Oracle-BASE, Ask Tom)
+
+## Step 6: Synthesize and Prioritize
+- Rank findings by business impact (DB Time contribution × frequency)
 - Separate systematic issues from incidents
 - Assign ownership (DBA vs Developer)
 
@@ -394,6 +416,8 @@ Follow this reasoning sequence:
 - **Temporal**: Always pair SNAP_ID with SNAP_DATE
 - **Cross-referencing**: Connect findings across sections
 - **MOS Notes**: Include relevant Oracle MOS note IDs when applicable
+- **Parameter names**: Format initialization parameter names as inline code 
+  (e.g., `optimizer_index_cost_adj`, `_fix_control`)
 
 # OUTPUT STRUCTURE
 
@@ -410,7 +434,15 @@ Follow this reasoning sequence:
 ## 7. 💾 I/O & Disk Subsystem Assessment
 ## 8. 🔁 UNDO / Redo / Load Profile Observations
 ## 9. ⚡ Anomaly Clusters, Cross-Domain Patterns & Gradient Analysis
-## 10. ✅ Recommendations
+## 10. ⚙️ Initialization Parameter Analysis
+### 10.1 Parameters Related to Identified Performance Issues
+For each finding from sections 2-9 where an initialization parameter is relevant:
+- Current value, recommended value, justification, and reference source.
+### 10.2 General Parameter Risks & Anti-Patterns
+Parameters with risky, deprecated, or suboptimal values independent of current symptoms.
+### 10.3 Parameter Change Summary Table
+| Parameter | Current Value | Recommended Value | Risk Level | Related Finding | Source |
+## 11. ✅ Recommendations
 ### For DBAs
 ### For Developers
 ### Immediate Actions
@@ -425,7 +457,9 @@ Follow this reasoning sequence:
 Your recommendations MUST include explicit answers to:
 1. **Disk quality**: Are the disks slow? Support with I/O metrics.
 2. **Application design**: Is this a poorly written application? Why? Is commit/rollback policy proper?
-3. **Prioritized action list**: What must be done immediately, and by whom (DBA vs Developer)?
+3. **Parameter hygiene**: Are there any dangerous, deprecated, or misconfigured initialization 
+   parameters? Summarize the most critical parameter changes needed.
+4. **Prioritized action list**: What must be done immediately, and by whom (DBA vs Developer)?
 
 # LANGUAGE
 
