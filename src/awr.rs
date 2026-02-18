@@ -283,7 +283,7 @@ pub struct AWRSCollection {
     pub db_instance_information: DBInstance,
     pub awrs: Vec<AWR>,
 	pub sql_text: HashMap<String, String>,
-
+	pub initialization_parameters: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -345,6 +345,100 @@ fn sql_text(table: ElementRef) -> HashMap<String, String> {
 		}
 	}
 	sqls
+}
+
+fn initialization_parameters(table: ElementRef) -> HashMap<String, String> {
+	let mut params: HashMap<String, String> = HashMap::new();
+	let row_selector = Selector::parse("tr").unwrap();
+    let column_selector = Selector::parse("td").unwrap();
+
+	for row in table.select(&row_selector) {
+		let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
+		if columns.len() > 1 {
+			let pname: Vec<&str> =  columns[0].text().collect::<Vec<_>>();
+			let pname = pname[0].trim().to_string();
+
+			let pvalue: Vec<&str> =  columns[1].text().collect::<Vec<_>>();
+			let pvalue = pvalue[0].trim().to_string();
+
+			params.entry(pname).or_insert(pvalue);
+		}
+	}
+	params
+}
+
+fn initialization_parameters_txt(inst_stats_section: Vec<&str>) -> HashMap<String, String> {
+    let mut params: HashMap<String, String> = HashMap::new();
+
+    let mut current_param: Option<String> = None;
+    let mut current_value = String::new();
+
+    // Sklejanie: gdy raport łamie w środku słowa, NIE chcemy dodawać spacji.
+    fn append_wrapped(dest: &mut String, cont: &str) {
+        let cont = cont.trim();
+        if cont.is_empty() {
+            return;
+        }
+
+        let dest_last = dest.chars().last();
+        let cont_first = cont.chars().next();
+
+        let glue_without_space = match (dest_last, cont_first) {
+            (Some(a), Some(b)) => a.is_ascii_alphanumeric() && b.is_ascii_alphanumeric(),
+            _ => false,
+        };
+		
+        dest.push_str(cont);
+    }
+
+    for raw_line in inst_stats_section {
+        let line = raw_line.trim_end();
+
+        // pomijamy nagłówki/separatory/puste
+        if line.is_empty()
+            || line.starts_with("Parameter Name")
+            || line.starts_with("----")
+			|| line.contains("init.ora")
+        {
+            continue;
+        }
+
+        let is_continuation = line.chars().next().map(|c| c.is_whitespace()).unwrap_or(true);
+
+        if !is_continuation {
+            // zapis poprzedniego parametru
+            if let Some(pname) = current_param.take() {
+                params.entry(pname).or_insert(current_value.trim().to_string());
+                current_value.clear();
+            }
+
+            // nowy parametr: pierwsze "słowo" to nazwa parametru, reszta to początek wartości
+            let mut it = line.split_whitespace();
+            let pname = match it.next() {
+                Some(x) => x.to_string(),
+                None => continue,
+            };
+
+            // wartość = reszta linii po nazwie (zachowujemy spacje/znaki, tylko obcinamy start)
+            let rest = &line[pname.len()..];
+            let pvalue = rest.trim_start();
+
+            current_param = Some(pname);
+            current_value.push_str(pvalue);
+        } else {
+            // kontynuacja wartości
+            if current_param.is_some() {
+                append_wrapped(&mut current_value, line);
+            }
+        }
+    }
+
+    // ostatni parametr
+    if let Some(pname) = current_param {
+        params.entry(pname).or_insert(current_value.trim().to_string());
+    }
+
+    params
 }
 
 fn top_sql_with_top_events(table: ElementRef) -> HashMap<String, TopSQLWithTopEvents> {
@@ -1311,6 +1405,7 @@ fn instance_activity_stats_txt(inst_stats_section: Vec<&str>) -> Vec<InstanceSta
 	ias
 }
 
+
 fn io_stats_byfunc(table: ElementRef) -> HashMap<String, IOStats> {
 	let mut result: HashMap<String, IOStats> = HashMap::new();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -1881,9 +1976,10 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
 	db_instance_information
 }
 
-fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, String>) {
+fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, String>, HashMap<String, String>) {
 	let mut awr: AWR = AWR::default();
 	let mut sqls_txt: HashMap<String, String> = HashMap::new();
+	let mut parameters: HashMap<String, String> = HashMap::new();
 	debug_note!("Parsing file: {}", fname);
 	if fname.ends_with("html") {
 
@@ -1968,6 +2064,8 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 				awr.segment_stats.insert("Global Cache Buffer Busy".to_string(), segment);
 			} else if args.security_level>=2 && element.value().attr("summary").unwrap().starts_with("This table displays the text of the SQL") {
 				 sqls_txt = sql_text(element);
+			} else if element.value().attr("summary").unwrap().starts_with("This table displays name and value of the modified initialization parameters") {
+				 parameters = initialization_parameters(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays the Top SQL by Top Wait Events" {
 				awr.top_sql_with_top_events = top_sql_with_top_events(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays total number of waits, and information about total wait time, for each wait event" {
@@ -2033,6 +2131,12 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 		let mut background_events: Vec<&str> = Vec::new();
 		background_events.extend_from_slice(&awr_lines[background_event_index.begin+8..background_event_index.end-1]);
 		awr.background_wait_events = wait_events_txt(background_events);
+
+		let parameters_section_start = format!("{}{}", 12u8 as char, "init.ora Parameters");
+		let parameters_section_index = find_section_boundries(awr_lines.clone(), &parameters_section_start, "End of Report",&fname, None);
+		let mut parameters_section: Vec<&str> = Vec::new();
+		parameters_section.extend_from_slice(&awr_lines[parameters_section_index.begin+5..parameters_section_index.end-1]);
+		parameters = initialization_parameters_txt(parameters_section);
 
 		let sql_cpu_section_start = format!("{}{}", 12u8 as char, "SQL ordered by CPU");
 		let sql_cpu_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed time");
@@ -2148,7 +2252,7 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 	}
 	awr.status = "OK".to_string();
 	awr.file_name = fname.to_string();
-	(awr, sqls_txt)
+	(awr, sqls_txt, parameters)
 }
 
 
@@ -2196,16 +2300,22 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
 
 	//This is save HashMap which will be filled with SQLText if appropriate Security Level is being set
 	let sqls_txt = Arc::new(DashMap::<String, String>::new());
+	let parameters = Arc::new(DashMap::<String, String>::new());
 
     let mut awr_vec: Vec<AWR> = file_collection
         .par_iter()
         .map_init( //initialize variables for each thread
-            || (Arc::clone(&counter), Arc::clone(&sqls_txt)), //initializied will be counter as cloned value for each thread
-            |(counter, s), f| { //map operator is initialized clone of counter and file name
-                let (result, sqls) = parse_awr_report_internal(f, &args); //each thread is processing one file
+            || (Arc::clone(&counter), Arc::clone(&sqls_txt), Arc::clone(&parameters)), //initializied will be counter as cloned value for each thread
+            |(counter, s, p), f| { //map operator is initialized clone of counter and file name
+                let (result, sqls, params) = parse_awr_report_internal(f, &args); //each thread is processing one file
 				if !sqls.is_empty() {
 					for (sqlid, sqltxt) in sqls {
 						s.entry(sqlid).or_insert(sqltxt);
+					}
+				}
+				if !params.is_empty() {
+					for (pname, pvalue) in params {
+						p.entry(pname).or_insert(pvalue);
 					}
 				}
 				counter.fetch_add(1, Ordering::Relaxed); //increment counter
@@ -2243,11 +2353,18 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
 	events_sqls.insert("BG", bg_events);
 	events_sqls.insert("SQL", sqls);
 
-	/* Collect sqls txt map from Arc */
+	/* Collect sqls txt and parameter map from Arc */
 	let dash = Arc::try_unwrap(sqls_txt)
     	.expect("Other Arc clones still exist");
 
 	let sql_txt_final: HashMap<_, _> = dash
+		.into_iter()
+		.collect();
+
+	let dash = Arc::try_unwrap(parameters)
+    	.expect("Other Arc clones still exist");
+
+	let parameters_final = dash
 		.into_iter()
 		.collect();
 
@@ -2257,7 +2374,9 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
         db_instance_information: is_instance_info.unwrap_or_default(),
         awrs: awr_vec,
 		sql_text: sql_txt_final,
+		initialization_parameters: parameters_final,
     };
+
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
 	let mut f = fs::File::create(file).unwrap();
 	f.write_all(json_str.as_bytes()).unwrap();

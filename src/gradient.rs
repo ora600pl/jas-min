@@ -119,6 +119,7 @@ pub fn compute_db_time_gradient(
     let event_delta_mad_by_event = compute_mad_by_event(&event_delta_by_event);
 
     // Ridge
+    println!("  -> Building Ridge regression");
     let ridge_gradient_by_event = ridge_regression_map(
         &event_delta_standardized_by_event,
         &db_time_delta,
@@ -126,6 +127,7 @@ pub fn compute_db_time_gradient(
     )?;
 
     // Elastic Net
+    println!("  -> Building Elastic Net regression");
     let elastic_net_gradient_by_event = elastic_net_coordinate_descent_map(
         &event_delta_standardized_by_event,
         &db_time_delta,
@@ -136,6 +138,7 @@ pub fn compute_db_time_gradient(
     );
 
     //Huber robust regression
+    println!("  -> Building Huber robust regression");
     let ridge_residuals = compute_residuals_map(&ridge_gradient_by_event, &event_delta_standardized_by_event, &db_time_delta);
     let huber_delta = 1.345 * mad_of_slice(&ridge_residuals);
     let huber_gradient_by_event = huber_regression_map(
@@ -148,6 +151,7 @@ pub fn compute_db_time_gradient(
     );
 
     //Quantile regression tau=0.95
+    println!("  -> Building Quantile regression tau=0.95");
     let quantile95_gradient_by_event = quantile_regression_irls_map(
         &event_delta_standardized_by_event,
         &db_time_delta,
@@ -705,7 +709,7 @@ pub fn cross_model_classify(
 
         let (classification, priority) = if in_ridge && in_en && in_huber && in_q95 {
             // All 4 models agree
-            ("CONFIRMED_BOTTLENECK", 1)
+            ("CONFIRMED_BOTTLENECK", 0)
         } else if in_ridge && in_huber && in_q95 && !in_en {
             // Ridge + Huber + Q95 but NOT EN → EN zeroed it due to collinearity with another 
             // dominant event. Still very high confidence since 3 independent models agree 

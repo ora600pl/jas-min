@@ -5059,7 +5059,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
             elastic_net_alpha,
             elastic_net_max_iter,
             elastic_net_tol,
-            "statistic_values_time"
+            "SQL_elapsed_time"
         ) {
             Ok(section) => {
                 report_for_ai.db_time_gradient_sql_elapsed_time = Some(section);
@@ -5295,5 +5295,6 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     strip_gradient_descriptions(&mut report_for_ai);
     /* ***************************************************** */
 
+    report_for_ai.initialization_parameters = collection.initialization_parameters;
     report_for_ai
 }
