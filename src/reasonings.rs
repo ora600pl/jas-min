@@ -266,6 +266,7 @@ pub struct ReportForAI {
     pub db_time_gradient_instance_stats_time: Option<DbTimeGradientSection>,
     pub db_time_gradient_sql_elapsed_time: Option<DbTimeGradientSection>,
     pub db_cpu_gradient_instance_stats: Option<DbTimeGradientSection>,
+    pub db_cpu_gradient_sql_cpu_time: Option<DbTimeGradientSection>,
     pub initialization_parameters: HashMap<String, String>,
 }
 
@@ -275,13 +276,14 @@ pub struct ReportForAI {
 /// boolean flags (in_ridge, in_elastic_net, in_huber, in_quantile95),
 /// and interpretation rules already present in the system prompt.
 pub fn strip_gradient_descriptions(report: &mut ReportForAI) {
-    let sections: [&mut Option<DbTimeGradientSection>; 6] = [
+    let sections: [&mut Option<DbTimeGradientSection>; 7] = [
         &mut report.db_time_gradient_fg_wait_events,
         &mut report.db_time_gradient_instance_stats_counters,
         &mut report.db_time_gradient_instance_stats_volumes,
         &mut report.db_time_gradient_instance_stats_time,
         &mut report.db_time_gradient_sql_elapsed_time,
         &mut report.db_cpu_gradient_instance_stats,
+        &mut report.db_cpu_gradient_sql_cpu_time,
     ];
 
     for section in sections {
@@ -325,9 +327,27 @@ The ReportForAI contains these analytical sections:
 
 ## Gradient Analysis Sections (Optional)
 
+### DB Time Gradient Sections
 Sections `db_time_gradient_fg_wait_events`, `db_time_gradient_instance_stats_[counters|volumes|time]`,
-`db_time_gradient_sql_elapsed_time`, and `db_cpu_gradient_instance_stats` contain multi-model 
-regression analysis of DB Time (or DB CPU) sensitivity to various factors.
+and `db_time_gradient_sql_elapsed_time` contain multi-model regression analysis of **DB Time** 
+sensitivity to various factors.
+
+### DB CPU Gradient Sections
+Sections `db_cpu_gradient_instance_stats` and `db_cpu_gradient_sql_cpu_time` contain multi-model 
+regression analysis of **DB CPU** sensitivity to instance statistics and SQL CPU time respectively.
+
+The `db_cpu_gradient_sql_cpu_time` section is particularly important for CPU-bound analysis:
+- It reveals which SQL_IDs contribute most to DB CPU changes, ranked by CPU time consumption.
+- Cross-reference SQL_IDs found here with `top_sqls_by_elapsed_time` to distinguish between 
+  SQLs that are CPU-intensive vs. those that are wait-bound.
+- A SQL_ID appearing as CONFIRMED_BOTTLENECK in both `db_time_gradient_sql_elapsed_time` AND 
+  `db_cpu_gradient_sql_cpu_time` is a CPU-dominant bottleneck — optimization should target 
+  reducing logical I/O (buffer gets), improving execution plans, or reducing execution frequency.
+- A SQL_ID in `db_time_gradient_sql_elapsed_time` but NOT in `db_cpu_gradient_sql_cpu_time` 
+  is wait-bound — its elapsed time is dominated by waits, not CPU work.
+- A SQL_ID in `db_cpu_gradient_sql_cpu_time` but NOT in `db_time_gradient_sql_elapsed_time` 
+  consumes CPU but does not significantly impact overall DB Time — lower priority unless 
+  CPU saturation is observed.
 
 Each gradient section contains results from four regression models:
 - **Ridge** (`ridge_top`) — stabilized, dense ranking of all contributing factors
@@ -360,6 +380,10 @@ Interpret classifications using this priority hierarchy:
 3. Cross-reference OUTLIER_DRIVEN with anomaly_clusters for root cause
 4. Use SPARSE_DOMINANT to find representative factors in correlated groups
 5. Integrate with traditional AWR analysis — gradients explain *why* DB Time changes
+6. For DB CPU gradients: cross-reference `db_cpu_gradient_sql_cpu_time` with 
+   `db_time_gradient_sql_elapsed_time` to classify each SQL as CPU-dominant, wait-dominant, 
+   or mixed — this determines whether optimization should target execution plans/LIOs (CPU) 
+   or wait events/I/O (waits)
 
 # ANALYTICAL METHODOLOGY
 
@@ -434,6 +458,13 @@ Follow this reasoning sequence:
 ## 7. 💾 I/O & Disk Subsystem Assessment
 ## 8. 🔁 UNDO / Redo / Load Profile Observations
 ## 9. ⚡ Anomaly Clusters, Cross-Domain Patterns & Gradient Analysis
+When presenting gradient analysis in this section:
+- Present DB Time gradient findings (wait events, instance stats, SQL elapsed time)
+- Present DB CPU gradient findings (instance stats, SQL CPU time)
+- For SQL analysis: include a cross-gradient comparison table showing SQL_IDs that appear 
+  in db_time_gradient_sql_elapsed_time and/or db_cpu_gradient_sql_cpu_time, with columns:
+  | SQL_ID | DB Time Classification | DB CPU Classification | Diagnosis |
+  Where Diagnosis is one of: CPU-Dominant, Wait-Dominant, Mixed, or CPU-Only
 ## 10. ⚙️ Initialization Parameter Analysis
 ### 10.1 Parameters Related to Identified Performance Issues
 For each finding from sections 2-9 where an initialization parameter is relevant:
