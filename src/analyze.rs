@@ -69,7 +69,8 @@ use crate::staticdata::StatUnitGroup;
 struct TopStats {
     events: BTreeMap<String, u8>,
     bgevents: BTreeMap<String, u8>,
-    sqls:   BTreeMap<String, String>,   // <SQL_ID, Module>
+    sqls:     BTreeMap<String, String>,   // <SQL_ID, Module>
+    sqls_cpu: BTreeMap<String, String>,   // <SQL_ID, Module>
     stat_names: BTreeMap<String, u8>,
     event_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
     bgevent_anomalies_mad: HashMap<String, Vec<(String,f64)>>,
@@ -99,6 +100,7 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
     let mut event_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut bgevent_names: BTreeMap<String, u8> = BTreeMap::new();
     let mut sql_ids: BTreeMap<String, String> = BTreeMap::new();
+    let mut sql_ids_cpu: BTreeMap<String, String> = BTreeMap::new();
     let mut stat_names: BTreeMap<String, u8> = BTreeMap::new();
 
     let mut stats_description = StatisticsDescription::default();
@@ -176,6 +178,23 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
                         sql_ids.entry(sqls[i].sql_id.clone()).or_insert(sqls[i].sql_module.clone());
                     }
                 }
+
+                //And the same with SQLs by CPU
+                let mut sqls_cpu: Vec<crate::awr::SQLCPUTime> = awr.sql_cpu_time.iter()
+                                                                  .map(|s| s.1.clone())
+                                                                  .collect();
+
+                sqls_cpu.sort_by_key(|s| s.cpu_time_s as i64);
+                let l: usize = sqls_cpu.len();  
+                if l > 5 {
+                    for i in 1..6 {
+                        sql_ids_cpu.entry(sqls_cpu[l-i].sql_id.clone()).or_insert(sqls_cpu[l-i].sql_module.clone());
+                    }
+                } else if l > 1 && l <=5 {
+                    for i in 0..=l-1 {
+                        sql_ids_cpu.entry(sqls_cpu[i].sql_id.clone()).or_insert(sqls_cpu[i].sql_module.clone());
+                    }
+                }
             }
             for stats in &awr.instance_stats {
                 stat_names.entry(stats.statname.clone()).or_insert(1);
@@ -218,6 +237,7 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
     let top: TopStats = TopStats {events: event_names, 
                                   bgevents: bgevent_names, 
                                   sqls: sql_ids, 
+                                  sqls_cpu: sql_ids_cpu,
                                   stat_names: stat_names, 
                                   event_anomalies_mad: event_anomalies,
                                   bgevent_anomalies_mad: bgevent_anomalies,
@@ -719,7 +739,10 @@ fn generate_sqls_plotfiles(awrs: &Vec<AWR>, top_stats: &TopStats, snap_range: &(
         .map(|awr| format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id))
         .collect();
 
-    let sqls_by_stats: HashMap<String, SQLStats> = top_stats.sqls.par_iter()
+    let mut combined_sqls = top_stats.sqls.clone();
+    combined_sqls.extend(top_stats.sqls_cpu.clone());
+    
+    let sqls_by_stats: HashMap<String, SQLStats> = combined_sqls.par_iter()
         .map(|(sql_id, _)| {
             let mut stats = SQLStats {
                 execs: Vec::new(),
@@ -2170,6 +2193,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_bgevents: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut y_vals_sqls_cpu: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_logons: Vec<u64> = Vec::new();
     let mut y_vals_logouts: Vec<u64> = Vec::new();
     let mut y_vals_calls: Vec<f64> = Vec::new();
@@ -2236,6 +2260,12 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
                 y_vals_sqls_exec_n.entry(sql.to_string()).or_insert(Vec::new());
                 y_vals_sqls_exec_s.entry(sql.to_string()).or_insert(Vec::new());
                 let mut v = y_vals_sqls.get_mut(sql).unwrap();
+                v.push(0.0);
+            }
+
+            for(sql, _) in &top_stats.sqls_cpu {
+                y_vals_sqls_cpu.entry(sql.to_string()).or_insert(Vec::new());
+                let mut v = y_vals_sqls_cpu.get_mut(sql).unwrap();
                 v.push(0.0);
             } 
 
@@ -2304,6 +2334,13 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
                         v.push(sqls.elapsed_time_s as f64); 
                     }
             }
+            for sqls in &awr.sql_cpu_time {
+                if top_stats.sqls_cpu.contains_key(&sqls.1.sql_id) {
+                    let mut v = y_vals_sqls_cpu.get_mut(&sqls.1.sql_id).unwrap();
+                    v[x_vals.len()-1] = sqls.1.cpu_time_s;
+                }
+            }
+
             let mut is_statspack: bool = false;
             //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
             for lp in &awr.load_profile {
@@ -4872,6 +4909,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     let mut gradient_stats_time = String::new();
     let mut gradient_sqls = String::new();
     let mut gradient_cpu_stats_all = String::new();
+    let mut gradient_cpu_sqls = String::new();
     /* *********************** */
 
     // ---------------------------------------------------------------------
@@ -5169,7 +5207,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
 
 
     // ---------------------------------------------------------------------
-    // Attach CPU Time gradient vs instance statistic all to ReportForAI (optional section)
+    // Attach CPU Time gradient vs instance statistic CPU to ReportForAI (optional section)
     // ---------------------------------------------------------------------
     {
         let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
@@ -5209,6 +5247,48 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
         }
         if let Some(section) = &report_for_ai.db_cpu_gradient_instance_stats {
             gradient_cpu_stats_all = print_db_time_gradient_tables(section, false, &logfile_name, &args);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Attach CPU Time gradient vs SQL by CPU Time to ReportForAI (optional section)
+    // ---------------------------------------------------------------------
+    {
+        
+        match build_db_time_gradient_section (
+            &y_vals_dbcpu,
+            &y_vals_sqls_cpu, // BTreeMap<String, Vec<f64>> aligned & zero-filled
+            ridge_lambda,
+            elastic_net_lambda,
+            elastic_net_alpha,
+            elastic_net_max_iter,
+            elastic_net_tol,
+            "SQL_CPU_time"
+        ) {
+            Ok(section) => {
+                report_for_ai.db_cpu_gradient_sql_cpu_time = Some(section);
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "{}",
+                    "\n\nCPU TIME GRADIENT for SQL CPU attached to ReportForAI".bold().green()
+                );
+            }
+            Err(err) => {
+                // Don't kill report generation; just log and continue.
+                report_for_ai.db_cpu_gradient_sql_cpu_time = None;
+                make_notes!(
+                    &logfile_name,
+                    false,
+                    1,
+                    "\n\nCPU TIME GRADIENT for SQL CPU time skipped: {}",
+                    err
+                );
+            }
+        }
+        if let Some(section) = &report_for_ai.db_cpu_gradient_sql_cpu_time {
+            gradient_cpu_sqls = print_db_time_gradient_tables(section, false, &logfile_name, &args);
         }
     }
 
@@ -5272,6 +5352,8 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
                 <p><span style="font-size:20px;font-weight:bold;">Gradient Analyzes</span></p>
                 <p><span style="font-size:15px;font-weight:bold;">DB CPU vs Instance Statistics</span></p>
                 {gradient_cpu_stats_all}
+                <p><span style="font-size:15px;font-weight:bold;">DB CPU vs SQLs by CPU Time</span></p>
+                {gradient_cpu_sqls}
             </div>
         </body>
         </html>

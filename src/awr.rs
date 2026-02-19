@@ -126,7 +126,7 @@ pub struct SQLCPUTime {
 	pub pct_total: f64,
 	pub pct_cpu: f64, 
 	pub pct_io: f64,
-	sql_module: String,
+	pub sql_module: String,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
