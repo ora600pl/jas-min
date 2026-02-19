@@ -89,29 +89,29 @@ Instead of manually combing through verbose report files, JAS-MIN produces a sin
                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   AWRSCollection (JSON)                         │
-│  ┌──────────┐ ┌───────────┐ ┌──────────┐ ┌──────────────────┐  │
-│  │SnapInfo  │ │LoadProfile│ │WaitEvents│ │ SQL Elapsed/CPU  │  │
-│  │HostCPU   │ │TimeModel  │ │ FG / BG  │ │ IO/Gets/Reads    │  │
-│  │InstStats │ │Efficiency │ │Histograms│ │ ASH Top Events   │  │
-│  │IOStats   │ │DictCache  │ │LibCache  │ │ Segment Stats    │  │
-│  │LatchAct  │ │RedoLog    │ │WaitClass │ │ Init Parameters  │  │
-│  └──────────┘ └───────────┘ └──────────┘ └──────────────────┘  │
+│  ┌──────────┐ ┌───────────┐ ┌──────────┐ ┌──────────────────┐   │
+│  │SnapInfo  │ │LoadProfile│ │WaitEvents│ │ SQL Elapsed/CPU  │   │
+│  │HostCPU   │ │TimeModel  │ │ FG / BG  │ │ IO/Gets/Reads    │   │
+│  │InstStats │ │Efficiency │ │Histograms│ │ ASH Top Events   │   │
+│  │IOStats   │ │DictCache  │ │LibCache  │ │ Segment Stats    │   │
+│  │LatchAct  │ │RedoLog    │ │WaitClass │ │ Init Parameters  │   │
+│  └──────────┘ └───────────┘ └──────────┘ └──────────────────┘   │
 └─────────────────┬───────────────────────────────────────────────┘
                   │
                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Analysis Engine                              │
 │                                                                 │
-│  ┌────────────────┐  ┌───────────────┐  ┌───────────────────┐  │
-│  │ Peak Detection │  │ MAD Anomaly   │  │ Pearson           │  │
-│  │ (CPU/Time      │  │ Detection     │  │ Correlation       │  │
-│  │  Ratio)        │  │ (sliding      │  │ (Bonferroni       │  │
-│  │                │  │  window)      │  │  corrected)       │  │
-│  └────────────────┘  └───────────────┘  └───────────────────┘  │
+│  ┌────────────────┐  ┌───────────────┐  ┌───────────────────┐   │
+│  │ Peak Detection │  │ MAD Anomaly   │  │ Pearson           │   │
+│  │ (CPU/Time      │  │ Detection     │  │ Correlation       │   │
+│  │  Ratio)        │  │ (sliding      │  │ (Bonferroni       │   │
+│  │                │  │  window)      │  │  corrected)       │   │
+│  └────────────────┘  └───────────────┘  └───────────────────┘   │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │ Multi-Model Gradient Regression                           │ │
-│  │  Ridge · Elastic Net · Huber (IRLS) · Quantile-95 (IRLS) │ │
-│  │  → Cross-Model Triangulation                              │ │
+│  │ Multi-Model Gradient Regression                            │ │
+│  │  Ridge · Elastic Net · Huber (IRLS) · Quantile-95 (IRLS)   │ │
+│  │  → Cross-Model Triangulation                               │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └─────────────────┬───────────────────────────────────────────────┘
                   │
