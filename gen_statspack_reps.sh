@@ -1,6 +1,7 @@
 #!/bin/bash
 
 REP_TIME=14
+SNAP_INTERVAL=30
 
 export NLS_LANG=AMERICAN_AMERICA.AL32UTF8
 
@@ -40,15 +41,18 @@ set trimspool on
 set feedback off
 with v_snaps as
 (
-select SNAP_ID || ' ' || lead(snap_id, 1) over (order by snap_id) as cmd, lead(snap_id, 1) over (order by snap_id) lsnap
+select snap_id as begin_snap, 
+      lead(snap_id, 1) over (order by snap_id) as end_snap, 
+      (lead(snap_time, 1) over (order by snap_id)-snap_time)*24*60 as snap_interval_minutes
 from perfstat.STATS\$SNAPSHOT
 where STARTUP_TIME=(select max(startup_time) from perfstat.STATS\$SNAPSHOT)
 and   DBID=(select dbid from v\$database)
 and   SNAP_TIME >= SYSDATE-${REP_TIME}
 )
-select cmd
+select begin_snap || ' ' || end_snap as cmd
 from v_snaps
-where lsnap is not null
+where end_snap is not null
+and   snap_interval_minutes >= ${SNAP_INTERVAL}
 /
 exit
 !

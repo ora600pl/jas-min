@@ -22,6 +22,7 @@ use dashmap::DashMap;
 
 use crate::analyze::main_report_builder;
 use crate::debug_note;
+use crate::debug_trace;
 use crate::staticdata::is_idle;
 use crate::Args;
 use crate::reasonings::ReportForAI;
@@ -298,20 +299,31 @@ fn find_section_boundries(awr_doc: Vec<&str>, section_start: &str, section_end: 
 	let section_start_trim = &section_start[1..section_start.len()-1];
 	let section_end_trim: &str = &section_end[1..section_end.len()-1];
 	let section_start = awr_iter.position(|x| x.starts_with(section_start) || x.starts_with(section_start_trim));
+	
+	debug_note!("File: {fname} Section start: {section_start_trim}, Section end: {section_end_trim}");
+
 	match section_start {
         Some(start) => {
             // Find end position relative to start
+			debug_note!("Section start found at position: {start}, starting to search end section from this position");
             let section_end = awr_iter.position(|x: &str| x.starts_with(section_end) || x.starts_with(section_end_trim));
-
+			debug_note!("Section end returned {:?}", section_end);
             match section_end {
                 Some(rel_end) => {
                     let end = start + rel_end;  // Adding relative position to start
+					debug_note!("Section absolute boundries: {start}, {end}");
                     SectionIdx { begin: start, end }
                 }
                 None => {
-                    eprintln!("\n{}: {} End section '{}' not found after start '{}'", "Error".bright_red(),fname.bright_magenta(), section_end_trim, section_start_trim);
-                    eprintln!("Debug: {} Start idx: {:?}, End idx: {:?}", fname, start, section_end);
-                    panic!("JAS-MIN is quitting");
+					debug_note!("End Section not found, continue value is {cinf}");
+					if cinf {
+						SectionIdx {begin: start, end: 0}
+					} else {
+						eprintln!("\n{}: {} End section '{}' not found after start '{}'", "Error".bright_red(),fname.bright_magenta(), section_end_trim, section_start_trim);
+						eprintln!("Debug: {} Start idx: {:?}, End idx: {:?}", fname, start, section_end);
+						debug_note!("Cannot continue: {} Start idx: {:?}, End idx: {:?}, {:?}", fname, start, section_end, cinf);
+						panic!("JAS-MIN is quitting - thread: {:?}", thread::current().id());
+					}
                 }
             }
         }
@@ -602,19 +614,148 @@ fn library_cache_stats(table: ElementRef) -> Vec<LibraryCache> {
 
 fn library_cache_stats_txt(library_cache_stats_section: Vec<&str>) -> Vec<LibraryCache> {
 	let mut library_cache_stats_txt: Vec<LibraryCache> = Vec::new();
-	for line in library_cache_stats_section {
-		if line.len() >= 79 && !line.starts_with(" "){
-			let statname = line[0..45].to_string().trim().to_string();
-			let get_requests = u64::from_str(&line[45..58].trim().replace(",",""));
-			let pct_miss = f64::from_str(&line[59..65].trim().replace(",",""));
-			let pin_req = u64::from_str(&line[66..80].trim().replace(",",""));
-			if get_requests.is_ok() && pct_miss.is_ok() && pin_req.is_ok() {
-				library_cache_stats_txt.push(LibraryCache{statname: statname.to_string(), get_requests: get_requests.unwrap() , get_pct_miss: pct_miss.unwrap(), pin_requests: pin_req.unwrap()});
+
+	// Filter out header/separator/empty lines, keep only data lines
+	let data_lines: Vec<&str> = library_cache_stats_section
+		.iter()
+		.filter(|line| {
+			let trimmed = line.trim();
+			!trimmed.is_empty()
+				&& !trimmed.starts_with("---")
+				&& !trimmed.starts_with("Library Cache")
+				&& !trimmed.starts_with("->")
+				&& !trimmed.contains("Namespace")
+				&& !trimmed.contains("Invali-")
+				&& !trimmed.contains("dations")
+				// Filter out header lines that contain ONLY header keywords
+				&& !is_library_cache_header_line(trimmed)
+		})
+		.copied()
+		.collect();
+
+	// Process lines in pairs: 
+	//   Line 1 (starts with non-space): namespace + first part of data
+	//   Line 2 (starts with space): continuation data
+	let mut i = 0;
+	while i < data_lines.len() {
+		let first_line = data_lines[i];
+
+		// A namespace line starts with a non-whitespace character
+		if !first_line.starts_with(' ') {
+			// Grab optional continuation line (starts with space)
+			let second_line = if i + 1 < data_lines.len() && data_lines[i + 1].starts_with(' ') {
+				i += 1;
+				Some(data_lines[i])
+			} else {
+				None
+			};
+
+			if let Some(entry) = parse_library_cache_two_lines(first_line, second_line) {
+				library_cache_stats_txt.push(entry);
 			}
 		}
-		
-	} 
+		i += 1;
+	}
+
 	library_cache_stats_txt
+}
+
+/// Returns true if the line looks like a header line from the Library Cache Activity section
+/// (contains only keywords like "Get", "Pct", "Pin", "Requests", "Miss", "Reloads" etc.)
+fn is_library_cache_header_line(line: &str) -> bool {
+	let tokens: Vec<&str> = line.split_whitespace().collect();
+	if tokens.is_empty() {
+		return true;
+	}
+	let header_words = ["Get", "Pct", "Pin", "Requests", "Miss", "Reloads", "DB/Inst:"];
+	tokens.iter().all(|t| header_words.contains(t))
+}
+
+/// Parse a namespace entry that spans two lines.
+/// Line 1: NAMESPACE_NAME           get_requests  get_pct_miss  [pin_requests]
+/// Line 2:                         [pin_requests]  [pin_pct_miss]  reloads  invalidations
+///
+/// We only need: statname, get_requests, get_pct_miss, pin_requests
+fn parse_library_cache_two_lines(first_line: &str, second_line: Option<&str>) -> Option<LibraryCache> {
+	// Find where the namespace name ends and numeric data begins.
+	// The namespace is followed by at least 2 consecutive spaces before the first number.
+	let namespace_end = find_namespace_boundary(first_line)?;
+	let statname = first_line[..namespace_end].trim().to_string();
+
+	// Collect all numeric tokens from both lines
+	let tokens_first: Vec<&str> = first_line[namespace_end..].split_whitespace().collect();
+	let tokens_second: Vec<&str> = second_line
+		.map(|l| l.split_whitespace().collect::<Vec<&str>>())
+		.unwrap_or_default();
+
+	let mut all_tokens: Vec<&str> = Vec::new();
+	all_tokens.extend_from_slice(&tokens_first);
+	all_tokens.extend_from_slice(&tokens_second);
+
+	// We expect at minimum: get_requests, get_pct_miss
+	// Full set (6 tokens): get_requests, get_pct_miss, pin_requests, pin_pct_miss, reloads, invalidations
+	// When pin_requests is 0, pin_pct_miss may be absent (only 5 tokens or fewer)
+	if all_tokens.len() < 2 {
+		return None;
+	}
+
+	let get_requests = parse_lib_u64(all_tokens.get(0)?)?;
+	let get_pct_miss = parse_lib_f64(all_tokens.get(1)?)?;
+
+	// Determine pin_requests from remaining tokens
+	let pin_requests = if all_tokens.len() > 2 {
+		// Token at index 2 could be pin_requests (integer) or something else
+		parse_lib_u64(all_tokens[2]).unwrap_or(0)
+	} else {
+		0
+	};
+
+	Some(LibraryCache {
+		statname,
+		get_requests,
+		get_pct_miss,
+		pin_requests,
+	})
+}
+
+/// Find the byte position where the namespace name ends.
+/// Heuristic: after seeing at least one non-space char, find a run of 2+ spaces
+/// followed by a digit or minus sign (start of numeric data).
+fn find_namespace_boundary(line: &str) -> Option<usize> {
+	let bytes = line.as_bytes();
+	let mut saw_text = false;
+	let mut i = 0;
+
+	while i < bytes.len() {
+		if bytes[i] != b' ' {
+			saw_text = true;
+		}
+
+		if saw_text && bytes[i] == b' ' {
+			// Check for 2+ consecutive spaces
+			let space_start = i;
+			while i < bytes.len() && bytes[i] == b' ' {
+				i += 1;
+			}
+			if i - space_start >= 2 && i < bytes.len() {
+				let ch = bytes[i];
+				if ch.is_ascii_digit() || ch == b'-' {
+					return Some(space_start);
+				}
+			}
+			continue; // don't increment i again, it's already advanced
+		}
+		i += 1;
+	}
+	None
+}
+
+fn parse_lib_u64(s: &str) -> Option<u64> {
+	s.replace(",", "").parse::<u64>().ok()
+}
+
+fn parse_lib_f64(s: &str) -> Option<f64> {
+	s.replace(",", "").parse::<f64>().ok()
 }
 
 fn latch_activity_stats(table: ElementRef) -> Vec<LatchActivity> {
@@ -2138,36 +2279,55 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 		parameters_section.extend_from_slice(&awr_lines[parameters_section_index.begin+5..parameters_section_index.end-1]);
 		parameters = initialization_parameters_txt(parameters_section);
 
+		debug_note!("Trying to parse SQL ordered by CPU section of file: {fname}");
 		let sql_cpu_section_start = format!("{}{}", 12u8 as char, "SQL ordered by CPU");
-		let sql_cpu_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed time");
-		let sql_cpu_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end,&fname, None);
+		let sql_cpu_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed");
+		let mut sql_cpu_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end, &fname, Some(true));
+		
+		/* It happens that Statspack doesn't have a stable section format or a section is missing */
+		debug_note!("Second attempt to parse SQL ordered by CPU section of file: {fname}");
+		if sql_cpu_index.begin == 0 || sql_cpu_index.end == 0 {
+			let sql_cpu_section_start = format!("{}{}", 12u8 as char, "SQL ordered by CPU");
+			let sql_cpu_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
+			sql_cpu_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end, &fname, None);
+		}
+		/* **************************************************************************************** */
 		let mut sql_cpu: Vec<&str> = Vec::new();
 		sql_cpu.extend_from_slice(&awr_lines[sql_cpu_index.begin..sql_cpu_index.end]);
 		awr.sql_cpu_time = sql_cpu_time_txt(sql_cpu);
 
 		let sql_gets_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
 		let sql_gets_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
-		let sql_gets_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end,&fname, None);
+		let sql_gets_index = find_section_boundries(awr_lines.clone(), &sql_gets_section_start, &sql_gets_section_end,&fname, None);
 		let mut sql_gets: Vec<&str> = Vec::new();
 		sql_gets.extend_from_slice(&awr_lines[sql_gets_index.begin..sql_gets_index.end]);
 		awr.sql_gets = sql_gets_txt(sql_gets);
 
 		let sql_reads_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
 		let sql_reads_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Executions");
-		let sql_reads_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end,&fname, None);
+		let sql_reads_index = find_section_boundries(awr_lines.clone(), &sql_reads_section_start, &sql_reads_section_end,&fname, None);
 		let mut sql_reads: Vec<&str> = Vec::new();
 		sql_reads.extend_from_slice(&awr_lines[sql_reads_index.begin..sql_reads_index.end]);
 		awr.sql_reads = sql_reads_txt(sql_reads);
 
-		let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed time");
+		let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed");
 		let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
-		let mut sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end,&fname, None);
+		let mut sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end,&fname, Some(true));
+
+		/* It happens that Statspack doesn't have a stable section format or a section is missing */
+		if sql_ela_index.begin == 0 || sql_ela_index.end == 0 {
+			let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed");
+			let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by CPU");
+			sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end,&fname, Some(true));
+		}
 
 		if sql_ela_index.begin == 0 || sql_ela_index.end == 0 {
-			let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed Time");
-			let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by CPU Time");
-			sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end,&fname, None);
+			let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed");
+			let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
+			sql_ela_index = find_section_boundries(awr_lines.clone(), &sql_ela_section_start, &sql_ela_section_end,&fname, Some(true));
 		}
+
+		/* ************************************************************************************** */
 
 		let mut sql_ela: Vec<&str> = Vec::new();
 		sql_ela.extend_from_slice(&awr_lines[sql_ela_index.begin..sql_ela_index.end]);
@@ -2197,14 +2357,14 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 
 
 		let library_cache_start = format!("{}{}", 12u8 as char, "Library Cache Activity");
-		let library_cache_end = format!("{}{}", 12u8 as char, "          -------------------------------------------------------------");
+		let library_cache_end = format!("{}{}", 12u8 as char, "Rule Sets");
 		let library_cache_index = find_section_boundries(awr_lines.clone(), &library_cache_start, &library_cache_end,&fname, None);
 		let mut library_cache: Vec<&str> = Vec::new();
 		library_cache.extend_from_slice(&awr_lines[library_cache_index.begin..library_cache_index.end+2]);
 		awr.library_cache = library_cache_stats_txt(library_cache);
 
 		let latch_activity_start = format!("{}{}", 12u8 as char, "Latch Activity");
-		let latch_activity_end = format!("{}{}", 12u8 as char, "          -------------------------------------------------------------");
+		let latch_activity_end = format!("{}{}", 12u8 as char, "Latch Sleep breakdown");
 		let latch_activity_index = find_section_boundries(awr_lines.clone(), &latch_activity_start, &latch_activity_end,&fname, None);
 		let mut latch_activity: Vec<&str> = Vec::new();
 		latch_activity.extend_from_slice(&awr_lines[latch_activity_index.begin..latch_activity_index.end+2]);

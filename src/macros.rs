@@ -38,16 +38,25 @@ macro_rules! debug_trace {
     ($($arg:tt)*) => {{
         use std::io::Write;
         use std::env;
-        use crate::tools::get_timestamp;
+        use std::thread;
 
-        if let Ok(trace_file) = env::var("JASMIN_TRACE") {
+        if let Ok(base) = env::var("JASMIN_TRACE") {
+            let tid = format!("{:?}", thread::current().id());
+            let tid = tid
+                .strip_prefix("ThreadId(")
+                .and_then(|s| s.strip_suffix(")"))
+                .unwrap_or("x");
+
+            let trace_file = format!("{}.t{}", base, tid);
+
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
                 .create(true)
                 .open(trace_file)
-                .expect("Can't create trace file - check JASMIN_TRACE variable");
+                .expect("Can't create trace file");
 
-            writeln!(file, "{}", format_args!($($arg)*)).expect("Unable to write to trace file");
+            writeln!(file, $($arg)*)
+                .expect("Unable to write to trace file");
         }
     }};
 }
