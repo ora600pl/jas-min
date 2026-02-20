@@ -840,14 +840,19 @@ pub fn print_cross_model_table(
         
     }
 
+
+    let mut html = table_to_html_string(&table, &format!("Cross-Model Triangulation: {}", section_label), &["Event/Stat/SQL", "Classification", "Ridge", "EN", "Huber", "Q95", "Description"]);
+    html = format!(r#"<div>{html}</div>"#);
+
+    /* Removing description before printing on screen, because it doesn't look good */
+    for row in table.row_iter_mut() {
+        row.remove_cell(6);
+    }
+
     for table_line in table.to_string().lines() {
         make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
     }
 
-    
-
-    let mut html = table_to_html_string(&table, &format!("Cross-Model Triangulation: {}", section_label), &["Event/Stat/SQL", "Classification", "Ridge", "EN", "Huber", "Q95", "Description"]);
-    html = format!(r#"<div>{html}</div>"#);
     html
 }
 

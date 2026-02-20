@@ -3637,7 +3637,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
         }
 
         let mut sql_text = format!("Security level {} does not allow gathering SQL text, use level 2 or higher", args.security_level);
-        if args.security_level >= 2 {
+        if args.security_level >= 2 && !collection.sql_text.is_empty() {
             sql_text = format!("<code><details><summary>FULL SQL TEXT</summary>{}</details></code>\n</body>",collection.sql_text.get(&sql_id).unwrap())
         }
 
