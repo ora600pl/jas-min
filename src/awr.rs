@@ -2205,7 +2205,8 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 				awr.segment_stats.insert("Global Cache Buffer Busy".to_string(), segment);
 			} else if args.security_level>=2 && element.value().attr("summary").unwrap().starts_with("This table displays the text of the SQL") {
 				 sqls_txt = sql_text(element);
-			} else if element.value().attr("summary").unwrap().starts_with("This table displays name and value of the modified initialization parameters") {
+			} else if element.value().attr("summary").unwrap().starts_with("This table displays name and value of the modified initialization parameters") 
+			       || element.value().attr("summary").unwrap().starts_with("This table displays name and value of init.ora parameters"){
 				 parameters = initialization_parameters(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays the Top SQL by Top Wait Events" {
 				awr.top_sql_with_top_events = top_sql_with_top_events(element);

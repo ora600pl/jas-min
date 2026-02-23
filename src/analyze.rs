@@ -4958,7 +4958,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     // ---------------------------------------------------------------------
     {
         let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
-                                                                         .filter(|i| classify_stat_unit_group(&i.0) == StatUnitGroup::Counter)
+                                                                         .filter(|i| is_counter_stat(&i.0))
                                                                          .collect();
         match build_db_time_gradient_section (
             &y_vals_dbtime,
@@ -5002,7 +5002,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     // ---------------------------------------------------------------------
     {
         let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
-                                                                         .filter(|i| classify_stat_unit_group(&i.0) == StatUnitGroup::Volume)
+                                                                         .filter(|i| is_volume_stat(&i.0))
                                                                          .collect();
         match build_db_time_gradient_section (
             &y_vals_dbtime,
@@ -5046,7 +5046,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     // ---------------------------------------------------------------------
     {
         let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
-                                                                         .filter(|i| classify_stat_unit_group(&i.0) == StatUnitGroup::Time)
+                                                                         .filter(|i| is_time_stat(&i.0))
                                                                          .collect();
         match build_db_time_gradient_section (
             &y_vals_dbtime,
@@ -5211,8 +5211,9 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     // ---------------------------------------------------------------------
     {
         let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
-                                                                         .filter(|i| classify_stat_unit_group(&i.0) == StatUnitGroup::CPU)
+                                                                         .filter(|i| is_cpu_stat(&i.0))
                                                                          .collect();
+        debug_note!("All instance statistics: {}, filtered for CPU: {}", instance_stats.len(), y_vals_statistics.len());
         match build_db_time_gradient_section (
             &y_vals_dbcpu,
             &y_vals_statistics, // BTreeMap<String, Vec<f64>> aligned & zero-filled
