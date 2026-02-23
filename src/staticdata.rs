@@ -101,11 +101,12 @@ pub const KEY_STATS_VOLUME: [&str; 22] = [
 // ─────────────────────────────────────────────────────────────────────────────
 // COUNTERS — liczniki opisujące zachowanie i obciążenie
 // ─────────────────────────────────────────────────────────────────────────────
-pub const KEY_STATS_COUNTERS: [&str; 103] = [
+pub const KEY_STATS_COUNTERS: [&str; 104] = [
     // Session / cursor churn
     "logons cumulative",
     "logons current",
     "user logons cumulative",
+    "user logouts cumulative",
     "opened cursors cumulative",
     "opened cursors current",
     "pinned cursors current",
@@ -239,7 +240,7 @@ pub const KEY_STATS_COUNTERS: [&str; 103] = [
 // CPU — statystyki najlepiej tłumaczące zużycie DB CPU
 // (do budowy gradientu DB CPU, NIE DB Time)
 // ─────────────────────────────────────────────────────────────────────────────
-pub const KEY_STATS_CPU: [&str;  45] = [
+pub const KEY_STATS_CPU: [&str;  47] = [
     // ── CPU time (direct) ────────────────────────────────────────────
     "cpu used by this session",
     "cpu used when call started",
@@ -253,6 +254,8 @@ pub const KEY_STATS_CPU: [&str;  45] = [
     "execute count",
     "recursive calls",
     "recursive system api invocations",
+    "user logons cumulative",
+    "user logouts cumulative",
 
     // ── Parse pressure (pure CPU work) ──────────────────────────────
     "parse count (total)",
@@ -342,17 +345,38 @@ pub fn classify_stat_unit_group(stat_name: &str) -> StatUnitGroup {
 }
 
 pub fn is_time_stat(stat_name: &str) -> bool {
-    classify_stat_unit_group(stat_name) == StatUnitGroup::Time
+    let name = normalize(stat_name);
+    if contains_normalized(&KEY_STATS_TIME, &name) {
+        return true;
+    } else {
+        return false;
+    }
 }
+
 pub fn is_volume_stat(stat_name: &str) -> bool {
-    classify_stat_unit_group(stat_name) == StatUnitGroup::Volume
+    let name = normalize(stat_name);
+    if contains_normalized(&KEY_STATS_VOLUME, &name) {
+        return true;
+    } else {
+        return false;
+    }
 }
 pub fn is_counter_stat(stat_name: &str) -> bool {
-    classify_stat_unit_group(stat_name) == StatUnitGroup::Counter
+    let name = normalize(stat_name);
+    if contains_normalized(&KEY_STATS_COUNTERS, &name) {
+        return true;
+    } else {
+        return false;
+    }
 }
 
 pub fn is_cpu_stat(stat_name: &str) -> bool {
-    classify_stat_unit_group(stat_name) == StatUnitGroup::CPU
+    let name = normalize(stat_name);
+    if contains_normalized(&KEY_STATS_CPU, &name) {
+        return true;
+    } else {
+        return false;
+    }
 }
 
 /* =========================================================================================
