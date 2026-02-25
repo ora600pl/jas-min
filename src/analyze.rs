@@ -3691,6 +3691,40 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
 
     report_for_ai.top_sqls_by_elapsed_time = top_sqls;
 
+    // --- Enrich foreground wait events with table names from SQL text ---
+    if !collection.sql_text.is_empty() {
+        // Build reverse map: event_name -> Set<SQL_ID>
+        // Sources: ASH data + strong correlation
+        let mut event_to_sqls: HashMap<String, HashSet<String>> = HashMap::new();
+        
+        for sql_data in &report_for_ai.top_sqls_by_elapsed_time {
+            // From ASH
+            for ash_event in &sql_data.wait_events_found_in_ash_sections_for_this_sql {
+                event_to_sqls
+                    .entry(ash_event.event_name.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(sql_data.sql_id.clone());
+            }
+            // From correlation
+            for corr_event in &sql_data.wait_events_with_strong_pearson_correlation {
+                event_to_sqls
+                    .entry(corr_event.event_name.clone())
+                    .or_insert_with(HashSet::new)
+                    .insert(sql_data.sql_id.clone());
+            }
+        }
+        
+        for event_data in report_for_ai.top_foreground_wait_events.iter_mut() {
+            if let Some(sql_ids) = event_to_sqls.get(&event_data.event_name) {
+                let tables = find_tables_for_sql_ids(sql_ids, &collection.sql_text);
+                if !tables.is_empty() {
+                    event_data.tables_associated_with_event_based_on_ash_sql = Some(tables);
+                }
+            }
+        }
+    }
+    // -----------------
+
     let sqls_table_html: String = format!(
         r#"
         <table id="sqls-table">

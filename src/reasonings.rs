@@ -73,6 +73,8 @@ pub struct TopForegroundWaitEvents {
     pub avg_wait_for_execution_ms: f64,
     pub stddev_wait_for_execution_ms: f64,
     pub median_absolute_deviation_anomalies: Vec<MadAnomaliesEvents>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tables_associated_with_event_based_on_ash_sql: Option<Vec<String>>,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -312,7 +314,15 @@ The ReportForAI contains these analytical sections:
 - `general_data` — overall DB load shape description with MAD analysis
 - `top_spikes_marked` — peak periods with DB Time, DB CPU, and their ratio
 - `top_foreground_wait_events` / `top_background_wait_events` — wait event statistics with 
-  correlations, averages, stddevs, and MAD anomalies
+  correlations, averages, stddevs, and MAD anomalies.
+  **Note:** `top_foreground_wait_events` may contain an optional field 
+  `tables_associated_with_event_based_on_ash_sql` — a list of table names extracted by 
+  parsing SQL text of queries associated with this wait event (via ASH or correlation). 
+  When present, use these table names as **authoritative evidence** of which tables are 
+  involved in the wait event. Cross-reference them with segment statistics sections. 
+  When this field is absent (sql_text was not available), continue to reason about 
+  potentially involved tables based on segment statistics, correlations, and other 
+  available data — but note that such reasoning is inferential.
 - `top_sqls_by_elapsed_time` — SQL-level metrics including cross-section presence, correlations, 
   MAD anomalies, ASH wait events, and Pearson-correlated wait events
 - `io_stats_by_function_summary` — per-function I/O statistics (LGWR, DBWR, etc.)
@@ -400,6 +410,12 @@ Follow this reasoning sequence:
 ## Step 3: Trace Root Causes
 - Wait events are symptoms → trace to SQLs → segments → application behavior
 - Use correlation data to build causal chains
+- **When `tables_associated_with_event_based_on_ash_sql` is present for a wait event, 
+  treat it as direct evidence linking the event to specific tables. Cross-reference 
+  these tables with segment statistics (logical reads, physical reads, row lock waits, 
+  buffer busy waits, etc.) for deeper insight. This SQL-parsed data supplements but 
+  does NOT replace statistical reasoning — always validate with segment stats and 
+  correlation data.**
 - Cross-validate with gradient analysis when available
 
 ## Step 4: Assess Infrastructure vs Application
@@ -449,6 +465,11 @@ Follow this reasoning sequence:
 ## 2. 📈 Overall Performance Profile
 ## 3. ⏳ Wait Event Analysis
 ### 3.1 Foreground Waits
+For each significant wait event:
+- If `tables_associated_with_event_based_on_ash_sql` is present, list the associated 
+  tables and cross-reference with segment statistics sections
+- Even with table data available, still analyze correlations and statistical patterns 
+  to provide comprehensive root-cause analysis
 ### 3.2 Background Waits
 ## 4. 🧮 SQL-Level Analysis
 ### 4.1 Most Impactful SQL_IDs
