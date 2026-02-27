@@ -152,6 +152,9 @@ struct Args {
 	#[clap(short = 'T', long, default_value_t=1e-6)]
 	en_tol: f64,
 
+	///Convert existing markdown file to HTML without calling AI model 
+	#[clap(short, long, default_value="", verbatim_doc_comment)]
+	convert_md2html: String,
 }
 
 
@@ -351,5 +354,9 @@ fn main() {
 		f.write_all(toon_str.as_bytes()).unwrap();
 		backend_ai(reportfile, backend_type, model_name, toon_str);
     }
+
+	if !args.convert_md2html.is_empty() {
+		convert_md_to_html_file(&args.convert_md2html, events_sqls.clone());
+	}
 	
 }
