@@ -5,20 +5,22 @@ SNAP_INTERVAL=30
 
 export NLS_LANG=AMERICAN_AMERICA.AL32UTF8
 
-cp $ORACLE_HOME/rdbms/admin/sprepcon.sql $ORACLE_HOME/rdbms/admin/sprepcon.sql.bak
-cp $ORACLE_HOME/rdbms/admin/sprepins.sql $ORACLE_HOME/rdbms/admin/sprepins.sql.bak
-sed 's/linesize_fmt = 80/linesize_fmt = 83/g' $ORACLE_HOME/rdbms/admin/sprepcon.sql > sprepcon.sql.tmp
-mv sprepcon.sql.tmp $ORACLE_HOME/rdbms/admin/sprepcon.sql
-sed 's/col aa format a80/col aa format a83/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
-mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
-sed 's/topn\.old_hash_value,10/st\.sql_id,13/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
-mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
-sed 's/topn\.old_hash_value, 10/st\.sql_id,13/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
-mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
-sed 's/topn\.old_hash_value,11/st\.sql_id,14/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
-mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
-sed 's/topn\.module,80/topn\.module,83/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
-mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
+if [ ! -f $ORACLE_HOME/rdbms/admin/sprepcon.sql.bak.ora600pl ]; then
+      cp $ORACLE_HOME/rdbms/admin/sprepcon.sql $ORACLE_HOME/rdbms/admin/sprepcon.sql.bak.ora600pl
+      cp $ORACLE_HOME/rdbms/admin/sprepins.sql $ORACLE_HOME/rdbms/admin/sprepins.sql.bak.ora600pl
+      sed 's/linesize_fmt = 80/linesize_fmt = 83/g' $ORACLE_HOME/rdbms/admin/sprepcon.sql > sprepcon.sql.tmp
+      mv sprepcon.sql.tmp $ORACLE_HOME/rdbms/admin/sprepcon.sql
+      sed 's/col aa format a80/col aa format a83/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
+      mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
+      sed 's/topn\.old_hash_value,10/st\.sql_id,13/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
+      mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
+      sed 's/topn\.old_hash_value, 10/st\.sql_id,13/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
+      mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
+      sed 's/topn\.old_hash_value,11/st\.sql_id,14/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
+      mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
+      sed 's/topn\.module,80/topn\.module,83/g' $ORACLE_HOME/rdbms/admin/sprepins.sql > sprepins.sql.tmp
+      mv sprepins.sql.tmp $ORACLE_HOME/rdbms/admin/sprepins.sql
+fi
 
 
 while IFS=  read -r line
