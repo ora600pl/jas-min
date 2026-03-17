@@ -24,7 +24,9 @@ use crate::reasonings::{StatisticsDescription,
                         GradientSettings,
                         GradientTopItem,
                         CrossModelClassification,
-                        DbTimeGradientSection};
+                        DbTimeGradientSection,
+                        VifDiagnostic,
+                        CollinearGroupImpact};
 
 use prettytable::{Table, Row, Cell, format, Attr};
 use colored::*;
@@ -45,6 +47,8 @@ pub struct EventImpact {
     pub gradient_coef: f64,
     /// impact = |coef| * MAD(raw Δ(event/stat/sql))
     pub impact: f64,
+    /// signed_impact = coef * MAD — preserves direction
+    pub signed_impact: f64,
 }
 
 /// Full result package
@@ -74,6 +78,12 @@ pub struct DbTimeGradientResult {
 
     /// MAD(raw Δ(wait event/statistic value/sqlid exec time))
     pub event_delta_mad_by_event: EventScalarMap,
+
+    /// Variance Inflation Factor for each predictor
+    pub vif_by_event: EventScalarMap,
+    /// Grouped impacts for collinear predictor clusters
+    /// Each entry: (group_member_names, group_impact, group_coef)
+    pub collinear_groups: Vec<(Vec<String>, f64, f64)>,
 }
 
 pub fn compute_db_time_gradient(
@@ -110,7 +120,10 @@ pub fn compute_db_time_gradient(
         }
     }
 
-    let db_time_delta = compute_time_deltas(db_time_series);
+    let db_time_delta_raw = compute_time_deltas(db_time_series);
+    // Center target variable (implicit intercept)
+    let y_mean = db_time_delta_raw.iter().sum::<f64>() / db_time_delta_raw.len() as f64;
+    let db_time_delta: Vec<f64> = db_time_delta_raw.iter().map(|&y| y - y_mean).collect();
     let event_delta_by_event = compute_event_deltas(event_series)?;
     let event_delta_mean_by_event = compute_mean_by_event(&event_delta_by_event);
     let event_delta_std_by_event = compute_std_by_event(&event_delta_by_event, &event_delta_mean_by_event);
@@ -139,8 +152,13 @@ pub fn compute_db_time_gradient(
 
     //Huber robust regression
     println!("  -> Building Huber robust regression");
-    let ridge_residuals = compute_residuals_map(&ridge_gradient_by_event, &event_delta_standardized_by_event, &db_time_delta);
-    let huber_delta = 1.345 * mad_of_slice(&ridge_residuals);
+
+    // Compute Huber delta from median residuals (intercept-only model)
+    // This makes Huber independent of Ridge quality
+    let y_median_val = median(&db_time_delta);
+    let median_residuals: Vec<f64> = db_time_delta.iter().map(|&y| y - y_median_val).collect();
+    let huber_delta = (1.345 * mad(&median_residuals)).max(1e-6);
+
     let huber_gradient_by_event = huber_regression_map(
         &event_delta_standardized_by_event,
         &db_time_delta,
@@ -158,12 +176,31 @@ pub fn compute_db_time_gradient(
         0.95,
         200,
         elastic_net_tol,
+        ridge_lambda,
     );
 
     let ridge_ranking = build_ranking(&ridge_gradient_by_event, &event_delta_mad_by_event);
     let elastic_net_ranking = build_ranking(&elastic_net_gradient_by_event, &event_delta_mad_by_event);
     let huber_ranking = build_ranking(&huber_gradient_by_event, &event_delta_mad_by_event);
     let quantile95_ranking = build_ranking(&quantile95_gradient_by_event, &event_delta_mad_by_event);
+
+    // VIF diagnostics
+    let vif_by_event = compute_vif(&event_delta_standardized_by_event);
+    for (event, vif) in &vif_by_event {
+        if *vif > 10.0 {
+            println!("  ⚠️  VIF({}) = {:.1} — severe multicollinearity", event, vif);
+        }
+    }
+
+    // Grouped impacts for collinear clusters
+    let collinear_groups = compute_grouped_impacts(
+        &event_delta_standardized_by_event,
+        &event_delta_by_event,
+        &db_time_delta,
+        &vif_by_event,
+        10.0,  // VIF threshold
+        0.8,   // correlation threshold for grouping
+    );
 
     Ok(DbTimeGradientResult {
         ridge_gradient_by_event,
@@ -177,6 +214,8 @@ pub fn compute_db_time_gradient(
         event_delta_mean_by_event,
         event_delta_std_by_event,
         event_delta_mad_by_event,
+        vif_by_event,
+        collinear_groups,
     })
 }
 
@@ -216,16 +255,21 @@ fn compute_mean_by_event(series_by_event: &EventSeriesMap) -> EventScalarMap {
     mean_by_event
 }
 
-fn compute_std_by_event(series_by_event: &EventSeriesMap, mean_by_event: &EventScalarMap) -> EventScalarMap {
+fn compute_std_by_event(
+    series_by_event: &EventSeriesMap,
+    mean_by_event: &EventScalarMap,
+) -> EventScalarMap {
     let mut std_by_event = BTreeMap::new();
     for (event_name, series) in series_by_event.iter() {
-        let mean = *mean_by_event.get(event_name).unwrap_or(&0.0);
+        let mean_val = *mean_by_event.get(event_name).unwrap_or(&0.0);
         let mut var = 0.0;
         for v in series.iter() {
-            let d = *v - mean;
+            let d = *v - mean_val;
             var += d * d;
         }
-        let denom = (series.len() as f64).max(1.0);
+        let n = series.len() as f64;
+        // Bessel's correction: N-1 for sample variance
+        let denom = if n > 1.0 { n - 1.0 } else { 1.0 };
         let mut std = (var / denom).sqrt();
         if !std.is_finite() || std == 0.0 {
             std = 1e-12;
@@ -256,152 +300,68 @@ fn standardize_by_event(
 fn compute_mad_by_event(series_by_event: &EventSeriesMap) -> EventScalarMap {
     let mut mad_by_event = BTreeMap::new();
     for (event_name, series) in series_by_event.iter() {
-        let mad = mad(series);
-        mad_by_event.insert(event_name.clone(), mad);
+        let mad_val = mad(series);
+        mad_by_event.insert(event_name.clone(), mad_val);
     }
     mad_by_event
-}
-
-//Compute residuals for a given coefficient map
-fn compute_residuals_map(
-    coefs: &EventScalarMap,
-    x_by_event: &EventSeriesMap,
-    y: &[f64],
-) -> Vec<f64> {
-    let n = y.len();
-    let mut residuals = y.to_vec();
-    for (event_name, series) in x_by_event.iter() {
-        let coef = *coefs.get(event_name).unwrap_or(&0.0);
-        if coef != 0.0 {
-            for t in 0..n {
-                residuals[t] -= coef * series[t];
-            }
-        }
-    }
-    residuals
-}
-
-//MAD of a slice
-fn mad_of_slice(values: &[f64]) -> f64 {
-    if values.is_empty() { return 1.0; }
-    let med = median(values);
-    let mut deviations: Vec<f64> = values.iter().map(|v| (v - med).abs()).collect();
-    let result = median_in_place(&mut deviations);
-    if result == 0.0 { 1.0 } else { result }
 }
 
 /* =========================================================================================
    Ridge regression (map-based)
    ========================================================================================= */
 
-fn ridge_regression_map(
+fn ridge_regression_map (
     standardized_event_deltas: &EventSeriesMap,
     db_time_delta: &[f64],
     lambda: f64,
 ) -> Result<EventScalarMap, String> {
-    let sample_count = db_time_delta.len();
-    for (event_name, series) in standardized_event_deltas.iter() {
-        if series.len() != sample_count {
+    let n = db_time_delta.len();
+    let event_names: Vec<String> = standardized_event_deltas.keys().cloned().collect();
+    let p = event_names.len();
+
+    if p == 0 || n == 0 {
+        return Err("Empty input for Ridge regression.".into());
+    }
+
+    for (name, series) in standardized_event_deltas.iter() {
+        if series.len() != n {
             return Err(format!(
-                "Standardized delta series length mismatch for '{event_name}': got {}, expected {}.",
-                series.len(), sample_count
+                "Standardized delta length mismatch for '{}': got {}, expected {}.",
+                name,
+                series.len(),
+                n
             ));
         }
     }
-    let rows = build_rows_by_time(standardized_event_deltas, sample_count)?;
-    let (mut a_matrix, mut b_vector) = build_normal_equations(&rows, db_time_delta);
-    for event_name in standardized_event_deltas.keys() {
-        let diag = a_matrix
-            .entry(event_name.clone())
-            .or_insert_with(BTreeMap::new)
-            .entry(event_name.clone())
-            .or_insert(0.0);
-        *diag += lambda;
-    }
-    gaussian_elimination_solve(&mut a_matrix, &mut b_vector)
-}
 
-fn build_rows_by_time(
-    standardized_event_deltas: &EventSeriesMap,
-    sample_count: usize,
-) -> Result<Vec<BTreeMap<String, f64>>, String> {
-    let mut rows: Vec<BTreeMap<String, f64>> = Vec::with_capacity(sample_count);
-    for _ in 0..sample_count {
-        rows.push(BTreeMap::new());
-    }
-    for (event_name, series) in standardized_event_deltas.iter() {
-        if series.len() != sample_count {
-            return Err(format!("Series length mismatch in build_rows_by_time for '{event_name}'."));
-        }
-        for (t, value) in series.iter().enumerate() {
-            rows[t].insert(event_name.clone(), *value);
-        }
-    }
-    Ok(rows)
-}
+    // Build X'X + lambda*I  and  X'y  using dense arrays
+    let mut xtx: Vec<Vec<f64>> = vec![vec![0.0; p]; p];
+    let mut xty: Vec<f64> = vec![0.0; p];
 
-fn build_normal_equations(
-    rows: &[BTreeMap<String, f64>],
-    y: &[f64],
-) -> (BTreeMap<String, BTreeMap<String, f64>>, BTreeMap<String, f64>) {
-    let mut a: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
-    let mut b: BTreeMap<String, f64> = BTreeMap::new();
-    for (t, row) in rows.iter().enumerate() {
-        let yt = y[t];
-        for (event_i, xi) in row.iter() {
-            *b.entry(event_i.clone()).or_insert(0.0) += xi * yt;
-        }
-        for (event_i, xi) in row.iter() {
-            let row_i = a.entry(event_i.clone()).or_insert_with(BTreeMap::new);
-            for (event_j, xj) in row.iter() {
-                *row_i.entry(event_j.clone()).or_insert(0.0) += xi * xj;
+    for t in 0..n {
+        let yt = db_time_delta[t];
+        for j in 0..p {
+            let xj = standardized_event_deltas[&event_names[j]][t];
+            xty[j] += xj * yt;
+            for k in j..p {
+                let xk = standardized_event_deltas[&event_names[k]][t];
+                let val = xj * xk;
+                xtx[j][k] += val;
+                if j != k {
+                    xtx[k][j] += val;
+                }
             }
         }
     }
-    (a, b)
-}
 
-fn gaussian_elimination_solve(
-    a: &mut BTreeMap<String, BTreeMap<String, f64>>,
-    b: &mut BTreeMap<String, f64>,
-) -> Result<EventScalarMap, String> {
-    let event_names: Vec<String> = a.keys().cloned().collect();
-    for pivot_name in event_names.iter() {
-        let pivot = get_matrix_value(a, pivot_name, pivot_name);
-        if pivot.abs() < 1e-18 || !pivot.is_finite() {
-            return Err(format!("Singular or invalid pivot for '{pivot_name}' in Ridge solve."));
-        }
-        let pivot_row = a.get_mut(pivot_name).ok_or_else(|| format!("Missing row for '{pivot_name}'"))?;
-        for (_col_name, val) in pivot_row.iter_mut() {
-            *val /= pivot;
-        }
-        let pivot_b = b.get(pivot_name).copied().unwrap_or(0.0) / pivot;
-        b.insert(pivot_name.clone(), pivot_b);
-        for other_name in event_names.iter() {
-            if other_name == pivot_name { continue; }
-            let factor = get_matrix_value(a, other_name, pivot_name);
-            if factor == 0.0 { continue; }
-            let pivot_row_snapshot = a.get(pivot_name).cloned()
-                .ok_or_else(|| format!("Missing pivot row snapshot for '{pivot_name}'"))?;
-            let other_row = a.get_mut(other_name)
-                .ok_or_else(|| format!("Missing row for '{other_name}'"))?;
-            for (col_name, pivot_val) in pivot_row_snapshot.iter() {
-                let entry = other_row.entry(col_name.clone()).or_insert(0.0);
-                *entry -= factor * pivot_val;
-            }
-            let b_other = b.get(other_name).copied().unwrap_or(0.0);
-            let b_pivot = b.get(pivot_name).copied().unwrap_or(0.0);
-            b.insert(other_name.clone(), b_other - factor * b_pivot);
-            if let Some(v) = other_row.get_mut(pivot_name) {
-                if v.abs() < 1e-15 { *v = 0.0; }
-            }
-        }
+    // Ridge penalty on diagonal
+    for j in 0..p {
+        xtx[j][j] += lambda;
     }
-    Ok(b.clone())
-}
 
-fn get_matrix_value(a: &BTreeMap<String, BTreeMap<String, f64>>, row: &str, col: &str) -> f64 {
-    a.get(row).and_then(|r| r.get(col)).copied().unwrap_or(0.0)
+    let beta = solve_dense_linear_system(&xtx, &xty);
+
+    Ok(event_names.into_iter().zip(beta).collect())
 }
 
 /* =========================================================================================
@@ -536,6 +496,7 @@ fn quantile_regression_irls_map(
     tau: f64,
     max_iter: usize,
     tol: f64,
+    ridge_penalty: f64,  // NEW parameter
 ) -> EventScalarMap {
     let n = y.len();
     let event_names: Vec<String> = x_by_event.keys().cloned().collect();
@@ -545,12 +506,14 @@ fn quantile_regression_irls_map(
     }
 
     let mut beta: Vec<f64> = vec![0.0; p];
-    let eps = 1e-6; // avoid division by zero
+    let eps = 1e-6;
+
+    // Scale ridge penalty down for quantile regression
+    let q_ridge = (ridge_penalty * 0.01).max(1e-6);
 
     for _iter in 0..max_iter {
         let beta_old = beta.clone();
 
-        // Compute residuals and asymmetric weights
         let mut weights: Vec<f64> = vec![1.0; n];
         for t in 0..n {
             let mut pred = 0.0;
@@ -562,7 +525,6 @@ fn quantile_regression_irls_map(
             weights[t] = if r >= 0.0 { tau / abs_r } else { (1.0 - tau) / abs_r };
         }
 
-        // Solve WLS: (X'WX + small_ridge*I) beta = X'Wy
         let mut xtwx: Vec<Vec<f64>> = vec![vec![0.0; p]; p];
         let mut xtwy: Vec<f64> = vec![0.0; p];
 
@@ -576,14 +538,20 @@ fn quantile_regression_irls_map(
                 }
             }
         }
-        // Small ridge for numerical stability
-        for j in 0..p { xtwx[j][j] += 1e-8; }
+        // Use scaled ridge penalty for numerical stability
+        for j in 0..p {
+            xtwx[j][j] += q_ridge;
+        }
         beta = solve_dense_linear_system(&xtwx, &xtwy);
 
-        let max_change: f64 = beta.iter().zip(beta_old.iter())
+        let max_change: f64 = beta
+            .iter()
+            .zip(beta_old.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0, f64::max);
-        if max_change < tol { break; }
+        if max_change < tol {
+            break;
+        }
     }
 
     event_names.into_iter().zip(beta).collect()
@@ -639,20 +607,238 @@ fn solve_dense_linear_system(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
    Ranking / reporting helpers
    ========================================================================================= */
 
+/* =========================================================================================
+   Variance Inflation Factor (VIF) diagnostics
+   ========================================================================================= */
+
+/// Compute Variance Inflation Factor for each predictor.
+/// VIF_j = 1 / (1 - R²_j), where R²_j is from regressing x_j on all other x's.
+/// VIF > 10 indicates severe multicollinearity.
+pub fn compute_vif(x_by_event: &EventSeriesMap) -> EventScalarMap {
+    let event_names: Vec<String> = x_by_event.keys().cloned().collect();
+    let p = event_names.len();
+    let n = x_by_event
+        .values()
+        .next()
+        .map(|v| v.len())
+        .unwrap_or(0);
+
+    if p <= 1 || n < p + 1 {
+        return event_names.iter().map(|e| (e.clone(), 1.0)).collect();
+    }
+
+    let mut vif_map: EventScalarMap = BTreeMap::new();
+
+    for target_name in &event_names {
+        let y_j: &[f64] = &x_by_event[target_name];
+
+        let other_names: Vec<&String> = event_names
+            .iter()
+            .filter(|name| *name != target_name)
+            .collect();
+        let q = other_names.len();
+
+        let mut xtx: Vec<Vec<f64>> = vec![vec![0.0; q]; q];
+        let mut xty: Vec<f64> = vec![0.0; q];
+        let mut yty: f64 = 0.0;
+        let mut y_sum: f64 = 0.0;
+
+        for t in 0..n {
+            let yt = y_j[t];
+            y_sum += yt;
+            yty += yt * yt;
+            for a in 0..q {
+                let xa = x_by_event[other_names[a]][t];
+                xty[a] += xa * yt;
+                for b in a..q {
+                    let xb = x_by_event[other_names[b]][t];
+                    let val = xa * xb;
+                    xtx[a][b] += val;
+                    if a != b {
+                        xtx[b][a] += val;
+                    }
+                }
+            }
+        }
+        // Tiny ridge for numerical stability in VIF auxiliary regressions
+        for a in 0..q {
+            xtx[a][a] += 1e-8;
+        }
+
+        let beta = solve_dense_linear_system(&xtx, &xty);
+
+        let y_mean_val = y_sum / n as f64;
+        let ss_tot = yty - n as f64 * y_mean_val * y_mean_val;
+
+        let mut ss_res = 0.0;
+        for t in 0..n {
+            let mut pred = 0.0;
+            for a in 0..q {
+                pred += beta[a] * x_by_event[other_names[a]][t];
+            }
+            let r = y_j[t] - pred;
+            ss_res += r * r;
+        }
+
+        let r_squared = if ss_tot > 1e-15 {
+            (1.0 - ss_res / ss_tot).max(0.0)
+        } else {
+            0.0
+        };
+        let vif = if r_squared < 1.0 - 1e-15 {
+            1.0 / (1.0 - r_squared)
+        } else {
+            1e6
+        };
+
+        vif_map.insert(target_name.clone(), vif);
+    }
+
+    vif_map
+}
+
+/// Groups collinear events (VIF > threshold) by pairwise correlation,
+/// then computes a single univariate coefficient for each group's combined signal.
+pub fn compute_grouped_impacts(
+    event_delta_standardized: &EventSeriesMap,
+    event_delta_raw: &EventSeriesMap,
+    db_time_delta: &[f64],
+    vif_by_event: &EventScalarMap,
+    vif_threshold: f64,
+    corr_threshold: f64,
+) -> Vec<(Vec<String>, f64, f64)> {
+    // Returns: Vec<(group_member_names, group_impact, group_coef)>
+
+    let high_vif: Vec<String> = vif_by_event
+        .iter()
+        .filter(|(_, &v)| v > vif_threshold)
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    if high_vif.is_empty() {
+        return vec![];
+    }
+
+    let n = db_time_delta.len();
+    if n == 0 {
+        return vec![];
+    }
+
+    // Greedy correlation-based clustering
+    let mut groups: Vec<HashSet<String>> = Vec::new();
+
+    for event in &high_vif {
+        let series_a = match event_delta_standardized.get(event) {
+            Some(s) => s,
+            None => continue,
+        };
+        let mut found_group = false;
+
+        for group in groups.iter_mut() {
+            let representative = group.iter().next().unwrap();
+            let series_b = match event_delta_standardized.get(representative) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let nf = series_a.len() as f64;
+            if nf == 0.0 {
+                continue;
+            }
+            let mean_a: f64 = series_a.iter().sum::<f64>() / nf;
+            let mean_b: f64 = series_b.iter().sum::<f64>() / nf;
+            let mut cov = 0.0;
+            let mut var_a = 0.0;
+            let mut var_b = 0.0;
+            for i in 0..series_a.len() {
+                let da = series_a[i] - mean_a;
+                let db = series_b[i] - mean_b;
+                cov += da * db;
+                var_a += da * da;
+                var_b += db * db;
+            }
+            let corr = if var_a > 0.0 && var_b > 0.0 {
+                cov / (var_a * var_b).sqrt()
+            } else {
+                0.0
+            };
+
+            if corr.abs() > corr_threshold {
+                group.insert(event.clone());
+                found_group = true;
+                break;
+            }
+        }
+
+        if !found_group {
+            let mut new_group = HashSet::new();
+            new_group.insert(event.clone());
+            groups.push(new_group);
+        }
+    }
+
+    let mut results: Vec<(Vec<String>, f64, f64)> = Vec::new();
+
+    for group in &groups {
+        if group.len() < 2 {
+            continue;
+        }
+
+        // Sum raw deltas within group
+        let mut combined: Vec<f64> = vec![0.0; n];
+        for event_name in group {
+            if let Some(raw_series) = event_delta_raw.get(event_name) {
+                for t in 0..n.min(raw_series.len()) {
+                    combined[t] += raw_series[t];
+                }
+            }
+        }
+
+        // Univariate regression: beta = cov(combined, y) / var(combined)
+        let mean_c: f64 = combined.iter().sum::<f64>() / n as f64;
+        let mean_y: f64 = db_time_delta.iter().sum::<f64>() / n as f64;
+        let mut cov_cy = 0.0;
+        let mut var_c = 0.0;
+        for t in 0..n {
+            let dc = combined[t] - mean_c;
+            let dy = db_time_delta[t] - mean_y;
+            cov_cy += dc * dy;
+            var_c += dc * dc;
+        }
+        let group_coef = if var_c > 0.0 { cov_cy / var_c } else { 0.0 };
+        let group_mad = mad(&combined);
+        let group_impact = group_coef.abs() * group_mad;
+
+        let mut names: Vec<String> = group.iter().cloned().collect();
+        names.sort();
+        results.push((names, group_impact, group_coef));
+    }
+
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    results
+}
+
 fn build_ranking(
     coef_by_event: &EventScalarMap,
     mad_by_event: &EventScalarMap,
 ) -> Vec<EventImpact> {
     let mut ranking = Vec::new();
     for (event_name, coef) in coef_by_event.iter() {
-        let mad = *mad_by_event.get(event_name).unwrap_or(&0.0);
+        let mad_val = *mad_by_event.get(event_name).unwrap_or(&0.0);
         ranking.push(EventImpact {
             event_name: event_name.clone(),
             gradient_coef: *coef,
-            impact: coef.abs() * mad,
+            impact: coef.abs() * mad_val,
+            signed_impact: *coef * mad_val,
         });
     }
-    ranking.sort_by(|a, b| b.impact.partial_cmp(&a.impact).unwrap());
+    // Sort by signed_impact descending (positive = actual bottlenecks first)
+    // then by absolute impact as tiebreaker
+    ranking.sort_by(|a, b| {
+        b.signed_impact
+            .partial_cmp(&a.signed_impact)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     ranking
 }
 
@@ -668,25 +854,25 @@ pub fn cross_model_classify(
 ) -> Vec<CrossModelClassification> {
     let ridge_set: HashSet<String> = section.ridge_top.iter()
         .take(top_n)
-        .filter(|i| i.impact > 0.0 && i.gradient_coef > 0.0)
+        .filter(|i| i.impact >= 0.0 && i.gradient_coef > 0.0)
         .map(|i| i.event_name.clone())
         .collect();
 
     let en_set: HashSet<String> = section.elastic_net_top.iter()
         .take(top_n)
-        .filter(|i| i.impact > 0.0 && i.gradient_coef > 0.0)
+        .filter(|i| i.impact >= 0.0 && i.gradient_coef > 0.0)
         .map(|i| i.event_name.clone())
         .collect();
 
     let huber_set: HashSet<String> = section.huber_top.iter()
         .take(top_n)
-        .filter(|i| i.impact > 0.0 && i.gradient_coef > 0.0)
+        .filter(|i| i.impact >= 0.0 && i.gradient_coef > 0.0)
         .map(|i| i.event_name.clone())
         .collect();
 
     let q95_set: HashSet<String> = section.quantile95_top.iter()
         .take(top_n)
-        .filter(|i| i.impact > 0.0 && i.gradient_coef > 0.0)
+        .filter(|i| i.impact >= 0.0 && i.gradient_coef > 0.0)
         .map(|i| i.event_name.clone())
         .collect();
 
@@ -856,33 +1042,6 @@ pub fn print_cross_model_table(
     html
 }
 
-/* =========================================================================================
-   Robust statistics helpers (MAD / median)
-   ========================================================================================= */
-
-fn mad(values: &[f64]) -> f64 {
-    if values.is_empty() { return 0.0; }
-    let med = median(values);
-    let mut deviations: Vec<f64> = values.iter().map(|v| (v - med).abs()).collect();
-    median_in_place(&mut deviations)
-}
-
-fn median(values: &[f64]) -> f64 {
-    let mut tmp = values.to_vec();
-    median_in_place(&mut tmp)
-}
-
-fn median_in_place(values: &mut [f64]) -> f64 {
-    if values.is_empty() { return 0.0; }
-    let mid = values.len() / 2;
-    values.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
-    if values.len() % 2 == 1 {
-        values[mid]
-    } else {
-        let lower_max = values[..mid].iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        (lower_max + values[mid]) * 0.5
-    }
-}
 
 /* =========================================================================================
    build_db_time_gradient_section — now includes Huber + Q95 + cross-model
@@ -953,10 +1112,43 @@ pub fn build_db_time_gradient_section(
         huber_top,
         quantile95_top,
         cross_model_classifications: Vec::new(),
+        vif_diagnostics: Vec::new(),
+        collinear_group_impacts: Vec::new(),
     };
 
     //Compute cross-model triangulation
     section.cross_model_classifications = cross_model_classify(&section, 20);
+
+    // VIF diagnostics
+    section.vif_diagnostics = gradient_result.vif_by_event.iter()
+        .filter(|(_, &vif)| vif > 5.0)  // Only report VIF > 5 (moderate+)
+        .map(|(name, &vif)| {
+            let interpretation = if vif > 100.0 {
+                "SEVERE_COLLINEARITY".to_string()
+            } else if vif > 10.0 {
+                "HIGH_COLLINEARITY".to_string()
+            } else {
+                "MODERATE_COLLINEARITY".to_string()
+            };
+            VifDiagnostic {
+                event_name: name.clone(),
+                vif,
+                interpretation,
+            }
+        })
+        .collect();
+    section.vif_diagnostics.sort_by(|a, b| b.vif.partial_cmp(&a.vif).unwrap());
+
+    // Collinear group impacts
+    section.collinear_group_impacts = gradient_result.collinear_groups.iter()
+        .map(|(names, impact, coef)| {
+            CollinearGroupImpact {
+                group_members: names.clone(),
+                combined_impact: *impact,
+                combined_coef: *coef,
+            }
+        })
+        .collect();
 
     Ok(section)
 }
@@ -1025,6 +1217,63 @@ pub fn print_db_time_gradient_tables(section: &DbTimeGradientSection, print_sett
         );
         gradient_html.push_str(&format!(r#"<div class="cross-model">{}</div>"#, cross_html));
     }
+
+    // VIF diagnostics table
+    if !section.vif_diagnostics.is_empty() {
+        make_notes!(logfile_name, args.quiet, 0, "{}",
+            "\n-- VIF Diagnostics (Multicollinearity) --\n".bold().bright_yellow());
+        let mut vif_table = Table::new();
+        vif_table.set_titles(Row::new(vec![
+            Cell::new("Event/Stat/SQL").with_style(Attr::Bold),
+            Cell::new("VIF").with_style(Attr::Bold),
+            Cell::new("Interpretation").with_style(Attr::Bold),
+        ]));
+        for vd in &section.vif_diagnostics {
+            vif_table.add_row(Row::new(vec![
+                Cell::new(&vd.event_name),
+                Cell::new(&format!("{:.1}", vd.vif)),
+                Cell::new(&vd.interpretation),
+            ]));
+        }
+        for table_line in vif_table.to_string().lines() {
+            make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
+        }
+        let vif_html = table_to_html_string(
+            &vif_table,
+            "VIF Diagnostics (Multicollinearity)",
+            &["Event/Stat/SQL", "VIF", "Interpretation"],
+        );
+        gradient_html.push_str(&format!(r#"<div class="cross-model">{}</div>"#, vif_html));
+    }
+
+    // Collinear group impacts table
+    if !section.collinear_group_impacts.is_empty() {
+        make_notes!(logfile_name, args.quiet, 0, "{}",
+            "\n-- Collinear Group Impacts --\n".bold().bright_yellow());
+        let mut grp_table = Table::new();
+        grp_table.set_titles(Row::new(vec![
+            Cell::new("Group Members").with_style(Attr::Bold),
+            Cell::new("Combined Coef").with_style(Attr::Bold),
+            Cell::new("Combined Impact").with_style(Attr::Bold),
+        ]));
+        for g in &section.collinear_group_impacts {
+            grp_table.add_row(Row::new(vec![
+                Cell::new(&g.group_members.join(" + ")),
+                Cell::new(&format!("{:+.6}", g.combined_coef)),
+                Cell::new(&format!("{:.6}", g.combined_impact)),
+            ]));
+        }
+        for table_line in grp_table.to_string().lines() {
+            make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
+        }
+        let grp_html = table_to_html_string(
+            &grp_table,
+            "Collinear Group Impacts",
+            &["Group Members", "Combined Coef", "Combined Impact"],
+        );
+        gradient_html.push_str(&format!(r#"<div class="cross-model">{}</div>"#, grp_html));
+    }
+
     gradient_html
 }
 
@@ -1040,7 +1289,10 @@ pub fn print_top_items_table(title: &str, items: &[GradientTopItem], logfile_nam
         table.add_row(Row::new(vec![
             Cell::new(&format!("{}", idx + 1)),
             Cell::new(&item.event_name),
-            Cell::new(&format!("{:+.6}", item.gradient_coef)),
+            Cell::new(&format!("{} {:+.6}",
+                if item.gradient_coef > 0.0 { "↑" } else { "↓" },
+                item.gradient_coef
+            )),
             Cell::new(&format!("{:.6}", item.impact)),
         ]));
     }

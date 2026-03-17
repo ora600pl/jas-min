@@ -56,7 +56,9 @@ use crate::reasonings::{StatisticsDescription,
                         GradientSettings,
                         GradientTopItem,
                         DbTimeGradientSection,
-                        strip_gradient_descriptions};
+                        strip_gradient_descriptions,
+                        VifDiagnostic,
+                        CollinearGroupImpact,};
 
 use crate::gradient::*;
 use crate::gradient::{EventSeriesMap,
@@ -2841,6 +2843,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
         let event_name: String = key.1.clone();
         /* Correlation calc */
         let corr: f64 = pearson_correlation_2v(&y_vals_dbtime, &yv);
+        let corr = if corr.is_finite() { corr } else { 0.0 };
         // Print Correlation considered high enough to mark it
         make_notes!(&logfile_name, args.quiet, 3, "\t{: >5}\n", &event_name.bold());
 
@@ -3065,6 +3068,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
         let event_name: String = key.1.clone();
         /* Correlation calc */
         let corr: f64 = pearson_correlation_2v(&y_vals_dbtime, &yv);
+        let corr = if corr.is_finite() { corr } else { 0.0 };
 
         /* STDDEV/AVG Calculations */
         let x_n: Vec<f64> = y_vals_bgevents_n.get(&event_name).unwrap().clone();
@@ -3304,6 +3308,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
         let sql_id_disp = format!("SQL_ID: {}", key.1.clone());
         /* Correlation calc */
         let corr: f64 = pearson_correlation_2v(&y_vals_dbtime, &yv);
+        let corr = if corr.is_finite() { corr } else { 0.0 };
         // Print Correlation considered high enough to mark it
         let top_sections: HashMap<String, f64> = report_top_sql_sections(&sql_id, &collection.awrs);
         make_notes!(&logfile_name, args.quiet, 3, "\n\t{: >5}", &sql_id_disp.bold());

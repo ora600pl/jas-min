@@ -227,6 +227,10 @@ pub struct DbTimeGradientSection {
     pub huber_top: Vec<GradientTopItem>,
     pub quantile95_top: Vec<GradientTopItem>,
     pub cross_model_classifications: Vec<CrossModelClassification>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vif_diagnostics: Vec<VifDiagnostic>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collinear_group_impacts: Vec<CollinearGroupImpact>,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -240,6 +244,20 @@ pub struct CrossModelClassification {
     pub in_huber: bool,
     pub in_quantile95: bool,
     pub priority: u8,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+pub struct VifDiagnostic {
+    pub event_name: String,
+    pub vif: f64,
+    pub interpretation: String,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+pub struct CollinearGroupImpact {
+    pub group_members: Vec<String>,
+    pub combined_impact: f64,
+    pub combined_coef: f64,
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -383,6 +401,25 @@ Interpret classifications using this priority hierarchy:
 | `ROBUST_ONLY` | Huber only | Background factor without outliers | LOW |
 | `MULTI_MODEL_MINOR` | 2+ models, no pattern | Minor contributor | LOW |
 | `SINGLE_MODEL` | 1 model only | Low confidence | INFORMATIONAL |
+
+### VIF Diagnostics & Collinear Groups
+
+Each gradient section may contain:
+- `vif_diagnostics` — Variance Inflation Factor for predictors with VIF > 5.
+  - VIF > 10: coefficients are unreliable due to multicollinearity; use group impact instead
+  - VIF > 100: extreme collinearity; individual Impact values are meaningless
+- `collinear_group_impacts` — when collinear predictors are detected, their raw signals
+  are summed and a single univariate coefficient is computed for the group.
+  - `combined_impact` represents the TRUE impact of the collinear group on DB Time
+  - This resolves cases where individual Impact ≈ 0 despite high correlation
+
+**When VIF diagnostics are present:**
+1. Do NOT report individual impacts for events with VIF > 10 as meaningful
+2. Instead, report the collinear group's combined_impact
+3. Explain to the reader that individual regression coefficients cannot separate
+   the effects of highly correlated events
+4. Example: if TX row lock and TM contention have VIF > 800, their individual
+   Impact ≈ 0 is an artifact — the group impact reveals their true contribution
 
 **Gradient analysis strategy:**
 1. Start with CONFIRMED_BOTTLENECK and CONFIRMED_BOTTLENECK_EN_COLLINEAR — highest priority
