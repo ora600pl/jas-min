@@ -1,3 +1,4 @@
+```markdown
 <p align="center">
   <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="300" alt="JAS-MIN Logo"/>
 </p>
@@ -33,6 +34,8 @@
   - [Pearson Correlation Coefficient](#pearson-correlation-coefficient)
   - [Bonferroni-Corrected Significance Threshold](#bonferroni-corrected-significance-threshold)
   - [Multi-Model Gradient Regression](#multi-model-gradient-regression)
+  - [Multicollinearity Diagnostics (VIF)](#multicollinearity-diagnostics-vif)
+  - [Collinear Group Impact](#collinear-group-impact)
   - [Cross-Model Triangulation](#cross-model-triangulation)
   - [Descriptive Statistics](#descriptive-statistics)
 - [AI Model Integration](#ai-model-integration)
@@ -56,7 +59,7 @@
 
 **JAS-MIN** (JSON AWR & Statspack Miner) is a high-performance Oracle Database performance analysis tool written in **Rust**. It parses hundreds of AWR (`.html`) and STATSPACK (`.txt`) reports, converts them into structured JSON, and runs a comprehensive suite of statistical and numerical analyses focused on **DB Time decomposition**.
 
-Instead of manually combing through verbose report files, JAS-MIN produces a single interactive HTML dashboard with Plotly-based visualizations, statistical summaries, anomaly detection, correlation analysis, multi-model gradient regression, and optional AI-generated interpretations.
+Instead of manually combing through verbose report files, JAS-MIN produces a single interactive HTML dashboard with Plotly-based visualizations, statistical summaries, anomaly detection, correlation analysis, multi-model gradient regression with multicollinearity diagnostics, and optional AI-generated interpretations.
 
 > Named after **Jasmin Fluri** — one of the SOUC founders — when the tool was first introduced at SOUC Database Circle 2024.
 
@@ -70,7 +73,8 @@ Instead of manually combing through verbose report files, JAS-MIN produces a sin
 | **Visualization** | Interactive Plotly HTML dashboards: time-series, heatmaps, histograms, box plots for wait events, SQL statistics, Load Profile, I/O stats, Instance Efficiency, Latch Activity, Segment Statistics. |
 | **Anomaly Detection** | Median Absolute Deviation (MAD) with configurable thresholds and sliding window across wait events, SQL elapsed times, Load Profile, Instance Statistics, Dictionary Cache, Library Cache, Latch Activity, and Time Model. |
 | **Correlation** | Pearson correlation between DB Time and every instance statistic, wait event, and SQL, with Bonferroni-corrected significance thresholds. |
-| **Gradient Analysis** | Four-model regression suite (Ridge, Elastic Net, Huber, Quantile-95) to determine which wait events, statistics, and SQL statements most influence DB Time and DB CPU changes. |
+| **Gradient Analysis** | Four-model regression suite (Ridge, Elastic Net, Huber, Quantile-95) to determine which wait events, statistics, and SQL statements most influence DB Time and DB CPU changes. Includes signed impact scores preserving directionality. |
+| **Multicollinearity Diagnostics** | Variance Inflation Factor (VIF) computation for all predictors, automatic detection of collinear groups, and combined group impact calculation resolving cases where individual impacts are suppressed by multicollinearity. |
 | **Cross-Model Triangulation** | Automated classification of bottlenecks by cross-referencing all four regression models (CONFIRMED_BOTTLENECK, TAIL_RISK, OUTLIER_DRIVEN, etc.). |
 | **AI Integration** | One-shot analysis via OpenAI, Google Gemini, or OpenRouter; modular multi-step pipeline for smaller-context models; local model support (LM Studio, Ollama); interactive backend assistant chat. |
 | **Security** | Three-tier security model controlling exposure of object names, SQL text, and other sensitive data in the JSON output. |
@@ -111,6 +115,7 @@ Instead of manually combing through verbose report files, JAS-MIN produces a sin
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Multi-Model Gradient Regression                            │ │
 │  │  Ridge · Elastic Net · Huber (IRLS) · Quantile-95 (IRLS)   │ │
+│  │  → VIF Diagnostics · Collinear Group Impact                │ │
 │  │  → Cross-Model Triangulation                               │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └─────────────────┬───────────────────────────────────────────────┘
@@ -314,6 +319,8 @@ Given a time series $X = \{x_1, x_2, \ldots, x_n\}$:
 4. Compute the MAD score for each observation: $z_i = \frac{|x_i - \tilde{x}|}{\text{MAD}}$
 5. Flag as anomaly if $z_i > \text{threshold}$ (default: 7.0)
 
+**Implementation Note:** The median is computed using `select_nth_unstable` for $O(n)$ average-case performance. A unified MAD/median implementation is shared across anomaly detection and gradient analysis modules to ensure consistency.
+
 **Sliding Window Mode** (`-W <PCT>`):
 
 When the window size is less than 100%, JAS-MIN uses a sliding window approach: for each observation $x_i$, the MAD is computed only from the local neighborhood of size $w$ centered on $i$. This detects anomalies relative to local behavior rather than global behavior, and runs in parallel across statistics using Rayon.
@@ -341,6 +348,8 @@ $$r = \frac{\sum_{i=1}^{n}(x_i - \bar{x})(y_i - \bar{y})}{\sqrt{\sum_{i=1}^{n}(x
 
 Additionally, JAS-MIN computes pairwise correlations between each SQL's elapsed time and every foreground wait event to identify which wait events most strongly co-occur with specific SQL statements.
 
+**NaN Protection:** When a statistic or event has zero variance (all values identical), the Pearson formula produces NaN. JAS-MIN guards against this by treating non-finite correlation values as zero.
+
 ### Bonferroni-Corrected Significance Threshold
 
 When correlating a large number of instance statistics with DB Time, JAS-MIN applies the Bonferroni correction to control the family-wise error rate:
@@ -351,22 +360,26 @@ Where $k$ is the number of statistics tested and $\alpha = 0.05$. Only statistic
 
 ### Multi-Model Gradient Regression
 
-To determine **what drives DB Time changes**, JAS-MIN computes first-order differences (deltas) of both DB Time and each feature (wait event, statistic, SQL elapsed time), standardizes them, and fits four regression models:
+To determine **what drives DB Time changes**, JAS-MIN computes first-order differences (deltas) of both DB Time and each feature (wait event, statistic, SQL elapsed time), standardizes them, and fits four regression models.
 
 **Pre-processing:**
 
-1. Compute deltas: $\Delta y_t = y_{t+1} - y_t$ (DB Time), $\Delta x_{j,t} = x_{j,t+1} - x_{j,t}$ (features)
-2. Standardize each feature's deltas: $\hat{x}_{j,t} = \frac{\Delta x_{j,t} - \mu_j}{\sigma_j}$
-3. Compute MAD of raw deltas for impact scaling
+1. **Differencing:** Compute deltas: $\Delta y_t = y_{t+1} - y_t$ (DB Time), $\Delta x_{j,t} = x_{j,t+1} - x_{j,t}$ (features)
+2. **Target centering:** The target variable $\Delta y$ is centered by subtracting its mean (equivalent to fitting an implicit intercept), preventing global trends from leaking into predictor coefficients.
+3. **Standardization** with Bessel's correction: Each feature's deltas are standardized using sample standard deviation with $N-1$ denominator:
+
+$$\hat{x}_{j,t} = \frac{\Delta x_{j,t} - \mu_j}{s_j}, \qquad s_j = \sqrt{\frac{1}{N-1}\sum_{t}(\Delta x_{j,t} - \mu_j)^2}$$
+
+4. Compute MAD of raw deltas for impact scaling
 
 **Four Regression Models:**
 
 | Model | Method | Purpose |
 |---|---|---|
-| **Ridge** | Closed-form via normal equations + L2 penalty $(A^TA + \lambda I)\beta = A^Ty$ | Dense, stabilized ranking of all contributing factors |
-| **Elastic Net** | Coordinate descent with L1+L2 penalty: $\min \frac{1}{2n}\|y - X\beta\|^2 + \lambda\alpha\|\beta\|_1 + \frac{\lambda(1-\alpha)}{2}\|\beta\|^2$ | Sparse ranking highlighting dominant factors; handles collinearity by zeroing out redundant features |
-| **Huber** | Iteratively Reweighted Least Squares (IRLS) with Huber loss ($\delta = 1.345 \cdot \text{MAD}(\text{residuals})$) | Outlier-resistant ranking; downweights extreme snapshots |
-| **Quantile 95** | IRLS with asymmetric check-loss function ($\tau = 0.95$) | Models the worst 5% of snapshots (tail risk) |
+| **Ridge** | Dense linear system solver with partial pivoting + L2 penalty: $(X^TX + \lambda I)\beta = X^Ty$ | Dense, stabilized ranking of all contributing factors. Uses partial pivoting for numerical stability under ill-conditioned Gram matrices. |
+| **Elastic Net** | Coordinate descent with L1+L2 penalty: $\min \frac{1}{2n}\|y - X\beta\|^2 + \lambda\alpha\|\beta\|_1 + \frac{\lambda(1-\alpha)}{2}\|\beta\|^2$ | Sparse ranking highlighting dominant factors; handles collinearity by zeroing out redundant features. |
+| **Huber** | Iteratively Reweighted Least Squares (IRLS) with Huber loss. The threshold $\delta$ is computed independently from median residuals: $\delta = 1.345 \cdot \text{MAD}(y - \tilde{y})$, ensuring Huber's outlier resistance is not dependent on any other model's quality. | Outlier-resistant ranking; downweights extreme snapshots. |
+| **Quantile 95** | IRLS with asymmetric check-loss function ($\tau = 0.95$). A scaled ridge penalty ($0.01 \times \lambda_{Ridge}$) is applied for numerical stability under multicollinearity. | Models the worst 5% of snapshots (tail risk). |
 
 **Impact Score:**
 
@@ -374,7 +387,13 @@ $$\text{impact}_j = |\beta_j| \cdot \text{MAD}(\Delta x_j)$$
 
 This quantifies the expected shift in DB Time for a typical perturbation in feature $j$.
 
-**Applied to six gradient sections:**
+**Signed Impact:**
+
+$$\text{signed\_impact}_j = \beta_j \cdot \text{MAD}(\Delta x_j)$$
+
+Preserves directionality: positive values indicate factors that drive DB Time **up** (actual bottlenecks), negative values indicate factors associated with DB Time **decreases**. Rankings are sorted by signed impact descending, so actual bottlenecks appear first. This prevents anti-correlated events (e.g., idle events that increase when DB Time drops) from appearing as top bottlenecks.
+
+**Applied to seven gradient sections:**
 
 1. **DB Time** vs. Foreground Wait Events (wait seconds)
 2. **DB Time** vs. Instance Statistics — Counters
@@ -383,6 +402,39 @@ This quantifies the expected shift in DB Time for a typical perturbation in feat
 5. **DB Time** vs. SQL Elapsed Time
 6. **DB CPU** vs. Instance Statistics — CPU-related
 7. **DB CPU** vs. SQL CPU Time
+
+### Multicollinearity Diagnostics (VIF)
+
+When multiple predictors are highly correlated (e.g., `enq: TX - row lock contention` and `enq: TM - contention` that always spike together), multivariate regression cannot reliably separate their individual effects. This manifests as individual Impact scores near zero despite the events clearly co-occurring with DB Time spikes.
+
+JAS-MIN computes the **Variance Inflation Factor (VIF)** for each predictor to diagnose this:
+
+$$VIF_j = \frac{1}{1 - R_j^2}$$
+
+where $R_j^2$ is the coefficient of determination from regressing predictor $j$ on all other predictors. The auxiliary regressions use a dense linear system solver with a tiny ridge penalty ($10^{-8}$) for numerical stability.
+
+| VIF Range | Interpretation | Action |
+|---|---|---|
+| 1.0 – 5.0 | Acceptable | Individual coefficients are reliable |
+| 5.0 – 10.0 | Moderate collinearity | Coefficients may be unstable; check group impact |
+| 10.0 – 100.0 | High collinearity | Individual coefficients unreliable; use group impact |
+| > 100.0 | Severe collinearity | Individual Impact is meaningless; only group impact is valid |
+
+VIF diagnostics with interpretation labels (`MODERATE_COLLINEARITY`, `HIGH_COLLINEARITY`, `SEVERE_COLLINEARITY`) are included in the gradient HTML report and in the `ReportForAI` data sent to AI models.
+
+### Collinear Group Impact
+
+When VIF exceeds 10.0 for multiple predictors, JAS-MIN automatically identifies groups of collinear predictors using greedy pairwise correlation clustering (threshold $|\rho| > 0.8$). For each group of 2+ members:
+
+1. The raw differenced series of all group members are summed into a single combined signal: $\Delta x_{group,t} = \sum_{j \in G} \Delta x_{j,t}$
+2. A univariate regression is performed: $\beta_{group} = \frac{Cov(\Delta x_{group}, \Delta y)}{Var(\Delta x_{group})}$
+3. The **combined group impact** is computed: $|\beta_{group}| \times MAD(\Delta x_{group})$
+
+This resolves the key limitation of multivariate regression when applied to correlated Oracle performance metrics. For example:
+
+> If `enq: TX - row lock contention` and `enq: TM - contention` have individual VIF > 800 and individual Impact ≈ 0 (because Ridge/Huber/EN cannot separate their effects), the collinear group impact may reveal a combined impact of 42.3, correctly representing their joint contribution to DB Time during spikes.
+
+Collinear group impacts are displayed in the gradient HTML report and included in the `ReportForAI` for AI interpretation.
 
 ### Cross-Model Triangulation
 
@@ -399,6 +451,8 @@ After fitting all four models, JAS-MIN automatically classifies each feature by 
 | `OUTLIER_DRIVEN` | Ridge only (not Huber) | Impact from a few extreme snapshots | MEDIUM |
 | `SPARSE_DOMINANT` | EN only (not Ridge) | Dominant among correlated group | MEDIUM |
 | `ROBUST_ONLY` | Huber only | Background factor visible only without outliers | LOW |
+
+**Integration with VIF:** When a predictor is classified as a bottleneck but has VIF > 10, the classification should be interpreted in conjunction with the collinear group impact. The cross-model classification identifies *what* is important; the VIF and group impact explain *how much* it truly contributes.
 
 ### Descriptive Statistics
 
@@ -436,6 +490,7 @@ jas-min -d ./reports --ai google:gemini-2.5-flash:EN
 The system prompt includes:
 - Complete role description and analytical methodology (6-step reasoning)
 - Gradient analysis interpretation rules with cross-model classification table
+- VIF diagnostics and collinear group impact interpretation guidelines
 - Output structure specification (11-section Markdown report)
 - Initialization parameter analysis instructions with source requirements
 
@@ -484,7 +539,7 @@ The `ReportForAI` JSON/TOON document sent to AI models contains:
 |---|---|
 | `general_data` | MAD/ratio analysis description |
 | `top_spikes_marked` | Peak periods with DB Time, DB CPU, ratio |
-| `top_foreground_wait_events` | Wait stats, correlations, MAD anomalies |
+| `top_foreground_wait_events` | Wait stats, correlations, MAD anomalies, associated tables from SQL text |
 | `top_background_wait_events` | Background wait stats and anomalies |
 | `top_sqls_by_elapsed_time` | SQL metrics, ASH events, correlations, MAD |
 | `io_stats_by_function_summary` | Per-function I/O (LGWR, DBWR, etc.) |
@@ -493,9 +548,22 @@ The `ReportForAI` JSON/TOON document sent to AI models contains:
 | `instance_stats_pearson_correlation` | Statistics correlated with DB Time |
 | `load_profile_anomalies` | Load Profile MAD anomalies |
 | `anomaly_clusters` | Temporally grouped cross-domain anomalies |
-| `db_time_gradient_*` | 5 gradient sections (DB Time) |
-| `db_cpu_gradient_*` | 2 gradient sections (DB CPU) |
+| `db_time_gradient_*` | 5 gradient sections (DB Time) with VIF diagnostics and collinear group impacts |
+| `db_cpu_gradient_*` | 2 gradient sections (DB CPU) with VIF diagnostics and collinear group impacts |
 | `initialization_parameters` | Oracle init.ora parameters |
+
+Each gradient section (`DbTimeGradientSection`) contains:
+
+| Field | Content |
+|---|---|
+| `settings` | Regularization hyperparameters and unit descriptions |
+| `ridge_top` | Top-50 Ridge regression results (event, coefficient, impact) |
+| `elastic_net_top` | Top-50 Elastic Net results (non-zero only) |
+| `huber_top` | Top-50 Huber robust regression results |
+| `quantile95_top` | Top-50 Quantile-95 regression results |
+| `cross_model_classifications` | Cross-model triangulation labels and priority |
+| `vif_diagnostics` | Predictors with VIF > 5 and interpretation labels |
+| `collinear_group_impacts` | Grouped members, combined coefficient, and combined impact |
 
 ### Custom Reasonings & URL Context
 
@@ -521,8 +589,8 @@ After running JAS-MIN, the following outputs are generated:
 │   └── sqlid_<sql_id>.html
 ├── stats/
 │   ├── statistics_corr.html         # Instance statistics correlation table
-│   ├── gradient.html                # DB Time gradient analysis
-│   ├── gradient_cpu.html            # DB CPU gradient analysis
+│   ├── gradient.html                # DB Time gradient analysis (with VIF & groups)
+│   ├── gradient_cpu.html            # DB CPU gradient analysis (with VIF & groups)
 │   ├── global_statistics.json       # Load Profile summary statistics
 │   ├── jasmin_highlight.html        # Load Profile box plots
 │   └── inst_stat_<name>.html        # Individual statistic detail pages
@@ -635,3 +703,4 @@ See repository for license details.
 <p align="center">
   <em>If you need expert Oracle performance tuning, reach out to <a href="https://www.ora-600.pl/en/">ora-600.pl</a></em>
 </p>
+```
