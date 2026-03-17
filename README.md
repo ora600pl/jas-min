@@ -1,4 +1,3 @@
-```markdown
 <p align="center">
   <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="300" alt="JAS-MIN Logo"/>
 </p>
@@ -703,4 +702,3 @@ See repository for license details.
 <p align="center">
   <em>If you need expert Oracle performance tuning, reach out to <a href="https://www.ora-600.pl/en/">ora-600.pl</a></em>
 </p>
-```
