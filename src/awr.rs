@@ -2299,17 +2299,21 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 
 		let sql_gets_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
 		let sql_gets_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
-		let sql_gets_index = find_section_boundries(awr_lines.clone(), &sql_gets_section_start, &sql_gets_section_end,&fname, None);
+		let sql_gets_index = find_section_boundries(awr_lines.clone(), &sql_gets_section_start, &sql_gets_section_end,&fname, Some(true));
 		let mut sql_gets: Vec<&str> = Vec::new();
-		sql_gets.extend_from_slice(&awr_lines[sql_gets_index.begin..sql_gets_index.end]);
-		awr.sql_gets = sql_gets_txt(sql_gets);
+		if sql_gets_index.begin > 0 && sql_gets_index.end > 0 {
+			sql_gets.extend_from_slice(&awr_lines[sql_gets_index.begin..sql_gets_index.end]);
+			awr.sql_gets = sql_gets_txt(sql_gets);
+		}
 
 		let sql_reads_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
 		let sql_reads_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Executions");
-		let sql_reads_index = find_section_boundries(awr_lines.clone(), &sql_reads_section_start, &sql_reads_section_end,&fname, None);
+		let sql_reads_index = find_section_boundries(awr_lines.clone(), &sql_reads_section_start, &sql_reads_section_end,&fname, Some(true));
 		let mut sql_reads: Vec<&str> = Vec::new();
-		sql_reads.extend_from_slice(&awr_lines[sql_reads_index.begin..sql_reads_index.end]);
-		awr.sql_reads = sql_reads_txt(sql_reads);
+		if sql_reads_index.begin > 0 && sql_reads_index.end > 0 {
+			sql_reads.extend_from_slice(&awr_lines[sql_reads_index.begin..sql_reads_index.end]);
+			awr.sql_reads = sql_reads_txt(sql_reads);
+		}
 
 		let sql_ela_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Elapsed");
 		let sql_ela_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
