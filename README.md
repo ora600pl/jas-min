@@ -388,7 +388,7 @@ This quantifies the expected shift in DB Time for a typical perturbation in feat
 
 **Signed Impact:**
 
-$$\text{impact}_j = |\beta_j| \cdot \text{MAD}(\Delta x_j)$$
+$$\text{impact}_j = \beta_j \cdot \text{MAD}(\Delta x_j)$$
 
 
 Preserves directionality: positive values indicate factors that drive DB Time **up** (actual bottlenecks), negative values indicate factors associated with DB Time **decreases**. Rankings are sorted by signed impact descending, so actual bottlenecks appear first. This prevents anti-correlated events (e.g., idle events that increase when DB Time drops) from appearing as top bottlenecks.
