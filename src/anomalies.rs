@@ -372,7 +372,7 @@ fn detect_anomalies_mad_sliding(awrs: &Vec<AWR>, stats_vector: &HashMap<String, 
                 let window = &values[start..end]; //local surrounding window
 
                 let local_median = median(window); 
-                let local_mad = mad(window, local_median);
+                let local_mad = mad_with_median(window, local_median);
 
                 if local_mad == 0.0 {
                     continue; // no scatter - ignore
@@ -401,7 +401,7 @@ fn detect_anomalies_mad(awrs: &Vec<AWR>, stats_vector: &HashMap<String, Vec<f64>
 
     for (stat_name, values) in stats_vector {
          let med = median(values);
-         let mad_val = mad(values, med);
+         let mad_val = mad_with_median(values, med);
 
         if mad_val == 0.0 {
             continue; // no nomalies - just move on

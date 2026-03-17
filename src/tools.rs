@@ -384,20 +384,36 @@ pub fn std_deviation(data: Vec<f64>) -> Option<f64> {
 }
 
 pub fn median(data: &[f64]) -> f64 {
-    let mut sorted = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let len = sorted.len();
-    if len == 0 {
+    if data.is_empty() {
         return 0.0;
     }
-    if len % 2 == 0 {
-        (sorted[len / 2 - 1] + sorted[len / 2]) / 2.0
+    let mut tmp = data.to_vec();
+    let mid = tmp.len() / 2;
+    tmp.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
+    if tmp.len() % 2 == 1 {
+        tmp[mid]
     } else {
-        sorted[len / 2]
+        let lower_max = tmp[..mid]
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        (lower_max + tmp[mid]) * 0.5
     }
 }
 
-pub fn mad(data: &[f64], med: f64) -> f64 {
+pub fn mad(data: &[f64]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let med = median(data);
+    let deviations: Vec<f64> = data.iter().map(|x| (x - med).abs()).collect();
+    median(&deviations)
+}
+
+pub fn mad_with_median(data: &[f64], med: f64) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
     let deviations: Vec<f64> = data.iter().map(|x| (x - med).abs()).collect();
     median(&deviations)
 }
