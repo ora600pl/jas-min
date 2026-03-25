@@ -496,7 +496,7 @@ fn quantile_regression_irls_map(
     tau: f64,
     max_iter: usize,
     tol: f64,
-    ridge_penalty: f64,  // NEW parameter
+    ridge_penalty: f64,
 ) -> EventScalarMap {
     let n = y.len();
     let event_names: Vec<String> = x_by_event.keys().cloned().collect();
