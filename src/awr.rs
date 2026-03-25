@@ -359,6 +359,142 @@ fn sql_text(table: ElementRef) -> HashMap<String, String> {
 	sqls
 }
 
+fn sql_text_txt(all_sql_sections: Vec<&str>) -> HashMap<String, String> {
+    let mut sqls: HashMap<String, String> = HashMap::new();
+    let mut current_hash = String::new();
+    let mut current_sql = String::new();
+    let mut collecting_sql = false;
+    let mut skip_header_block = false;
+
+    let sql_start_re = regex::Regex::new(
+        r"(?i)^(SELECT|INSERT|UPDATE|DELETE|MERGE|DECLARE|BEGIN)\b"
+    ).unwrap();
+
+    /// Checks if a line is part of a mid-section page header/separator block.
+    /// These appear when the same "SQL ordered by ..." section spans multiple pages.
+    fn is_page_header_line(line: &str) -> bool {
+        let trimmed = line.trim();
+        trimmed.is_empty()
+            || trimmed.starts_with("SQL ordered by ")
+            || trimmed.starts_with("-> ")
+            || trimmed.starts_with("------")
+            || trimmed.starts_with("CPU ")
+            || trimmed.starts_with("Time (s)")
+            || trimmed.starts_with("Elapsed")
+            || trimmed.starts_with("Elap per")
+            || trimmed.starts_with("Buffer Gets")
+            || trimmed.starts_with("Physical Rds")
+            || trimmed.starts_with("Executions")
+            || trimmed.starts_with("Parse Calls")
+            || trimmed.starts_with("Max")
+            || trimmed.starts_with("Cluster")
+            || trimmed.starts_with("Memory (KB)")
+            || trimmed.starts_with("Version")
+            || trimmed.contains("Hash Value")
+            || trimmed.contains("DB/Inst:")
+            || trimmed.contains("Snaps:")
+            || trimmed.starts_with("%Total")
+            || trimmed.starts_with("% Total")
+            || trimmed.starts_with("Sharable")
+            || trimmed.starts_with("CPU per")
+            || trimmed.starts_with("Old")
+    }
+
+    /// Detects a data line with metrics + hash/sql_id as the last token.
+    fn extract_hash_from_data_line(trimmed: &str) -> Option<String> {
+        let fields: Vec<&str> = trimmed.split_whitespace().collect();
+        if fields.len() < 7 {
+            return None;
+        }
+        let candidate = fields.last().unwrap();
+        let no_commas = !candidate.contains(',');
+        let no_dots = !candidate.contains('.');
+        let reasonable_len = candidate.len() >= 5 && candidate.len() <= 20;
+        let all_valid = candidate.chars().all(|c| c.is_ascii_alphanumeric());
+        let first_numeric = fields[0].replace(",", "").parse::<f64>().is_ok();
+
+        if no_commas && no_dots && reasonable_len && all_valid && first_numeric {
+            Some(candidate.to_string())
+        } else {
+            None
+        }
+    }
+
+    for line in all_sql_sections {
+        let trimmed = line.trim();
+
+        // Detect mid-section page headers and skip them entirely
+        if is_page_header_line(line) {
+            if collecting_sql {
+                // We're in the middle of collecting SQL — just skip this header line,
+                // don't reset anything, SQL will continue after the header block
+                skip_header_block = true;
+            }
+            continue;
+        }
+
+        // If we were skipping a header block and now see a non-header line,
+        // the header block is over
+        if skip_header_block {
+            skip_header_block = false;
+            // This line could be:
+            // a) continuation of SQL text from before the header
+            // b) a new data line (metrics + hash)
+            // We proceed with normal detection below
+        }
+
+        // Detect data line with hash value
+        if let Some(hash) = extract_hash_from_data_line(trimmed) {
+            // Flush previous SQL
+            if !current_hash.is_empty() && !current_sql.is_empty() {
+                sqls.entry(current_hash.clone())
+                    .and_modify(|existing| {
+                        if current_sql.len() > existing.len() {
+                            *existing = current_sql.clone();
+                        }
+                    })
+                    .or_insert(current_sql.clone());
+            }
+            current_hash = hash;
+            current_sql.clear();
+            collecting_sql = false;
+            continue;
+        }
+
+        // Skip Module: lines
+        if trimmed.starts_with("Module:") {
+            continue;
+        }
+
+        // Detect start of SQL text
+        if !current_hash.is_empty() && !collecting_sql && sql_start_re.is_match(trimmed) {
+            collecting_sql = true;
+            current_sql.clear();
+        }
+
+        // Collect SQL text lines
+        if collecting_sql && !trimmed.is_empty() {
+            if !current_sql.is_empty() {
+                current_sql.push('\n');
+            }
+            current_sql.push_str(trimmed);
+        }
+    }
+
+    // Flush last entry
+    if !current_hash.is_empty() && !current_sql.is_empty() {
+        sqls.entry(current_hash)
+            .and_modify(|existing| {
+                if current_sql.len() > existing.len() {
+                    *existing = current_sql.clone();
+                }
+            })
+            .or_insert(current_sql);
+    }
+
+    sqls
+}
+
 fn initialization_parameters(table: ElementRef) -> HashMap<String, String> {
 	let mut params: HashMap<String, String> = HashMap::new();
 	let row_selector = Selector::parse("tr").unwrap();
@@ -2413,6 +2549,23 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 					ev.waitevent_histogram_ms = histogram;
 				}
 			}
+		}
+
+		// Collect SQL text fragments from Statspack "SQL ordered by" sections
+		if args.security_level >= 2 {
+			// Reuse already parsed sections — concatenate all SQL sections
+			let mut all_sql_lines: Vec<&str> = Vec::new();
+			all_sql_lines.extend_from_slice(&awr_lines[sql_cpu_index.begin..sql_cpu_index.end]);
+			if sql_ela_index.begin > 0 && sql_ela_index.end > 0 {
+				all_sql_lines.extend_from_slice(&awr_lines[sql_ela_index.begin..sql_ela_index.end]);
+			}
+			if sql_gets_index.begin > 0 && sql_gets_index.end > 0 {
+				all_sql_lines.extend_from_slice(&awr_lines[sql_gets_index.begin..sql_gets_index.end]);
+			}
+			if sql_reads_index.begin > 0 && sql_reads_index.end > 0 {
+				all_sql_lines.extend_from_slice(&awr_lines[sql_reads_index.begin..sql_reads_index.end]);
+			}
+			sqls_txt = sql_text_txt(all_sql_lines);
 		}
 	}
 	awr.status = "OK".to_string();
