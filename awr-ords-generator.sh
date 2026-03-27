@@ -9,7 +9,7 @@
 # Usage:
 # getAWR.sh -p PDB_NAME -u USER_NAME [options]
 # Example:
-# getAWR.sh -p PDB1 -u juf -o dghost1 -n 8080 -i 1166464959 -c 1 -l 100 -t 110 -s true -m SINGLE -d /path/to/output
+# getAWR.sh -p PDB1 -u admin -o localhost -n 8080 -i 1111111111 -c 1 -l 100 -t 110 -s true -m SINGLE -d /path/to/output
 #
 # Options:
 # -p     | --pdb_name              PDB to connect
