@@ -1502,19 +1502,44 @@ fn time_model_stats(table: ElementRef) -> Vec<TimeModelStats> {
 }
 
 fn time_model_stats_txt(time_model_section: Vec<&str>) -> Vec<TimeModelStats> {
-	let mut time_model_stats: Vec<TimeModelStats> = Vec::new();
-	for line in time_model_section {
-		if line.len() >= 66 {
-			let statname = line[0..35].to_string().trim().to_string();
-			let time_s = f64::from_str(&line[35..56].trim().replace(",",""));
-			let pct_dbtime = f64::from_str(&line[56..66].trim().replace(",",""));
-			if time_s.is_ok() && pct_dbtime.is_ok() {
-				time_model_stats.push(TimeModelStats{stat_name: statname.to_string(), time_s: time_s.unwrap(), pct_dbtime: pct_dbtime.unwrap()});
-			}
-		} 
-		
-	} 
-	time_model_stats
+    let mut time_model_stats: Vec<TimeModelStats> = Vec::new();
+
+    for line in time_model_section {
+        if line.len() < 56 {
+            continue;
+        }
+
+        let stat_name = line[0..35].trim().to_string();
+        if stat_name.is_empty() || stat_name.starts_with("---") {
+            continue;
+        }
+
+        let time_s_txt = line[35..56].trim().replace(",", "");
+        let pct_dbtime_txt = if line.len() >= 66 {
+            line[56..66].trim().replace(",", "")
+        } else {
+            String::new()
+        };
+
+        let time_s = match f64::from_str(&time_s_txt) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let pct_dbtime = if pct_dbtime_txt.is_empty() {
+            0.0
+        } else {
+            f64::from_str(&pct_dbtime_txt).unwrap_or(0.0)
+        };
+
+        time_model_stats.push(TimeModelStats {
+            stat_name,
+            time_s,
+            pct_dbtime,
+        });
+    }
+
+    time_model_stats
 }
 
 fn host_cpu(table: ElementRef) -> HostCPU {
@@ -2393,13 +2418,14 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 		load_profile_lines.extend_from_slice(&awr_lines[load_profile_index.begin+2..load_profile_index.end]);
 		awr.load_profile = load_profile_txt(load_profile_lines);
 
-		let time_model_index = find_section_boundries(awr_lines.clone(), "Time Model", "DB time",&fname, None);
+		let foreground_even_section_start = format!("{}{}", 12u8 as char, "Foreground Wait Events");
+
+		let time_model_index = find_section_boundries(awr_lines.clone(),"Time Model",&foreground_even_section_start,&fname,None,);
 		let mut db_time_lines: Vec<&str> = Vec::new();
-		db_time_lines.extend_from_slice(&awr_lines[time_model_index.begin+5..time_model_index.end]);
+		db_time_lines.extend_from_slice(&awr_lines[time_model_index.begin + 5..time_model_index.end]);
 		awr.time_model_stats = time_model_stats_txt(db_time_lines);
 
-		let foreground_even_section_start = format!("{}{}", 12u8 as char, "Foreground Wait Events");
-		let foreground_event_index = find_section_boundries(awr_lines.clone(), &foreground_even_section_start, "Background Wait Events",&fname, None);
+		let foreground_event_index = find_section_boundries(awr_lines.clone(),&foreground_even_section_start,"Background Wait Events",&fname,None,);
 		let mut foreground_events: Vec<&str> = Vec::new();
 		foreground_events.extend_from_slice(&awr_lines[foreground_event_index.begin+8..foreground_event_index.end-1]);
 		awr.foreground_wait_events = wait_events_txt(foreground_events);
@@ -2498,10 +2524,36 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 
 
 		let library_cache_start = format!("{}{}", 12u8 as char, "Library Cache Activity");
-		let library_cache_end = format!("{}{}", 12u8 as char, "Rule Sets");
-		let library_cache_index = find_section_boundries(awr_lines.clone(), &library_cache_start, &library_cache_end,&fname, None);
+		let library_cache_end_candidates = [
+			format!("{}{}", 12u8 as char, "Rule Sets"),
+			format!("{}{}", 12u8 as char, "Rule Set"),
+			format!("{}{}", 12u8 as char, "Shared Pool Advisory"),
+			//format!("{}{}", 12u8 as char, "Latch Activity"),
+		];
+		let mut library_cache_index = SectionIdx { begin: 0, end: 0 };
+		for end_marker in &library_cache_end_candidates {
+			let idx = find_section_boundries(
+				awr_lines.clone(),
+				&library_cache_start,
+				end_marker,
+				&fname,
+				Some(true),
+			);
+			if idx.begin > 0 && idx.end > 0 {
+				library_cache_index = idx;
+				break;
+			}
+		}
+		if library_cache_index.begin == 0 || library_cache_index.end == 0 {
+			eprintln!(
+				"\n{}: {} Could not determine end of 'Library Cache Activity' section",
+				"Error".bright_red(),
+				fname.bright_magenta()
+			);
+			panic!("JAS-MIN is quitting - thread: {:?}", thread::current().id());
+		}
 		let mut library_cache: Vec<&str> = Vec::new();
-		library_cache.extend_from_slice(&awr_lines[library_cache_index.begin..library_cache_index.end+2]);
+		library_cache.extend_from_slice(&awr_lines[library_cache_index.begin..library_cache_index.end + 2]);
 		awr.library_cache = library_cache_stats_txt(library_cache);
 
 		let latch_activity_start = format!("{}{}", 12u8 as char, "Latch Activity");
