@@ -132,14 +132,22 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
             let mut dbtime: f64 = 0.0;
             let mut cputime: f64 = 0.0;
             //We want to find dbtime and cputime because based on their delta we will base our decisions 
-            for lp in awr.load_profile.clone() {
+            for tm in &awr.time_model_stats {
+                if tm.stat_name.starts_with("DB Time") || tm.stat_name.starts_with("DB time") {
+                    dbtime = tm.time_s;
+                    
+                } else if tm.stat_name.starts_with("DB CPU") {
+                    cputime = tm.time_s;
+                }
+            }
+            /*for lp in awr.load_profile.clone() {
                 if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
                     dbtime = lp.per_second;
                     
                 } else if lp.stat_name.starts_with("DB CPU") {
                     cputime = lp.per_second;
                 }
-            }
+            }*/
             //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
             //because it means that Oracle spent some time waiting on wait events and not working on CPU
 
