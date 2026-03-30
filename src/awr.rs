@@ -282,9 +282,9 @@ pub struct AWR {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AWRSCollection {
     pub db_instance_information: DBInstance,
+	pub initialization_parameters: HashMap<String, String>,
     pub awrs: Vec<AWR>,
 	pub sql_text: HashMap<String, String>,
-	pub initialization_parameters: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -382,73 +382,147 @@ fn initialization_parameters(table: ElementRef) -> HashMap<String, String> {
 fn initialization_parameters_txt(inst_stats_section: Vec<&str>) -> HashMap<String, String> {
     let mut params: HashMap<String, String> = HashMap::new();
 
-    let mut current_param: Option<String> = None;
-    let mut current_value = String::new();
+    const NAME_END: usize = 29;
+    const BEGIN_START: usize = 30;
+    const BEGIN_END: usize = 63;
+    const END_START: usize = 64;
 
-    // Sklejanie: gdy raport łamie w środku słowa, NIE chcemy dodawać spacji.
+    let mut current_param: Option<String> = None;
+    let mut current_begin = String::new();
+    let mut current_end = String::new();
+    let mut current_has_real_end = false;
+
+    fn slice_trimmed(line: &str, start: usize, end: Option<usize>) -> String {
+        let bytes = line.as_bytes();
+        if start >= bytes.len() {
+            return String::new();
+        }
+        let end = end.unwrap_or(bytes.len()).min(bytes.len());
+        line[start..end].trim().to_string()
+    }
+
     fn append_wrapped(dest: &mut String, cont: &str) {
         let cont = cont.trim();
         if cont.is_empty() {
             return;
         }
 
-        let dest_last = dest.chars().last();
-        let cont_first = cont.chars().next();
-
-        let glue_without_space = match (dest_last, cont_first) {
-            (Some(a), Some(b)) => a.is_ascii_alphanumeric() && b.is_ascii_alphanumeric(),
+        let glue_without_space = match (dest.chars().last(), cont.chars().next()) {
+            (Some(a), Some(b)) => {
+                (a.is_ascii_alphanumeric() || ",./:+-_()".contains(a))
+                    && (b.is_ascii_alphanumeric() || ",./:+-_()".contains(b))
+            }
             _ => false,
         };
-		
+
+        if !dest.is_empty() && !glue_without_space {
+            dest.push(' ');
+        }
         dest.push_str(cont);
+    }
+
+    fn finalize_param(
+        params: &mut HashMap<String, String>,
+        current_param: &mut Option<String>,
+        current_begin: &mut String,
+        current_end: &mut String,
+        current_has_real_end: &mut bool,
+    ) {
+        if let Some(pname) = current_param.take() {
+            let final_value = if *current_has_real_end && !current_end.trim().is_empty() {
+                current_end.trim().to_string()
+            } else {
+                current_begin.trim().to_string()
+            };
+            params.entry(pname).or_insert(final_value);
+        }
+
+        current_begin.clear();
+        current_end.clear();
+        *current_has_real_end = false;
     }
 
     for raw_line in inst_stats_section {
         let line = raw_line.trim_end();
 
-        // pomijamy nagłówki/separatory/puste
         if line.is_empty()
             || line.starts_with("Parameter Name")
             || line.starts_with("----")
-			|| line.contains("init.ora")
+            || line.contains("init.ora Parameters")
+            || line.contains("End value")
         {
             continue;
         }
 
-        let is_continuation = line.chars().next().map(|c| c.is_whitespace()).unwrap_or(true);
+        let is_continuation = raw_line
+            .chars()
+            .next()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(true);
 
         if !is_continuation {
-            // zapis poprzedniego parametru
-            if let Some(pname) = current_param.take() {
-                params.entry(pname).or_insert(current_value.trim().to_string());
-                current_value.clear();
+            finalize_param(
+                &mut params,
+                &mut current_param,
+                &mut current_begin,
+                &mut current_end,
+                &mut current_has_real_end,
+            );
+
+            let pname = slice_trimmed(line, 0, Some(NAME_END));
+            if pname.is_empty() {
+                continue;
             }
 
-            // nowy parametr: pierwsze "słowo" to nazwa parametru, reszta to początek wartości
-            let mut it = line.split_whitespace();
-            let pname = match it.next() {
-                Some(x) => x.to_string(),
-                None => continue,
-            };
+            let begin_value = slice_trimmed(line, BEGIN_START, Some(BEGIN_END));
+            let end_value = slice_trimmed(line, END_START, None);
 
-            // wartość = reszta linii po nazwie (zachowujemy spacje/znaki, tylko obcinamy start)
-            let rest = &line[pname.len()..];
-            let pvalue = rest.trim_start();
+            let begin_reaches_boundary = line.len() > BEGIN_END;
 
             current_param = Some(pname);
-            current_value.push_str(pvalue);
-        } else {
-            // kontynuacja wartości
-            if current_param.is_some() {
-                append_wrapped(&mut current_value, line);
+
+            if !begin_value.is_empty() {
+                current_begin.push_str(&begin_value);
+            }
+
+            if !end_value.is_empty() {
+                if begin_reaches_boundary {
+                    // Long value overflowed visually into the "end" column;
+                    // treat it as a continuation of the same parameter value.
+                    append_wrapped(&mut current_begin, &end_value);
+                } else {
+                    current_end.push_str(&end_value);
+                    current_has_real_end = true;
+                }
+            }
+        } else if current_param.is_some() {
+            let begin_cont = slice_trimmed(raw_line, BEGIN_START, Some(BEGIN_END));
+            let end_cont = slice_trimmed(raw_line, END_START, None);
+
+            if current_has_real_end {
+                if !end_cont.is_empty() {
+                    append_wrapped(&mut current_end, &end_cont);
+                } else if !begin_cont.is_empty() {
+                    append_wrapped(&mut current_end, &begin_cont);
+                }
+            } else {
+                if !begin_cont.is_empty() {
+                    append_wrapped(&mut current_begin, &begin_cont);
+                }
+                if !end_cont.is_empty() {
+                    append_wrapped(&mut current_begin, &end_cont);
+                }
             }
         }
     }
 
-    // ostatni parametr
-    if let Some(pname) = current_param {
-        params.entry(pname).or_insert(current_value.trim().to_string());
-    }
+    finalize_param(
+        &mut params,
+        &mut current_param,
+        &mut current_begin,
+        &mut current_end,
+        &mut current_has_real_end,
+    );
 
     params
 }
@@ -2099,6 +2173,8 @@ fn parse_db_instance_information(fname: String) -> DBInstance {
                         db_instance_information.db_id = inst_info.db_id;
                         db_instance_information.release = inst_info.release;
                         db_instance_information.rac = inst_info.rac;
+						db_instance_information.instance_num = inst_info.instance_num;
+						db_instance_information.startup_time = inst_info.startup_time;
                     }
                     if let Some(inst_details) = instance_info(table,"Details") {
                         // Merge fields from the second table:
@@ -2589,9 +2665,9 @@ pub fn parse_awr_dir(args: Args, events_sqls: &mut HashMap<&str, HashSet<String>
 
     let collection = AWRSCollection {
         db_instance_information: is_instance_info.unwrap_or_default(),
+		initialization_parameters: parameters_final,
         awrs: awr_vec,
 		sql_text: sql_txt_final,
-		initialization_parameters: parameters_final,
     };
 
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
