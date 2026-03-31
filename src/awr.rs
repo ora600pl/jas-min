@@ -1981,7 +1981,7 @@ fn load_profile(table: ElementRef) -> Vec<LoadProfile>{
 		let columns = row.select(&column_selector).collect::<Vec<_>>();
 		if columns.len() == 5 {
 			let statname = columns[0].text().collect::<Vec<_>>();
-			let statname = statname[0].trim();
+			let statname = statname[0].trim().trim_end_matches(':').to_string();;
 			
 			let per_second = columns[1].text().collect::<Vec<_>>();
 			let per_second = f64::from_str(&per_second[0].trim().replace(",","")).unwrap_or(0.0);
@@ -2001,7 +2001,7 @@ fn load_profile_txt(load_section: Vec<&str>) -> Vec<LoadProfile> {
 		let statname_end = line.to_string().find(":");
 		if statname_end.is_some() {
 			let statname_end = statname_end.unwrap() + 1;
-			let statname = line[0..statname_end].to_string().trim().to_string();
+			let statname = line[0..statname_end].trim().trim_end_matches(':').to_string();
 			let mut per_second_end = statname_end + 19;
 			if per_second_end > line.len() {
 				per_second_end = line.len();
