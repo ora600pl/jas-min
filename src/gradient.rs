@@ -31,6 +31,8 @@ use crate::reasonings::{StatisticsDescription,
 use prettytable::{Table, Row, Cell, format, Attr};
 use colored::*;
 use crate::tools::*;
+use rayon::prelude::*;
+use std::time::Instant;
 
 
 /// Named time series: event_name/stat_name/sqlid -> Vec<sample_value>
@@ -86,6 +88,15 @@ pub struct DbTimeGradientResult {
     pub collinear_groups: Vec<(Vec<String>, f64, f64)>,
 }
 
+//This will be usable for task collection to make parallel threads with Rayon
+#[derive(Debug)]
+enum RegressionResult {
+    Ridge(Result<EventScalarMap, String>),
+    ElasticNet(EventScalarMap),
+    Huber(EventScalarMap),
+    Quantile95(EventScalarMap),
+}
+
 pub fn compute_db_time_gradient(
     db_time_series: &[f64],
     event_series: &EventSeriesMap,
@@ -131,27 +142,8 @@ pub fn compute_db_time_gradient(
         standardize_by_event(&event_delta_by_event, &event_delta_mean_by_event, &event_delta_std_by_event);
     let event_delta_mad_by_event = compute_mad_by_event(&event_delta_by_event);
 
-    // Ridge
-    println!("  -> Building Ridge regression");
-    let ridge_gradient_by_event = ridge_regression_map(
-        &event_delta_standardized_by_event,
-        &db_time_delta,
-        ridge_lambda,
-    )?;
 
-    // Elastic Net
-    println!("  -> Building Elastic Net regression");
-    let elastic_net_gradient_by_event = elastic_net_coordinate_descent_map(
-        &event_delta_standardized_by_event,
-        &db_time_delta,
-        elastic_net_lambda,
-        elastic_net_alpha,
-        elastic_net_max_iter,
-        elastic_net_tol,
-    );
-
-    //Huber robust regression
-    println!("  -> Building Huber robust regression");
+    let tasks: Vec<u8> = vec![0, 1, 2, 3]; //4 tasks - 4 models
 
     // Compute Huber delta from median residuals (intercept-only model)
     // This makes Huber independent of Ridge quality
@@ -159,25 +151,63 @@ pub fn compute_db_time_gradient(
     let median_residuals: Vec<f64> = db_time_delta.iter().map(|&y| y - y_median_val).collect();
     let huber_delta = (1.345 * mad(&median_residuals)).max(1e-6);
 
-    let huber_gradient_by_event = huber_regression_map(
-        &event_delta_standardized_by_event,
-        &db_time_delta,
-        huber_delta,
-        100,
-        elastic_net_tol,
-        ridge_lambda,
-    );
+    let start = Instant::now(); //for counting duration of models computation
+    //parallel regression calculation
+    let results: Vec<RegressionResult> = tasks.par_iter().map(|&task_id| {
+            match task_id {
+                0 => RegressionResult::Ridge(ridge_regression_map(
+                    &event_delta_standardized_by_event,
+                    &db_time_delta,
+                    ridge_lambda,
+                )),
+                1 => RegressionResult::ElasticNet(elastic_net_coordinate_descent_map(
+                    &event_delta_standardized_by_event,
+                    &db_time_delta,
+                    elastic_net_lambda,
+                    elastic_net_alpha,
+                    elastic_net_max_iter,
+                    elastic_net_tol,
+                )),
+                2 => RegressionResult::Huber(huber_regression_map(
+                    &event_delta_standardized_by_event,
+                    &db_time_delta,
+                    huber_delta,
+                    100,
+                    elastic_net_tol,
+                    ridge_lambda,
+                )),
+                3 => RegressionResult::Quantile95(quantile_regression_irls_map(
+                    &event_delta_standardized_by_event,
+                    &db_time_delta,
+                    0.95,
+                    200,
+                    elastic_net_tol,
+                    ridge_lambda,
+                )),
+                _ => unreachable!(),
+            }
+        }).collect();
 
-    //Quantile regression tau=0.95
-    println!("  -> Building Quantile regression tau=0.95");
-    let quantile95_gradient_by_event = quantile_regression_irls_map(
-        &event_delta_standardized_by_event,
-        &db_time_delta,
-        0.95,
-        200,
-        elastic_net_tol,
-        ridge_lambda,
-    );
+    
+    //Unpacking results
+    let mut ridge_gradient_by_event = None;
+    let mut elastic_net_gradient_by_event = None;
+    let mut huber_gradient_by_event = None;
+    let mut quantile95_gradient_by_event = None;
+
+    for result in results {
+        match result {
+            RegressionResult::Ridge(r) => ridge_gradient_by_event = Some(r?),
+            RegressionResult::ElasticNet(m) => elastic_net_gradient_by_event = Some(m),
+            RegressionResult::Huber(m) => huber_gradient_by_event = Some(m),
+            RegressionResult::Quantile95(m) => quantile95_gradient_by_event = Some(m),
+        }
+    }
+
+    let ridge_gradient_by_event = ridge_gradient_by_event.unwrap();
+    let elastic_net_gradient_by_event = elastic_net_gradient_by_event.unwrap();
+    let huber_gradient_by_event = huber_gradient_by_event.unwrap();
+    let quantile95_gradient_by_event = quantile95_gradient_by_event.unwrap();
 
     let ridge_ranking = build_ranking(&ridge_gradient_by_event, &event_delta_mad_by_event);
     let elastic_net_ranking = build_ranking(&elastic_net_gradient_by_event, &event_delta_mad_by_event);
@@ -191,6 +221,10 @@ pub fn compute_db_time_gradient(
             println!("  ⚠️  VIF({}) = {:.1} — severe multicollinearity", event, vif);
         }
     }
+    let end = Instant::now(); //for counting duration of models computation
+    let duration = end.duration_since(start);
+
+    println!(" [Elapsed: {}ms]", duration.as_millis());
 
     // Grouped impacts for collinear clusters
     let collinear_groups = compute_grouped_impacts(
@@ -315,6 +349,9 @@ fn ridge_regression_map (
     db_time_delta: &[f64],
     lambda: f64,
 ) -> Result<EventScalarMap, String> {
+
+    println!("  -> Building Ridge regression");
+
     let n = db_time_delta.len();
     let event_names: Vec<String> = standardized_event_deltas.keys().cloned().collect();
     let p = event_names.len();
@@ -376,6 +413,9 @@ fn elastic_net_coordinate_descent_map(
     max_iter: usize,
     tol: f64,
 ) -> EventScalarMap {
+
+    println!("  -> Building Elastic Net regression");
+
     let sample_count = db_time_delta.len();
     let mut coef_by_event: EventScalarMap = standardized_event_deltas
         .keys().map(|k| (k.clone(), 0.0)).collect();
@@ -428,7 +468,6 @@ fn soft_threshold(value: f64, threshold: f64) -> f64 {
 /* =========================================================================================
    Huber robust regression via IRLS (map-based)
    ========================================================================================= */
-
 fn huber_regression_map(
     x_by_event: &EventSeriesMap,
     y: &[f64],
@@ -437,6 +476,8 @@ fn huber_regression_map(
     tol: f64,
     ridge_penalty: f64,
 ) -> EventScalarMap {
+    println!("  -> Building Huber robust regression");
+
     let n = y.len();
     let event_names: Vec<String> = x_by_event.keys().cloned().collect();
     let p = event_names.len();
@@ -444,38 +485,55 @@ fn huber_regression_map(
         return BTreeMap::new();
     }
 
+    // Pre-materialize columns
+    let columns: Vec<&[f64]> = event_names.iter()
+        .map(|name| x_by_event[name].as_slice())
+        .collect();
+
     let mut beta: Vec<f64> = vec![0.0; p];
+
+    // Pre-allocate, reuse
+    let mut xtwx: Vec<f64> = vec![0.0; p * p];
+    let mut xtwy: Vec<f64> = vec![0.0; p];
+    let mut weights: Vec<f64> = vec![1.0; n];
 
     for _iter in 0..max_iter {
         let beta_old = beta.clone();
 
-        // Compute residuals and Huber weights
-        let mut weights: Vec<f64> = vec![1.0; n];
+        // Compute Huber weights
         for t in 0..n {
             let mut pred = 0.0;
-            for (j, name) in event_names.iter().enumerate() {
-                pred += beta[j] * x_by_event[name][t];
+            for j in 0..p {
+                pred += beta[j] * columns[j][t];
             }
             let r = (y[t] - pred).abs();
             weights[t] = if r <= delta { 1.0 } else { delta / r.max(1e-15) };
         }
 
-        // Solve WLS: (X'WX + ridge*I) beta = X'Wy
-        let mut xtwx: Vec<Vec<f64>> = vec![vec![0.0; p]; p];
-        let mut xtwy: Vec<f64> = vec![0.0; p];
+        xtwx.iter_mut().for_each(|v| *v = 0.0);
+        xtwy.iter_mut().for_each(|v| *v = 0.0);
 
         for t in 0..n {
             let w = weights[t];
+            let wyt = w * y[t];
             for j in 0..p {
-                let xj = x_by_event[&event_names[j]][t];
-                xtwy[j] += w * xj * y[t];
-                for k in 0..p {
-                    xtwx[j][k] += w * xj * x_by_event[&event_names[k]][t];
+                let xj = columns[j][t];
+                let wxj = w * xj;
+                xtwy[j] += xj * wyt;
+                for k in j..p {
+                    xtwx[j * p + k] += wxj * columns[k][t];
                 }
             }
         }
-        for j in 0..p { xtwx[j][j] += ridge_penalty; }
-        beta = solve_dense_linear_system(&xtwx, &xtwy);
+
+        for j in 0..p {
+            for k in (j + 1)..p {
+                xtwx[k * p + j] = xtwx[j * p + k];
+            }
+            xtwx[j * p + j] += ridge_penalty;
+        }
+
+        solve_dense_linear_system_flat(&mut xtwx, &mut xtwy, p, &mut beta);
 
         let max_change: f64 = beta.iter().zip(beta_old.iter())
             .map(|(a, b)| (a - b).abs())
@@ -498,6 +556,8 @@ fn quantile_regression_irls_map(
     tol: f64,
     ridge_penalty: f64,
 ) -> EventScalarMap {
+    println!("  -> Building Quantile regression tau={}", tau);
+
     let n = y.len();
     let event_names: Vec<String> = x_by_event.keys().cloned().collect();
     let p = event_names.len();
@@ -505,48 +565,65 @@ fn quantile_regression_irls_map(
         return BTreeMap::new();
     }
 
+    // Pre-materialize columns ONCE — eliminate all BTreeMap lookups
+    let columns: Vec<&[f64]> = event_names.iter()
+        .map(|name| x_by_event[name].as_slice())
+        .collect();
+
     let mut beta: Vec<f64> = vec![0.0; p];
     let eps = 1e-6;
-
-    // Scale ridge penalty down for quantile regression
     let q_ridge = (ridge_penalty * 0.01).max(1e-6);
+
+    // Pre-allocate matrices ONCE, reuse across iterations
+    let mut xtwx: Vec<f64> = vec![0.0; p * p];  // flat layout for cache
+    let mut xtwy: Vec<f64> = vec![0.0; p];
+    let mut weights: Vec<f64> = vec![1.0; n];
 
     for _iter in 0..max_iter {
         let beta_old = beta.clone();
 
-        let mut weights: Vec<f64> = vec![1.0; n];
+        // Compute weights
         for t in 0..n {
             let mut pred = 0.0;
-            for (j, name) in event_names.iter().enumerate() {
-                pred += beta[j] * x_by_event[name][t];
+            for j in 0..p {
+                pred += beta[j] * columns[j][t];
             }
             let r = y[t] - pred;
             let abs_r = r.abs().max(eps);
             weights[t] = if r >= 0.0 { tau / abs_r } else { (1.0 - tau) / abs_r };
         }
 
-        let mut xtwx: Vec<Vec<f64>> = vec![vec![0.0; p]; p];
-        let mut xtwy: Vec<f64> = vec![0.0; p];
+        // Zero out — much faster than reallocating
+        xtwx.iter_mut().for_each(|v| *v = 0.0);
+        xtwy.iter_mut().for_each(|v| *v = 0.0);
 
+        // Build X'WX (symmetric, upper triangle) + X'Wy
         for t in 0..n {
             let w = weights[t];
+            let wyt = w * y[t];
             for j in 0..p {
-                let xj = x_by_event[&event_names[j]][t];
-                xtwy[j] += w * xj * y[t];
-                for k in 0..p {
-                    xtwx[j][k] += w * xj * x_by_event[&event_names[k]][t];
+                let xj = columns[j][t];
+                let wxj = w * xj;
+                xtwy[j] += xj * wyt;
+                // Upper triangle only, flat indexing
+                for k in j..p {
+                    xtwx[j * p + k] += wxj * columns[k][t];
                 }
             }
         }
-        // Use scaled ridge penalty for numerical stability
-        for j in 0..p {
-            xtwx[j][j] += q_ridge;
-        }
-        beta = solve_dense_linear_system(&xtwx, &xtwy);
 
-        let max_change: f64 = beta
-            .iter()
-            .zip(beta_old.iter())
+        // Mirror upper triangle to lower + add ridge
+        for j in 0..p {
+            for k in (j + 1)..p {
+                xtwx[k * p + j] = xtwx[j * p + k];
+            }
+            xtwx[j * p + j] += q_ridge;
+        }
+
+        // Solve in-place (reusing xtwx as augmented matrix)
+        solve_dense_linear_system_flat(&mut xtwx, &mut xtwy, p, &mut beta);
+
+        let max_change: f64 = beta.iter().zip(beta_old.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0, f64::max);
         if max_change < tol {
@@ -560,6 +637,58 @@ fn quantile_regression_irls_map(
 /* =========================================================================================
    Dense linear system solver with partial pivoting
    ========================================================================================= */
+/// Solves Ax = b in-place. 
+/// `a` is p×p flat row-major (DESTROYED during solve).
+/// `b` is the RHS (DESTROYED, becomes scratch).
+/// `x` receives the solution.
+fn solve_dense_linear_system_flat(a: &mut [f64], b: &mut [f64], p: usize, x: &mut [f64]) {
+    if p == 0 { return; }
+
+    // We need the augmented column, but instead of building [A|b],
+    // we keep b separate and apply the same row operations.
+
+    // Forward elimination with partial pivoting
+    for col in 0..p {
+        // Find pivot
+        let mut max_row = col;
+        let mut max_val = a[col * p + col].abs();
+        for row in (col + 1)..p {
+            let val = a[row * p + col].abs();
+            if val > max_val {
+                max_val = val;
+                max_row = row;
+            }
+        }
+
+        // Swap rows in a and b
+        if max_row != col {
+            for j in 0..p {
+                a.swap(col * p + j, max_row * p + j);
+            }
+            b.swap(col, max_row);
+        }
+
+        let pivot = a[col * p + col];
+        if pivot.abs() < 1e-15 { continue; }
+
+        for row in (col + 1)..p {
+            let factor = a[row * p + col] / pivot;
+            for j in col..p {
+                a[row * p + j] -= factor * a[col * p + j];
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+
+    // Back substitution
+    for i in (0..p).rev() {
+        let mut sum = b[i];
+        for j in (i + 1)..p {
+            sum -= a[i * p + j] * x[j];
+        }
+        x[i] = if a[i * p + i].abs() > 1e-15 { sum / a[i * p + i] } else { 0.0 };
+    }
+}
 
 fn solve_dense_linear_system(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
     let n = b.len();
@@ -615,6 +744,7 @@ fn solve_dense_linear_system(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 /// VIF_j = 1 / (1 - R²_j), where R²_j is from regressing x_j on all other x's.
 /// VIF > 10 indicates severe multicollinearity.
 pub fn compute_vif(x_by_event: &EventSeriesMap) -> EventScalarMap {
+    println!("  -> Computing VIF");
     let event_names: Vec<String> = x_by_event.keys().cloned().collect();
     let p = event_names.len();
     let n = x_by_event
@@ -627,9 +757,7 @@ pub fn compute_vif(x_by_event: &EventSeriesMap) -> EventScalarMap {
         return event_names.iter().map(|e| (e.clone(), 1.0)).collect();
     }
 
-    let mut vif_map: EventScalarMap = BTreeMap::new();
-
-    for target_name in &event_names {
+    let vif_entries: Vec<(String, f64)> = event_names.par_iter().map(|target_name| {
         let y_j: &[f64] = &x_by_event[target_name];
 
         let other_names: Vec<&String> = event_names
@@ -691,10 +819,10 @@ pub fn compute_vif(x_by_event: &EventSeriesMap) -> EventScalarMap {
             1e6
         };
 
-        vif_map.insert(target_name.clone(), vif);
-    }
+        (target_name.clone(), vif)
+    }).collect();
 
-    vif_map
+    vif_entries.into_iter().collect()
 }
 
 /// Groups collinear events (VIF > threshold) by pairwise correlation,
