@@ -141,7 +141,7 @@ struct Args {
 	///For calculating gradient - mixing between L1 and L2 in Elastic Net:
 	///     alpha = 1.0 -> Lasso (pure L1)
 	///     alpha = 0.0 -> Ridge-like (pure L2)
-	#[clap(short = 'A', long, default_value_t=0.666,verbatim_doc_comment)]
+	#[clap(short = 'A', long, default_value_t=0.333,verbatim_doc_comment)]
 	en_alpha: f64,
 
 	///Max iterations for coordinate descent in Elastic Net

@@ -2528,13 +2528,15 @@ fn parse_awr_report_internal(fname: &str, args: &Args) -> (AWR, HashMap<String, 
 		if sql_cpu_index.begin == 0 || sql_cpu_index.end == 0 {
 			let sql_cpu_section_start = format!("{}{}", 12u8 as char, "SQL ordered by CPU");
 			let sql_cpu_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
-			sql_cpu_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end, &fname, None);
+			sql_cpu_index = find_section_boundries(awr_lines.clone(), &sql_cpu_section_start, &sql_cpu_section_end, &fname, Some(true));
 		}
 		/* **************************************************************************************** */
 		let mut sql_cpu: Vec<&str> = Vec::new();
-		sql_cpu.extend_from_slice(&awr_lines[sql_cpu_index.begin..sql_cpu_index.end]);
-		awr.sql_cpu_time = sql_cpu_time_txt(sql_cpu);
-
+		if sql_cpu_index.begin > 0 && sql_cpu_index.end > 0 {
+			sql_cpu.extend_from_slice(&awr_lines[sql_cpu_index.begin..sql_cpu_index.end]);
+			awr.sql_cpu_time = sql_cpu_time_txt(sql_cpu);
+		}
+		
 		let sql_gets_section_start = format!("{}{}", 12u8 as char, "SQL ordered by Gets");
 		let sql_gets_section_end = format!("{}{}", 12u8 as char, "SQL ordered by Reads");
 		let sql_gets_index = find_section_boundries(awr_lines.clone(), &sql_gets_section_start, &sql_gets_section_end,&fname, Some(true));
