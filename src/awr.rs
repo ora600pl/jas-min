@@ -1504,7 +1504,7 @@ fn wait_events(table: ElementRef) -> Vec<WaitEvents> {
 			let total_wait_time_s = f64::from_str(&total_wait_time_s[0].trim().replace(",","")).unwrap_or(0.0);
 
 			let avg_wait = columns[4].text().collect::<Vec<_>>();
-			let avg_wait = f64::from_str(&avg_wait[0].trim().replace(",","")).unwrap_or(0.0);
+			let avg_wait = parse_wait_avg_ms(&avg_wait[0]);
 
 			let pct_dbtime = columns[6].text().collect::<Vec<_>>();
 			let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",","")).unwrap_or(0.0);
@@ -1513,7 +1513,6 @@ fn wait_events(table: ElementRef) -> Vec<WaitEvents> {
 			}
 		}
 	}
-
 	wait_events	
 }
 
@@ -1532,7 +1531,7 @@ fn wait_events_txt(events_section: Vec<&str>) -> Vec<WaitEvents> {
 				//if total_wait_time == 0.0 {
 				//	total_wait_time = f64::from_str(&line[38..54].trim().replace(",","")).unwrap_or(0.0);
 				//}
-				let avg_wait = f64::from_str(&line[57..64].trim().replace(",","")).unwrap_or(0.0);
+				let avg_wait = parse_wait_avg_ms(&line[57..64]);
 				let mut pct_dbtime = 0.0;
 				if line.len() > 79 {
 					//let mut pct_dbtime_end: usize = 80;
@@ -1550,6 +1549,26 @@ fn wait_events_txt(events_section: Vec<&str>) -> Vec<WaitEvents> {
 	}
 	wait_events
 }	
+
+fn parse_wait_avg_ms(raw: &str) -> f64 {
+	let normalized = raw.trim().replace(",", "");
+	if normalized.is_empty() {
+		return 0.0;
+	}
+
+	let lower = normalized.to_ascii_lowercase();
+	if let Some(value) = lower.strip_suffix("us") {
+		return f64::from_str(value.trim()).unwrap_or(0.0) / 1000.0;
+	}
+	if let Some(value) = lower.strip_suffix("ms") {
+		return f64::from_str(value.trim()).unwrap_or(0.0);
+	}
+	if let Some(value) = lower.strip_suffix('s') {
+		return f64::from_str(value.trim()).unwrap_or(0.0) * 1000.0;
+	}
+
+	f64::from_str(&normalized).unwrap_or(0.0)
+}
 
 fn time_model_stats(table: ElementRef) -> Vec<TimeModelStats> {
 	let mut time_model_stats: Vec<TimeModelStats> = Vec::new();
@@ -2117,7 +2136,7 @@ fn load_profile(table: ElementRef) -> Vec<LoadProfile>{
 		let columns = row.select(&column_selector).collect::<Vec<_>>();
 		if columns.len() == 5 {
 			let statname = columns[0].text().collect::<Vec<_>>();
-			let statname = statname[0].trim();
+			let statname = statname[0].trim().trim_end_matches(':').to_string();;
 			
 			let per_second = columns[1].text().collect::<Vec<_>>();
 			let per_second = f64::from_str(&per_second[0].trim().replace(",","")).unwrap_or(0.0);
@@ -2137,7 +2156,7 @@ fn load_profile_txt(load_section: Vec<&str>) -> Vec<LoadProfile> {
 		let statname_end = line.to_string().find(":");
 		if statname_end.is_some() {
 			let statname_end = statname_end.unwrap() + 1;
-			let statname = line[0..statname_end].to_string().trim().to_string();
+			let statname = line[0..statname_end].trim().trim_end_matches(':').to_string();
 			let mut per_second_end = statname_end + 19;
 			if per_second_end > line.len() {
 				per_second_end = line.len();
