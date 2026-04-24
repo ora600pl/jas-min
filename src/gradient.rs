@@ -1432,3 +1432,257 @@ pub fn print_top_items_table(title: &str, items: &[GradientTopItem], logfile_nam
     html = format!(r#"<div>{html}</div>"#);
     html
 }
+
+
+pub struct GradientSectionSpec<'a> {
+    /// Target time series (e.g. DB Time or DB CPU)
+    pub target: &'a [f64],
+    /// Feature series – already filtered/ready
+    pub features: BTreeMap<String, Vec<f64>>,
+    /// Label passed to `build_db_time_gradient_section`
+    pub label: &'a str,
+    /// Whether this is a wait-events section (affects table rendering)
+    pub is_events: bool,
+    /// Human-readable name for logs
+    pub display_name: &'a str,
+}
+
+pub fn run_gradient_section(
+    spec: &GradientSectionSpec,
+    ridge_lambda: f64,
+    elastic_net_lambda: f64,
+    elastic_net_alpha: f64,
+    elastic_net_max_iter: usize,
+    elastic_net_tol: f64,
+    logfile_name: &str,
+    args: &Args,
+) -> (Option<DbTimeGradientSection>, String) {
+    match build_db_time_gradient_section(
+        spec.target,
+        &spec.features,
+        ridge_lambda,
+        elastic_net_lambda,
+        elastic_net_alpha,
+        elastic_net_max_iter,
+        elastic_net_tol,
+        spec.label,
+    ) {
+        Ok(section) => {
+            make_notes!(
+                logfile_name, false, 1,
+                "\n\n{}",
+                format!("{} attached to ReportForAI", spec.display_name)
+                    .bold().green()
+            );
+            let html = print_db_time_gradient_tables(
+                &section, spec.is_events, logfile_name, args,
+            );
+            (Some(section), html)
+        }
+        Err(err) => {
+            make_notes!(
+                logfile_name, false, 1,
+                "\n\n{} skipped: {}", spec.display_name, err
+            );
+            (None, String::new())
+        }
+    }
+}
+
+/// Specification of a single gradient section to be rendered in HTML
+pub struct GradientHtmlSection {
+    /// Section heading displayed in HTML (e.g. "DB Time vs Wait Events")
+    pub heading: String,
+    /// Rendered HTML of this section (output from `print_db_time_gradient_tables`)
+    pub html: String,
+}
+
+/// Generic function that builds a complete HTML file from gradient sections.
+///
+/// # Arguments
+/// * `title` - page title (e.g. "DB Time Gradient Analyzes" or "DB CPU Gradient Analyzes")
+/// * `main_heading` - main heading displayed on the page
+/// * `sections` - vector of gradient sections to render (in order)
+///
+/// # Returns
+/// Complete HTML document as a `String`.
+pub fn build_gradient_html(
+    title: &str,
+    main_heading: &str,
+    sections: Vec<GradientHtmlSection>,
+) -> String {
+    // Combine all non-empty sections into a single HTML block
+    let sections_html: String = sections
+        .into_iter()
+        .filter(|s| !s.html.trim().is_empty()) // skip empty sections
+        .map(|s| {
+            format!(
+                r#"                <p><span style="font-size:15px;font-weight:bold;">{}</span></p>
+                {}
+"#,
+                s.heading, s.html
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; }}
+        .content {{ font-size: 14px; }}
+        table {{
+            width: 30%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }}
+        th, td {{
+            border: 1px solid black;
+            padding: 8px;
+            text-align: center;
+        }}
+        th {{
+            background-color: #632e4f;
+            color: white;
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+        }}
+        th:hover {{
+            background-color: #7a3a62;
+        }}
+        th.sort-asc::after {{
+            content: " \25B2";
+            font-size: 0.8em;
+        }}
+        th.sort-desc::after {{
+            content: " \25BC";
+            font-size: 0.8em;
+        }}
+        tr:nth-child(even) {{
+            background-color: #f2f2f2;
+        }}
+        td:first-child {{
+            text-align: right;
+            font-weight: bold;
+        }}
+        .tables-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+            gap: 20px;
+            align-items: start;
+        }}
+        .tables-grid table {{
+            width: 100%;
+            margin-top: 0;
+        }}
+        .cross-model table {{
+            width: 100%;
+            margin-top: 20px;
+        }}
+        .cross-model p {{
+            font-weight: bold;
+            font-size: 16px;
+            margin-top: 40px;
+        }}
+    </style>
+    <script>
+        // Generic sorter that works for every table on the page.
+        // Numeric values (including negative and scientific notation) are sorted numerically,
+        // otherwise locale-aware string comparison is used.
+        function gradientSortTable(headerCell) {{
+            const table = headerCell.closest('table');
+            if (!table) return;
+
+            // Determine the clicked column index within its own row
+            const headerRow = headerCell.parentElement;
+            const headers = Array.from(headerRow.children);
+            const columnIndex = headers.indexOf(headerCell);
+            if (columnIndex < 0) return;
+
+            // Pick the tbody (or fallback to the table itself if missing)
+            const tbody = table.tBodies[0] || table;
+            const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => {{
+                // Skip rows that are actually header rows inside tbody
+                return r.querySelector('td') !== null;
+            }});
+            if (rows.length === 0) return;
+
+            // Toggle sort direction based on the previous state stored on the header
+            const currentDir = headerCell.getAttribute('data-sort-dir');
+            const ascending = currentDir !== 'asc';
+
+            // Clear sort indicators on all headers of this table
+            table.querySelectorAll('th').forEach(th => {{
+                th.removeAttribute('data-sort-dir');
+                th.classList.remove('sort-asc', 'sort-desc');
+            }});
+
+            // Helper: try to parse a cell's text as a number
+            const parseValue = (text) => {{
+                if (text === null || text === undefined) return {{ num: NaN, str: '' }};
+                const trimmed = String(text).trim();
+                if (trimmed === '' || trimmed === '-' || trimmed === 'N/A') {{
+                    return {{ num: NaN, str: trimmed }};
+                }}
+                // Remove thousands separators and percent signs before numeric parsing
+                const cleaned = trimmed.replace(/,/g, '').replace(/%$/, '');
+                const num = Number(cleaned);
+                return {{ num: isNaN(num) ? NaN : num, str: trimmed }};
+            }};
+
+            // Sort the rows using the chosen column
+            rows.sort((rowA, rowB) => {{
+                const cellA = rowA.children[columnIndex];
+                const cellB = rowB.children[columnIndex];
+                const textA = cellA ? cellA.innerText : '';
+                const textB = cellB ? cellB.innerText : '';
+                const a = parseValue(textA);
+                const b = parseValue(textB);
+
+                let cmp;
+                if (!isNaN(a.num) && !isNaN(b.num)) {{
+                    cmp = a.num - b.num;
+                }} else {{
+                    cmp = a.str.localeCompare(b.str, undefined, {{ numeric: true, sensitivity: 'base' }});
+                }}
+                return ascending ? cmp : -cmp;
+            }});
+
+            // Re-append rows in the new order
+            rows.forEach(r => tbody.appendChild(r));
+
+            // Save the new direction indicator on the clicked header
+            headerCell.setAttribute('data-sort-dir', ascending ? 'asc' : 'desc');
+            headerCell.classList.add(ascending ? 'sort-asc' : 'sort-desc');
+        }}
+
+        // Attach click handlers to every table header on page load
+        document.addEventListener('DOMContentLoaded', function() {{
+            document.querySelectorAll('table th').forEach(th => {{
+                th.addEventListener('click', function() {{
+                    gradientSortTable(th);
+                }});
+            }});
+        }});
+    </script>
+</head>
+<body>
+    <div class="content">
+        <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
+            <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png"
+                 width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
+        </a></p>
+        <p><span style="font-size:20px;font-weight:bold;">{main_heading}</span></p>
+{sections_html}
+    </div>
+</body>
+</html>
+"#
+    )
+}
