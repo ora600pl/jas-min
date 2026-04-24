@@ -64,7 +64,9 @@ use crate::gradient::*;
 use crate::gradient::{EventSeriesMap,
                      EventScalarMap,
                      EventImpact,
-                     DbTimeGradientResult};
+                     DbTimeGradientResult,
+                     GradientHtmlSection,
+                     GradientSectionSpec};
 
 use crate::staticdata::StatUnitGroup;
 
@@ -2151,6 +2153,275 @@ fn report_segments_summary(awrs: &Vec<AWR>, args: &Args, logfile_name: &str, dir
     sections_toplot   
 }
 
+/// Where the value for a tracked stat comes from in each AWR snapshot.
+#[derive(Debug, Clone, Copy)]
+pub enum StatSource {
+    /// Matches an Oracle statname in `awr.instance_stats` (exact match).
+    InstanceStatExact(&'static str),
+    /// Matches an Oracle statname in `awr.instance_stats` by prefix.
+    InstanceStatPrefix(&'static str),
+    /// Matches a load-profile row by `starts_with`. Uses `per_second`.
+    LoadProfilePerSec(&'static str),
+    /// Matches a load-profile row by `starts_with`. Uses `per_second` multiplied
+    /// by the given factor (e.g. block_size / (1024*1024) for MB/s).
+    LoadProfilePerSecScaled(&'static str, f64),
+    /// Single scalar per snapshot, provided by the caller (e.g. redo log switches).
+    Scalar,
+    /// Computed per snapshot by a closure (e.g. excessive-commit ratio).
+    Computed,
+}
+
+/// Stable identifiers for stats tracked by the main report.
+/// Adding a new tracked series = 1 variant + 1 spec row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrackedStatKey {
+    // --- Load Profile ---
+    UserCallsPerSec,
+    TransactionsPerSec,
+    ExecutesPerSec,
+    BlockChangesPerSec,
+    RedoMbPerSec,
+    LogicalReadMbPerSec,
+    PhysReadMbPerSec,
+    PhysWriteMbPerSec,
+    ParsesPerSec,
+    HardParsesPerSec,
+    // --- Instance stats (cumulative totals) ---
+    UserCommits,
+    UserRollbacks,
+    FailedParseCount,
+    UserLogons,
+    UserLogouts,
+    UserCalls,
+    CleanoutKtugct,
+    CleanoutCr,
+    // --- Derived / external scalars ---
+    RedoLogSwitches,
+    ExcessiveCommits,
+}
+
+pub struct TrackedStatSpec {
+    pub key: TrackedStatKey,
+    pub display_name: &'static str,
+    pub unit: &'static str,        // printed in the tooltip after the absolute value
+    pub source: StatSource,
+    /// When `true`, the stat is only collected/plotted if `log file sync` is a TOP event.
+    pub requires_logfilesync: bool,
+}
+
+pub fn tracked_stats_specs() -> &'static [TrackedStatSpec] {
+    &[
+        // --- Load Profile (rates) ---
+        TrackedStatSpec { key: TrackedStatKey::UserCallsPerSec,     display_name: "User Calls/s",        unit: "calls/s",  source: StatSource::LoadProfilePerSec("User calls"),         requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::TransactionsPerSec,  display_name: "Transactions/s",      unit: "tx/s",     source: StatSource::LoadProfilePerSec("Transactions"),       requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::ExecutesPerSec,      display_name: "Executes/s",          unit: "exec/s",   source: StatSource::LoadProfilePerSec("Executes"),           requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::BlockChangesPerSec,  display_name: "Block changes/s",     unit: "blk/s",    source: StatSource::LoadProfilePerSec("Block changes"),      requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::ParsesPerSec,        display_name: "Parses/s",            unit: "parse/s",  source: StatSource::LoadProfilePerSec("Parses"),             requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::HardParsesPerSec,    display_name: "Hard Parses/s",       unit: "hparse/s", source: StatSource::LoadProfilePerSec("Hard parses"),        requires_logfilesync: false },
+
+        // --- Load Profile (scaled to MB/s using block size) ---
+        // The scale factor is filled in at runtime (block_size / 1024 / 1024); see build_tracked_stats().
+        TrackedStatSpec { key: TrackedStatKey::RedoMbPerSec,        display_name: "Redo MB/s",           unit: "MB/s",     source: StatSource::LoadProfilePerSecScaled("Redo size",  1.0 / (1024.0 * 1024.0)), requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::LogicalReadMbPerSec, display_name: "Logical Read MB/s",   unit: "MB/s",     source: StatSource::LoadProfilePerSecScaled("Logical read", 0.0 /* filled at runtime */), requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::PhysReadMbPerSec,    display_name: "Physical Read MB/s",  unit: "MB/s",     source: StatSource::LoadProfilePerSecScaled("Physical read", 0.0), requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::PhysWriteMbPerSec,   display_name: "Physical Write MB/s", unit: "MB/s",     source: StatSource::LoadProfilePerSecScaled("Physical write", 0.0), requires_logfilesync: false },
+
+        // --- Instance stats (absolute totals per snap) ---
+        TrackedStatSpec { key: TrackedStatKey::UserCommits,      display_name: "User Commits",        unit: "#", source: StatSource::InstanceStatExact("user commits"),              requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::UserRollbacks,    display_name: "User Rollbacks",      unit: "#", source: StatSource::InstanceStatExact("user rollbacks"),            requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::FailedParseCount, display_name: "Failed Parses",       unit: "#", source: StatSource::InstanceStatExact("parse count (failures)"),   requires_logfilesync: true  },
+        TrackedStatSpec { key: TrackedStatKey::UserLogons,       display_name: "User Logons",         unit: "#", source: StatSource::InstanceStatExact("user logons cumulative"),   requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::UserLogouts,      display_name: "User Logouts",        unit: "#", source: StatSource::InstanceStatExact("user logouts cumulative"),  requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::UserCalls,        display_name: "User Calls (cum.)",   unit: "#", source: StatSource::InstanceStatExact("user calls"),               requires_logfilesync: true  },
+        TrackedStatSpec { key: TrackedStatKey::CleanoutKtugct,   display_name: "Cleanout KTUGCT",     unit: "#", source: StatSource::InstanceStatPrefix("cleanout - number of ktugct calls"), requires_logfilesync: true },
+        TrackedStatSpec { key: TrackedStatKey::CleanoutCr,       display_name: "Cleanouts CR Only",   unit: "#", source: StatSource::InstanceStatPrefix("cleanouts only - consistent read"), requires_logfilesync: true },
+
+        // --- Externally fed scalars ---
+        TrackedStatSpec { key: TrackedStatKey::RedoLogSwitches,  display_name: "Redo Log Switches/h", unit: "/h",    source: StatSource::Scalar,   requires_logfilesync: true },
+        TrackedStatSpec { key: TrackedStatKey::ExcessiveCommits, display_name: "Excessive Commits",   unit: "ratio", source: StatSource::Computed, requires_logfilesync: true },
+    ]
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TrackedStat {
+    pub display_name: String,
+    pub unit: String,
+    pub values: Vec<f64>,
+}
+
+impl TrackedStat {
+    pub fn new(display_name: &str, unit: &str) -> Self {
+        Self { display_name: display_name.to_string(), unit: unit.to_string(), values: Vec::new() }
+    }
+
+    pub fn push(&mut self, v: f64) { self.values.push(v); }
+    //pub fn z_scores(&self) -> Vec<f64> { z_score_normalize(&self.values) }
+    pub fn z_scores(&self) -> Vec<f64> {self.values.clone()} //Z-score to be verified
+
+    pub fn custom_data(&self) -> Vec<Vec<f64>> {
+        let avg = mean(self.values.clone()).unwrap_or(0.0);
+        let sd  = std_deviation(self.values.clone()).unwrap_or(0.0);
+        self.values.iter().map(|v| vec![*v, avg, sd]).collect()
+    }
+
+    /// Per-point custom data, one preformatted string per snapshot.
+    /// Each row contains "Absolute: X unit<br>Mean: Y unit<br>StdDev: Z unit".
+    /// This works around the Rust plotly crate limitation where `customdata`
+    /// must be a flat collection of scalars/strings (not a 2D matrix).
+    pub fn custom_data_strings(&self) -> Vec<String> {
+        let avg = mean(self.values.clone()).unwrap_or(0.0);
+        let sd  = std_deviation(self.values.clone()).unwrap_or(0.0);
+        let unit = &self.unit;
+
+        self.values
+            .iter()
+            .map(|v| {
+                format!(
+                    "Absolute: {:.2} {unit}<br>Mean: {:.2} {unit}<br>StdDev: {:.2} {unit}",
+                    v, avg, sd, unit = unit
+                )
+            })
+            .collect()
+    }
+}
+
+
+/// Build an empty registry containing **all** tracked stats.
+/// Filtering by `is_logfilesync_high` happens later, at plot time.
+pub fn build_tracked_stats() -> HashMap<TrackedStatKey, TrackedStat> {
+    tracked_stats_specs()
+        .iter()
+        .map(|s| (s.key, TrackedStat::new(s.display_name, s.unit)))
+        .collect()
+}
+
+/// Look up a spec by key.
+pub fn spec_of(key: TrackedStatKey) -> Option<&'static TrackedStatSpec> {
+    tracked_stats_specs().iter().find(|s| s.key == key)
+}
+
+/// Feed one AWR's instance_stats into the registry.
+/// Returns the set of TrackedStatKeys that were matched (useful for side-effects).
+pub fn ingest_instance_stats(
+    registry: &mut HashMap<TrackedStatKey, TrackedStat>,
+    awr: &AWR,
+) -> HashMap<TrackedStatKey, f64> {
+    let mut matched: HashMap<TrackedStatKey, f64> = HashMap::new();
+    for activity in &awr.instance_stats {
+        for spec in tracked_stats_specs() {
+            let hit = match spec.source {
+                StatSource::InstanceStatExact(name)  => activity.statname == name,
+                StatSource::InstanceStatPrefix(pref) => activity.statname.starts_with(pref),
+                _ => false,
+            };
+            if hit {
+                if let Some(ts) = registry.get_mut(&spec.key) {
+                    let v = activity.total as f64;
+                    ts.push(v);
+                    matched.insert(spec.key, v);
+                }
+            }
+        }
+    }
+    matched
+}
+
+/// Feed one AWR's load_profile rows into the registry.
+/// `block_size_bytes` is used to finalize MB/s scaling factors.
+pub fn ingest_load_profile(
+    registry: &mut HashMap<TrackedStatKey, TrackedStat>,
+    awr: &AWR,
+    block_size_bytes: u64,
+) {
+    let mb_factor = block_size_bytes as f64 / 1024.0 / 1024.0;
+
+    for lp in &awr.load_profile {
+        for spec in tracked_stats_specs() {
+            let value_opt = match spec.source {
+                StatSource::LoadProfilePerSec(prefix) if lp.stat_name.starts_with(prefix) => {
+                    Some(lp.per_second)
+                }
+                StatSource::LoadProfilePerSecScaled(prefix, factor) if lp.stat_name.starts_with(prefix) => {
+                    // For "Physical read/write" and "Logical read" we want MB/s => multiply by block size.
+                    // For "Redo size" we want MB/s from raw bytes/s => 1/(1024*1024).
+                    let f = match spec.key {
+                        TrackedStatKey::RedoMbPerSec => 1.0 / (1024.0 * 1024.0),
+                        _ => mb_factor,
+                    };
+                    Some(lp.per_second * f)
+                }
+                _ => None,
+            };
+            if let Some(v) = value_opt {
+                if let Some(ts) = registry.get_mut(&spec.key) {
+                    ts.push(v);
+                }
+            }
+        }
+    }
+}
+
+/// Push a pre-computed scalar into the registry.
+pub fn push_scalar(
+    registry: &mut HashMap<TrackedStatKey, TrackedStat>,
+    key: TrackedStatKey,
+    value: f64,
+) {
+    if let Some(ts) = registry.get_mut(&key) {
+        ts.push(value);
+    }
+}
+
+/// Render every tracked stat on y2, honoring the `requires_logfilesync` gate.
+fn add_tracked_stat_traces(
+    plot: &mut Plot,
+    x_vals: &[String],
+    tracked_stats: &HashMap<TrackedStatKey, TrackedStat>,
+    is_logfilesync_high: bool,
+) {
+    for spec in tracked_stats_specs() {
+        // Honor the "only show when log file sync is high" gate at render time,
+        // not at build time — the flag may not be final until we enter plotting.
+        if spec.requires_logfilesync && !is_logfilesync_high {
+            continue;
+        }
+
+        let Some(stat) = tracked_stats.get(&spec.key) else { continue };
+        if stat.values.is_empty() {
+            continue;
+        }
+
+        let hover = "<b>%{fullData.name}</b><br>\
+             Snap: %{x}<br>\
+             Z-Score: %{y:.2f}<br>\
+             %{customdata}\
+             <extra></extra>";
+
+        let trace = Scatter::new(x_vals.to_vec(), stat.z_scores())
+            .mode(Mode::Lines)
+            .name(stat.display_name.clone())
+            .custom_data(stat.custom_data_strings())
+            .hover_template(hover)
+            .x_axis("x1")
+            .y_axis("y2")
+            .visible(Visible::LegendOnly);
+
+        plot.add_trace(trace);
+    }
+}
+
+/// Return the raw values of a tracked stat, or an empty slice if missing.
+/// Box plots need absolute values (not Z-Scores), so use this accessor.
+pub fn raw_values_of(
+    tracked_stats: &HashMap<TrackedStatKey, TrackedStat>,
+    key: TrackedStatKey,
+) -> Vec<f64> {
+    tracked_stats
+        .get(&key)
+        .map(|ts| ts.values.clone())
+        .unwrap_or_default()
+}
+
 pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: HashMap<&str, HashSet<String>>) -> ReportForAI {
     let mut plot_main: Plot = Plot::new();
     let mut plot_highlight: Plot = Plot::new();
@@ -2196,7 +2467,6 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
             eprintln!("⚠️ Failed to create directory {:?}: {}", path, e);
         }
     }
-    
     // Y-axis
     let mut y_vals_dbtime: Vec<f64> = Vec::new();
     let mut y_vals_dbcpu: Vec<f64> = Vec::new();
@@ -2204,28 +2474,11 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     let mut y_vals_bgevents: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_cpu: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut y_vals_logons: Vec<u64> = Vec::new();
-    let mut y_vals_logouts: Vec<u64> = Vec::new();
-    let mut y_vals_calls: Vec<f64> = Vec::new();
-    let mut y_vals_execs: Vec<f64> = Vec::new();
-    let mut y_vals_trans: Vec<f64> = Vec::new();
-    let mut y_vals_redosize: Vec<f64> = Vec::new();
-    let mut y_vals_parses: Vec<f64> = Vec::new();
-    let mut y_vals_hparses: Vec<f64> = Vec::new();
     let mut y_vals_cpu_user: Vec<f64> = Vec::new();
     let mut y_vals_cpu_load: Vec<f64> = Vec::new();
     let mut y_vals_cpu_count: Vec<u32> = Vec::new();
-    let mut y_vals_redo_switches: Vec<f64> = Vec::new();
-    let mut y_excessive_commits: Vec<f64> = Vec::new();
-    let mut y_cleanout_ktugct: Vec<f64> = Vec::new();
-    let mut y_cleanout_cr: Vec<f64> = Vec::new();
-    let mut y_read_mb: Vec<f64> = Vec::new();
-    let mut y_write_mb: Vec<f64> = Vec::new();
-    let mut y_user_commits: Vec<u64> = Vec::new();
-    let mut y_user_rollbacks: Vec<u64> = Vec::new();
-    let mut y_logical_reads_s: Vec<f64> = Vec::new();
-    let mut y_block_changes_s: Vec<f64> = Vec::new();
-    let mut y_failed_parse_count: Vec<u64> = Vec::new();
+    let mut tracked_stats = build_tracked_stats();
+
     /*Variables used for statistics computations*/
     let mut y_vals_events_n: BTreeMap<String, Vec<f64>> = BTreeMap::new(); 
     let mut y_vals_events_t: BTreeMap<String, Vec<f64>> = BTreeMap::new();
@@ -2243,7 +2496,6 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     
     println!("{}","\n==== ANALYZING ===".bold().bright_cyan());
     let top_stats: TopStats = find_top_stats(&collection.awrs, db_time_cpu_ratio, filter_db_time, &snap_range, &logfile_name, &args, &mut report_for_ai);  
-    let mut is_logfilesync_high: bool = false;
     
     println!("{}","\n==== CREATING PLOTS ===".bold().bright_cyan()); 
     generate_events_plotfiles(&collection.awrs, &top_stats.events, true, &snap_range, &html_dir);
@@ -2256,6 +2508,11 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     let fname: String = format!("{}/jasmin_main.html", &html_dir); //new file name path for main report
     
     println!("\n{}","==== PREPARING RESULTS ===".bold().bright_cyan());
+
+    let is_logfilesync_high: bool = top_stats
+        .events
+        .keys()
+        .any(|e| e == "log file sync");
 
     for awr in &collection.awrs {
         let (f_begin_snap,f_end_snap) = snap_range;
@@ -2280,9 +2537,6 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
             } 
 
             for (event, _) in &top_stats.events {
-                if event.to_string() == "log file sync"{
-                    is_logfilesync_high = true;
-                }
                 y_vals_events.entry(event.to_string()).or_insert(Vec::new());
                 y_vals_events_n.entry(event.to_string()).or_insert(Vec::new());
                 y_vals_events_t.entry(event.to_string()).or_insert(Vec::new());
@@ -2352,6 +2606,12 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
             }
 
             let mut is_statspack: bool = false;
+            ingest_load_profile(
+                &mut tracked_stats,
+                awr,
+                collection.db_instance_information.db_block_size as u64,
+            );
+
             //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
             for lp in &awr.load_profile {
                     if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
@@ -2361,26 +2621,6 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
                         }
                     } else if lp.stat_name.starts_with("DB CPU") {
                         y_vals_dbcpu.push(lp.per_second);
-                    } else if lp.stat_name.starts_with("User calls") {
-                        y_vals_calls.push(lp.per_second);
-                    } else if lp.stat_name.starts_with("Executes") {
-                        y_vals_execs.push(lp.per_second);
-                    } else if lp.stat_name.starts_with("Transactions") {
-                            y_vals_trans.push(lp.per_second);
-                    } else if lp.stat_name.starts_with("Redo size") {
-                        y_vals_redosize.push(lp.per_second as f64/1024.0/1024.0);
-                    } else if lp.stat_name.starts_with("Block changes") {
-                        y_block_changes_s.push(lp.per_second);
-                    } else if lp.stat_name.starts_with("Parses") {
-                        y_vals_parses.push(lp.per_second);
-                    } else if lp.stat_name.starts_with("Hard parses") {
-                        y_vals_hparses.push(lp.per_second);
-                    } else if lp.stat_name.starts_with("Physical read") {
-                        y_read_mb.push(lp.per_second*collection.db_instance_information.db_block_size as f64/1024.0/1024.0);
-                    } else if lp.stat_name.starts_with("Physical write") {
-                        y_write_mb.push(lp.per_second*collection.db_instance_information.db_block_size as f64/1024.0/1024.0);
-                    } else if lp.stat_name.starts_with("Logical read") {
-                        y_logical_reads_s.push(lp.per_second*collection.db_instance_information.db_block_size as f64/1024.0/1024.0);
                     }
             }
 
@@ -2394,9 +2634,6 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
             y_vals_cpu_load.push(100.0-awr.host_cpu.pct_idle);
             y_vals_cpu_count.push(awr.host_cpu.cpus);
 
-            // ----- Additionally plot Redo Log Switches
-            y_vals_redo_switches.push(awr.redo_log.per_hour);
-
             let mut calls: u64 = 0;
             let mut commits: u64 = 0;
             let mut rollbacks: u64 = 0;
@@ -2404,55 +2641,27 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
             let mut cleanout_cr: u64 = 0;
             let mut excessive_commit: f64 = 0.0;
 
+            let matched = ingest_instance_stats(&mut tracked_stats, awr);
+
             for activity in &awr.instance_stats {
                 let mut v: &mut Vec<f64> = instance_stats.get_mut(&activity.statname).unwrap();
-                v[x_vals.len()-1] = activity.total as f64;
-
-                
-                if activity.statname == "user commits" {
-                    y_user_commits.push(activity.total);
-                } else if activity.statname == "user rollbacks" {
-                    y_user_rollbacks.push(activity.total);
-                } else if activity.statname == "parse count (failures)" {
-                    y_failed_parse_count.push(activity.total);
-                } else if activity.statname == "user logons cumulative" {
-                    y_vals_logons.push(activity.total);
-                } else if activity.statname == "user logouts cumulative"{
-                    y_vals_logouts.push(activity.total);
-                }
-                
-                // Plot additional stats if 'log file sync' is in top events
-                if is_logfilesync_high {
-                
-                    if activity.statname == "user calls" {
-                        calls = activity.total;
-                    } else if activity.statname == "user commits" {
-                        commits = activity.total;
-                    } else if activity.statname == "user rollbacks" {
-                        rollbacks = activity.total;
-                    } else if activity.statname.starts_with("cleanout - number of ktugct calls") {
-                        cleanout_ktugct = activity.total;
-                    } else if activity.statname.starts_with("cleanouts only - consistent read") {
-                        cleanout_cr = activity.total;
-                    }
-                    excessive_commit = if commits + rollbacks > 0 {
-                        (calls as f64) / ((commits + rollbacks) as f64)
-                        } else {
-                            0.0
-                    };
-                }
+                v[x_vals.len()-1] = activity.total as f64;                
             }
+
+            // log-file-sync–dependent pushes
             if is_logfilesync_high {
-                    y_excessive_commits.push(excessive_commit);
-                    /* This is for printing delayed block cleanouts when log file sync is present*/
-                    y_cleanout_ktugct.push(cleanout_ktugct as f64);
-                    y_cleanout_cr.push(cleanout_cr as f64);
+                push_scalar(&mut tracked_stats, TrackedStatKey::RedoLogSwitches, awr.redo_log.per_hour);
+
+                let calls     = matched.get(&TrackedStatKey::UserCalls).copied().unwrap_or(0.0);
+                let commits   = matched.get(&TrackedStatKey::UserCommits).copied().unwrap_or(0.0);
+                let rollbacks = matched.get(&TrackedStatKey::UserRollbacks).copied().unwrap_or(0.0);
+                let excessive = if commits + rollbacks > 0.0 { calls / (commits + rollbacks) } else { 0.0 };
+                push_scalar(&mut tracked_stats, TrackedStatKey::ExcessiveCommits, excessive);
             }
         }
     }
 
-    //make_notes!(&logfile_name, false, 0, "{}\n","Load Profile and Top Stats");
-    //println!("{}","Load Profile and Top Stats");
+    
     //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
     for (evname, ev) in y_vals_events.clone() {
@@ -2489,21 +2698,20 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
         
     }
     //Get Global Stats for Lod Profile
-    global_statistics.insert("CPU Load".to_string(), get_statistics(y_vals_cpu_load.clone()));
-    global_statistics.insert("AAS".to_string(), get_statistics(y_vals_dbtime.clone()));
-    global_statistics.insert("Executions/s".to_string(), get_statistics(y_vals_execs.clone()));
-    global_statistics.insert("Transactions/s".to_string(), get_statistics(y_vals_trans.clone()));
-    global_statistics.insert("Physical Reads MB/s".to_string(), get_statistics(y_read_mb.clone()));
-    global_statistics.insert("Physical Writes MB/s".to_string(), get_statistics(y_write_mb.clone()));
-    global_statistics.insert("Redo MB/s".to_string(), get_statistics(y_vals_redosize.clone()));
-    global_statistics.insert("User Commits/snap".to_string(), get_statistics(y_user_commits.iter().map(|v| *v as f64).collect()));
-    global_statistics.insert("User Rollbacks/snap".to_string(),get_statistics(y_user_rollbacks.iter().map(|v| *v as f64).collect()));
-    global_statistics.insert("Parses/s".to_string(), get_statistics(y_vals_parses.clone()));
-    global_statistics.insert("Hard Parses/s".to_string(), get_statistics(y_vals_hparses.clone()));
-    global_statistics.insert("Logical Reads MB/s".to_string(), get_statistics(y_logical_reads_s.clone()));
-    global_statistics.insert("Block Changes/s".to_string(), get_statistics(y_block_changes_s.clone()));
-    global_statistics.insert("User Calls/s".to_string(), get_statistics(y_vals_calls.clone()));
-    fs::write(format!("{}/stats/global_statistics.json",&html_dir),serde_json::to_string(&global_statistics).unwrap());
+    global_statistics.insert("CPU Load".to_string(),            get_statistics(y_vals_cpu_load.clone()));
+    global_statistics.insert("AAS".to_string(),                 get_statistics(y_vals_dbtime.clone()));
+    global_statistics.insert("Executions/s".to_string(),        get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::ExecutesPerSec)));
+    global_statistics.insert("Transactions/s".to_string(),      get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::TransactionsPerSec)));
+    global_statistics.insert("Physical Reads MB/s".to_string(), get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::PhysReadMbPerSec)));
+    global_statistics.insert("Physical Writes MB/s".to_string(),get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::PhysWriteMbPerSec)));
+    global_statistics.insert("Redo MB/s".to_string(),           get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::RedoMbPerSec)));
+    global_statistics.insert("User Commits/snap".to_string(),   get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::UserCommits)));
+    global_statistics.insert("User Rollbacks/snap".to_string(), get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::UserRollbacks)));
+    global_statistics.insert("Parses/s".to_string(),            get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::ParsesPerSec)));
+    global_statistics.insert("Hard Parses/s".to_string(),       get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::HardParsesPerSec)));
+    global_statistics.insert("Logical Reads MB/s".to_string(),  get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::LogicalReadMbPerSec)));
+    global_statistics.insert("Block Changes/s".to_string(),     get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::BlockChangesPerSec)));
+    global_statistics.insert("User Calls/s".to_string(),        get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::UserCallsPerSec)));
     
     // ------ Ploting and reporting starts ----------
     make_notes!(&logfile_name, args.quiet, 0, "\n\n");
@@ -2514,96 +2722,31 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
                                                     .name("DB Time (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
+    
     let dbcpu_trace = Scatter::new(x_vals.clone(), y_vals_dbcpu.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("DB CPU (s/s)")
                                                     .x_axis("x1")
                                                     .y_axis("y1");
-    let calls_trace = Scatter::new(x_vals.clone(), y_vals_calls.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("User Calls/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let transactions_trace = Scatter::new(x_vals.clone(), y_vals_trans.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Transactions/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let logons_trace = Scatter::new(x_vals.clone(), y_vals_logons)
-                                                    .mode(Mode::LinesText)
-                                                    .name("User Logons")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let logouts_trace = Scatter::new(x_vals.clone(), y_vals_logouts)
-                                                    .mode(Mode::LinesText)
-                                                    .name("User Logouts")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");                                            
-    let commits_trace = Scatter::new(x_vals.clone(), y_user_commits.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("User Commits")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let rollbacks_trace = Scatter::new(x_vals.clone(), y_user_rollbacks.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("User Rollbacks")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let exec_trace = Scatter::new(x_vals.clone(), y_vals_execs.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Executes/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let parses_trace = Scatter::new(x_vals.clone(), y_vals_parses.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Parses/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let hparses_trace = Scatter::new(x_vals.clone(), y_vals_hparses.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Hard Parses/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let blockchanges_trace = Scatter::new(x_vals.clone(), y_block_changes_s.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Block changes/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let redosize_trace = Scatter::new(x_vals.clone(), y_vals_redosize.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Redo MB/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let logicalread_trace = Scatter::new(x_vals.clone(), y_logical_reads_s.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Logical Read MB/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let phyread_trace = Scatter::new(x_vals.clone(), y_read_mb.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Physical Read MB/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
-    let phywrite_trace = Scatter::new(x_vals.clone(), y_write_mb.clone())
-                                                    .mode(Mode::LinesText)
-                                                    .name("Physical Write MB/s")
-                                                    .x_axis("x1")
-                                                    .y_axis("y2");
+    
     let cpu_user = Scatter::new(x_vals.clone(), y_vals_cpu_user)
                                                     .mode(Mode::LinesText)
                                                     .name("CPU User")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
+    
     let cpu_load = Scatter::new(x_vals.clone(), y_vals_cpu_load.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("CPU Load")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
+    
     let cpu_count = Scatter::new(x_vals.clone(), y_vals_cpu_count.clone())
                                                     .mode(Mode::LinesText)
                                                     .name("CPU Count")
                                                     .x_axis("x1")
                                                     .y_axis("y4");
+    
     let cpu_load_box_plot  = BoxPlot::new(y_vals_cpu_load)
                                                     //.mode(Mode::LinesText)
                                                     .name("CPU Load %")
@@ -2614,6 +2757,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
                                                     .box_points(BoxPoints::All)
                                                     .whisker_width(0.2)
                                                     .marker(Marker::new().color("#9c2d2d".to_string()).opacity(0.7).size(2));
+    
     let aas_box_plot  = BoxPlot::new(y_vals_dbtime.clone())
                                                     .name("AAS")
                                                     .x_axis("x2")
@@ -2623,181 +2767,100 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
                                                     .box_points(BoxPoints::All)
                                                     .whisker_width(0.2)
                                                     .marker(Marker::new().color("#2d9c57".to_string()).opacity(0.7).size(2));
-    let exec_box_plot  = BoxPlot::new(y_vals_execs)
-                                                    .name("Exec/s")
-                                                    .x_axis("x3")
-                                                    .y_axis("y3")
-                                                    .box_mean(BoxMean::True)
-                                                    .show_legend(false)
-                                                    .box_points(BoxPoints::All)
-                                                    .whisker_width(0.2)
-                                                    .marker(Marker::new().color("#2d5d9c".to_string()).opacity(0.7).size(2));
-    let trans_box_plot  = BoxPlot::new(y_vals_trans)
-                                                    .name("Trans/s")
-                                                    .x_axis("x4")
-                                                    .y_axis("y4")
-                                                    .box_mean(BoxMean::True)
-                                                    .show_legend(false)
-                                                    .box_points(BoxPoints::All)
-                                                    .whisker_width(0.2)
-                                                    .marker(Marker::new().color("#904fc2".to_string()).opacity(0.7).size(2));
-    let read_mb_box_plot  = BoxPlot::new(y_read_mb)
-                                                    //.mode(Mode::LinesText)
-                                                    .name("Phy Reads MB/s")
-                                                    .x_axis("x5")
-                                                    .y_axis("y5")
-                                                    .box_mean(BoxMean::True)
-                                                    .show_legend(false)
-                                                    .box_points(BoxPoints::All)
-                                                    .whisker_width(0.2)
-                                                    .marker(Marker::new().color("#c2be4f".to_string()).opacity(0.7).size(2));
-    let write_mb_box_plot  = BoxPlot::new(y_write_mb)
-                                                    //.mode(Mode::LinesText)
-                                                    .name("Phy Writes MB/s")
-                                                    .x_axis("x6")
-                                                    .y_axis("y6")
-                                                    .box_mean(BoxMean::True)
-                                                    .show_legend(false)
-                                                    .box_points(BoxPoints::All)
-                                                    .whisker_width(0.2)
-                                                    .marker(Marker::new().color("#c2904f".to_string()).opacity(0.7).size(2));
-    let redo_mb_box_plot  = BoxPlot::new(y_vals_redosize)
-                                                //.mode(Mode::LinesText)
+    
+    let exec_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::ExecutesPerSec))
+                                                .name("Exec/s")
+                                                .x_axis("x3").y_axis("y3")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
+                                                .marker(Marker::new().color("#2d5d9c".to_string()).opacity(0.7).size(2));
+    
+    let trans_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::TransactionsPerSec))
+                                                .name("Trans/s")
+                                                .x_axis("x4").y_axis("y4")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
+                                                .marker(Marker::new().color("#904fc2".to_string()).opacity(0.7).size(2));
+
+    let read_mb_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::PhysReadMbPerSec))
+                                                .name("Phy Reads MB/s")
+                                                .x_axis("x5").y_axis("y5")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
+                                                .marker(Marker::new().color("#c2be4f".to_string()).opacity(0.7).size(2));
+
+    let write_mb_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::PhysWriteMbPerSec))
+                                                .name("Phy Writes MB/s")
+                                                .x_axis("x6").y_axis("y6")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
+                                                .marker(Marker::new().color("#c2904f".to_string()).opacity(0.7).size(2));
+
+    let redo_mb_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::RedoMbPerSec))
                                                 .name("Redo MB/s")
-                                                .x_axis("x7")
-                                                .y_axis("y7")
-                                                .box_mean(BoxMean::True)
-                                                .show_legend(false)
-                                                .box_points(BoxPoints::All)
-                                                .whisker_width(0.2)
+                                                .x_axis("x7").y_axis("y7")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
                                                 .marker(Marker::new().color("#ad247a".to_string()).opacity(0.7).size(2));
-    let user_commits_box_plot  = BoxPlot::new(y_user_commits)
-                                                //.mode(Mode::LinesText)
+
+    let user_commits_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::UserCommits))
                                                 .name("User Commits/snap")
-                                                .x_axis("x1")
-                                                .y_axis("y1")
-                                                .box_mean(BoxMean::True)
-                                                .show_legend(false)
-                                                .box_points(BoxPoints::All)
-                                                .whisker_width(0.2)
+                                                .x_axis("x1").y_axis("y1")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
                                                 .marker(Marker::new().color("#fa3434".to_string()).opacity(0.7).size(2));
-    let user_rollbacks_box_plot  = BoxPlot::new(y_user_rollbacks)
-                                            //.mode(Mode::LinesText)
+
+let user_rollbacks_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::UserRollbacks))
                                                 .name("User Rollbacks/snap")
-                                                .x_axis("x2")
-                                                .y_axis("y2")
-                                                .box_mean(BoxMean::True)
-                                                .show_legend(false)
-                                                .box_points(BoxPoints::All)
-                                                .whisker_width(0.2)
+                                                .x_axis("x2").y_axis("y2")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
                                                 .marker(Marker::new().color("#11fa7a".to_string()).opacity(0.7).size(2));
-    let user_parses_box_plot  = BoxPlot::new(y_vals_parses)
-                                            //.mode(Mode::LinesText)
+
+let user_parses_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::ParsesPerSec))
                                                 .name("Parses/s")
-                                                .x_axis("x3")
-                                                .y_axis("y3")
-                                                .box_mean(BoxMean::True)
-                                                .show_legend(false)
-                                                .box_points(BoxPoints::All)
-                                                .whisker_width(0.2)
+                                                .x_axis("x3").y_axis("y3")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
                                                 .marker(Marker::new().color("#006aff".to_string()).opacity(0.7).size(2));
-    let user_hparses_box_plot  = BoxPlot::new(y_vals_hparses)
-                                            //.mode(Mode::LinesText)
+
+let user_hparses_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::HardParsesPerSec))
                                                 .name("Hard Parses/s")
-                                                .x_axis("x4")
-                                                .y_axis("y4")
-                                                .box_mean(BoxMean::True)
-                                                .show_legend(false)
-                                                .box_points(BoxPoints::All)
-                                                .whisker_width(0.2)
+                                                .x_axis("x4").y_axis("y4")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
                                                 .marker(Marker::new().color("#9000ff".to_string()).opacity(0.7).size(2));
-    let logical_reads_box_plot  = BoxPlot::new(y_logical_reads_s)
-                                            //.mode(Mode::LinesText)
+
+let logical_reads_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::LogicalReadMbPerSec))
                                                 .name("Logical Reads (MB)/s")
-                                                .x_axis("x5")
-                                                .y_axis("y5")
-                                                .box_mean(BoxMean::True)
-                                                .show_legend(false)
-                                                .box_points(BoxPoints::All)
-                                                .whisker_width(0.2)
+                                                .x_axis("x5").y_axis("y5")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
                                                 .marker(Marker::new().color("#f0dc02".to_string()).opacity(0.7).size(2));
-    let block_changes_box_plot  = BoxPlot::new(y_block_changes_s)
-                                            //.mode(Mode::LinesText)
+
+let block_changes_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::BlockChangesPerSec))
                                                 .name("Block Changes/s")
-                                                .x_axis("x6")
-                                                .y_axis("y6")
-                                                .box_mean(BoxMean::True)
-                                                .show_legend(false)
-                                                .box_points(BoxPoints::All)
-                                                .whisker_width(0.2)
+                                                .x_axis("x6").y_axis("y6")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
                                                 .marker(Marker::new().color("#ff8f1f".to_string()).opacity(0.7).size(2));
-    let user_calls_box_plot     = BoxPlot::new(y_vals_calls)
-                                            //.mode(Mode::LinesText)
+
+let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStatKey::UserCallsPerSec))
                                                 .name("User Calls/s")
-                                                .x_axis("x7")
-                                                .y_axis("y7")
-                                                .box_mean(BoxMean::True)
-                                                .show_legend(false)
-                                                .box_points(BoxPoints::All)
-                                                .whisker_width(0.2)
+                                                .x_axis("x7").y_axis("y7")
+                                                .box_mean(BoxMean::True).show_legend(false)
+                                                .box_points(BoxPoints::All).whisker_width(0.2)
                                                 .marker(Marker::new().color("#FF00CC".to_string()).opacity(0.7).size(2));
 
-    if is_logfilesync_high{
-        let redo_switches = Scatter::new(x_vals.clone(), y_vals_redo_switches)
-                                                        .mode(Mode::LinesText)
-                                                        .name("Log Switches")
-                                                        .x_axis("x1")
-                                                        .y_axis("y2");
-        let excessive_commits = Scatter::new(x_vals.clone(), y_excessive_commits)
-                                                        .mode(Mode::LinesText)
-                                                        .name("Excessive Commits")
-                                                        .x_axis("x1")
-                                                        .y_axis("y2");
-        let cleanout_ktugct_calls = Scatter::new(x_vals.clone(), y_cleanout_ktugct)
-                                                        .mode(Mode::LinesText)
-                                                        .name("cleanout - number of ktugct calls")
-                                                        .x_axis("x1")
-                                                        .y_axis("y2");
-        let cleanout_cr_only = Scatter::new(x_vals.clone(), y_cleanout_cr)
-                                                        .mode(Mode::LinesText)
-                                                        .name("cleanouts only - consistent read gets")
-                                                        .x_axis("x1")
-                                                        .y_axis("y2");
-        let parse_failure_count = Scatter::new(x_vals.clone(), y_failed_parse_count)
-                                                        .mode(Mode::LinesText)
-                                                        .name("Failed Parses")
-                                                        .x_axis("x1")
-                                                        .y_axis("y2");
-        
-        plot_main.add_trace(redo_switches);
-        plot_main.add_trace(excessive_commits);
-        plot_main.add_trace(cleanout_cr_only);
-        plot_main.add_trace(cleanout_ktugct_calls);
-        plot_main.add_trace(parse_failure_count);
-    }
     
     plot_main.add_trace(dbtime_trace);
     plot_highlight.add_trace(aas_box_plot);
     plot_main.add_trace(dbcpu_trace);
-    plot_main.add_trace(calls_trace);
-    plot_main.add_trace(transactions_trace);
-    plot_main.add_trace(logons_trace);
-    plot_main.add_trace(logouts_trace);
-    plot_main.add_trace(commits_trace);
-    plot_main.add_trace(rollbacks_trace);
-    plot_main.add_trace(exec_trace);
     plot_highlight.add_trace(exec_box_plot);
     plot_highlight.add_trace(trans_box_plot);
-    plot_main.add_trace(blockchanges_trace);
-    plot_main.add_trace(redosize_trace);
-    plot_main.add_trace(logicalread_trace);
-    plot_main.add_trace(phyread_trace);
-    plot_main.add_trace(phywrite_trace);
-    plot_main.add_trace(parses_trace);
-    plot_main.add_trace(hparses_trace);
     plot_main.add_trace(cpu_user);
     plot_main.add_trace(cpu_load);
-    
+    add_tracked_stat_traces(&mut plot_main, &x_vals, &tracked_stats, is_logfilesync_high);
     
     let first_cpu = y_vals_cpu_count.first(); //Get first value of CPU Count
     if first_cpu.is_some() { // if you found something
@@ -4949,302 +5012,151 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     let elastic_net_max_iter = args.en_max_iter;
     let elastic_net_tol = args.en_tol;
 
-    /*HTML variables for tables*/
-    let mut gradient_events = String::new();
-    let mut gradient_stats_cnt = String::new();
-    let mut gradient_stats_volume = String::new();
-    let mut gradient_stats_time = String::new();
-    let mut gradient_sqls = String::new();
-    let mut gradient_cpu_stats_all = String::new();
-    let mut gradient_cpu_sqls = String::new();
-    /* *********************** */
+    // Define all gradient sections declaratively
+    let gradient_specs: Vec<(GradientSectionSpec, &str)> = vec![
+        // (spec, field_name_tag) — field_name_tag used to dispatch into report_for_ai
+        (
+            GradientSectionSpec {
+                target: &y_vals_dbtime,
+                features: y_vals_events.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                label: "event_wait_s",
+                is_events: true,
+                display_name: "DB TIME GRADIENT for wait events",
+            },
+            "fg_wait_events",
+        ),
+        (
+            GradientSectionSpec {
+                target: &y_vals_dbtime,
+                features: instance_stats.iter()
+                    .filter(|(k, _)| is_counter_stat(k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                label: "statistic_values_counter",
+                is_events: false,
+                display_name: "DB TIME GRADIENT for stats counters",
+            },
+            "instance_stats_counters",
+        ),
+        (
+            GradientSectionSpec {
+                target: &y_vals_dbtime,
+                features: instance_stats.iter()
+                    .filter(|(k, _)| is_volume_stat(k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                label: "statistic_values_volume",
+                is_events: false,
+                display_name: "DB TIME GRADIENT for stats volumes",
+            },
+            "instance_stats_volumes",
+        ),
+        (
+            GradientSectionSpec {
+                target: &y_vals_dbtime,
+                features: instance_stats.iter()
+                    .filter(|(k, _)| is_time_stat(k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                label: "statistic_values_time",
+                is_events: false,
+                display_name: "DB TIME GRADIENT for stats time",
+            },
+            "instance_stats_time",
+        ),
+        (
+            GradientSectionSpec {
+                target: &y_vals_dbtime,
+                features: y_vals_sqls.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                label: "SQL_elapsed_time",
+                is_events: false,
+                display_name: "DB TIME GRADIENT for SQL elapsed time",
+            },
+            "sql_elapsed_time",
+        ),
+        (
+            GradientSectionSpec {
+                target: &y_vals_dbcpu,
+                features: instance_stats.iter()
+                    .filter(|(k, _)| is_cpu_stat(k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                label: "statistic_values_cpu",
+                is_events: false,
+                display_name: "CPU TIME GRADIENT for stats",
+            },
+            "cpu_instance_stats",
+        ),
+        (
+            GradientSectionSpec {
+                target: &y_vals_dbcpu,
+                features: y_vals_sqls_cpu.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                label: "SQL_CPU_time",
+                is_events: false,
+                display_name: "CPU TIME GRADIENT for SQL CPU",
+            },
+            "cpu_sql_cpu_time",
+        ),
+    ];
 
-    // ---------------------------------------------------------------------
-    // Attach DB Time gradient vs wait events to ReportForAI (optional section)
-    // ---------------------------------------------------------------------
-    {
-        match build_db_time_gradient_section (
-            &y_vals_dbtime,
-            &y_vals_events, // BTreeMap<String, Vec<f64>> aligned & zero-filled
+    // Process all sections in a loop
+    let mut gradient_results: HashMap<&str, String> = HashMap::new();
+
+    for (spec, tag) in &gradient_specs {
+        let (section, html) = run_gradient_section(
+            spec,
             ridge_lambda,
             elastic_net_lambda,
             elastic_net_alpha,
             elastic_net_max_iter,
             elastic_net_tol,
-            "event_wait_s"
-        ) {
-            Ok(section) => {
-                report_for_ai.db_time_gradient_fg_wait_events = Some(section);
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "{}",
-                    "\n\nDB TIME GRADIENT for wait events attached to ReportForAI".bold().green()
-                );
-            }
-            Err(err) => {
-                // Don't kill report generation; just log and continue.
-                report_for_ai.db_time_gradient_fg_wait_events = None;
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\nDB TIME GRADIENT skipped: {}",
-                    err
-                );
-            }
+            &logfile_name,
+            &args,
+        );
+
+        // Dispatch into the correct field of report_for_ai
+        match *tag {
+            "fg_wait_events"        => report_for_ai.db_time_gradient_fg_wait_events = section,
+            "instance_stats_counters" => report_for_ai.db_time_gradient_instance_stats_counters = section,
+            "instance_stats_volumes"  => report_for_ai.db_time_gradient_instance_stats_volumes = section,
+            "instance_stats_time"     => report_for_ai.db_time_gradient_instance_stats_time = section,
+            "sql_elapsed_time"        => report_for_ai.db_time_gradient_sql_elapsed_time = section,
+            "cpu_instance_stats"      => report_for_ai.db_cpu_gradient_instance_stats = section,
+            "cpu_sql_cpu_time"        => report_for_ai.db_cpu_gradient_sql_cpu_time = section,
+            _ => {}
         }
-        if let Some(section) = &report_for_ai.db_time_gradient_fg_wait_events {
-            gradient_events = print_db_time_gradient_tables(section, true, &logfile_name, &args);
-        }
+
+        gradient_results.insert(tag, html);
     }
 
-    // ---------------------------------------------------------------------
-    // Attach DB Time gradient vs instance statistic counters to ReportForAI (optional section)
-    // ---------------------------------------------------------------------
-    {
-        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
-                                                                         .filter(|i| is_counter_stat(&i.0))
-                                                                         .collect();
-        match build_db_time_gradient_section (
-            &y_vals_dbtime,
-            &y_vals_statistics, // BTreeMap<String, Vec<f64>> aligned & zero-filled
-            ridge_lambda,
-            elastic_net_lambda,
-            elastic_net_alpha,
-            elastic_net_max_iter,
-            elastic_net_tol,
-            "statistic_values_counter"
-        ) {
-            Ok(section) => {
-                report_for_ai.db_time_gradient_instance_stats_counters = Some(section);
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\n{}",
-                    "DB TIME GRADIENT for stats counters attached to ReportForAI".bold().green()
-                );
-            }
-            Err(err) => {
-                // Don't kill report generation; just log and continue.
-                report_for_ai.db_time_gradient_instance_stats_counters = None;
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\nDB TIME GRADIENT for instance stats counters skipped: {}",
-                    err
-                );
-            }
-        }
-        if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_counters {
-            gradient_stats_cnt = print_db_time_gradient_tables(section, false, &logfile_name, &args);
-        }
-    }
+    // Extract HTML for template rendering
+    let gradient_events      = gradient_results.remove("fg_wait_events").unwrap_or_default();
+    let gradient_stats_cnt   = gradient_results.remove("instance_stats_counters").unwrap_or_default();
+    let gradient_stats_volume = gradient_results.remove("instance_stats_volumes").unwrap_or_default();
+    let gradient_stats_time  = gradient_results.remove("instance_stats_time").unwrap_or_default();
+    let gradient_sqls        = gradient_results.remove("sql_elapsed_time").unwrap_or_default();
+    let gradient_cpu_stats_all = gradient_results.remove("cpu_instance_stats").unwrap_or_default();
+    let gradient_cpu_sqls    = gradient_results.remove("cpu_sql_cpu_time").unwrap_or_default();
 
-    // ---------------------------------------------------------------------
-    // Attach DB Time gradient vs instance statistic volumes to ReportForAI (optional section)
-    // ---------------------------------------------------------------------
-    {
-        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
-                                                                         .filter(|i| is_volume_stat(&i.0))
-                                                                         .collect();
-        match build_db_time_gradient_section (
-            &y_vals_dbtime,
-            &y_vals_statistics, // BTreeMap<String, Vec<f64>> aligned & zero-filled
-            ridge_lambda,
-            elastic_net_lambda,
-            elastic_net_alpha,
-            elastic_net_max_iter,
-            elastic_net_tol,
-            "statistic_values_volume"
-        ) {
-            Ok(section) => {
-                report_for_ai.db_time_gradient_instance_stats_volumes = Some(section);
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\n{}",
-                    "DB TIME GRADIENT for stats attached to ReportForAI".bold().green()
-                );
-            }
-            Err(err) => {
-                // Don't kill report generation; just log and continue.
-                report_for_ai.db_time_gradient_instance_stats_volumes = None;
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\nDB TIME GRADIENT for instance stats volumes skipped: {}",
-                    err
-                );
-            }
-        }
-        if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_volumes {
-            gradient_stats_volume = print_db_time_gradient_tables(section, false, &logfile_name, &args);
-        }
-    }
+    // ---- DB Time gradient page ----
+    let db_time_sections = vec![
+        GradientHtmlSection { heading: "DB Time vs Wait Events".to_string(),        html: gradient_events },
+        GradientHtmlSection { heading: "DB Time vs Statistic Counters".to_string(), html: gradient_stats_cnt },
+        GradientHtmlSection { heading: "DB Time vs Statistic Volumes".to_string(),  html: gradient_stats_volume },
+        GradientHtmlSection { heading: "DB Time vs Statistic Time".to_string(),     html: gradient_stats_time },
+        GradientHtmlSection { heading: "DB Time vs SQLs".to_string(),               html: gradient_sqls },
+    ];
 
-    // ---------------------------------------------------------------------
-    // Attach DB Time gradient vs instance statistic time to ReportForAI (optional section)
-    // ---------------------------------------------------------------------
-    {
-        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
-                                                                         .filter(|i| is_time_stat(&i.0))
-                                                                         .collect();
-        match build_db_time_gradient_section (
-            &y_vals_dbtime,
-            &y_vals_statistics, // BTreeMap<String, Vec<f64>> aligned & zero-filled
-            ridge_lambda,
-            elastic_net_lambda,
-            elastic_net_alpha,
-            elastic_net_max_iter,
-            elastic_net_tol,
-            "statistic_values_time"
-        ) {
-            Ok(section) => {
-                report_for_ai.db_time_gradient_instance_stats_time = Some(section);
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "{}",
-                    "\n\nDB TIME GRADIENT for stats time attached to ReportForAI".bold().green()
-                );
-            }
-            Err(err) => {
-                // Don't kill report generation; just log and continue.
-                report_for_ai.db_time_gradient_instance_stats_time = None;
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\nDB TIME GRADIENT for instance stats time skipped: {}",
-                    err
-                );
-            }
-        }
-        if let Some(section) = &report_for_ai.db_time_gradient_instance_stats_time {
-            gradient_stats_time = print_db_time_gradient_tables(section, false, &logfile_name, &args);
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Attach DB Time gradient vs sql_id/old_hash_value elapsed time to ReportForAI (optional section)
-    // ---------------------------------------------------------------------
-    {
-        match build_db_time_gradient_section (
-            &y_vals_dbtime,
-            &y_vals_sqls, // BTreeMap<String, Vec<f64>> aligned & zero-filled
-            ridge_lambda,
-            elastic_net_lambda,
-            elastic_net_alpha,
-            elastic_net_max_iter,
-            elastic_net_tol,
-            "SQL_elapsed_time"
-        ) {
-            Ok(section) => {
-                report_for_ai.db_time_gradient_sql_elapsed_time = Some(section);
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\n{}",
-                    "DB TIME GRADIENT for SQL elapsed time attached to ReportForAI".bold().green()
-                );
-            }
-            Err(err) => {
-                // Don't kill report generation; just log and continue.
-                report_for_ai.db_time_gradient_sql_elapsed_time = None;
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\nDB TIME GRADIENT for SQL elapsed time skipped: {}",
-                    err
-                );
-            }
-        }
-        if let Some(section) = &report_for_ai.db_time_gradient_sql_elapsed_time {
-            gradient_sqls = print_db_time_gradient_tables(section, false, &logfile_name, &args);
-        }
-    }
-
-    let gradient_html = format!(
-        r#"<!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Gradient Analyzes</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; }}
-                .content {{ font-size: 14px; }}
-                table {{
-                    width: 30%;
-                    border-collapse: collapse;
-                    margin-top: 20px;
-                }}
-                th, td {{ 
-                    border: 1px solid black;
-                    padding: 8px;
-                    text-align: center;
-                }}
-                th {{
-                    background-color: #632e4f;
-                    color: white;
-                }}
-                tr:nth-child(even) {{
-                    background-color: #f2f2f2;
-                }}
-                td:first-child {{
-                    text-align: right;
-                    font-weight: bold;
-                }}
-                .tables-grid {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-                    gap: 20px;
-                    align-items: start;
-                }}
-                .tables-grid table {{
-                    width: 100%;
-                    margin-top: 0;
-                }}
-                .cross-model table {{
-                    width: 100%;
-                    margin-top: 20px;
-                    }}
-                .cross-model p {{
-                    font-weight: bold;
-                    font-size: 16px;
-                    margin-top: 40px;
-                    }}
-            </style>
-            </head>
-        <body>
-            <div class="content">
-                <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
-                <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
-                </a></p>
-                <p><span style="font-size:20px;font-weight:bold;">Gradient Analyzes</span></p>
-                <p><span style="font-size:15px;font-weight:bold;">DB Time vs Wait Events</span></p>
-                {gradient_events}
-                <p><span style="font-size:15px;font-weight:bold;">DB Time vs Statistic Counters</span></p>
-                {gradient_stats_cnt}
-                <p><span style="font-size:15px;font-weight:bold;">DB Time vs Statistic Volumes</span></p>
-                {gradient_stats_volume}
-                <p><span style="font-size:15px;font-weight:bold;">DB Time vs Statistic Time</span></p>
-                {gradient_stats_time}
-                <p><span style="font-size:15px;font-weight:bold;">DB Time vs SQLs</span></p>
-                {gradient_sqls}
-            </div>
-        </body>
-        </html>
-        "#
+    let gradient_html = build_gradient_html(
+        "Gradient Analyzes",
+        "Gradient Analyzes",
+        db_time_sections,
     );
     let gradient_html = add_links_to_html(gradient_html, events_sqls.clone(), "..".to_string(), html_dir.clone());
     let gradient_filename: String = format!("{}/stats/gradient.html", &html_dir);
@@ -5252,160 +5164,16 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
         eprintln!("Error writing file {}: {}", gradient_filename, e);
     }
 
+    // ---- DB CPU gradient page ----
+    let db_cpu_sections = vec![
+        GradientHtmlSection { heading: "DB CPU vs Instance Statistics".to_string(), html: gradient_cpu_stats_all },
+        GradientHtmlSection { heading: "DB CPU vs SQLs by CPU Time".to_string(),    html: gradient_cpu_sqls },
+    ];
 
-    // ---------------------------------------------------------------------
-    // Attach CPU Time gradient vs instance statistic CPU to ReportForAI (optional section)
-    // ---------------------------------------------------------------------
-    {
-        let y_vals_statistics: BTreeMap<String,Vec<f64>> = instance_stats.clone().into_iter()
-                                                                         .filter(|i| is_cpu_stat(&i.0))
-                                                                         .collect();
-        debug_note!("All instance statistics: {}, filtered for CPU: {}", instance_stats.len(), y_vals_statistics.len());
-        match build_db_time_gradient_section (
-            &y_vals_dbcpu,
-            &y_vals_statistics, // BTreeMap<String, Vec<f64>> aligned & zero-filled
-            ridge_lambda,
-            elastic_net_lambda,
-            elastic_net_alpha,
-            elastic_net_max_iter,
-            elastic_net_tol,
-            "statistic_values_cpu"
-        ) {
-            Ok(section) => {
-                report_for_ai.db_cpu_gradient_instance_stats = Some(section);
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "{}",
-                    "\n\nCPU TIME GRADIENT for stats attached to ReportForAI".bold().green()
-                );
-            }
-            Err(err) => {
-                // Don't kill report generation; just log and continue.
-                report_for_ai.db_cpu_gradient_instance_stats = None;
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\nCPU TIME GRADIENT for instance stats time skipped: {}",
-                    err
-                );
-            }
-        }
-        if let Some(section) = &report_for_ai.db_cpu_gradient_instance_stats {
-            gradient_cpu_stats_all = print_db_time_gradient_tables(section, false, &logfile_name, &args);
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Attach CPU Time gradient vs SQL by CPU Time to ReportForAI (optional section)
-    // ---------------------------------------------------------------------
-    {
-        
-        match build_db_time_gradient_section (
-            &y_vals_dbcpu,
-            &y_vals_sqls_cpu, // BTreeMap<String, Vec<f64>> aligned & zero-filled
-            ridge_lambda,
-            elastic_net_lambda,
-            elastic_net_alpha,
-            elastic_net_max_iter,
-            elastic_net_tol,
-            "SQL_CPU_time"
-        ) {
-            Ok(section) => {
-                report_for_ai.db_cpu_gradient_sql_cpu_time = Some(section);
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "{}",
-                    "\n\nCPU TIME GRADIENT for SQL CPU attached to ReportForAI".bold().green()
-                );
-            }
-            Err(err) => {
-                // Don't kill report generation; just log and continue.
-                report_for_ai.db_cpu_gradient_sql_cpu_time = None;
-                make_notes!(
-                    &logfile_name,
-                    false,
-                    1,
-                    "\n\nCPU TIME GRADIENT for SQL CPU time skipped: {}",
-                    err
-                );
-            }
-        }
-        if let Some(section) = &report_for_ai.db_cpu_gradient_sql_cpu_time {
-            gradient_cpu_sqls = print_db_time_gradient_tables(section, false, &logfile_name, &args);
-        }
-    }
-
-    let gradient_html = format!(
-        r#"<!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Gradient Analyzes</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; }}
-                .content {{ font-size: 14px; }}
-                table {{
-                    width: 30%;
-                    border-collapse: collapse;
-                    margin-top: 20px;
-                }}
-                th, td {{ 
-                    border: 1px solid black;
-                    padding: 8px;
-                    text-align: center;
-                }}
-                th {{
-                    background-color: #632e4f;
-                    color: white;
-                }}
-                tr:nth-child(even) {{
-                    background-color: #f2f2f2;
-                }}
-                td:first-child {{
-                    text-align: right;
-                    font-weight: bold;
-                }}
-                .tables-grid {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
-                    gap: 20px;
-                    align-items: start;
-                }}
-                .tables-grid table {{
-                    width: 100%;
-                    margin-top: 0;
-                }}
-                .cross-model table {{
-                    width: 100%;
-                    margin-top: 20px;
-                    }}
-                .cross-model p {{
-                    font-weight: bold;
-                    font-size: 16px;
-                    margin-top: 40px;
-                    }}
-            </style>
-            </head>
-        <body>
-            <div class="content">
-                <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
-                <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
-                </a></p>
-                <p><span style="font-size:20px;font-weight:bold;">Gradient Analyzes</span></p>
-                <p><span style="font-size:15px;font-weight:bold;">DB CPU vs Instance Statistics</span></p>
-                {gradient_cpu_stats_all}
-                <p><span style="font-size:15px;font-weight:bold;">DB CPU vs SQLs by CPU Time</span></p>
-                {gradient_cpu_sqls}
-            </div>
-        </body>
-        </html>
-        "#
+    let gradient_html = build_gradient_html(
+        "Gradient Analyzes",
+        "Gradient Analyzes",
+        db_cpu_sections,
     );
     let gradient_html = add_links_to_html(gradient_html, events_sqls, "..".to_string(), html_dir.clone());
     let gradient_filename: String = format!("{}/stats/gradient_cpu.html", &html_dir);

@@ -655,3 +655,38 @@ pub fn find_tables_for_sql_ids(
     result.sort();
     result
 }
+
+/// Compute Z-Score normalization for a vector: (x - mean) / stddev.
+/// Returns a vector of the same length. If stddev is 0 or NaN, returns zeros
+/// (the series is constant — nothing to normalize).
+pub fn z_score_normalize(values: &[f64]) -> Vec<f64> {
+    // Use only finite values to compute mean/stddev, but preserve NaN positions in output.
+    let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if finite.is_empty() {
+        return vec![0.0; values.len()];
+    }
+    let avg = mean(finite.clone()).unwrap_or(0.0);
+    let sd  = std_deviation(finite).unwrap_or(0.0);
+    if sd.abs() < f64::EPSILON || !sd.is_finite() {
+        return vec![0.0; values.len()];
+    }
+    values
+        .iter()
+        .map(|v| if v.is_finite() { (v - avg) / sd } else { f64::NAN })
+        .collect()
+}
+
+pub fn robust_z_score(values: &[f64]) -> Vec<f64> {
+    if values.is_empty() { return Vec::new(); }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = sorted[sorted.len() / 2];
+    let mut deviations: Vec<f64> = values.iter().map(|v| (v - median).abs()).collect();
+    deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mad = deviations[deviations.len() / 2];
+    if mad.abs() < f64::EPSILON {
+        return vec![0.0; values.len()];
+    }
+    let scale = 1.4826 * mad;
+    values.iter().map(|v| (v - median) / scale).collect()
+}
