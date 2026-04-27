@@ -379,6 +379,13 @@ pub fn is_cpu_stat(stat_name: &str) -> bool {
     }
 }
 
+pub fn is_in_any_categhory(stat_name: &str) -> bool {
+    is_counter_stat(stat_name) ||
+    is_time_stat(stat_name) ||
+    is_volume_stat(stat_name) ||
+    is_cpu_stat(stat_name)
+}
+
 /* =========================================================================================
    Internals
    ========================================================================================= */

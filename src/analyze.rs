@@ -2195,6 +2195,10 @@ pub enum TrackedStatKey {
     UserCalls,
     CleanoutKtugct,
     CleanoutCr,
+    TableScanRows,
+    TableScanBlocks,
+    TableFetchRowid,
+    TableFetchContRow,
     // --- Derived / external scalars ---
     RedoLogSwitches,
     ExcessiveCommits,
@@ -2227,14 +2231,18 @@ pub fn tracked_stats_specs() -> &'static [TrackedStatSpec] {
         TrackedStatSpec { key: TrackedStatKey::PhysWriteMbPerSec,   display_name: "Physical Write MB/s", unit: "MB/s",     source: StatSource::LoadProfilePerSecScaled("Physical write", 0.0), requires_logfilesync: false },
 
         // --- Instance stats (absolute totals per snap) ---
-        TrackedStatSpec { key: TrackedStatKey::UserCommits,      display_name: "User Commits",        unit: "#", source: StatSource::InstanceStatExact("user commits"),              requires_logfilesync: false },
-        TrackedStatSpec { key: TrackedStatKey::UserRollbacks,    display_name: "User Rollbacks",      unit: "#", source: StatSource::InstanceStatExact("user rollbacks"),            requires_logfilesync: false },
-        TrackedStatSpec { key: TrackedStatKey::FailedParseCount, display_name: "Failed Parses",       unit: "#", source: StatSource::InstanceStatExact("parse count (failures)"),   requires_logfilesync: true  },
-        TrackedStatSpec { key: TrackedStatKey::UserLogons,       display_name: "User Logons",         unit: "#", source: StatSource::InstanceStatExact("user logons cumulative"),   requires_logfilesync: false },
-        TrackedStatSpec { key: TrackedStatKey::UserLogouts,      display_name: "User Logouts",        unit: "#", source: StatSource::InstanceStatExact("user logouts cumulative"),  requires_logfilesync: false },
-        TrackedStatSpec { key: TrackedStatKey::UserCalls,        display_name: "User Calls (cum.)",   unit: "#", source: StatSource::InstanceStatExact("user calls"),               requires_logfilesync: true  },
-        TrackedStatSpec { key: TrackedStatKey::CleanoutKtugct,   display_name: "Cleanout KTUGCT",     unit: "#", source: StatSource::InstanceStatPrefix("cleanout - number of ktugct calls"), requires_logfilesync: true },
-        TrackedStatSpec { key: TrackedStatKey::CleanoutCr,       display_name: "Cleanouts CR Only",   unit: "#", source: StatSource::InstanceStatPrefix("cleanouts only - consistent read"), requires_logfilesync: true },
+        TrackedStatSpec { key: TrackedStatKey::UserCommits,      display_name: "User Commits",         unit: "#", source: StatSource::InstanceStatExact("user commits"),              requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::UserRollbacks,    display_name: "User Rollbacks",       unit: "#", source: StatSource::InstanceStatExact("user rollbacks"),            requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::FailedParseCount, display_name: "Failed Parses",        unit: "#", source: StatSource::InstanceStatExact("parse count (failures)"),   requires_logfilesync: true  },
+        TrackedStatSpec { key: TrackedStatKey::UserLogons,       display_name: "User Logons",          unit: "#", source: StatSource::InstanceStatExact("user logons cumulative"),   requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::UserLogouts,      display_name: "User Logouts",         unit: "#", source: StatSource::InstanceStatExact("user logouts cumulative"),  requires_logfilesync: false },
+        TrackedStatSpec { key: TrackedStatKey::UserCalls,        display_name: "User Calls (cum.)",    unit: "#", source: StatSource::InstanceStatExact("user calls"),               requires_logfilesync: true  },
+        TrackedStatSpec { key: TrackedStatKey::CleanoutKtugct,   display_name: "Cleanout KTUGCT",      unit: "#", source: StatSource::InstanceStatPrefix("cleanout - number of ktugct calls"), requires_logfilesync: true },
+        TrackedStatSpec { key: TrackedStatKey::CleanoutCr,       display_name: "Cleanouts CR Only",    unit: "#", source: StatSource::InstanceStatPrefix("cleanouts only - consistent read"), requires_logfilesync: true },
+        TrackedStatSpec { key: TrackedStatKey::TableFetchContRow,display_name: "Table Fetch Cont Row", unit: "#",source:  StatSource::InstanceStatExact("table fetch continued row"), requires_logfilesync: false  },
+        TrackedStatSpec { key: TrackedStatKey::TableFetchRowid,  display_name: "Table Fetch by Rowid", unit: "#",source:  StatSource::InstanceStatExact("table fetch by rowid"), requires_logfilesync: false  },
+        TrackedStatSpec { key: TrackedStatKey::TableScanBlocks,  display_name: "Table Scan Blocks",    unit: "#",source:  StatSource::InstanceStatExact("table scan blocks gotten"), requires_logfilesync: false  },
+        TrackedStatSpec { key: TrackedStatKey::TableScanRows,    display_name: "Table Scan Rows",      unit: "#",source:  StatSource::InstanceStatExact("table scan rows gotten"), requires_logfilesync: false  },
 
         // --- Externally fed scalars ---
         TrackedStatSpec { key: TrackedStatKey::RedoLogSwitches,  display_name: "Redo Log Switches/h", unit: "/h",    source: StatSource::Scalar,   requires_logfilesync: true },
@@ -2255,8 +2263,9 @@ impl TrackedStat {
     }
 
     pub fn push(&mut self, v: f64) { self.values.push(v); }
-    //pub fn z_scores(&self) -> Vec<f64> { z_score_normalize(&self.values) }
-    pub fn z_scores(&self) -> Vec<f64> {self.values.clone()} //Z-score to be verified
+    pub fn z_scores(&self) -> Vec<f64> { z_score_normalize(&self.values) }
+    pub fn normalized(&self) -> Vec<f64> {log1p_robust_minmax_0_100(&self.values, 5.0, 95.0)} 
+    pub fn raw_data(&self) -> Vec<f64> {self.values.clone()}
 
     pub fn custom_data(&self) -> Vec<Vec<f64>> {
         let avg = mean(self.values.clone()).unwrap_or(0.0);
@@ -2393,11 +2402,11 @@ fn add_tracked_stat_traces(
 
         let hover = "<b>%{fullData.name}</b><br>\
              Snap: %{x}<br>\
-             Z-Score: %{y:.2f}<br>\
+             Normalized Value: %{y:.2f}<br>\
              %{customdata}\
              <extra></extra>";
 
-        let trace = Scatter::new(x_vals.to_vec(), stat.z_scores())
+        let trace = Scatter::new(x_vals.to_vec(), stat.raw_data())
             .mode(Mode::Lines)
             .name(stat.display_name.clone())
             .custom_data(stat.custom_data_strings())
@@ -4905,7 +4914,18 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                 </a>
                 <a href=\"stats/gradient_cpu.html\" target=\"_blank\" style=\"text-decoration: none;\">
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">DB CPU Gradient Analyzes</span><span>DB CPU Gradient Analyzes</span></button>
-                </a>"
+                </a>
+                {}",
+                if !args.gradient_sql.is_empty() {
+                    format!(
+                        "<a href=\"stats/gradient_sqlid.html\" target=\"_blank\" style=\"text-decoration: none;\">
+                            <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">SQL_ID Gradient ({})</span><span>Custom Gradient ({})</span></button>
+                        </a>",
+                        args.gradient_sql, args.gradient_sql
+                    )
+                } else {
+                    String::new()
+                }
             ),
             if !args.backend_assistant.is_empty() { 
                 format!("{}","<button id=\"show-JASMINAI-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">JAS-MIN Assistant</span><span>JAS-MIN Assistant</span></button>")
@@ -5013,7 +5033,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
     let elastic_net_tol = args.en_tol;
 
     // Define all gradient sections declaratively
-    let gradient_specs: Vec<(GradientSectionSpec, &str)> = vec![
+    let mut gradient_specs: Vec<(GradientSectionSpec, &str)> = vec![
         // (spec, field_name_tag) — field_name_tag used to dispatch into report_for_ai
         (
             GradientSectionSpec {
@@ -5021,9 +5041,9 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                 features: y_vals_events.iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "event_wait_s",
+                label: "event_wait_s".to_string(),
                 is_events: true,
-                display_name: "DB TIME GRADIENT for wait events",
+                display_name: "DB TIME GRADIENT for wait events".to_string(),
             },
             "fg_wait_events",
         ),
@@ -5034,9 +5054,9 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                     .filter(|(k, _)| is_counter_stat(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "statistic_values_counter",
+                label: "statistic_values_counter".to_string(),
                 is_events: false,
-                display_name: "DB TIME GRADIENT for stats counters",
+                display_name: "DB TIME GRADIENT for stats counters".to_string(),
             },
             "instance_stats_counters",
         ),
@@ -5047,9 +5067,9 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                     .filter(|(k, _)| is_volume_stat(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "statistic_values_volume",
+                label: "statistic_values_volume".to_string(),
                 is_events: false,
-                display_name: "DB TIME GRADIENT for stats volumes",
+                display_name: "DB TIME GRADIENT for stats volumes".to_string(),
             },
             "instance_stats_volumes",
         ),
@@ -5060,9 +5080,9 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                     .filter(|(k, _)| is_time_stat(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "statistic_values_time",
+                label: "statistic_values_time".to_string(),
                 is_events: false,
-                display_name: "DB TIME GRADIENT for stats time",
+                display_name: "DB TIME GRADIENT for stats time".to_string(),
             },
             "instance_stats_time",
         ),
@@ -5072,9 +5092,9 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                 features: y_vals_sqls.iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "SQL_elapsed_time",
+                label: "SQL_elapsed_time".to_string(),
                 is_events: false,
-                display_name: "DB TIME GRADIENT for SQL elapsed time",
+                display_name: "DB TIME GRADIENT for SQL elapsed time".to_string(),
             },
             "sql_elapsed_time",
         ),
@@ -5085,9 +5105,9 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                     .filter(|(k, _)| is_cpu_stat(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "statistic_values_cpu",
+                label: "statistic_values_cpu".to_string(),
                 is_events: false,
-                display_name: "CPU TIME GRADIENT for stats",
+                display_name: "CPU TIME GRADIENT for stats".to_string(),
             },
             "cpu_instance_stats",
         ),
@@ -5097,13 +5117,49 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                 features: y_vals_sqls_cpu.iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "SQL_CPU_time",
+                label: "SQL_CPU_time".to_string(),
                 is_events: false,
-                display_name: "CPU TIME GRADIENT for SQL CPU",
+                display_name: "CPU TIME GRADIENT for SQL CPU".to_string(),
             },
             "cpu_sql_cpu_time",
         ),
     ];
+
+    let mut custom_gradient = false;
+    if !args.gradient_sql.is_empty() {
+        let sql_id = args.gradient_sql.trim().to_string();
+        let target_data = y_vals_sqls.get(&sql_id);
+        if let Some(t) = target_data {
+            gradient_specs.push((
+                GradientSectionSpec {
+                    target: t,
+                    features: instance_stats.iter()
+                        .filter(|(k, _)| is_in_any_categhory(k))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                    label: "sql_id_stats".to_string(),
+                    is_events: false,
+                    display_name: "SQL ID Gradient for stats".to_string(),
+                },
+                "instance_stats_for_sql")
+            );
+
+            gradient_specs.push((
+                GradientSectionSpec {
+                    target: t,
+                    features: y_vals_events.iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                    label: "sql_id_events".to_string(),
+                    is_events: false,
+                    display_name: "SQL ID Gradiant for events".to_string(),
+                },
+                "wait_event_for_sql"));
+
+            custom_gradient = true;
+        }
+
+    }
 
     // Process all sections in a loop
     let mut gradient_results: HashMap<&str, String> = HashMap::new();
@@ -5129,6 +5185,8 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
             "sql_elapsed_time"        => report_for_ai.db_time_gradient_sql_elapsed_time = section,
             "cpu_instance_stats"      => report_for_ai.db_cpu_gradient_instance_stats = section,
             "cpu_sql_cpu_time"        => report_for_ai.db_cpu_gradient_sql_cpu_time = section,
+            "instance_stats_for_sql"  => report_for_ai.sql_id_gradient_instance_stats = section,
+            "wait_event_for_sql"      => report_for_ai.sql_id_gradient_wait_events = section,
             _ => {}
         }
 
@@ -5175,10 +5233,32 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
         "Gradient Analyzes",
         db_cpu_sections,
     );
-    let gradient_html = add_links_to_html(gradient_html, events_sqls, "..".to_string(), html_dir.clone());
+    let gradient_html = add_links_to_html(gradient_html, events_sqls.clone(), "..".to_string(), html_dir.clone());
     let gradient_filename: String = format!("{}/stats/gradient_cpu.html", &html_dir);
     if let Err(e) = fs::write(&gradient_filename, gradient_html) {
         eprintln!("Error writing file {}: {}", gradient_filename, e);
+    }
+
+    if custom_gradient {
+        // Extract HTML for template rendering
+        let sql_instance_stats   = gradient_results.remove("instance_stats_for_sql").unwrap_or_default();
+        let sql_wait_events      = gradient_results.remove("wait_event_for_sql").unwrap_or_default();
+        let sql_gradient_sections = vec![
+            GradientHtmlSection { heading: "SQL_ID vs Instance Stats".to_string(), html: sql_instance_stats },
+            GradientHtmlSection { heading: "SQL_ID vs Wait Events".to_string(),    html: sql_wait_events },
+        ];
+
+        let gradient_html = build_gradient_html(
+            "Gradient Analyzes",
+            "Gradient Analyzes",
+            sql_gradient_sections,
+            );
+        
+        let gradient_html = add_links_to_html(gradient_html, events_sqls, "..".to_string(), html_dir.clone());
+        let gradient_filename: String = format!("{}/stats/gradient_sqlid.html", &html_dir);
+        if let Err(e) = fs::write(&gradient_filename, gradient_html) {
+            eprintln!("Error writing file {}: {}", gradient_filename, e);
+        }
     }
 
     // Write the updated HTML back to the file

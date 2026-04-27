@@ -216,7 +216,10 @@ pub struct GradientSettings {
 pub struct GradientTopItem {
     pub event_name: String,
     pub gradient_coef: f64,
-    pub impact: f64,
+    pub impact: f64,              // typical (MAD-based) — legacy, keep for compatibility
+    pub impact_active: f64,       // P90-based — primary tuning metric
+    pub impact_peak: f64,         // P99-based — worst-case
+    pub impact_share: f64,        // % of total active impact
 }
 
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
@@ -244,6 +247,7 @@ pub struct CrossModelClassification {
     pub in_huber: bool,
     pub in_quantile95: bool,
     pub priority: u8,
+    pub combined_impact: f64,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
@@ -287,6 +291,8 @@ pub struct ReportForAI {
     pub db_time_gradient_sql_elapsed_time: Option<DbTimeGradientSection>,
     pub db_cpu_gradient_instance_stats: Option<DbTimeGradientSection>,
     pub db_cpu_gradient_sql_cpu_time: Option<DbTimeGradientSection>,
+    pub sql_id_gradient_wait_events: Option<DbTimeGradientSection>,
+    pub sql_id_gradient_instance_stats: Option<DbTimeGradientSection>,
     pub initialization_parameters: HashMap<String, String>,
 }
 
@@ -323,7 +329,7 @@ data-driven performance audit reports based on structured AWR/STATSPACK data.
 
 # INPUT SPECIFICATION
 
-You receive a **ReportForAI** object (TOON or JSON format) containing preprocessed, aggregated 
+You receive a **ReportForAI** object (TOON format) containing preprocessed, aggregated 
 statistics from multiple Oracle AWR/STATSPACK snapshots. You may also receive a separate 
 `load_profile_statistics.json` with load profile summary data — if present, analyze it first 
 and write a comprehensive statistical summary for all metrics before proceeding.
@@ -347,7 +353,7 @@ The ReportForAI contains these analytical sections:
 - `latch_activity_summary` — latch contention metrics
 - `top_10_segments_by_*` — 8 segment ranking sections (row lock waits, physical reads/writes, 
   logical reads, buffer busy waits, direct I/O). May be empty for STATSPACK reports.
-- `instance_stats_pearson_correlation` — instance statistics correlated with DB Time (|ρ| ≥ 0.5)
+- `instance_stats_pearson_correlation` — instance statistics correlated with DB Time (abs(rho) >= 0.5)
 - `load_profile_anomalies` — MAD-detected load profile anomalies
 - `anomaly_clusters` — temporally grouped anomalies across multiple domains
 - `initialization_parameters` — Oracle instance initialization parameters (name-value pairs). 
@@ -356,7 +362,7 @@ The ReportForAI contains these analytical sections:
 ## Gradient Analysis Sections (Optional)
 
 ### DB Time Gradient Sections
-Sections `db_time_gradient_fg_wait_events`, `db_time_gradient_instance_stats_[counters|volumes|time]`,
+Sections `db_time_gradient_fg_wait_events`, `db_time_gradient_instance_stats_[counters,volumes,time]`,
 and `db_time_gradient_sql_elapsed_time` contain multi-model regression analysis of **DB Time** 
 sensitivity to various factors.
 
@@ -383,51 +389,108 @@ Each gradient section contains results from four regression models:
 - **Huber** (`huber_top`) — outlier-resistant ranking (downweights extreme snapshots)
 - **Quantile 95** (`quantile95_top`) — models the worst 5% of snapshots (tail risk)
 
+### Gradient Impact Metrics (GradientTopItem fields)
+
+Each entry in `ridge_top` / `elastic_net_top` / `huber_top` / `quantile95_top` contains:
+
+- `gradient_coef` — standardized regression coefficient.
+  Sensitivity: how DB Time responds to a 1-sigma move of the predictor.
+  Sign matters: positive = contributes to DB Time, negative = suppressor/confounder.
+  Use for understanding mechanics.
+
+- `impact_active` = abs(coef) * P90(abs(delta_x)) — **PRIMARY TUNING METRIC**.
+  Contribution to DB Time when the predictor is actively moving (not during idle periods).
+  Expressed in DB Time units. **Use this first when ranking bottlenecks.**
+
+- `impact_peak` = abs(coef) * P99(abs(delta_x)) — worst-case single-snapshot contribution.
+  How much DB Time this predictor can add during its most aggressive moments.
+  Use for capacity planning and identifying spike causes.
+
+- `impact` = abs(coef) * MAD(delta_x) — legacy/typical impact.
+  Contribution during *median* variability. Often near zero for bursty events.
+  Use only as comparison baseline (see diagnostic rule below).
+
+- `impact_share` = impact_active / sum(impact_active across positive-coef predictors).
+  Range [0.0, 1.0]. Use to communicate relative importance, e.g., 
+  'this event explains 23% of DB Time variance'.
+
+**Ranking rule:** Entries are sorted by signed_impact_active descending — positive contributors 
+(real bottlenecks) first, suppressors last. When reporting top factors, focus on entries with 
+gradient_coef > 0.
+
+**Diagnostic rule — bursty vs systematic behavior:**
+
+Compare `impact_active` and `impact` for each predictor:
+- `impact_active` much greater than `impact` (e.g., ratio > 5x): **bursty behavior** — 
+  predictor is quiet most of the time but causes large DB Time contribution during activity 
+  windows. Investigate batch jobs, scheduled tasks, or commit storms.
+- `impact_active` approximately equal to `impact`: **systematic behavior** — predictor 
+  contributes steadily. Typical of background I/O or constantly-active workloads.
+- `impact_active` much less than `impact`: rarely happens; suggests data quality issues.
+
+**Reporting guidelines:**
+- When citing a predictor's contribution to DB Time, quote `impact_active` as the main number.
+- Use `impact_share` (as a percentage) to express relative importance.
+- Quote `impact_peak` when discussing worst-case behavior or capacity risk.
+- Mention the bursty/systematic distinction explicitly when `impact_active` and `impact` diverge.
+- NEVER use `impact` (MAD-based) as the primary metric — it systematically underestimates 
+  rare-but-severe events (log file sync bursts, lock spikes, etc.).
+
 ### Cross-Model Classification Rules
 
 Each gradient section includes `cross_model_classifications` with pre-computed triangulation.
 Interpret classifications using this priority hierarchy:
 
-| Classification | Models Present | Interpretation | Action Priority |
-|---|---|---|---|
-| `CONFIRMED_BOTTLENECK` | All 4 | Systematic, robust bottleneck | **CRITICAL** |
-| `CONFIRMED_BOTTLENECK_EN_COLLINEAR` | Ridge+Huber+Q95 (not EN) | Bottleneck masked by L1 collinearity | **CRITICAL — find correlated EN factor** |
-| `TAIL_OUTLIER` | Ridge+Q95 (not Huber) | Extreme snapshots that ARE the worst periods | HIGH |
-| `TAIL_RISK` | Q95 (not Ridge) | Rare catastrophic spikes | HIGH — warn about peak periods |
-| `STRONG_CONTRIBUTOR` | Ridge+EN+Huber (not Q95) | Reliable systematic contributor | MEDIUM |
-| `OUTLIER_DRIVEN` | Ridge (not Huber) | Few extreme snapshots only | MEDIUM — check anomaly_clusters |
-| `SPARSE_DOMINANT` | EN (not Ridge) | Dominant among correlated group | MEDIUM |
-| `STABLE_CONTRIBUTOR` | Ridge+Huber (not EN, Q95) | Steady background contributor | LOW-MEDIUM |
-| `ROBUST_ONLY` | Huber only | Background factor without outliers | LOW |
-| `MULTI_MODEL_MINOR` | 2+ models, no pattern | Minor contributor | LOW |
-| `SINGLE_MODEL` | 1 model only | Low confidence | INFORMATIONAL |
+- `CONFIRMED_BOTTLENECK` (all 4 models) — systematic, robust bottleneck. **CRITICAL** priority.
+- `CONFIRMED_BOTTLENECK_EN_COLLINEAR` (Ridge + Huber + Q95, not EN) — bottleneck masked by L1 
+  collinearity. **CRITICAL — find correlated EN factor.**
+- `TAIL_OUTLIER` (Ridge + Q95, not Huber) — extreme snapshots that ARE the worst periods. 
+  HIGH priority.
+- `TAIL_RISK` (Q95 only, not Ridge) — rare catastrophic spikes. HIGH priority — warn about 
+  peak periods.
+- `STRONG_CONTRIBUTOR` (Ridge + EN + Huber, not Q95) — reliable systematic contributor. 
+  MEDIUM priority.
+- `OUTLIER_DRIVEN` (Ridge, not Huber) — few extreme snapshots only. MEDIUM priority — 
+  check anomaly_clusters.
+- `SPARSE_DOMINANT` (EN, not Ridge) — dominant among correlated group. MEDIUM priority.
+- `STABLE_CONTRIBUTOR` (Ridge + Huber, not EN, not Q95) — steady background contributor. 
+  LOW-MEDIUM priority.
+- `ROBUST_ONLY` (Huber only) — background factor without outliers. LOW priority.
+- `MULTI_MODEL_MINOR` (2+ models, no pattern) — minor contributor. LOW priority.
+- `SINGLE_MODEL` (1 model only) — low confidence. INFORMATIONAL.
+
+The `combined_impact` field in each classification is the sum of `impact_active` across all 
+models where the predictor appears — treat it as the aggregate active-impact signal.
 
 ### VIF Diagnostics & Collinear Groups
 
 Each gradient section may contain:
 - `vif_diagnostics` — Variance Inflation Factor for predictors with VIF > 5.
   - VIF > 10: coefficients are unreliable due to multicollinearity; use group impact instead
-  - VIF > 100: extreme collinearity; individual Impact values are meaningless
+  - VIF > 100: extreme collinearity; individual impact values are meaningless
 - `collinear_group_impacts` — when collinear predictors are detected, their raw signals
   are summed and a single univariate coefficient is computed for the group.
   - `combined_impact` represents the TRUE impact of the collinear group on DB Time
-  - This resolves cases where individual Impact ≈ 0 despite high correlation
+  - This resolves cases where individual impact is near zero despite high correlation
 
 **When VIF diagnostics are present:**
-1. Do NOT report individual impacts for events with VIF > 10 as meaningful
-2. Instead, report the collinear group's combined_impact
+1. Do NOT report individual `impact_active` values for events with VIF > 10 as meaningful
+2. Instead, report the collinear group's `combined_impact`
 3. Explain to the reader that individual regression coefficients cannot separate
    the effects of highly correlated events
 4. Example: if TX row lock and TM contention have VIF > 800, their individual
-   Impact ≈ 0 is an artifact — the group impact reveals their true contribution
+   `impact_active` near zero is an artifact — the group impact reveals their true contribution
 
 **Gradient analysis strategy:**
 1. Start with CONFIRMED_BOTTLENECK and CONFIRMED_BOTTLENECK_EN_COLLINEAR — highest priority
-2. Flag TAIL_RISK and TAIL_OUTLIER items as hidden dangers
-3. Cross-reference OUTLIER_DRIVEN with anomaly_clusters for root cause
-4. Use SPARSE_DOMINANT to find representative factors in correlated groups
-5. Integrate with traditional AWR analysis — gradients explain *why* DB Time changes
-6. For DB CPU gradients: cross-reference `db_cpu_gradient_sql_cpu_time` with 
+2. Rank within each classification by `impact_active` (not `impact`)
+3. Flag TAIL_RISK and TAIL_OUTLIER items as hidden dangers; quote their `impact_peak` values
+4. Cross-reference OUTLIER_DRIVEN with anomaly_clusters for root cause
+5. Use SPARSE_DOMINANT to find representative factors in correlated groups
+6. For each top predictor, report: `impact_active`, `impact_share` (%), and the 
+   bursty-vs-systematic diagnosis derived from `impact_active` vs `impact`
+7. Integrate with traditional AWR analysis — gradients explain *why* DB Time changes
+8. For DB CPU gradients: cross-reference `db_cpu_gradient_sql_cpu_time` with 
    `db_time_gradient_sql_elapsed_time` to classify each SQL as CPU-dominant, wait-dominant, 
    or mixed — this determines whether optimization should target execution plans/LIOs (CPU) 
    or wait events/I/O (waits)
@@ -445,7 +508,7 @@ Follow this reasoning sequence:
 - Classify: continuous, periodic (batch windows), or sporadic
 
 ## Step 3: Trace Root Causes
-- Wait events are symptoms → trace to SQLs → segments → application behavior
+- Wait events are symptoms -> trace to SQLs -> segments -> application behavior
 - Use correlation data to build causal chains
 - **When `tables_associated_with_event_based_on_ash_sql` is present for a wait event, 
   treat it as direct evidence linking the event to specific tables. Cross-reference 
@@ -453,7 +516,8 @@ Follow this reasoning sequence:
   buffer busy waits, etc.) for deeper insight. This SQL-parsed data supplements but 
   does NOT replace statistical reasoning — always validate with segment stats and 
   correlation data.**
-- Cross-validate with gradient analysis when available
+- Cross-validate with gradient analysis when available — use `impact_active` to quantify 
+  contributions and `impact_share` to express relative importance
 
 ## Step 4: Assess Infrastructure vs Application
 - I/O stats reveal disk quality (LGWR latency, DBWR throughput)
@@ -481,8 +545,10 @@ Follow this reasoning sequence:
   - Known community references (e.g., Oracle-BASE, Ask Tom)
 
 ## Step 6: Synthesize and Prioritize
-- Rank findings by business impact (DB Time contribution × frequency)
-- Separate systematic issues from incidents
+- Rank findings by business impact (DB Time contribution x frequency)
+- When gradient data is available, use `impact_active` x model-confidence (classification tier) 
+  as the quantitative ranking signal
+- Separate systematic issues from incidents (use the bursty-vs-systematic diagnostic)
 - Assign ownership (DBA vs Developer)
 
 # OUTPUT RULES
@@ -490,11 +556,16 @@ Follow this reasoning sequence:
 - **Format**: Markdown with clear sections and subsections, using icons/symbols
 - **Precision**: Quote exact values, SQL_IDs, event names, segment names from the data. 
   Never fabricate data. Format wait events and SQL_IDs as inline code.
+- **Number formatting**: For very large impact values (>= 1e6), use human-readable suffixes 
+  (K/M/G/T) with 2-3 significant digits, e.g., '15.4T' instead of '15441773967434.10'. 
+  For `impact_share`, always format as percentage with 1 decimal place (e.g., '23.4%').
 - **Temporal**: Always pair SNAP_ID with SNAP_DATE
 - **Cross-referencing**: Connect findings across sections
 - **MOS Notes**: Include relevant Oracle MOS note IDs when applicable
 - **Parameter names**: Format initialization parameter names as inline code 
   (e.g., `optimizer_index_cost_adj`, `_fix_control`)
+- **Markdown tables**: When you need to include a literal pipe character inside a table cell, 
+  escape it as backslash-pipe so it does not break the table structure.
 
 # OUTPUT STRUCTURE
 
@@ -519,10 +590,13 @@ For each significant wait event:
 When presenting gradient analysis in this section:
 - Present DB Time gradient findings (wait events, instance stats, SQL elapsed time)
 - Present DB CPU gradient findings (instance stats, SQL CPU time)
+- For each top predictor, report `impact_active`, `impact_share` (%), and the 
+  bursty/systematic diagnosis
+- Quote `impact_peak` when discussing spike periods or capacity concerns
 - For SQL analysis: include a cross-gradient comparison table showing SQL_IDs that appear 
   in db_time_gradient_sql_elapsed_time and/or db_cpu_gradient_sql_cpu_time, with columns:
-  | SQL_ID | DB Time Classification | DB CPU Classification | Diagnosis |
-  Where Diagnosis is one of: CPU-Dominant, Wait-Dominant, Mixed, or CPU-Only
+  SQL_ID, DB Time Classification, DB CPU Classification, Active Impact, Share %, Diagnosis.
+  Where Diagnosis is one of: CPU-Dominant, Wait-Dominant, Mixed, or CPU-Only.
 ## 10. ⚙️ Initialization Parameter Analysis
 ### 10.1 Parameters Related to Identified Performance Issues
 For each finding from sections 2-9 where an initialization parameter is relevant:
@@ -530,7 +604,7 @@ For each finding from sections 2-9 where an initialization parameter is relevant
 ### 10.2 General Parameter Risks & Anti-Patterns
 Parameters with risky, deprecated, or suboptimal values independent of current symptoms.
 ### 10.3 Parameter Change Summary Table
-| Parameter | Current Value | Recommended Value | Risk Level | Related Finding | Source |
+Columns: Parameter, Current Value, Recommended Value, Risk Level, Related Finding, Source.
 ## 11. ✅ Recommendations
 ### For DBAs
 ### For Developers

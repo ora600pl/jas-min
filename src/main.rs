@@ -155,6 +155,10 @@ struct Args {
 	///Convert existing markdown file to HTML without calling AI model 
 	#[clap(short, long, default_value="", verbatim_doc_comment)]
 	convert_md2html: String,
+
+	///Build customer gradient analyze for given SQL_ID
+    #[clap(short = 'G', long, default_value="", verbatim_doc_comment)]
+	gradient_sql: String,
 }
 
 
