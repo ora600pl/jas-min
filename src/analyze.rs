@@ -133,6 +133,9 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
         if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap {
             let mut dbtime: f64 = 0.0;
             let mut cputime: f64 = 0.0;
+            let mut dbtime_filter = 0.0;
+            let mut cputime_filter = 0.0;
+
             //We want to find dbtime and cputime because based on their delta we will base our decisions 
             for tm in &awr.time_model_stats {
                 if tm.stat_name.starts_with("DB Time") || tm.stat_name.starts_with("DB time") {
@@ -142,18 +145,18 @@ fn find_top_stats(awrs: &Vec<AWR>, db_time_cpu_ratio: f64, filter_db_time: f64, 
                     cputime = tm.time_s;
                 }
             }
-            /*for lp in awr.load_profile.clone() {
+            for lp in awr.load_profile.clone() {
                 if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
-                    dbtime = lp.per_second;
+                    dbtime_filter = lp.per_second;
                     
                 } else if lp.stat_name.starts_with("DB CPU") {
-                    cputime = lp.per_second;
+                    cputime_filter = lp.per_second;
                 }
-            }*/
+            }
             //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem 
             //because it means that Oracle spent some time waiting on wait events and not working on CPU
 
-            if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime>filter_db_time){
+            if dbtime > 0.0 && cputime > 0.0 && cputime/dbtime < db_time_cpu_ratio && (filter_db_time==0.0 || dbtime_filter>filter_db_time){
                 //println!("Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
                 make_notes!(&logfile_name, false, 0, "Analyzing a peak in {} ({}) for ratio: [{:.2}/{:.2}] = {:.2}\n", awr.file_name, awr.snap_info.begin_snap_time, cputime, dbtime, (cputime/dbtime));
                 
