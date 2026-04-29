@@ -4199,7 +4199,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                     load_profile_stat_name: l.clone(),
                     anomaly_date: a.0.clone(),
                     mad_score: a.1,
-                    mad_threshold: args.mad_threshold,
+                    mad_threshold: 7.0,
                     per_second: per_second_this_date,
                     avg_value_per_second: mean_per_s,
                 });

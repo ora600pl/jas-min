@@ -785,16 +785,28 @@ pub fn compute_vif(x_by_event: &EventSeriesMap) -> EventScalarMap {
         return event_names.iter().map(|e| (e.clone(), 1.0)).collect();
     }
 
-    let vif_entries: Vec<(String, f64)> = event_names.par_iter().map(|target_name| {
-        let y_j: &[f64] = &x_by_event[target_name];
+    // Pre-materialize all columns ONCE — eliminates BTreeMap lookups in hot loops.
+    // Indexed by position in `event_names`.
+    let all_columns: Vec<&[f64]> = event_names
+        .iter()
+        .map(|name| x_by_event[name].as_slice())
+        .collect();
 
-        let other_names: Vec<&String> = event_names
+    let vif_entries: Vec<(String, f64)> = (0..p).into_par_iter().map(|target_idx| {
+        let target_name = &event_names[target_idx];
+        let y_j: &[f64] = all_columns[target_idx];
+
+        // Build slice of "other" columns (everything except target_idx)
+        let other_columns: Vec<&[f64]> = all_columns
             .iter()
-            .filter(|name| *name != target_name)
+            .enumerate()
+            .filter(|(i, _)| *i != target_idx)
+            .map(|(_, col)| *col)
             .collect();
-        let q = other_names.len();
+        let q = other_columns.len();
 
-        let mut xtx: Vec<Vec<f64>> = vec![vec![0.0; q]; q];
+        // Flat row-major X'X (q×q) and X'y (q)
+        let mut xtx: Vec<f64> = vec![0.0; q * q];
         let mut xty: Vec<f64> = vec![0.0; q];
         let mut yty: f64 = 0.0;
         let mut y_sum: f64 = 0.0;
@@ -804,24 +816,26 @@ pub fn compute_vif(x_by_event: &EventSeriesMap) -> EventScalarMap {
             y_sum += yt;
             yty += yt * yt;
             for a in 0..q {
-                let xa = x_by_event[other_names[a]][t];
+                let xa = other_columns[a][t];
                 xty[a] += xa * yt;
+                // Upper triangle only — mirror later
                 for b in a..q {
-                    let xb = x_by_event[other_names[b]][t];
-                    let val = xa * xb;
-                    xtx[a][b] += val;
-                    if a != b {
-                        xtx[b][a] += val;
-                    }
+                    xtx[a * q + b] += xa * other_columns[b][t];
                 }
             }
         }
-        // Tiny ridge for numerical stability in VIF auxiliary regressions
+
+        // Mirror upper triangle to lower + add tiny ridge for numerical stability
         for a in 0..q {
-            xtx[a][a] += 1e-8;
+            for b in (a + 1)..q {
+                xtx[b * q + a] = xtx[a * q + b];
+            }
+            xtx[a * q + a] += 1e-8;
         }
 
-        let beta = solve_dense_linear_system(&xtx, &xty);
+        // Solve (X'X + εI) β = X'y using the fast flat solver
+        let mut beta: Vec<f64> = vec![0.0; q];
+        solve_dense_linear_system_flat(&mut xtx, &mut xty, q, &mut beta);
 
         let y_mean_val = y_sum / n as f64;
         let ss_tot = yty - n as f64 * y_mean_val * y_mean_val;
@@ -830,7 +844,7 @@ pub fn compute_vif(x_by_event: &EventSeriesMap) -> EventScalarMap {
         for t in 0..n {
             let mut pred = 0.0;
             for a in 0..q {
-                pred += beta[a] * x_by_event[other_names[a]][t];
+                pred += beta[a] * other_columns[a][t];
             }
             let r = y_j[t] - pred;
             ss_res += r * r;
@@ -1089,6 +1103,21 @@ pub fn cross_model_classify(
                                                .unwrap_or(0.0);
         let combined_impact = ridge_impact + en_impact + huber_impact + q95_impact;
 
+        let ridge_peak_impact = section.ridge_top.iter() 
+                                               .find_map(|r| (&r.event_name == event).then(|| r.impact_peak))
+                                               .unwrap_or(0.0);
+        let en_peak_impact = section.elastic_net_top.iter() 
+                                               .find_map(|r| (&r.event_name == event).then(|| r.impact_peak))
+                                               .unwrap_or(0.0);
+        let huber_peak_impact = section.huber_top.iter() 
+                                               .find_map(|r| (&r.event_name == event).then(|| r.impact_peak))
+                                               .unwrap_or(0.0);
+        let q95_peak_impact = section.quantile95_top.iter() 
+                                               .find_map(|r| (&r.event_name == event).then(|| r.impact_peak))
+                                               .unwrap_or(0.0);
+
+        let combined_peak_impact = ridge_peak_impact + en_peak_impact + huber_peak_impact + q95_peak_impact;
+
         let (classification, priority) = if in_ridge && in_en && in_huber && in_q95 {
             // All 4 models agree
             ("CONFIRMED_BOTTLENECK", 0)
@@ -1179,6 +1208,7 @@ pub fn cross_model_classify(
             in_quantile95: in_q95,
             priority: priority as u8,
             combined_impact: combined_impact,
+            combined_peak_impact: combined_peak_impact,
         });
     }
 
@@ -1205,6 +1235,7 @@ pub fn print_cross_model_table(
         Cell::new("Huber").with_style(Attr::Bold),
         Cell::new("Q95").with_style(Attr::Bold),
         Cell::new("Combined Impact").with_style(Attr::Bold),
+        Cell::new("Combined Peak Impact").with_style(Attr::Bold),
         Cell::new("Description").with_style(Attr::Bold),
     ]));
 
@@ -1219,6 +1250,7 @@ pub fn print_cross_model_table(
             Cell::new(yn(c.in_huber)),
             Cell::new(yn(c.in_quantile95)),
             Cell::new(&format!("{:.2}",c.combined_impact)),
+            Cell::new(&format!("{:.2}",c.combined_peak_impact)),
             Cell::new(&desc),
         ]));
         }
@@ -1226,7 +1258,7 @@ pub fn print_cross_model_table(
     }
 
 
-    let mut html = table_to_html_string(&table, &format!("Cross-Model Triangulation: {}", section_label), &["Event/Stat/SQL", "Classification", "Ridge", "EN", "Huber", "Q95", "Combined Impact","Description"]);
+    let mut html = table_to_html_string(&table, &format!("Cross-Model Triangulation: {}", section_label), &["Event/Stat/SQL", "Classification", "Ridge", "EN", "Huber", "Q95", "Combined Impact","Combined Peak Impact","Description"]);
     html = format!(r#"<div>{html}</div>"#);
 
     /* Removing description before printing on screen, because it doesn't look good */
@@ -1722,16 +1754,31 @@ pub fn build_gradient_html(
             }});
 
             // Helper: try to parse a cell's text as a number
+            // Helper: try to parse a cell's text as a number
             const parseValue = (text) => {{
                 if (text === null || text === undefined) return {{ num: NaN, str: '' }};
                 const trimmed = String(text).trim();
                 if (trimmed === '' || trimmed === '-' || trimmed === 'N/A') {{
                     return {{ num: NaN, str: trimmed }};
                 }}
-                // Remove thousands separators and percent signs before numeric parsing
-                const cleaned = trimmed.replace(/,/g, '').replace(/%$/, '');
-                const num = Number(cleaned);
-                return {{ num: isNaN(num) ? NaN : num, str: trimmed }};
+
+                // Extract the first signed number (int, decimal, or scientific notation)
+                // from the text, ignoring leading symbols like arrows (↑ ↓), currency,
+                // thousands separators, trailing %, etc.
+                // Examples matched:
+                //   "↑ +0.123456"   -> 0.123456
+                //   "↓ -1.5e-3"     -> -0.0015
+                //   "12.5%"         -> 12.5
+                //   "1,234.56"      -> 1234.56
+                const cleaned = trimmed.replace(/,/g, '');
+                const match = cleaned.match(/[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/);
+                if (match) {{
+                    const num = Number(match[0]);
+                    if (!isNaN(num)) {{
+                        return {{ num: num, str: trimmed }};
+                    }}
+                }}
+                return {{ num: NaN, str: trimmed }};
             }};
 
             // Sort the rows using the chosen column

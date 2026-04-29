@@ -97,9 +97,9 @@ struct Args {
 	#[clap(short, long, default_value="", verbatim_doc_comment)]
 	backend_assistant: String,
 
-	///Threshold for detecting anomalies using MAD
-	#[clap(short, long, default_value_t=7.0)]
-	mad_threshold: f64,
+	///TOPn for detecting anomalies using MAD 
+	#[clap(short, long, default_value_t=10)]
+	mad_threshold: usize,
 
 	///Window size for detecting anomalies using MAD for local sliding window specified as % of probes
 	#[clap(short = 'W', long, default_value_t = 100)]
