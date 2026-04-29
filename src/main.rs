@@ -105,7 +105,7 @@ struct Args {
 	#[clap(short = 'W', long, default_value_t = 100)]
     mad_window_size: usize,
 
-	///Parallelism level
+	///Parallelism level 
 	#[clap(short = 'P', long, default_value_t=4)]
     parallel: usize,
 

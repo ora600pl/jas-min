@@ -677,6 +677,20 @@ Options:
 
 ---
 
+## Docker reference 
+
+```
+docker build  -t ora600pl/jas-min:latest .
+export AWRDIR=PATH/TO/DIRECTORY/WITH/AWRDIR
+docker run --rm -v $AWRDIR:/work \
+                -v $JASMIN_HOME:/jasmin/home \
+                ora600pl/jas-min:latest \
+                -j node2.json -q -m 10
+```
+
+---
+
+
 ## Further Reading
 
 - [JAS-MIN Introduction (blog.ora-600.pl)](https://blog.ora-600.pl/2024/12/13/jas-min/)
