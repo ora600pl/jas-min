@@ -248,6 +248,7 @@ pub struct CrossModelClassification {
     pub in_quantile95: bool,
     pub priority: u8,
     pub combined_impact: f64,
+    pub combined_peak_impact: f64,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
@@ -461,6 +462,9 @@ Interpret classifications using this priority hierarchy:
 
 The `combined_impact` field in each classification is the sum of `impact_active` across all 
 models where the predictor appears — treat it as the aggregate active-impact signal.
+
+The `combined_peak_impact` field in each classification is the sum of `impact_peak` across all 
+models where the predictor appears — treat it as the aggregate peak-impact signal.
 
 ### VIF Diagnostics & Collinear Groups
 

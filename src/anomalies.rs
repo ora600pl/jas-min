@@ -340,7 +340,8 @@ fn detect_anomalies_mad_sliding(awrs: &Vec<AWR>, stats_vector: &HashMap<String, 
         return anomalies;
     }
     
-    let threshold = args.mad_threshold;
+    let threshold = 7.0;//args.mad_threshold;
+    let top_n = args.mad_threshold;
     let len = awrs.len();
     let mut full_window_size = ((args.mad_window_size as f32 / 100.0 ) * len as f32) as usize;
     if full_window_size % 2 == 1 {
@@ -386,6 +387,9 @@ fn detect_anomalies_mad_sliding(awrs: &Vec<AWR>, stats_vector: &HashMap<String, 
                     local_anomalies.push((snap_date, val_mad_check)); //put in vector date of anomalie and value of MAD
                 } 
             }
+            local_anomalies.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            local_anomalies.truncate(top_n);
+            local_anomalies.sort_by(|a, b| a.0.cmp(&b.0));
             (stat_name.clone(), local_anomalies) //return statistic name and anomalies
         }).filter(|(_, v)| {!v.is_empty()}) //filter out statistics with empty vectors - it means that no anomalie was detected for this stat
         .collect();
@@ -397,30 +401,43 @@ fn detect_anomalies_mad_sliding(awrs: &Vec<AWR>, stats_vector: &HashMap<String, 
 fn detect_anomalies_mad(awrs: &Vec<AWR>, stats_vector: &HashMap<String, Vec<f64>>,  args: &Args) -> HashMap<String, Vec<(String,f64)>> {
     let mut anomalies: HashMap<String, Vec<(String, f64)>> = HashMap::new();
     //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
-    let threshold = args.mad_threshold;
+    let threshold = 7.0; //args.mad_threshold;
+    let top_n = args.mad_threshold;
 
     for (stat_name, values) in stats_vector {
-         let med = median(values);
-         let mad_val = mad_with_median(values, med);
+        let med = median(values);
+        let mad_val = mad_with_median(values, med);
 
         if mad_val == 0.0 {
-            continue; // no nomalies - just move on
+            continue; // no anomalies - just move on
         }
 
+        //Collect all anomalies for this statistic first
+        let mut stat_anomalies: Vec<(String, f64)> = Vec::new();
+
         for (i, &val) in values.iter().enumerate() {
-            let val_mad_check = ((val - med).abs()) / mad_val ;
+            let val_mad_check = ((val - med).abs()) / mad_val;
 
             //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
             if val_mad_check > threshold && val >= 0.0 { //Don't take into considaration negative values that are placeholders
                 let snap_date = awrs[i].snap_info.begin_snap_time.clone();
-                if let Some(a) = anomalies.get_mut(stat_name) {
-                    a.push((snap_date, val_mad_check));
-                } else {
-                    anomalies.insert(stat_name.to_string(), vec![(snap_date, val_mad_check)]);
-                }
-            } 
+                stat_anomalies.push((snap_date, val_mad_check));
+            }
         }
-    } 
+
+        if stat_anomalies.is_empty() {
+            continue;
+        }
+
+        //Sort by MAD score descending and keep only top_n
+        stat_anomalies.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        stat_anomalies.truncate(top_n);
+
+        //Restore chronological order for nicer reports
+        stat_anomalies.sort_by(|a, b| a.0.cmp(&b.0));
+
+        anomalies.insert(stat_name.to_string(), stat_anomalies);
+    }
 
     anomalies
 }
