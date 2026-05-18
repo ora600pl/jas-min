@@ -22,6 +22,7 @@ mod anomalies;
 mod tools;
 mod reasonings_modular;
 mod gradient;
+mod ai_tools;
 
 use crate::reasonings::*;
 use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI,AppState};
@@ -156,9 +157,19 @@ struct Args {
 	#[clap(short, long, default_value="", verbatim_doc_comment)]
 	convert_md2html: String,
 
-	///Build customer gradient analyze for given SQL_ID
+	///Build customer gradient analyze for given SQL_ID or wait event
+	/// Usage: SQL=0zv508wsas63c
+	///        EVENT='log file sync'
     #[clap(short = 'G', long, default_value="", verbatim_doc_comment)]
-	gradient_sql: String,
+	gradient_custom: String,
+
+	 /// Enable TOOLS mode for OpenRouter (agentic loop with function calling)
+    #[arg(long, default_value_t = false)]
+    pub tools_mode: bool,
+    
+    /// Maximum number of tool-call iterations
+    #[arg(long, default_value_t=10)]
+    pub max_tool_iterations: usize,
 }
 
 
