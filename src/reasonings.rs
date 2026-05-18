@@ -19,6 +19,7 @@ use std::error::Error;
 use crate::tools::*;
 use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR};
 use std::str::FromStr;
+use crate::ai_tools::*;
 
 fn get_openai_url() -> String {
     env::var("OPENAI_URL").unwrap_or_else(|_| "https://api.openai.com/".to_string())
@@ -292,8 +293,8 @@ pub struct ReportForAI {
     pub db_time_gradient_sql_elapsed_time: Option<DbTimeGradientSection>,
     pub db_cpu_gradient_instance_stats: Option<DbTimeGradientSection>,
     pub db_cpu_gradient_sql_cpu_time: Option<DbTimeGradientSection>,
-    pub sql_id_gradient_wait_events: Option<DbTimeGradientSection>,
-    pub sql_id_gradient_instance_stats: Option<DbTimeGradientSection>,
+    pub custom_gradient_wait_events: Option<DbTimeGradientSection>,
+    pub custom_gradient_instance_stats: Option<DbTimeGradientSection>,
     pub initialization_parameters: HashMap<String, String>,
 }
 
@@ -630,6 +631,7 @@ Your recommendations MUST include explicit answers to:
 
 # LANGUAGE
 
+Language style has to be precise, descriptive and professional. 
 Write answer in language: ";
 
 #[derive(Deserialize)]
@@ -1127,7 +1129,9 @@ pub async fn openrouter(
     report_for_ai: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
 
-    println!("=== Consulting OpenRouter model: {} ===", vendor_model_lang[1]);
+    let tools_mode = args.tools_mode;
+    let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
+    println!("=== Consulting OpenRouter ({}) model: {} ===", mode_label, vendor_model_lang[1]);
 
     let api_key = env::var("OPENROUTER_API_KEY")
         .expect("You have to set OPENROUTER_API_KEY env variable");
@@ -1138,9 +1142,11 @@ pub async fn openrouter(
         .expect(&format!("Can't open file {}", json_path));
 
     let model_name = vendor_model_lang[1].replace("/", "_");
-    let response_file = format!("{}_{}.md", logfile_name, model_name);
+    let suffix = if tools_mode { "_tools" } else { "" };
+    let response_file = format!("{}_{}{}.md", logfile_name, model_name, suffix);
     let client = Client::new();
 
+    // --- system prompt ---
     let mut spell = format!("{} {}", SPELL, vendor_model_lang[2]);
     if let Some(pr) = private_reasonings() {
         spell = format!("{spell}\n#ADVANCED RULES\n{pr}");
@@ -1150,57 +1156,141 @@ pub async fn openrouter(
             spell = format!("{spell}\n# URL CONTEXT\n{urls}");
         }
     }
+    if tools_mode {
+        spell.push_str(
+            "\n\n# TOOLS MODE\n\
+             You have access to functions that fetch detailed data on demand. \
+             After your initial analysis you MAY call tools to verify hypotheses, \
+             drill into specific snapshots, fetch SQL text, or examine segments. \
+             Call tools only when extra detail will materially improve conclusions. \
+             When done investigating, produce the FINAL markdown report following \
+             the OUTPUT STRUCTURE."
+        );
+    }
 
-    let payload = json!({
-        "model": vendor_model_lang[1],
-        "messages": [
-            { "role": "system", "content": format!("### SYSTEM INSTRUCTIONS\n{spell}") },
-            { "role": "user", "content": format!(
-                "MAIN REPORT (toon/json-as-text):\n```\n{}\n```\n\nGLOBAL PROFILE:\n```json\n{}\n```",
-                report_for_ai, load_profile
-            )}
-        ],
-        "reasoning": { "effort": "high" },
-        "stream": false
-    });
+    // --- common - history begins ---
+    let mut messages: Vec<Value> = vec![
+        json!({ "role": "system", "content": format!("### SYSTEM INSTRUCTIONS\n{}", spell) }),
+        json!({ "role": "user", "content": format!(
+            "MAIN REPORT (toon/json-as-text):\n```\n{}\n```\n\nGLOBAL PROFILE:\n```json\n{}\n```",
+            report_for_ai, load_profile
+        )})
+    ];
 
-    let (tx, rx) = oneshot::channel();
-    let spinner = tokio::spawn(spinning_beer(rx));
+    // --- TOOLS-ONLY: lazy load for collection ---
+    let collection: Option<AWRSCollection> = if tools_mode {
+        let mut json_file = args.json_file.clone();
+        if json_file.is_empty() {
+            json_file = format!("{}.json", args.directory);
+        }
+        let s_json = fs::read_to_string(&json_file)
+            .expect(&format!("Can't read {}", json_file));
+        Some(serde_json::from_str(&s_json).expect("Wrong AWRSCollection JSON"))
+    } else {
+        None
+    };
 
-    let resp = client
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .header("X-Title", "jas-min")
-        .json(&payload)
-        .send()
-        .await?;
+    let max_iterations = if tools_mode {
+        args.max_tool_iterations
+    } else {
+        1   // without tools we always have one iteration. 
+    };
 
-    if resp.status().is_success() {
-        println!("Waiting for OpenRouter to stream full response - please wait...");
-        let body = resp.text().await?;
+    let mut final_content = String::new();
+    let mut last_usage: Value = Value::Null;
+    let mut last_finish: String = String::new();
+
+    for iteration in 0..max_iterations {
+        if tools_mode {
+            println!("🔁 Tool loop iteration {}/{}", iteration + 1, max_iterations);
+        }
+
+        // Payload — if tools mode is on we can add it to payload
+        let mut payload = json!({
+            "model": vendor_model_lang[1],
+            "messages": messages,
+            "reasoning": { "effort": "high" },
+            "stream": false
+        });
+        if tools_mode {
+            payload["tools"] = jasmin_tools_schema();
+            payload["tool_choice"] = json!("auto");
+        }
+
+        let (tx, rx) = oneshot::channel();
+        let spinner = tokio::spawn(spinning_beer(rx));
+
+        let resp = client
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .header("X-Title", "jas-min")
+            .json(&payload)
+            .send()
+            .await?;
 
         let _ = tx.send(());
         let _ = spinner.await;
 
+        if !resp.status().is_success() {
+            eprintln!("Error: {}", resp.status());
+            eprintln!("{}", resp.text().await.unwrap_or_default());
+            break;
+        }
+
+        let body = resp.text().await?;
         let json: Value = serde_json::from_str(&body)?;
-        let content = json["choices"][0]["message"]["content"]
-            .as_str().unwrap_or("")
-            .to_string();
+        let choice = &json["choices"][0];
+        let msg = &choice["message"];
+        last_usage  = json["usage"].clone();
+        last_finish = choice["finish_reason"].as_str().unwrap_or("").to_string();
 
-        fs::write(&response_file, content.as_bytes())?;
-        println!("🍻 OpenRouter response written to file: {}", &response_file);
+        // --- TOOLS: is model calling any tools? ---
+        if tools_mode {
+            if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+                if !tool_calls.is_empty() {
+                    messages.push(msg.clone());   // keep message history
 
-        convert_md_to_html_file(&response_file, events_sqls.clone());
+                    for tc in tool_calls {
+                        let tc_id    = tc["id"].as_str().unwrap_or("").to_string();
+                        let fn_name  = tc["function"]["name"].as_str().unwrap_or("").to_string();
+                        let raw_args = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                        let parsed_args: Value = serde_json::from_str(raw_args).unwrap_or(json!({}));
 
-        println!(
-            "Total tokens: {}\nFinish reason: {}\n",
-            json["usage"]["total_tokens"],
-            json["choices"][0]["finish_reason"]
-        );
+                        println!("🛠  Tool call: {}({})", fn_name, parsed_args);
+
+                        let result = dispatch_tool_call(
+                            &fn_name,
+                            &parsed_args,
+                            collection.as_ref().unwrap(),
+                        );
+
+                        messages.push(json!({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "name": fn_name,
+                            "content": result
+                        }));
+                    }
+                    continue;   // next rund
+                }
+            }
+        }
+
+        // --- No tool called or single-shot -> final answear ---
+        if let Some(content) = msg["content"].as_str() {
+            final_content = content.to_string();
+        }
+        break;
+    }
+
+    if final_content.is_empty() {
+        eprintln!("⚠️  No final content produced");
     } else {
-        eprintln!("Error: {}", resp.status());
-        eprintln!("{}", resp.text().await.unwrap_or_default());
+        fs::write(&response_file, final_content.as_bytes())?;
+        println!("🍻 OpenRouter response written to file: {}", &response_file);
+        convert_md_to_html_file(&response_file, events_sqls.clone());
+        println!("Total tokens: {}\nFinish reason: {}\n", last_usage, last_finish);
     }
 
     Ok(())

@@ -2724,6 +2724,7 @@ pub fn main_report_builder(collection: AWRSCollection, args: Args, events_sqls: 
     global_statistics.insert("Logical Reads MB/s".to_string(),  get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::LogicalReadMbPerSec)));
     global_statistics.insert("Block Changes/s".to_string(),     get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::BlockChangesPerSec)));
     global_statistics.insert("User Calls/s".to_string(),        get_statistics(raw_values_of(&tracked_stats, TrackedStatKey::UserCallsPerSec)));
+    fs::write(format!("{}/stats/global_statistics.json",&html_dir),serde_json::to_string(&global_statistics).unwrap());
     
     // ------ Ploting and reporting starts ----------
     make_notes!(&logfile_name, args.quiet, 0, "\n\n");
@@ -4919,12 +4920,12 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">DB CPU Gradient Analyzes</span><span>DB CPU Gradient Analyzes</span></button>
                 </a>
                 {}",
-                if !args.gradient_sql.is_empty() {
+                if !args.gradient_custom.is_empty() {
                     format!(
                         "<a href=\"stats/gradient_sqlid.html\" target=\"_blank\" style=\"text-decoration: none;\">
-                            <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">SQL_ID Gradient ({})</span><span>Custom Gradient ({})</span></button>
+                            <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">Gradient ({})</span><span>Custom Gradient ({})</span></button>
                         </a>",
-                        args.gradient_sql, args.gradient_sql
+                        args.gradient_custom, args.gradient_custom
                     )
                 } else {
                     String::new()
@@ -5129,35 +5130,43 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
     ];
 
     let mut custom_gradient = false;
-    if !args.gradient_sql.is_empty() {
-        let sql_id = args.gradient_sql.trim().to_string();
-        let target_data = y_vals_sqls.get(&sql_id);
+    if !args.gradient_custom.is_empty() {
+        let sql_id_event = args.gradient_custom.trim().split("=").collect::<Vec<&str>>();
+        let mut target_data: Option<&Vec<f64>> = None;
+        if sql_id_event[0] == "SQL" {
+            target_data=y_vals_sqls.get(sql_id_event[1]);
+        } else if sql_id_event[0] == "WAIT" {
+            target_data=y_vals_events.get(sql_id_event[1]);
+        } else {
+            println!("WARNING! parameter gradient_custom was wrongly specified as: {}", args.gradient_custom);
+        }
         if let Some(t) = target_data {
             gradient_specs.push((
                 GradientSectionSpec {
                     target: t,
                     features: instance_stats.iter()
-                        .filter(|(k, _)| is_in_any_categhory(k))
+                        //.filter(|(k, _)| is_in_any_categhory(k))
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
-                    label: "sql_id_stats".to_string(),
+                    label: "custom_stats".to_string(),
                     is_events: false,
-                    display_name: "SQL ID Gradient for stats".to_string(),
+                    display_name: "Custom Gradient for stats".to_string(),
                 },
-                "instance_stats_for_sql")
+                "instance_stats_for_sql_or_event")
             );
 
             gradient_specs.push((
                 GradientSectionSpec {
                     target: t,
                     features: y_vals_events.iter()
+                        .filter(|(e, _)| *e != sql_id_event[1])
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
-                    label: "sql_id_events".to_string(),
+                    label: "custom_events".to_string(),
                     is_events: false,
-                    display_name: "SQL ID Gradiant for events".to_string(),
+                    display_name: "Custom Gradiant for events".to_string(),
                 },
-                "wait_event_for_sql"));
+                "wait_event_for_sql_or_event"));
 
             custom_gradient = true;
         }
@@ -5188,8 +5197,8 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
             "sql_elapsed_time"        => report_for_ai.db_time_gradient_sql_elapsed_time = section,
             "cpu_instance_stats"      => report_for_ai.db_cpu_gradient_instance_stats = section,
             "cpu_sql_cpu_time"        => report_for_ai.db_cpu_gradient_sql_cpu_time = section,
-            "instance_stats_for_sql"  => report_for_ai.sql_id_gradient_instance_stats = section,
-            "wait_event_for_sql"      => report_for_ai.sql_id_gradient_wait_events = section,
+            "instance_stats_for_sql_or_event"  => report_for_ai.custom_gradient_instance_stats = section,
+            "wait_event_for_sql_or_event"      => report_for_ai.custom_gradient_wait_events = section,
             _ => {}
         }
 
@@ -5208,10 +5217,10 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
     // ---- DB Time gradient page ----
     let db_time_sections = vec![
         GradientHtmlSection { heading: "DB Time vs Wait Events".to_string(),        html: gradient_events },
+        GradientHtmlSection { heading: "DB Time vs SQLs".to_string(),               html: gradient_sqls },
         GradientHtmlSection { heading: "DB Time vs Statistic Counters".to_string(), html: gradient_stats_cnt },
         GradientHtmlSection { heading: "DB Time vs Statistic Volumes".to_string(),  html: gradient_stats_volume },
-        GradientHtmlSection { heading: "DB Time vs Statistic Time".to_string(),     html: gradient_stats_time },
-        GradientHtmlSection { heading: "DB Time vs SQLs".to_string(),               html: gradient_sqls },
+        GradientHtmlSection { heading: "DB Time vs Statistic Time".to_string(),     html: gradient_stats_time },   
     ];
 
     let gradient_html = build_gradient_html(
@@ -5227,8 +5236,8 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
 
     // ---- DB CPU gradient page ----
     let db_cpu_sections = vec![
-        GradientHtmlSection { heading: "DB CPU vs Instance Statistics".to_string(), html: gradient_cpu_stats_all },
         GradientHtmlSection { heading: "DB CPU vs SQLs by CPU Time".to_string(),    html: gradient_cpu_sqls },
+        GradientHtmlSection { heading: "DB CPU vs Instance Statistics".to_string(), html: gradient_cpu_stats_all },
     ];
 
     let gradient_html = build_gradient_html(
@@ -5244,11 +5253,11 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
 
     if custom_gradient {
         // Extract HTML for template rendering
-        let sql_instance_stats   = gradient_results.remove("instance_stats_for_sql").unwrap_or_default();
-        let sql_wait_events      = gradient_results.remove("wait_event_for_sql").unwrap_or_default();
+        let sql_instance_stats   = gradient_results.remove("instance_stats_for_sql_or_event").unwrap_or_default();
+        let sql_wait_events      = gradient_results.remove("wait_event_for_sql_or_event").unwrap_or_default();
         let sql_gradient_sections = vec![
-            GradientHtmlSection { heading: "SQL_ID vs Instance Stats".to_string(), html: sql_instance_stats },
-            GradientHtmlSection { heading: "SQL_ID vs Wait Events".to_string(),    html: sql_wait_events },
+            GradientHtmlSection { heading: "Instance Stats".to_string(), html: sql_instance_stats },
+            GradientHtmlSection { heading: "Wait Events".to_string(),    html: sql_wait_events },
         ];
 
         let gradient_html = build_gradient_html(

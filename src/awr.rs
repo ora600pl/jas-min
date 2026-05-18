@@ -76,13 +76,13 @@ pub struct WaitClasses {
 #[derive(Default,Serialize, Deserialize, Debug, Clone)]
 pub struct HostCPU {
 	pub cpus: u32,
-	cores: u32,
-	sockets: u8,
-	load_avg_begin: f64,
-	load_avg_end: f64,
+	pub cores: u32,
+	pub sockets: u8,
+	pub load_avg_begin: f64,
+	pub load_avg_end: f64,
 	pub pct_user: f64,
-	pct_system: f64,
-	pct_wio: f64,
+	pub pct_system: f64,
+	pub pct_wio: f64,
 	pub pct_idle: f64,
 }
 
