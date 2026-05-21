@@ -16,10 +16,12 @@
 
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::fs;
 
 use crate::awr::{AWR, AWRSCollection};
 
-const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-05-18.1";
+const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-05-20.1";
 const DEFAULT_LIMIT: usize = 50;
 const DEFAULT_TOP_N: usize = 10;
 const MAX_LIMIT: usize = 500;
@@ -33,8 +35,8 @@ const MAX_TOP_N: usize = 100;
 ///
 /// Keep descriptions explicit: the model uses them as its routing table. Yes,
 /// apparently we now write documentation for probabilistic parrots. Here we are.
-pub fn jasmin_tools_schema() -> Value {
-    json!([
+pub fn jasmin_tools_schema(stem: &str) -> Value {
+    let mut tools = json!([
         // ====================================================================
         // 0. GLOBAL OVERVIEW / TRIAGE
         // ====================================================================
@@ -432,7 +434,56 @@ pub fn jasmin_tools_schema() -> Value {
                 }
             }
         }
-    ])
+    ]);
+    ///If directory with attachments exists, check for its contents (eg. node1_attchaments could have SQL_ID.xplan files with execution plans)
+    let attachments_dir = PathBuf::from(format!("{stem}_attachments"));
+    if attachments_dir.is_dir() {
+        for entry in fs::read_dir(attachments_dir).unwrap() {
+            let fname: &String = &entry.unwrap().path().display().to_string();
+            let file_name = fname.split("/").collect::<Vec<&str>>();
+            let file_name = file_name.last().unwrap().to_string();
+            //If there is at least one execution plan file in the attachments library, allow model to use additional tools
+            if file_name.ends_with("xplan") { 
+                tools.as_array_mut().unwrap().push(json!({
+                        "type": "function",
+                        "function": {
+                            "name": "get_sql_execution_plan",
+                            "description": "Returns the text execution plan from an attachment file, typically <SQL_ID>.xplan. Strongly prefer using this tool before making claims about access paths, join methods, cardinality estimates, partition pruning, index usage, full scans, adaptive plans, or SQL tuning recommendations for a SQL_ID.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "sql_id": {
+                                        "type": "string",
+                                        "description": "SQL_ID whose execution plan should be read."
+                                    }
+                                }
+                            }
+                        }
+                    }));
+
+                    tools.as_array_mut().unwrap().push(json!({
+                        "type": "function",
+                        "function": {
+                            "name": "list_available_sql_plans",
+                            "description": "Lists SQL_ID with available execution plans. Use this whenever the analysis mentions top SQL_IDs, SQL elapsed time, SQL CPU, SQL I/O, suspicious waits, plan instability, regressions, or when you need to verify whether an execution plan exists before drawing conclusions.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "limit": {
+                                        "type": "integer",
+                                        "description": "Maximum plans returned, default 100, max 500"
+                                    }
+                                }
+                            }
+                        }
+                    }));
+                println!("✅ Found execution plans in {stem}_attachments");
+                break;
+            }
+        }
+    }
+    
+    tools
 }
 
 // ----------------------------------------------------------------------------
@@ -441,7 +492,7 @@ pub fn jasmin_tools_schema() -> Value {
 
 /// Routes a tool call from the LLM to the matching implementation and returns a
 /// JSON-encoded string suitable for a `role: "tool"` chat message.
-pub fn dispatch_tool_call(name: &str, args: &Value, collection: &AWRSCollection) -> String {
+pub fn dispatch_tool_call(name: &str, args: &Value, collection: &AWRSCollection, stem: &str) -> String {
     let result: Value = match name {
         // Global overview
         "get_database_load_summary" => tool_get_database_load_summary(args, collection),
@@ -455,6 +506,8 @@ pub fn dispatch_tool_call(name: &str, args: &Value, collection: &AWRSCollection)
             "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
             "db_instance_information": collection.db_instance_information
         }),
+        "list_available_sql_plans" => tool_list_available_sql_plans(args, stem),
+        "get_sql_execution_plan" => tool_get_sql_execution_plan(args, stem),
 
         // Aggregations
         "list_snapshots" | "list_snapshots_in_range" => tool_list_snapshots(args, collection),
@@ -861,6 +914,71 @@ fn tool_get_init_parameter(args: &Value, c: &AWRSCollection) -> Value {
         "total_returned": total_returned,
         "total_available": c.initialization_parameters.len(),
         "limit": limit
+    })
+}
+
+fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
+    let sql_id = arg_str(args, "sql_id").unwrap();
+    let sql_plan_file_path = format!("{stem}_attachments/{sql_id}.xplan");
+    let path = PathBuf::from(&sql_plan_file_path);
+    if !path.is_file() {
+        return json!({
+            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+            "filename": &sql_plan_file_path,
+            "plan_text": null,
+            "note": "Execution plan attachment was not found."
+        });
+    }
+
+    let metadata = fs::metadata(&path).ok();
+    let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+
+    let mut text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "filename": sql_plan_file_path,
+                "error": format!("Failed to read xplan file: {}", e)
+            });
+        }
+    };
+
+    json!({
+        "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+        "sql_id": sql_id,
+        "size_bytes": size_bytes,
+        "plan_text": text
+    })
+}
+
+fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
+    let attachments_dir = PathBuf::from(format!("{stem}_attachments"));
+    let mut sql_ids: Vec<Value> = Vec::new();
+    if attachments_dir.is_dir() {
+        for entry in fs::read_dir(attachments_dir).unwrap() {
+            let fname: &String = &entry.unwrap().path().display().to_string();
+            let file_name = fname.split("/").collect::<Vec<&str>>();
+            let file_name = file_name.last().unwrap().to_string();
+            if file_name.ends_with("xplan") { 
+                let sql_id = file_name.strip_suffix(".xplan").unwrap();
+                let size_bytes = fs::metadata(fname)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                
+                sql_ids.push(json!({
+                        "sql_id": sql_id,
+                        "size_bytes": size_bytes
+                    }))
+            }
+        }
+    }
+
+    json!({
+        "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+        "available": true,
+        "returned": sql_ids.len(),
+        "sql_ids_xplan": sql_ids
     })
 }
 
