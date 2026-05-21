@@ -777,226 +777,6 @@ async fn upload_log_file_gemini(api_key: &str, log_content: String, file_name: S
     }
 }
 
-async fn gemini_deep(logfile_name: &str, args: &crate::Args, vendor_model_lang: Vec<&str>, token_count_factor: usize, first_response: String, api_key: &str, events_sqls: HashMap<&str, HashSet<String>>,) {
-    println!("{}{}{}","=== Starting deep dive with Google Gemini model: ".bright_cyan(), vendor_model_lang[1]," ===".bright_cyan());
-    let mut json_file = args.json_file.clone();
-    if json_file.is_empty() {
-        json_file = format!("{}.json", args.directory);
-    }
-
-    let client = Client::new();
-
-    let file_uri = upload_log_file_gemini(&api_key, first_response, "performance_analyze.md".to_string()).await.unwrap();
-    let spell = format!(
-        "You are given a detailed Oracle Database performance analysis report (markdown format). \
-         Your task is to select exactly {} SNAP_IDs that warrant the deepest investigation.\n\n\
-         Selection criteria:\n\
-         1. Choose snapshots that represent the most severe performance degradation\n\
-         2. Ensure temporal diversity: select approximately half from business hours and half from \
-            off-hours/maintenance windows to capture different workload profiles\n\
-         3. Prioritize snapshots mentioned in anomaly clusters or as top spikes\n\
-         4. Avoid selecting adjacent snap_ids unless they represent distinctly different problems\n\n\
-         Output format: Return ONLY the selected SNAP_IDs, one number per line, with no additional text.",
-        args.deep_check
-    );
-
-    let payload = json!({
-                    "contents": [{
-                        "parts": [
-                            { "text": spell }, 
-                            {
-                                "fileData": {
-                                    "mimeType": "text/plain",
-                                    "fileUri": file_uri
-                                }
-                            }
-                        ]
-                    }],
-                    "generationConfig": {
-                        "maxOutputTokens": 8192 * token_count_factor,
-                        "thinkingConfig": {
-                            "thinkingBudget": -1
-                        }
-                    }
-                });
-
-    let (tx, rx) = oneshot::channel();
-    let spinner = tokio::spawn(spinning_beer(rx));
-
-    let response = client
-            .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await.unwrap();
-    
-    let _ = tx.send(());
-    let _ = spinner.await;
-
-    if response.status().is_success() {
-        let json: Value = response.json().await.unwrap();
-
-        let parts = &json["candidates"][0]["content"]["parts"];
-        let mut seen = HashSet::new();
-        let full_text = parts
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|part| part["text"].as_str())
-            .filter(|text| seen.insert(text.to_string()))
-            .collect::<Vec<&str>>()
-            .join("\n");
-
-        println!("🍻 Gemini will analyze further the following SNP_ID:\n{}", &full_text);
-        
-        let s_json = fs::read_to_string(&json_file).expect(&format!("Something wrong with a file {} ", &args.json_file));
-        let mut collection: AWRSCollection = serde_json::from_str(&s_json).expect(&format!("Wrong JSON format {}", &json_file));
-        let awrs: Vec<AWR> = collection.awrs;
-        let mut snap_ids: HashSet<u64> = HashSet::new();
-        for snap_id in full_text.split("\n") {
-            let id = u64::from_str(snap_id);
-            if id.is_ok() {
-                snap_ids.insert(id.unwrap());
-            } else if snap_id.contains("_") {
-                let s_id = snap_id.split("_").next().unwrap();
-                snap_ids.insert(u64::from_str(s_id).unwrap());
-            } else {
-                let id = awrs.iter()
-                                           .find(|a| &a.snap_info.begin_snap_time == snap_id).unwrap()
-                                           .snap_info.begin_snap_id;
-                snap_ids.insert(id);
-            }
-            
-        }
-
-        let mut deep_stats: Vec<AWR> = Vec::new();
-        for awr in awrs {
-            if snap_ids.contains(&awr.snap_info.begin_snap_id) {
-                deep_stats.push(awr);
-            }
-        }
-        
-        let spell = format!(
-            "# DEEP-DIVE PERFORMANCE ANALYSIS\n\n\
-             You are given:\n\
-             1. A comprehensive performance report (markdown) covering the full analysis period\n\
-             2. A JSON file with detailed AWR/STATSPACK statistics for one specific snapshot period\n\n\
-             # TASK\n\n\
-             Perform an in-depth analysis of this specific snapshot period. Your analysis must:\n\n\
-             ## Analytical Approach\n\
-             1. **Contextualize**: Compare this snapshot's metrics against the baselines from the full report\n\
-             2. **Decompose DB Time**: Break down exactly where DB Time was spent in this period\n\
-             3. **SQL Investigation**: Examine all SQL sections and cross-reference SQL_IDs across them. \
-                Identify SQL_IDs appearing in multiple sections — these are the highest-priority targets\n\
-             4. **Latch & Contention**: Identify unusual latch activity or internal contention specific to this period\n\
-             5. **Segment Analysis**: Connect segment-level activity to specific SQLs and wait events\n\
-             6. **Root Cause Synthesis**: Trace from symptoms (wait events) through SQLs to root causes\n\n\
-             ## Cross-Reference Requirements\n\
-             - Match SQL_IDs found here with those flagged in the full report\n\
-             - Compare wait event distribution against the full-period averages\n\
-             - Identify what is UNIQUE to this snapshot vs. what is a continuation of systemic issues\n\n\
-             # OUTPUT FORMAT\n\n\
-             Structure your answer in markdown:\n\n\
-             1. 🧭 Executive Summary (what makes this period notable)\n\
-             2. 📈 Performance Profile (DB Time breakdown, comparison to baseline)\n\
-             3. ⏳ Wait Event Analysis (foreground and background)\n\
-             4. 🧮 SQL-Level Analysis (harmful SQL_IDs, multi-section appearances, patterns)\n\
-             5. 🧱 Segment & Object Analysis\n\
-             6. 🔧 Latches & Internal Contention\n\
-             7. 💾 I/O Assessment\n\
-             8. 🔁 UNDO / Redo / Load Profile\n\
-             9. ⚡ Anomalies & Cross-Domain Patterns\n\
-             10. ✅ Recommendations (DBAs, Developers, Immediate Actions, Management Summary)\n\n\
-             Rules:\n\
-             - Never invent numbers. Quote exact values from the data.\n\
-             - Always pair SNAP_ID with SNAP_DATE.\n\
-             - Format wait event names and SQL_IDs as inline code.\n\
-             - Cross-reference with the full report's findings.\n\n\
-             Write answer in language: {}",
-            vendor_model_lang[2]
-        );
-
-        for ds in deep_stats {
-
-            let deep_stats_json = serde_json::to_string(&ds).unwrap();
-            let file_uri_stats = upload_log_file_gemini(&api_key, deep_stats_json, "detailed_statistics.json".to_string()).await.unwrap();
-
-            let payload = json!({
-                "contents": [{
-                    "parts": [
-                        { "text": spell },
-                        {
-                            "fileData": {
-                                "mimeType": "text/plain",
-                                "fileUri": file_uri
-                            }
-                        },
-                        {
-                            "fileData": {
-                                "mimeType": "text/plain",
-                                "fileUri": file_uri_stats
-                            }
-                        }
-                    ]
-                }],
-                "generationConfig": {
-                    "maxOutputTokens": 8192 * token_count_factor,
-                    "thinkingConfig": {
-                        "thinkingBudget": -1
-                    }
-                }
-            });
-
-            let (tx, rx) = oneshot::channel();
-            let spinner = tokio::spawn(spinning_beer(rx));
-
-            let response = client
-                    .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", vendor_model_lang[1], api_key))
-                    .header("Content-Type", "application/json")
-                    .json(&payload)
-                    .send()
-                    .await.unwrap();
-            
-            let _ = tx.send(());
-            let _ = spinner.await;
-
-            if response.status().is_success() {
-                let json: Value = response.json().await.unwrap();
-
-                let parts = &json["candidates"][0]["content"]["parts"];
-                let mut seen = HashSet::new();
-                let full_text = parts
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter_map(|part| part["text"].as_str())
-                    .filter(|text| seen.insert(text.to_string()))
-                    .collect::<Vec<&str>>()
-                    .join("\n");
-
-                let stem = logfile_name.split('.').next().unwrap();
-                let response_file = format!("{stem}.html_reports/{}_gemini_deep_{}.md", logfile_name, &ds.snap_info.begin_snap_id);
-                fs::write(&response_file, full_text.as_bytes()).unwrap();
-
-                println!("🍻 Gemini response written to file: {}", &response_file);
-                convert_md_to_html_file(&response_file, events_sqls.clone());
-
-            } else {
-                eprintln!("Error: {}", response.status());
-                eprintln!("{}", response.text().await.unwrap());
-            }
-
-        }
-        
-
-    } else {
-        eprintln!("Error: {}", response.status());
-        eprintln!("{}", response.text().await.unwrap());
-    }
-
-
-}
-
 #[tokio::main]
 pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_factor: usize,events_sqls: HashMap<&str, HashSet<String>>,args: &crate::Args, report_for_ai: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}{}{}", 
@@ -1099,18 +879,6 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
             json["candidates"][0]["finishReason"]
         );
 
-        if args.deep_check > 0 {
-            gemini_deep(
-                logfile_name,
-                &args,
-                vendor_model_lang,
-                token_count_factor,
-                full_text,
-                &api_key,
-                events_sqls,
-            )
-            .await;
-        }
     } else {
         eprintln!("Error: {}", response.status());
         eprintln!("{}", response.text().await.unwrap());
@@ -1157,16 +925,30 @@ pub async fn openrouter(
         }
     }
     if tools_mode {
-        spell.push_str(
+        let xplan_dir = format!("{stem}_attachments");
+        let xplan_note = if Path::new(&xplan_dir).is_dir() {
+            format!(
+                "\nAvailable execution-plan attachment directory: `{}`. \
+                 If list_available_sql_plans is present, use it to discover SQL_IDs with plans.",
+                xplan_dir
+            )
+        } else {
+            String::new()
+        };
+
+        spell.push_str(&format!(
             "\n\n# TOOLS MODE\n\
-             You have access to functions that fetch detailed data on demand. \
-             After your initial analysis you MAY call tools to verify hypotheses, \
-             drill into specific snapshots, fetch SQL text, SQL plan, or examine segments. \
-             Call tools only when extra detail will materially improve conclusions. \
-             If SQL plans are avaliable - fetch them for better understanding of SQL impact. \
-             When done investigating, produce the FINAL markdown report following \
-             the OUTPUT STRUCTURE."
-        );
+             You have access to diagnostic tools that fetch detailed AWR/STATSPACK data on demand. \
+             Use tools proactively. Do not rely only on the initial summary when a precise tool call can verify or falsify a hypothesis. \
+             Start with get_database_load_summary unless the user request is already very narrow. \
+             For suspicious snapshots, call list_snapshots, compare_snapshots, top_wait_events_in_snapshot, top_sqls_in_snapshot, get_metric_time_series, get_sql_timeline, or get_wait_event_timeline as needed. \
+             For every SQL_ID that materially contributes to DB Time, elapsed time, DB CPU, I/O time, buffer gets, physical reads, anomalous waits, or regression symptoms, call get_sql_text and get_sql_timeline. \
+             If execution-plan tools are available, you are expected to use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations. \
+             When you fetch an execution plan, produce a dedicated SQL execution plan analysis covering: dominant operations, access paths, join methods and join order, cardinality estimate errors, partition pruning, parallel execution, adaptive plan notes, temp spills/sorts, index usage, and concrete remediation options. \
+             Recommendations must be specific and evidence-based: statistics refresh, histograms, extended statistics, SQL rewrite, indexing, partitioning, SQL Plan Management baseline/profile, bind/literal handling, or application-side change. \
+             Prefer multiple narrow tool calls over guessing. Stop calling tools only when you have enough evidence to produce the FINAL markdown report following the OUTPUT STRUCTURE.{}",
+             xplan_note
+        ));
     }
 
     // --- common - history begins ---

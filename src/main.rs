@@ -122,11 +122,6 @@ struct Args {
 	#[clap(short, long, default_value="",verbatim_doc_comment)]
 	url_context_file: String,
 
-	///Should AI perform a deep analyze of detail JSON statistics? 
-	/// By using this option, LLM will be asked to propose topN SNAPs to analyze all of the statistics from this period. 
-	#[clap(short = 'D', long, default_value_t=0,verbatim_doc_comment)]
-	deep_check: usize,
-
 	///Budget for token - used by modular LLM analyzes to minimize the number of tokens used by the model
 	#[clap(short = 'B', long, default_value_t=80000)]
 	tokens_budget: usize,

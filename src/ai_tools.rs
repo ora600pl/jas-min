@@ -26,6 +26,8 @@ const DEFAULT_LIMIT: usize = 50;
 const DEFAULT_TOP_N: usize = 10;
 const MAX_LIMIT: usize = 500;
 const MAX_TOP_N: usize = 100;
+const DEFAULT_XPLAN_LIMIT: usize = 100;
+const MAX_XPLAN_BYTES: usize = 512 * 1024;
 
 // ----------------------------------------------------------------------------
 // Tool schema (sent to the LLM)
@@ -435,54 +437,52 @@ pub fn jasmin_tools_schema(stem: &str) -> Value {
             }
         }
     ]);
-    ///If directory with attachments exists, check for its contents (eg. node1_attchaments could have SQL_ID.xplan files with execution plans)
-    let attachments_dir = PathBuf::from(format!("{stem}_attachments"));
-    if attachments_dir.is_dir() {
-        for entry in fs::read_dir(attachments_dir).unwrap() {
-            let fname: &String = &entry.unwrap().path().display().to_string();
-            let file_name = fname.split("/").collect::<Vec<&str>>();
-            let file_name = file_name.last().unwrap().to_string();
-            //If there is at least one execution plan file in the attachments library, allow model to use additional tools
-            if file_name.ends_with("xplan") { 
-                tools.as_array_mut().unwrap().push(json!({
-                        "type": "function",
-                        "function": {
-                            "name": "get_sql_execution_plan",
-                            "description": "Returns the text execution plan from an attachment file, typically <SQL_ID>.xplan. Strongly prefer using this tool before making claims about access paths, join methods, cardinality estimates, partition pruning, index usage, full scans, adaptive plans, or SQL tuning recommendations for a SQL_ID.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "sql_id": {
-                                        "type": "string",
-                                        "description": "SQL_ID whose execution plan should be read."
-                                    }
-                                }
-                            }
+    // If an attachments directory exists and contains *.xplan files, publish
+    // SQL plan tools. The model can then discover available SQL_ID plans and
+    // fetch a concrete plan before making SQL tuning recommendations.
+    let attachments_dir = attachments_dir_for_stem(stem);
+    if !list_xplan_files(&attachments_dir).is_empty() {
+        tools.as_array_mut().expect("tools must be a JSON array").push(json!({
+            "type": "function",
+            "function": {
+                "name": "list_available_sql_plans",
+                "description": "Lists SQL_IDs for which execution plan attachments (*.xplan) are available. Use this early when analyzing top SQL, SQL elapsed time, SQL CPU, SQL I/O, suspicious waits, plan instability, performance regressions, or when deciding which SQL execution plans need deeper analysis.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Optional case-insensitive filter. Usually a SQL_ID or part of a filename."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum plans returned, default 100, max 500."
                         }
-                    }));
-
-                    tools.as_array_mut().unwrap().push(json!({
-                        "type": "function",
-                        "function": {
-                            "name": "list_available_sql_plans",
-                            "description": "Lists SQL_ID with available execution plans. Use this whenever the analysis mentions top SQL_IDs, SQL elapsed time, SQL CPU, SQL I/O, suspicious waits, plan instability, regressions, or when you need to verify whether an execution plan exists before drawing conclusions.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "limit": {
-                                        "type": "integer",
-                                        "description": "Maximum plans returned, default 100, max 500"
-                                    }
-                                }
-                            }
-                        }
-                    }));
-                println!("✅ Found execution plans in {stem}_attachments");
-                break;
+                    }
+                }
             }
-        }
-    }
-    
+        }));
+
+        tools.as_array_mut().expect("tools must be a JSON array").push(json!({
+            "type": "function",
+            "function": {
+                "name": "get_sql_execution_plan",
+                "description": "Returns the text execution plan from an attachment file, typically <SQL_ID>.xplan. Use this for every SQL_ID that materially contributes to DB Time, DB CPU, elapsed time, I/O time, buffer gets, physical reads, regressions, or suspicious wait events. Strongly prefer this tool before making claims about access paths, join methods, cardinality estimates, partition pruning, index usage, full scans, adaptive plans, bind sensitivity, or SQL tuning recommendations.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "sql_id": {
+                            "type": "string",
+                            "description": "SQL_ID whose execution plan should be read. If filename is 7ud94ccmpaz8u.xplan, pass 7ud94ccmpaz8u."
+                        }
+                    },
+                    "required": ["sql_id"]
+                }
+            }
+        }));
+
+        println!("✅ Found execution plans in {}", attachments_dir.display());
+    }    
     tools
 }
 
@@ -581,6 +581,51 @@ fn arg_limit(args: &Value, key: &str, default: usize, max: usize) -> usize {
 
 fn cmp_desc(a: f64, b: f64) -> std::cmp::Ordering {
     b.partial_cmp(&a).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+fn attachments_dir_for_stem(stem: &str) -> PathBuf {
+    // Current JAS-MIN convention used by report generation.
+    // Example: report "node1.html" -> "node1_attachments".
+    PathBuf::from(format!("{stem}_attachments"))
+}
+
+fn is_safe_sql_id(sql_id: &str) -> bool {
+    let s = sql_id.trim();
+
+    !s.is_empty()
+        && s.len() <= 30
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '$')
+        && !s.contains('/')
+        && !s.contains('\\')
+        && !s.contains("..")
+}
+
+fn list_xplan_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("xplan"))
+                        .unwrap_or(false)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    files.sort();
+    files
+}
+
+fn sql_id_from_xplan_path(path: &Path) -> Option<String> {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
 }
 
 fn db_time_of(awr: &AWR) -> f64 {
@@ -918,13 +963,26 @@ fn tool_get_init_parameter(args: &Value, c: &AWRSCollection) -> Value {
 }
 
 fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
-    let sql_id = arg_str(args, "sql_id").unwrap();
-    let sql_plan_file_path = format!("{stem}_attachments/{sql_id}.xplan");
-    let path = PathBuf::from(&sql_plan_file_path);
+    let sql_id = match arg_str(args, "sql_id") {
+        Some(v) if is_safe_sql_id(v) => v.trim(),
+        Some(v) => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": "Invalid sql_id. Only simple SQL_ID-like filenames are accepted.",
+                "sql_id": v
+            });
+        }
+        None => return error_missing_arg("sql_id"),
+    };
+
+    let attachments_dir = attachments_dir_for_stem(stem);
+    let path = attachments_dir.join(format!("{sql_id}.xplan"));
+
     if !path.is_file() {
         return json!({
             "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "filename": &sql_plan_file_path,
+            "sql_id": sql_id,
+            "filename": path.display().to_string(),
             "plan_text": null,
             "note": "Execution plan attachment was not found."
         });
@@ -938,49 +996,89 @@ fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
         Err(e) => {
             return json!({
                 "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-                "filename": sql_plan_file_path,
+                "sql_id": sql_id,
+                "filename": path.display().to_string(),
                 "error": format!("Failed to read xplan file: {}", e)
             });
         }
     };
 
+    let truncated = text.len() > MAX_XPLAN_BYTES;
+    if truncated {
+        text.truncate(MAX_XPLAN_BYTES);
+        text.push_str("\n\n-- JAS-MIN NOTE: execution plan output truncated because it exceeded the tool payload limit.\n");
+    }
+
     json!({
         "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
         "sql_id": sql_id,
+        "filename": path.file_name().and_then(|f| f.to_str()).unwrap_or("").to_string(),
         "size_bytes": size_bytes,
+        "truncated": truncated,
+        "max_bytes": MAX_XPLAN_BYTES,
+        "analysis_guidance": [
+            "Identify the dominant operations by cost, cardinality, bytes, elapsed time evidence, and likely row-source impact.",
+            "Check access paths: full scans, index range scans, index unique scans, skip scans, bitmap operations, partition pruning.",
+            "Check join methods and join order: nested loops, hash joins, merge joins, cartesian joins, bloom filters.",
+            "Compare estimated rows with actual rows if A-Rows/Starts are present; highlight cardinality estimation errors.",
+            "Look for expensive sorts, temp spills, remote operations, adaptive plan notes, bind peeking/sensitivity, dynamic sampling, SQL plan directives, parallel execution, and partition-related issues.",
+            "Produce concrete recommendations: stats refresh, histograms, extended stats, SQL rewrite, indexing, partitioning, SPM baseline/profile, or bind/literal handling."
+        ],
         "plan_text": text
     })
 }
 
 fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
-    let attachments_dir = PathBuf::from(format!("{stem}_attachments"));
-    let mut sql_ids: Vec<Value> = Vec::new();
-    if attachments_dir.is_dir() {
-        for entry in fs::read_dir(attachments_dir).unwrap() {
-            let fname: &String = &entry.unwrap().path().display().to_string();
-            let file_name = fname.split("/").collect::<Vec<&str>>();
-            let file_name = file_name.last().unwrap().to_string();
-            if file_name.ends_with("xplan") { 
-                let sql_id = file_name.strip_suffix(".xplan").unwrap();
-                let size_bytes = fs::metadata(fname)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                
-                sql_ids.push(json!({
-                        "sql_id": sql_id,
-                        "size_bytes": size_bytes
-                    }))
+    let attachments_dir = attachments_dir_for_stem(stem);
+    let pattern = arg_str(args, "pattern").map(|s| s.to_lowercase());
+    let limit = arg_limit(args, "limit", DEFAULT_XPLAN_LIMIT, MAX_LIMIT);
+
+    let mut plans: Vec<Value> = list_xplan_files(&attachments_dir)
+        .into_iter()
+        .filter_map(|path| {
+            let filename = path.file_name()?.to_str()?.to_string();
+            let filename_lc = filename.to_lowercase();
+
+            if let Some(pattern) = &pattern {
+                if !filename_lc.contains(pattern) {
+                    return None;
+                }
             }
-        }
-    }
+
+            let sql_id = sql_id_from_xplan_path(&path)?;
+            let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+            Some(json!({
+                "sql_id": sql_id,
+                "filename": filename,
+                "size_bytes": size_bytes
+            }))
+        })
+        .collect();
+
+    plans.sort_by(|a, b| {
+        a["sql_id"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["sql_id"].as_str().unwrap_or(""))
+    });
+
+    let total_matches = plans.len();
+    plans.truncate(limit);
 
     json!({
         "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-        "available": true,
-        "returned": sql_ids.len(),
-        "sql_ids_xplan": sql_ids
+        "available": attachments_dir.is_dir(),
+        "attachments_dir": attachments_dir.display().to_string(),
+        "pattern": pattern,
+        "total_matches": total_matches,
+        "returned": plans.len(),
+        "limit": limit,
+        "sql_ids_xplan": plans,
+        "usage_hint": "For SQL_IDs that are material to DB Time, DB CPU, elapsed time, I/O, buffer gets, physical reads, or regressions, call get_sql_execution_plan and include a dedicated plan analysis with recommendations."
     })
 }
+
 
 // ============================================================================
 // 2. AGGREGATIONS
