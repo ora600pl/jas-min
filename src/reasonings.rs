@@ -16,7 +16,7 @@ use tokio::time::{sleep, Duration};
 use tokio::sync::oneshot;
 use std::io::{stdout, Write};
 use std::error::Error;
-use crate::tools::*;
+use crate::{debug_note, tools::*};
 use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR};
 use std::str::FromStr;
 use crate::ai_tools::*;
@@ -1161,8 +1161,9 @@ pub async fn openrouter(
             "\n\n# TOOLS MODE\n\
              You have access to functions that fetch detailed data on demand. \
              After your initial analysis you MAY call tools to verify hypotheses, \
-             drill into specific snapshots, fetch SQL text, or examine segments. \
+             drill into specific snapshots, fetch SQL text, SQL plan, or examine segments. \
              Call tools only when extra detail will materially improve conclusions. \
+             If SQL plans are avaliable - fetch them for better understanding of SQL impact. \
              When done investigating, produce the FINAL markdown report following \
              the OUTPUT STRUCTURE."
         );
@@ -1213,9 +1214,11 @@ pub async fn openrouter(
             "stream": false
         });
         if tools_mode {
-            payload["tools"] = jasmin_tools_schema();
+            payload["tools"] = jasmin_tools_schema(stem);
             payload["tool_choice"] = json!("auto");
         }
+
+        debug_note!("Payload for AI is {:?}", payload);
 
         let (tx, rx) = oneshot::channel();
         let spinner = tokio::spawn(spinning_beer(rx));
@@ -1263,6 +1266,7 @@ pub async fn openrouter(
                             &fn_name,
                             &parsed_args,
                             collection.as_ref().unwrap(),
+                            stem
                         );
 
                         messages.push(json!({
