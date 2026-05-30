@@ -31,7 +31,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Gradient analysis | Runs Ridge, Elastic Net, Huber, and Quantile-95 regression models over DB Time and DB CPU drivers. |
 | Custom gradient | Builds extra gradient pages for a selected SQL ID or wait event with `--gradient-custom`. |
 | AI reports | Supports OpenAI, Google Gemini, OpenRouter, OpenRouter small-context modular mode, and local OpenAI-compatible models. |
-| AI tools mode | Enables function/tool-call loops for OpenAI and OpenRouter with `--tools-mode`. |
+| AI tools mode | Enables function/tool-call loops for OpenAI, Google Gemini, and OpenRouter with `--tools-mode`. |
 | Security | Controls whether object names and SQL text are stored with `--security-level`. |
 
 ## Architecture Overview
@@ -186,10 +186,11 @@ The language code, for example `EN` or `PL`, controls the requested report langu
 
 ### Tools Mode
 
-For `openai` and `openrouter`, `--tools-mode` enables an iterative tool-call loop. In this mode the model can request focused diagnostic data from the parsed collection instead of relying only on the initial summary.
+For `openai`, `google`, and `openrouter`, `--tools-mode` enables an iterative tool-call loop. In this mode the model can request focused diagnostic data from the parsed collection instead of relying only on the initial summary.
 
 ```bash
 jas-min -d ./awr_reports --ai openai:o3:EN --tools-mode --max-tool-iterations 12
+jas-min -d ./awr_reports --ai google:gemini-2.5-flash:EN --tools-mode
 jas-min -d ./awr_reports --ai openrouter:openai/gpt-4.1:EN --tools-mode
 ```
 
@@ -586,7 +587,7 @@ Options:
       --top-gradient <TOP_GRADIENT>          Top N rows per regression model [default: 10]
   -c, --convert-md2html <CONVERT_MD2HTML>    Convert Markdown to HTML without AI call
   -G, --gradient-custom <GRADIENT_CUSTOM>    Custom gradient: SQL=<sql_id> or WAIT=<event>
-      --tools-mode                           Enable AI tools mode for OpenAI/OpenRouter
+      --tools-mode                           Enable AI tools mode for OpenAI/Google/OpenRouter
       --max-tool-iterations <N>              Max tool-call iterations [default: 10]
   -h, --help                                 Print help
   -V, --version                              Print version

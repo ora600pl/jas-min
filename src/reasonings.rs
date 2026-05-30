@@ -1,37 +1,128 @@
-use colored::Colorize;
+use crate::ai_tools::*;
+use crate::awr::{
+    AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads,
+    SegmentStats, WaitEvents, AWR,
+};
+use crate::{debug_note, tools::*};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use base64::{engine::general_purpose, Engine as _};
-use reqwest::{Client, multipart};
+use colored::Colorize;
 use reqwest::multipart::{Form, Part};
-use serde_json::json;
-use std::env::Args;
-use std::fmt::format;
-use std::borrow::Cow;
-use std::{env, fs, collections::HashMap, sync::Arc, path::Path, collections::HashSet};
-use axum::{routing::post, Router, Json, extract::State, http::StatusCode, response::IntoResponse};
+use reqwest::{multipart, Client};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use serde_json::Value;
-use tower_http::cors::{CorsLayer, Any};
+use std::borrow::Cow;
+use std::env::Args;
+use std::error::Error;
+use std::fmt::format;
+use std::io::{stdout, Write};
+use std::str::FromStr;
+use std::{collections::HashMap, collections::HashSet, env, fs, path::Path, sync::Arc};
+use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
-use tokio::sync::oneshot;
-use std::io::{stdout, Write};
-use std::error::Error;
-use crate::{debug_note, tools::*};
-use crate::awr::{AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR};
-use std::str::FromStr;
-use crate::ai_tools::*;
+use tower_http::cors::{Any, CorsLayer};
 
 fn get_openai_url() -> String {
     env::var("OPENAI_URL").unwrap_or_else(|_| "https://api.openai.com/".to_string())
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
-pub struct StatisticsDescription {
-    pub dbcpu_dbtime: String,
-    pub median_absolute_deviation: String, 
+fn stem_from_logfile(logfile_name: &str) -> &str {
+    logfile_name.split('.').next().unwrap_or(logfile_name)
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+fn load_profile_for_stem(stem: &str) -> String {
+    let json_path = format!("{stem}.html_reports/stats/global_statistics.json");
+    fs::read_to_string(&json_path).expect(&format!("Can't open file {}", json_path))
+}
+
+fn load_tools_collection(args: &crate::Args) -> AWRSCollection {
+    let mut json_file = args.json_file.clone();
+    if json_file.is_empty() {
+        json_file = format!("{}.json", args.directory);
+    }
+    let s_json = fs::read_to_string(&json_file).expect(&format!("Can't read {}", json_file));
+    serde_json::from_str(&s_json).expect("Wrong AWRSCollection JSON")
+}
+
+fn build_model_instructions(
+    lang: &str,
+    args: &crate::Args,
+    events_sqls: &HashMap<&str, HashSet<String>>,
+    stem: &str,
+    tools_mode: bool,
+) -> String {
+    let mut spell = format!("{} {}", SPELL, lang);
+
+    if let Some(pr) = private_reasonings() {
+        spell = format!("{spell}\n#ADVANCED RULES\n{pr}");
+    }
+
+    if !args.url_context_file.is_empty() {
+        if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
+            spell = format!("{spell}\n# URL CONTEXT\n{urls}");
+        }
+    }
+
+    if tools_mode {
+        spell.push_str(&tools_mode_instructions(stem));
+    }
+
+    spell
+}
+
+fn tools_mode_instructions(stem: &str) -> String {
+    let xplan_dir = format!("{stem}_attachments");
+    let xplan_note = if Path::new(&xplan_dir).is_dir() {
+        format!(
+            "\nAvailable execution-plan attachment directory: `{}`. \
+             If list_available_sql_plans is present, use it to discover SQL_IDs with plans.",
+            xplan_dir
+        )
+    } else {
+        String::new()
+    };
+
+    format!(
+        "\n\n# TOOLS MODE\n\
+         You have access to diagnostic tools that fetch detailed AWR/STATSPACK data on demand. \
+         Use tools proactively. Do not rely only on the initial summary when a precise tool call can verify or falsify a hypothesis. \
+         Start with get_database_load_summary unless the user request is already very narrow. \
+         For suspicious snapshots, call list_snapshots, compare_snapshots, top_wait_events_in_snapshot, top_sqls_in_snapshot, get_metric_time_series, get_sql_timeline, or get_wait_event_timeline as needed. \
+         For every SQL_ID that materially contributes to DB Time, elapsed time, DB CPU, I/O time, buffer gets, physical reads, anomalous waits, or regression symptoms, call get_sql_text and get_sql_timeline. \
+         If execution-plan tools are available, you are expected to use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations. \
+         When you fetch an execution plan, produce a dedicated SQL execution plan analysis covering: dominant operations, access paths, join methods and join order, cardinality estimate errors, partition pruning, parallel execution, adaptive plan notes, temp spills/sorts, index usage, and concrete remediation options. \
+         Recommendations must be specific and evidence-based: statistics refresh, histograms, extended statistics, SQL rewrite, indexing, partitioning, SQL Plan Management baseline/profile, bind/literal handling, or application-side change. \
+         Prefer multiple narrow tool calls over guessing. Stop calling tools only when you have enough evidence to produce the FINAL markdown report following the OUTPUT STRUCTURE.{}",
+        xplan_note
+    )
+}
+
+fn final_synthesis_request() -> &'static str {
+    r#"
+You have reached the maximum number of allowed tool iterations.
+
+You must now write the final Oracle performance analysis report in Markdown.
+
+Rules:
+- Do not request or call any more tools.
+- Use the original ReportForAI / AWR / Statspack data already provided.
+- Use all tool results already returned in this conversation.
+- If some SQL texts or execution plans were not inspected, do not invent their details.
+- Focus on evidence-backed findings, impact, root causes, and concrete recommendations.
+- Do not mention that the tool budget was exhausted.
+- Produce the final Markdown report now.
+"#
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+pub struct StatisticsDescription {
+    pub dbcpu_dbtime: String,
+    pub median_absolute_deviation: String,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct TopPeaksSelected {
     pub report_name: String,
     pub report_date: String,
@@ -41,7 +132,7 @@ pub struct TopPeaksSelected {
     pub dbcpu_dbtime_ratio: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct MadAnomaliesEvents {
     pub anomaly_date: String,
     pub mad_score: f64,
@@ -51,7 +142,7 @@ pub struct MadAnomaliesEvents {
     pub pct_of_db_time: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct MadAnomaliesSQL {
     pub anomaly_date: String,
     pub mad_score: f64,
@@ -60,7 +151,7 @@ pub struct MadAnomaliesSQL {
     pub avg_exec_time_for_execution: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct TopForegroundWaitEvents {
     pub event_name: String,
     pub correlation_with_db_time: f64,
@@ -78,7 +169,7 @@ pub struct TopForegroundWaitEvents {
     pub tables_associated_with_event_based_on_ash_sql: Option<Vec<String>>,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct TopBackgroundWaitEvents {
     pub event_name: String,
     pub correlation_with_db_time: f64,
@@ -94,7 +185,7 @@ pub struct TopBackgroundWaitEvents {
     pub median_absolute_deviation_anomalies: Vec<MadAnomaliesEvents>,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct PctOfTimesThisSQLFoundInOtherTopSections {
     pub sqls_by_cpu_time_pct: f64,
     pub sqls_by_user_io_pct: f64,
@@ -102,13 +193,13 @@ pub struct PctOfTimesThisSQLFoundInOtherTopSections {
     pub sqls_by_gets: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct WaitEventsWithStrongCorrelation {
     pub event_name: String,
     pub correlation_value: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct WaitEventsFromASH {
     pub event_name: String,
     pub avg_pct_of_dbtime_in_sql: f64,
@@ -116,7 +207,7 @@ pub struct WaitEventsFromASH {
     pub count: u64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct TopSQLsByElapsedTime {
     pub sql_id: String,
     pub module: String,
@@ -139,20 +230,20 @@ pub struct TopSQLsByElapsedTime {
     pub wait_events_found_in_ash_sections_for_this_sql: Vec<WaitEventsFromASH>,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct StatsSummary {
     pub statistic_name: String,
     pub avg_value: f64,
     pub stddev_value: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct IOStatsByFunctionSummary {
     pub function_name: String,
     pub statistics_summary: Vec<StatsSummary>,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct LatchActivitySummary {
     pub latch_name: String,
     pub get_requests_avg: f64,
@@ -161,7 +252,7 @@ pub struct LatchActivitySummary {
     pub found_in_pct_of_probes: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct Top10SegmentStats {
     pub segment_name: String,
     pub segment_type: String,
@@ -172,13 +263,13 @@ pub struct Top10SegmentStats {
     pub pct_of_occuriance: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct InstanceStatisticCorrelation {
     pub stat_name: String,
     pub pearson_correlation_value: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct LoadProfileAnomalies {
     pub load_profile_stat_name: String,
     pub anomaly_date: String,
@@ -188,13 +279,13 @@ pub struct LoadProfileAnomalies {
     pub avg_value_per_second: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct AnomalyDescription {
     pub area_of_anomaly: String,
     pub statistic_name: String,
 }
- 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct AnomlyCluster {
     pub begin_snap_id: u64,
     pub begin_snap_date: String,
@@ -202,7 +293,7 @@ pub struct AnomlyCluster {
     pub number_of_anomalies: u64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct GradientSettings {
     pub ridge_lambda: f64,
     pub elastic_net_lambda: f64,
@@ -213,17 +304,17 @@ pub struct GradientSettings {
     pub input_db_time_unit: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct GradientTopItem {
     pub event_name: String,
     pub gradient_coef: f64,
-    pub impact: f64,              // typical (MAD-based) — legacy, keep for compatibility
-    pub impact_active: f64,       // P90-based — primary tuning metric
-    pub impact_peak: f64,         // P99-based — worst-case
-    pub impact_share: f64,        // % of total active impact
+    pub impact: f64,        // typical (MAD-based) — legacy, keep for compatibility
+    pub impact_active: f64, // P90-based — primary tuning metric
+    pub impact_peak: f64,   // P99-based — worst-case
+    pub impact_share: f64,  // % of total active impact
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct DbTimeGradientSection {
     pub settings: GradientSettings,
     pub ridge_top: Vec<GradientTopItem>,
@@ -237,7 +328,7 @@ pub struct DbTimeGradientSection {
     pub collinear_group_impacts: Vec<CollinearGroupImpact>,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct CrossModelClassification {
     pub event_name: String,
     pub classification: String,
@@ -266,7 +357,7 @@ pub struct CollinearGroupImpact {
     pub combined_coef: f64,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct ReportForAI {
     pub general_data: StatisticsDescription,
     pub top_spikes_marked: Vec<TopPeaksSelected>,
@@ -676,12 +767,11 @@ fn private_reasonings() -> Option<String> {
     Some(r_content)
 }
 
-#[derive(Default,Serialize, Deserialize, Debug, Clone)]
-struct UrlContext{
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+struct UrlContext {
     action: String,
     url: String,
 }
-
 
 fn url_context(url_fname: &str, events_sqls: HashMap<&str, HashSet<String>>) -> Option<String> {
     let r_content = fs::read_to_string(url_fname);
@@ -690,7 +780,8 @@ fn url_context(url_fname: &str, events_sqls: HashMap<&str, HashSet<String>>) -> 
         println!("Couldn't read url file");
         return None;
     }
-    let url_context_data: HashMap<String, Vec<UrlContext>> = serde_json::from_str(&r_content.unwrap()).expect("Wrong url file JSON format");
+    let url_context_data: HashMap<String, Vec<UrlContext>> =
+        serde_json::from_str(&r_content.unwrap()).expect("Wrong url file JSON format");
     let mut url_context_msg = "\nAdditionally you have to follow those commands:".to_string();
 
     for (_, search_key) in events_sqls {
@@ -706,7 +797,12 @@ fn url_context(url_fname: &str, events_sqls: HashMap<&str, HashSet<String>>) -> 
     Some(url_context_msg)
 }
 
-async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &str,file_name: &str) -> Result<String, Box<dyn std::error::Error>> {
+async fn upload_file_to_gemini_from_path(
+    api_key: &str,
+    path: &str,
+    file_type: &str,
+    file_name: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     let file_bytes = fs::read(path)?;
 
     let part = multipart::Part::bytes(file_bytes)
@@ -717,7 +813,10 @@ async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("https://generativelanguage.googleapis.com/upload/v1beta/files?key={}",api_key))
+        .post(format!(
+            "https://generativelanguage.googleapis.com/upload/v1beta/files?key={}",
+            api_key
+        ))
         .multipart(form)
         .send()
         .await?;
@@ -726,7 +825,10 @@ async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &
         let response_text = response.text().await?;
         match serde_json::from_str::<GeminiFileUploadResponse>(&response_text) {
             Ok(file_upload_response) => {
-                println!("✅ {} uploaded! URI: {}", path, file_upload_response.file.uri);
+                println!(
+                    "✅ {} uploaded! URI: {}",
+                    path, file_upload_response.file.uri
+                );
                 Ok(file_upload_response.file.uri)
             }
             Err(e) => {
@@ -742,19 +844,28 @@ async fn upload_file_to_gemini_from_path(api_key: &str, path: &str, file_type: &
     }
 }
 
-async fn upload_log_file_gemini(api_key: &str, log_content: String, file_name: String) -> Result<String, Box<dyn std::error::Error>> {
+async fn upload_log_file_gemini(
+    api_key: &str,
+    log_content: String,
+    file_name: String,
+) -> Result<String, Box<dyn std::error::Error>> {
     let part = multipart::Part::bytes(log_content.into_bytes())
-        .file_name(file_name) 
-        .mime_str("text/plain").unwrap();
+        .file_name(file_name)
+        .mime_str("text/plain")
+        .unwrap();
 
     let form = multipart::Form::new().part("file", part);
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("https://generativelanguage.googleapis.com/upload/v1beta/files?key={}", api_key))
+        .post(format!(
+            "https://generativelanguage.googleapis.com/upload/v1beta/files?key={}",
+            api_key
+        ))
         .multipart(form)
         .send()
-        .await.unwrap();
+        .await
+        .unwrap();
 
     if response.status().is_success() {
         let response_text = response.text().await?;
@@ -763,7 +874,7 @@ async fn upload_log_file_gemini(api_key: &str, log_content: String, file_name: S
             Ok(file_upload_response) => {
                 println!("✅ File uploaded! URI: {}", file_upload_response.file.uri);
                 Ok(file_upload_response.file.uri)
-            },
+            }
             Err(e) => {
                 eprintln!("Error while paring JSON: {}", e);
                 Err(format!("Parsing error: {}. TEXT: '{}'", e, response_text).into())
@@ -777,110 +888,301 @@ async fn upload_log_file_gemini(api_key: &str, log_content: String, file_name: S
     }
 }
 
+fn extract_gemini_text(json: &Value) -> String {
+    let Some(parts) = json
+        .pointer("/candidates/0/content/parts")
+        .and_then(|v| v.as_array())
+    else {
+        return String::new();
+    };
+
+    let mut seen = HashSet::new();
+    parts
+        .iter()
+        .filter_map(|p| p.get("text").and_then(|v| v.as_str()))
+        .filter(|t| seen.insert(t.to_string()))
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+fn extract_gemini_function_calls(json: &Value) -> Vec<Value> {
+    json.pointer("/candidates/0/content/parts")
+        .and_then(|v| v.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("functionCall").cloned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[tokio::main]
-pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,events_sqls: HashMap<&str, HashSet<String>>,args: &crate::Args, report_for_ai: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("{}{}{}", 
-        "=== Consulting Google Gemini model: ".bright_cyan(), 
-        vendor_model_lang[1], 
+pub async fn gemini(
+    logfile_name: &str,
+    vendor_model_lang: Vec<&str>,
+    events_sqls: HashMap<&str, HashSet<String>>,
+    args: &crate::Args,
+    report_for_ai: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tools_mode = args.tools_mode;
+    let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
+    println!(
+        "{}{}{}{}{}",
+        "=== Consulting Google Gemini (".bright_cyan(),
+        mode_label,
+        ") model: ".bright_cyan(),
+        vendor_model_lang[1],
         " ===".bright_cyan()
     );
 
-    let api_key = env::var("GEMINI_API_KEY")
-        .expect("You have to set GEMINI_API_KEY env variable");
+    let api_key = env::var("GEMINI_API_KEY").expect("You have to set GEMINI_API_KEY env variable");
 
-    let log_content = fs::read_to_string(logfile_name).expect(&format!("Can't open file {}", logfile_name));
-    let stem = logfile_name.split('.').next().unwrap();
-    let json_path = format!("{stem}.html_reports/stats/global_statistics.json");
-    let load_profile = fs::read_to_string(&json_path).expect(&format!("Can't open file {}", json_path));
-    let response_file = format!("{}_gemini.md", logfile_name);
+    let stem = stem_from_logfile(logfile_name);
+    let load_profile = load_profile_for_stem(stem);
+    let suffix = if tools_mode { "_tools" } else { "" };
+    let response_file = format!("{}_gemini{}.md", logfile_name, suffix);
     let client = Client::new();
 
-    let mut spell = format!("{} {}", SPELL, vendor_model_lang[2]);
+    let spell =
+        build_model_instructions(vendor_model_lang[2], args, &events_sqls, stem, tools_mode);
+    let main_report_uri = upload_log_file_gemini(
+        &api_key,
+        report_for_ai.to_string(),
+        "main_report.toon".to_string(),
+    )
+    .await
+    .unwrap();
+    let global_profile_data_uri = upload_log_file_gemini(
+        &api_key,
+        load_profile,
+        "load_profile_statistics.json".to_string(),
+    )
+    .await
+    .unwrap();
 
-    if let Some(pr) = private_reasonings() {
-        spell = format!("{spell}\n#ADVANCED RULES\n{pr}");
+    let mut initial_parts = vec![
+        json!({
+            "fileData": {
+                "mimeType": "text/plain",
+                "fileUri": main_report_uri
+            }
+        }),
+        json!({
+            "fileData": {
+                "mimeType": "text/plain",
+                "fileUri": global_profile_data_uri
+            }
+        }),
+    ];
+
+    if tools_mode && Path::new(&format!("{stem}_attachments")).is_dir() {
+        initial_parts.push(json!({
+            "text": "### AVAILABLE ATTACHMENTS\nExecution plan attachments (*.xplan) may be available through tools. Use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations.\n-- END AVAILABLE ATTACHMENTS --"
+        }));
     }
 
-    if !args.url_context_file.is_empty() {
-        if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
-            spell = format!("{spell}\n# URL CONTEXT\n{urls}");
+    let mut contents: Vec<Value> = vec![json!({
+        "role": "user",
+        "parts": initial_parts
+    })];
+
+    let collection: Option<AWRSCollection> = if tools_mode {
+        Some(load_tools_collection(args))
+    } else {
+        None
+    };
+
+    let max_iterations = if tools_mode {
+        args.max_tool_iterations
+    } else {
+        1
+    };
+
+    let tools = if tools_mode {
+        tools_schema_for_gemini(stem)
+    } else {
+        json!([])
+    };
+
+    let mut final_content = String::new();
+    let mut last_usage: Value = Value::Null;
+    let mut last_finish: Value = Value::Null;
+
+    for iteration in 0..max_iterations {
+        if tools_mode {
+            println!(
+                "🔁 Gemini tool loop iteration {}/{}",
+                iteration + 1,
+                max_iterations
+            );
         }
-    }
-    let main_report_uri = upload_log_file_gemini(&api_key, report_for_ai.to_string(), "main_report.toon".to_string()).await.unwrap();
-    let global_profile_data_uri = upload_log_file_gemini(&api_key, load_profile, "load_profile_statistics.json".to_string()).await.unwrap();
 
-    let payload = json!({
-                "contents": [{
-                    "parts": [
-                        { "text": format!("### SYSTEM INSTRUCTIONS\n{spell}") },
-                        {
-                            "fileData": {
-                                "mimeType": "text/plain",
-                                "fileUri": main_report_uri
+        let is_last_iteration = iteration + 1 == max_iterations;
+
+        let mut payload = json!({
+            "systemInstruction": {
+                "parts": [{ "text": format!("### SYSTEM INSTRUCTIONS\n{spell}") }]
+            },
+            "contents": contents.clone(),
+            "generationConfig": {
+                "thinkingConfig": {
+                    "thinkingBudget": -1
+                }
+            }
+        });
+
+        if tools_mode {
+            payload["tools"] = tools.clone();
+            payload["toolConfig"] = json!({
+                "functionCallingConfig": { "mode": "AUTO" }
+            });
+        }
+
+        debug_note!("Payload for Gemini API is {:?}", payload);
+
+        let (tx, rx) = oneshot::channel();
+        let spinner = tokio::spawn(spinning_beer(rx));
+
+        let response = client
+            .post(format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                vendor_model_lang[1], api_key
+            ))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        let _ = tx.send(());
+        let _ = spinner.await;
+
+        if !response.status().is_success() {
+            eprintln!("Error: {}", response.status());
+            eprintln!("{}", response.text().await.unwrap_or_default());
+            break;
+        }
+
+        let json: Value = response.json().await?;
+        last_usage = json.get("usageMetadata").cloned().unwrap_or(Value::Null);
+        last_finish = json
+            .pointer("/candidates/0/finishReason")
+            .cloned()
+            .unwrap_or(Value::Null);
+
+        if tools_mode {
+            let tool_calls = extract_gemini_function_calls(&json);
+            if !tool_calls.is_empty() {
+                if let Some(model_content) = json.pointer("/candidates/0/content").cloned() {
+                    contents.push(model_content);
+                }
+
+                for tc in tool_calls {
+                    let fn_name = tc
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let parsed_args = tc.get("args").cloned().unwrap_or_else(|| json!({}));
+
+                    println!("🛠  Gemini tool call: {}({})", fn_name, parsed_args);
+
+                    let result_text = dispatch_tool_call(
+                        &fn_name,
+                        &parsed_args,
+                        collection.as_ref().unwrap(),
+                        stem,
+                    );
+                    let result_json: Value = serde_json::from_str(&result_text)
+                        .unwrap_or_else(|_| json!({ "result": result_text }));
+
+                    contents.push(json!({
+                        "role": "user",
+                        "parts": [{
+                            "functionResponse": {
+                                "name": fn_name,
+                                "response": result_json
                             }
+                        }]
+                    }));
+                }
+
+                if is_last_iteration {
+                    eprintln!(
+                        "⚠️ Tool loop limit reached while model still requested tools. \
+                         Running final synthesis pass without tools."
+                    );
+                    contents.push(json!({
+                        "role": "user",
+                        "parts": [{ "text": final_synthesis_request() }]
+                    }));
+
+                    let final_payload = json!({
+                        "systemInstruction": {
+                            "parts": [{ "text": format!("### SYSTEM INSTRUCTIONS\n{spell}") }]
                         },
-                        {
-                            "fileData": {
-                                "mimeType": "text/plain",
-                                "fileUri": global_profile_data_uri
+                        "contents": contents.clone(),
+                        "generationConfig": {
+                            "thinkingConfig": {
+                                "thinkingBudget": -1
                             }
                         }
-                    ]
-                }],
-                "generationConfig": {
-                    "thinkingConfig": {
-                        "thinkingBudget": -1
+                    });
+
+                    let (tx, rx) = oneshot::channel();
+                    let spinner = tokio::spawn(spinning_beer(rx));
+
+                    let final_response = client
+                        .post(format!(
+                            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                            vendor_model_lang[1],
+                            api_key
+                        ))
+                        .header("Content-Type", "application/json")
+                        .json(&final_payload)
+                        .send()
+                        .await?;
+
+                    let _ = tx.send(());
+                    let _ = spinner.await;
+
+                    if !final_response.status().is_success() {
+                        eprintln!("Error during final synthesis: {}", final_response.status());
+                        eprintln!("{}", final_response.text().await.unwrap_or_default());
+                        break;
                     }
+
+                    let final_json: Value = final_response.json().await?;
+                    last_usage = final_json
+                        .get("usageMetadata")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    last_finish = final_json
+                        .pointer("/candidates/0/finishReason")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    final_content = extract_gemini_text(&final_json);
+                    break;
                 }
-            });
-    
 
-    let (tx, rx) = oneshot::channel();
-    let spinner = tokio::spawn(spinning_beer(rx));
+                continue;
+            }
+        }
 
-    let response = client
-        .post(format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            vendor_model_lang[1],
-            api_key
-        ))
-        .header("Content-Type", "application/json")
-        .json(&payload)
-        .send()
-        .await?;
+        final_content = extract_gemini_text(&json);
+        break;
+    }
 
-    let _ = tx.send(());
-    let _ = spinner.await;
-
-    if response.status().is_success() {
-        let json: Value = response.json().await.unwrap();
-
-        let parts = json["candidates"][0]["content"]["parts"]
-            .as_array()
-            .unwrap();
-
-        let mut seen = HashSet::new();
-        let full_text = parts
-            .iter()
-            .filter_map(|p| p["text"].as_str())
-            .filter(|t| seen.insert(t.to_string()))
-            .collect::<Vec<&str>>()
-            .join("\n");
-
-        fs::write(&response_file, full_text.as_bytes())?;
+    if final_content.is_empty() {
+        eprintln!("⚠️ Gemini response had no extractable final content");
+    } else {
+        fs::write(&response_file, final_content.as_bytes())?;
         println!("🍻 Gemini response written to file: {}", &response_file);
-
         convert_md_to_html_file(&response_file, events_sqls.clone());
-
         println!(
             "Total tokens: {}\nFinish reason: {}\n",
-            json["usageMetadata"]["totalTokenCount"],
-            json["candidates"][0]["finishReason"]
+            last_usage, last_finish
         );
-
-    } else {
-        eprintln!("Error: {}", response.status());
-        eprintln!("{}", response.text().await.unwrap());
     }
 
     Ok(())
@@ -918,60 +1220,26 @@ pub async fn openrouter(
     args: &crate::Args,
     report_for_ai: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
     let tools_mode = args.tools_mode;
     let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
-    println!("=== Consulting OpenRouter ({}) model: {} ===", mode_label, vendor_model_lang[1]);
+    println!(
+        "=== Consulting OpenRouter ({}) model: {} ===",
+        mode_label, vendor_model_lang[1]
+    );
 
-    let api_key = env::var("OPENROUTER_API_KEY")
-        .expect("You have to set OPENROUTER_API_KEY env variable");
+    let api_key =
+        env::var("OPENROUTER_API_KEY").expect("You have to set OPENROUTER_API_KEY env variable");
 
-    let stem = logfile_name.split('.').next().unwrap();
-    let json_path = format!("{stem}.html_reports/stats/global_statistics.json");
-    let load_profile = fs::read_to_string(&json_path)
-        .expect(&format!("Can't open file {}", json_path));
+    let stem = stem_from_logfile(logfile_name);
+    let load_profile = load_profile_for_stem(stem);
 
     let model_name = vendor_model_lang[1].replace("/", "_");
     let suffix = if tools_mode { "_tools" } else { "" };
     let response_file = format!("{}_{}{}.md", logfile_name, model_name, suffix);
     let client = Client::new();
 
-    // --- system prompt ---
-    let mut spell = format!("{} {}", SPELL, vendor_model_lang[2]);
-    if let Some(pr) = private_reasonings() {
-        spell = format!("{spell}\n#ADVANCED RULES\n{pr}");
-    }
-    if !args.url_context_file.is_empty() {
-        if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
-            spell = format!("{spell}\n# URL CONTEXT\n{urls}");
-        }
-    }
-    if tools_mode {
-        let xplan_dir = format!("{stem}_attachments");
-        let xplan_note = if Path::new(&xplan_dir).is_dir() {
-            format!(
-                "\nAvailable execution-plan attachment directory: `{}`. \
-                 If list_available_sql_plans is present, use it to discover SQL_IDs with plans.",
-                xplan_dir
-            )
-        } else {
-            String::new()
-        };
-
-        spell.push_str(&format!(
-            "\n\n# TOOLS MODE\n\
-             You have access to diagnostic tools that fetch detailed AWR/STATSPACK data on demand. \
-             Use tools proactively. Do not rely only on the initial summary when a precise tool call can verify or falsify a hypothesis. \
-             Start with get_database_load_summary unless the user request is already very narrow. \
-             For suspicious snapshots, call list_snapshots, compare_snapshots, top_wait_events_in_snapshot, top_sqls_in_snapshot, get_metric_time_series, get_sql_timeline, or get_wait_event_timeline as needed. \
-             For every SQL_ID that materially contributes to DB Time, elapsed time, DB CPU, I/O time, buffer gets, physical reads, anomalous waits, or regression symptoms, call get_sql_text and get_sql_timeline. \
-             If execution-plan tools are available, you are expected to use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations. \
-             When you fetch an execution plan, produce a dedicated SQL execution plan analysis covering: dominant operations, access paths, join methods and join order, cardinality estimate errors, partition pruning, parallel execution, adaptive plan notes, temp spills/sorts, index usage, and concrete remediation options. \
-             Recommendations must be specific and evidence-based: statistics refresh, histograms, extended statistics, SQL rewrite, indexing, partitioning, SQL Plan Management baseline/profile, bind/literal handling, or application-side change. \
-             Prefer multiple narrow tool calls over guessing. Stop calling tools only when you have enough evidence to produce the FINAL markdown report following the OUTPUT STRUCTURE.{}",
-             xplan_note
-        ));
-    }
+    let spell =
+        build_model_instructions(vendor_model_lang[2], args, &events_sqls, stem, tools_mode);
 
     // --- common - history begins ---
     let mut messages: Vec<Value> = vec![
@@ -979,18 +1247,11 @@ pub async fn openrouter(
         json!({ "role": "user", "content": format!(
             "MAIN REPORT (toon/json-as-text):\n```\n{}\n```\n\nGLOBAL PROFILE:\n```json\n{}\n```",
             report_for_ai, load_profile
-        )})
+        )}),
     ];
 
-    // --- TOOLS-ONLY: lazy load for collection ---
     let collection: Option<AWRSCollection> = if tools_mode {
-        let mut json_file = args.json_file.clone();
-        if json_file.is_empty() {
-            json_file = format!("{}.json", args.directory);
-        }
-        let s_json = fs::read_to_string(&json_file)
-            .expect(&format!("Can't read {}", json_file));
-        Some(serde_json::from_str(&s_json).expect("Wrong AWRSCollection JSON"))
+        Some(load_tools_collection(args))
     } else {
         None
     };
@@ -998,7 +1259,7 @@ pub async fn openrouter(
     let max_iterations = if tools_mode {
         args.max_tool_iterations
     } else {
-        1   // without tools we always have one iteration. 
+        1 // without tools we always have one iteration.
     };
 
     let mut final_content = String::new();
@@ -1006,215 +1267,196 @@ pub async fn openrouter(
     let mut last_finish: String = String::new();
 
     for iteration in 0..max_iterations {
-    if tools_mode {
-        println!("🔁 Tool loop iteration {}/{}", iteration + 1, max_iterations);
-    }
+        if tools_mode {
+            println!(
+                "🔁 Tool loop iteration {}/{}",
+                iteration + 1,
+                max_iterations
+            );
+        }
 
-    let is_last_iteration = iteration + 1 == max_iterations;
+        let is_last_iteration = iteration + 1 == max_iterations;
 
-    // Payload — if tools mode is on we can add it to payload
-    let mut payload = json!({
-        "model": vendor_model_lang[1],
-        "messages": messages,
-        "reasoning": { "effort": "high" },
-        "stream": false
-    });
+        // Payload — if tools mode is on we can add it to payload
+        let mut payload = json!({
+            "model": vendor_model_lang[1],
+            "messages": messages,
+            "reasoning": { "effort": "high" },
+            "stream": false
+        });
 
-    if tools_mode {
-        payload["tools"] = jasmin_tools_schema(stem);
-        payload["tool_choice"] = json!("auto");
-    }
+        if tools_mode {
+            payload["tools"] = tools_schema(stem);
+            payload["tool_choice"] = json!("auto");
+        }
 
-    debug_note!("Payload for AI is {:?}", payload);
+        debug_note!("Payload for AI is {:?}", payload);
 
-    let (tx, rx) = oneshot::channel();
-    let spinner = tokio::spawn(spinning_beer(rx));
+        let (tx, rx) = oneshot::channel();
+        let spinner = tokio::spawn(spinning_beer(rx));
 
-    let resp = client
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .header("X-Title", "jas-min")
-        .json(&payload)
-        .send()
-        .await?;
+        let resp = client
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .header("X-Title", "jas-min")
+            .json(&payload)
+            .send()
+            .await?;
 
-    let _ = tx.send(());
-    let _ = spinner.await;
+        let _ = tx.send(());
+        let _ = spinner.await;
 
-    if !resp.status().is_success() {
-        eprintln!("Error: {}", resp.status());
-        eprintln!("{}", resp.text().await.unwrap_or_default());
-        break;
-    }
+        if !resp.status().is_success() {
+            eprintln!("Error: {}", resp.status());
+            eprintln!("{}", resp.text().await.unwrap_or_default());
+            break;
+        }
 
-    let body = resp.text().await?;
-    let json: Value = serde_json::from_str(&body)?;
+        let body = resp.text().await?;
+        let json: Value = serde_json::from_str(&body)?;
 
-    let choice = &json["choices"][0];
-    let msg = &choice["message"];
+        let choice = &json["choices"][0];
+        let msg = &choice["message"];
 
-    last_usage = json["usage"].clone();
-    last_finish = choice["finish_reason"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+        last_usage = json["usage"].clone();
+        last_finish = choice["finish_reason"].as_str().unwrap_or("").to_string();
 
-    // --- TOOLS: is model calling any tools? ---
-    if tools_mode {
-        if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-            if !tool_calls.is_empty() {
-                messages.push(msg.clone()); // keep assistant tool-call message in history
+        // --- TOOLS: is model calling any tools? ---
+        if tools_mode {
+            if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+                if !tool_calls.is_empty() {
+                    messages.push(msg.clone()); // keep assistant tool-call message in history
 
-                for tc in tool_calls {
-                    let tc_id = tc["id"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
+                    for tc in tool_calls {
+                        let tc_id = tc["id"].as_str().unwrap_or("").to_string();
 
-                    let fn_name = tc["function"]["name"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
+                        let fn_name = tc["function"]["name"].as_str().unwrap_or("").to_string();
 
-                    let raw_args = tc["function"]["arguments"]
-                        .as_str()
-                        .unwrap_or("{}");
+                        let raw_args = tc["function"]["arguments"].as_str().unwrap_or("{}");
 
-                    let parsed_args: Value =
-                        serde_json::from_str(raw_args).unwrap_or_else(|_| json!({}));
+                        let parsed_args: Value =
+                            serde_json::from_str(raw_args).unwrap_or_else(|_| json!({}));
 
-                    println!("🛠  Tool call: {}({})", fn_name, parsed_args);
+                        println!("🛠  Tool call: {}({})", fn_name, parsed_args);
 
-                    let result = dispatch_tool_call(
-                        &fn_name,
-                        &parsed_args,
-                        collection.as_ref().unwrap(),
-                        stem,
-                    );
+                        let result = dispatch_tool_call(
+                            &fn_name,
+                            &parsed_args,
+                            collection.as_ref().unwrap(),
+                            stem,
+                        );
 
-                    let result_text = serde_json::to_string(&result)
-                        .unwrap_or_else(|_| {
+                        let result_text = serde_json::to_string(&result).unwrap_or_else(|_| {
                             "{\"error\":\"failed to serialize tool result\"}".to_string()
                         });
 
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": result_text
-                    }));
-                }
+                        messages.push(json!({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": result_text
+                        }));
+                    }
 
-                if is_last_iteration {
-                    eprintln!(
-                        "⚠️ Tool loop limit reached while model still requested tools. \
+                    if is_last_iteration {
+                        eprintln!(
+                            "⚠️ Tool loop limit reached while model still requested tools. \
                          Running final synthesis pass without tools."
-                    );
+                        );
 
-                    messages.push(json!({
-                        "role": "user",
-                        "content": r#"
-You have reached the maximum number of allowed tool iterations.
+                        messages.push(json!({
+                            "role": "user",
+                            "content": final_synthesis_request()
+                        }));
 
-You must now write the final Oracle performance analysis report in Markdown.
+                        let final_payload = json!({
+                            "model": vendor_model_lang[1],
+                            "messages": messages,
+                            "reasoning": { "effort": "high" },
+                            "stream": false
+                        });
 
-Rules:
-- Do not request or call any more tools.
-- Use the original ReportForAI / AWR / Statspack data already provided.
-- Use all tool results already returned in this conversation.
-- If some SQL texts or execution plans were not inspected, do not invent their details.
-- Focus on evidence-backed findings, impact, root causes, and concrete recommendations.
-- Do not mention that the tool budget was exhausted.
-- Produce the final Markdown report now.
-"#
-                    }));
+                        debug_note!("Final synthesis payload for AI is {:?}", final_payload);
 
-                    let final_payload = json!({
-                        "model": vendor_model_lang[1],
-                        "messages": messages,
-                        "reasoning": { "effort": "high" },
-                        "stream": false
-                    });
+                        let (tx, rx) = oneshot::channel();
+                        let spinner = tokio::spawn(spinning_beer(rx));
 
-                    debug_note!("Final synthesis payload for AI is {:?}", final_payload);
+                        let final_resp = client
+                            .post("https://openrouter.ai/api/v1/chat/completions")
+                            .header("Authorization", format!("Bearer {}", api_key))
+                            .header("Content-Type", "application/json")
+                            .header("X-Title", "jas-min")
+                            .json(&final_payload)
+                            .send()
+                            .await?;
 
-                    let (tx, rx) = oneshot::channel();
-                    let spinner = tokio::spawn(spinning_beer(rx));
+                        let _ = tx.send(());
+                        let _ = spinner.await;
 
-                    let final_resp = client
-                        .post("https://openrouter.ai/api/v1/chat/completions")
-                        .header("Authorization", format!("Bearer {}", api_key))
-                        .header("Content-Type", "application/json")
-                        .header("X-Title", "jas-min")
-                        .json(&final_payload)
-                        .send()
-                        .await?;
+                        if !final_resp.status().is_success() {
+                            eprintln!("Error during final synthesis: {}", final_resp.status());
+                            eprintln!("{}", final_resp.text().await.unwrap_or_default());
+                            break;
+                        }
 
-                    let _ = tx.send(());
-                    let _ = spinner.await;
+                        let final_body = final_resp.text().await?;
+                        let final_json: Value = serde_json::from_str(&final_body)?;
 
-                    if !final_resp.status().is_success() {
-                        eprintln!("Error during final synthesis: {}", final_resp.status());
-                        eprintln!("{}", final_resp.text().await.unwrap_or_default());
+                        let final_choice = &final_json["choices"][0];
+                        let final_msg = &final_choice["message"];
+
+                        last_usage = final_json["usage"].clone();
+                        last_finish = final_choice["finish_reason"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string();
+
+                        final_content = extract_chat_message_content(final_msg);
+
+                        if final_content.is_empty() {
+                            eprintln!("⚠️ Final synthesis message had no extractable content:");
+                            eprintln!(
+                                "{}",
+                                serde_json::to_string_pretty(final_msg)
+                                    .unwrap_or_else(|_| final_msg.to_string())
+                            );
+                        }
+
                         break;
                     }
 
-                    let final_body = final_resp.text().await?;
-                    let final_json: Value = serde_json::from_str(&final_body)?;
-
-                    let final_choice = &final_json["choices"][0];
-                    let final_msg = &final_choice["message"];
-
-                    last_usage = final_json["usage"].clone();
-                    last_finish = final_choice["finish_reason"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
-
-                    final_content = extract_chat_message_content(final_msg);
-
-                    if final_content.is_empty() {
-                        eprintln!("⚠️ Final synthesis message had no extractable content:");
-                        eprintln!(
-                            "{}",
-                            serde_json::to_string_pretty(final_msg)
-                                .unwrap_or_else(|_| final_msg.to_string())
-                        );
-                    }
-
-                    break;
+                    continue; // next round, because tools were called
                 }
-
-                continue; // next round, because tools were called
             }
         }
+
+        // --- No tool called or single-shot -> final answer ---
+        final_content = extract_chat_message_content(msg);
+
+        if final_content.is_empty() {
+            eprintln!("⚠️ Assistant message had no extractable final content:");
+            eprintln!(
+                "{}",
+                serde_json::to_string_pretty(msg).unwrap_or_else(|_| msg.to_string())
+            );
+        }
+
+        break;
     }
-
-    // --- No tool called or single-shot -> final answer ---
-    final_content = extract_chat_message_content(msg);
-
-    if final_content.is_empty() {
-        eprintln!("⚠️ Assistant message had no extractable final content:");
-        eprintln!(
-            "{}",
-            serde_json::to_string_pretty(msg).unwrap_or_else(|_| msg.to_string())
-        );
-    }
-
-    break;
-}
 
     fs::write(&response_file, final_content.as_bytes())?;
     println!("🍻 OpenRouter response written to file: {}", &response_file);
     convert_md_to_html_file(&response_file, events_sqls.clone());
-    println!("Total tokens: {}\nFinish reason: {}\n", last_usage, last_finish);
-    
+    println!(
+        "Total tokens: {}\nFinish reason: {}\n",
+        last_usage, last_finish
+    );
 
     Ok(())
 }
 
-fn jasmin_tools_schema_for_openai_responses(stem: &str) -> Value {
-    let tools = jasmin_tools_schema(stem);
+fn tools_schema_for_openai_responses(stem: &str) -> Value {
+    let tools = tools_schema(stem);
 
     let Some(arr) = tools.as_array() else {
         return json!([]);
@@ -1229,13 +1471,12 @@ fn jasmin_tools_schema_for_openai_responses(stem: &str) -> Value {
                 .get("description")
                 .cloned()
                 .unwrap_or_else(|| json!(""));
-            let parameters = function
-                .get("parameters")
-                .cloned()
-                .unwrap_or_else(|| json!({
+            let parameters = function.get("parameters").cloned().unwrap_or_else(|| {
+                json!({
                     "type": "object",
                     "properties": {}
-                }));
+                })
+            });
 
             Some(json!({
                 "type": "function",
@@ -1248,6 +1489,40 @@ fn jasmin_tools_schema_for_openai_responses(stem: &str) -> Value {
         .collect();
 
     json!(converted)
+}
+
+fn tools_schema_for_gemini(stem: &str) -> Value {
+    let tools = tools_schema(stem);
+
+    let Some(arr) = tools.as_array() else {
+        return json!([]);
+    };
+
+    let declarations: Vec<Value> = arr
+        .iter()
+        .filter_map(|tool| {
+            let function = tool.get("function")?;
+            let name = function.get("name")?.clone();
+            let description = function
+                .get("description")
+                .cloned()
+                .unwrap_or_else(|| json!(""));
+            let parameters = function.get("parameters").cloned().unwrap_or_else(|| {
+                json!({
+                    "type": "object",
+                    "properties": {}
+                })
+            });
+
+            Some(json!({
+                "name": name,
+                "description": description,
+                "parameters": parameters
+            }))
+        })
+        .collect();
+
+    json!([{ "functionDeclarations": declarations }])
 }
 
 fn extract_openai_responses_text(json: &Value) -> String {
@@ -1298,71 +1573,23 @@ pub async fn openai_gpt(
         " ===".bright_cyan()
     );
 
-    let api_key = env::var("OPENAI_API_KEY")
-        .expect("You have to set OPENAI_API_KEY env variable");
+    let api_key = env::var("OPENAI_API_KEY").expect("You have to set OPENAI_API_KEY env variable");
 
-    let stem = logfile_name.split('.').collect::<Vec<&str>>()[0];
-    let path = format!("{stem}.html_reports/stats/global_statistics.json");
-    let load_profile = fs::read_to_string(&path).expect(&format!("Can't open file {}", path));
+    let stem = stem_from_logfile(logfile_name);
+    let load_profile = load_profile_for_stem(stem);
 
     let suffix = if tools_mode { "_tools" } else { "" };
     let response_file = format!("{}_{}{}.md", logfile_name, vendor_model_lang[1], suffix);
 
-    let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
-    let rag_context = private_reasonings();
+    let spell =
+        build_model_instructions(vendor_model_lang[2], args, &events_sqls, stem, tools_mode);
 
-    if !args.url_context_file.is_empty() {
-        if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
-            spell = format!("{spell}\n# URL CONTEXT\n{urls}");
-        }
-    }
-
-    if tools_mode {
-        let xplan_dir = format!("{stem}_attachments");
-        let xplan_note = if Path::new(&xplan_dir).is_dir() {
-            format!(
-                "\nAvailable execution-plan attachment directory: `{}`. \
-                 If list_available_sql_plans is present, use it to discover SQL_IDs with plans.",
-                xplan_dir
-            )
-        } else {
-            String::new()
-        };
-
-        spell.push_str(&format!(
-            "\n\n# TOOLS MODE\n\
-             You have access to diagnostic tools that fetch detailed AWR/STATSPACK data on demand. \
-             Use tools proactively. Do not rely only on the initial summary when a precise tool call can verify or falsify a hypothesis. \
-             Start with get_database_load_summary unless the user request is already very narrow. \
-             For suspicious snapshots, call list_snapshots, compare_snapshots, top_wait_events_in_snapshot, top_sqls_in_snapshot, get_metric_time_series, get_sql_timeline, or get_wait_event_timeline as needed. \
-             For every SQL_ID that materially contributes to DB Time, elapsed time, DB CPU, I/O time, buffer gets, physical reads, anomalous waits, or regression symptoms, call get_sql_text and get_sql_timeline. \
-             If execution-plan tools are available, you are expected to use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations. \
-             When you fetch an execution plan, produce a dedicated SQL execution plan analysis covering: dominant operations, access paths, join methods and join order, cardinality estimate errors, partition pruning, parallel execution, adaptive plan notes, temp spills/sorts, index usage, and concrete remediation options. \
-             Recommendations must be specific and evidence-based: statistics refresh, histograms, extended statistics, SQL rewrite, indexing, partitioning, SQL Plan Management baseline/profile, bind/literal handling, or application-side change. \
-             Prefer multiple narrow tool calls over guessing. Stop calling tools only when you have enough evidence to produce the FINAL markdown report following the OUTPUT STRUCTURE.{}",
-             xplan_note
-        ));
-    }
-
-    let mut input_messages = vec![
-        json!({
-            "role": "system",
-            "content": [
-                { "type": "input_text", "text": spell }
-            ]
-        }),
-    ];
-
-    if let Some(rag) = rag_context {
-        input_messages.push(json!({
-            "role": "user",
-            "content": [
-                { "type": "input_text", "text":
-                    format!("### RAG CONTEXT\n{rag}\n-- END RAG CONTEXT --")
-                }
-            ]
-        }));
-    }
+    let mut input_messages = vec![json!({
+        "role": "system",
+        "content": [
+            { "type": "input_text", "text": spell }
+        ]
+    })];
 
     let mut report_payload = vec![
         json!({"type":"input_text", "text":
@@ -1387,13 +1614,7 @@ pub async fn openai_gpt(
     }));
 
     let collection: Option<AWRSCollection> = if tools_mode {
-        let mut json_file = args.json_file.clone();
-        if json_file.is_empty() {
-            json_file = format!("{}.json", args.directory);
-        }
-        let s_json = fs::read_to_string(&json_file)
-            .expect(&format!("Can't read {}", json_file));
-        Some(serde_json::from_str(&s_json).expect("Wrong AWRSCollection JSON"))
+        Some(load_tools_collection(args))
     } else {
         None
     };
@@ -1405,7 +1626,7 @@ pub async fn openai_gpt(
     };
 
     let tools = if tools_mode {
-        jasmin_tools_schema_for_openai_responses(stem)
+        tools_schema_for_openai_responses(stem)
     } else {
         json!([])
     };
@@ -1417,8 +1638,14 @@ pub async fn openai_gpt(
 
     for iteration in 0..max_iterations {
         if tools_mode {
-            println!("🔁 OpenAI tool loop iteration {}/{}", iteration + 1, max_iterations);
+            println!(
+                "🔁 OpenAI tool loop iteration {}/{}",
+                iteration + 1,
+                max_iterations
+            );
         }
+
+        let is_last_iteration = iteration + 1 == max_iterations;
 
         let mut payload = json!({
             "model": vendor_model_lang[1],
@@ -1431,7 +1658,10 @@ pub async fn openai_gpt(
         }
 
         let payload_str = serde_json::to_string(&payload).unwrap();
-        println!("The whole estimated number of tokens is: {}", estimate_tokens_from_str(&payload_str));
+        println!(
+            "The whole estimated number of tokens is: {}",
+            estimate_tokens_from_str(&payload_str)
+        );
         debug_note!("Payload for OpenAI Responses API is {:?}", payload);
 
         let (tx, rx) = oneshot::channel();
@@ -1478,17 +1708,17 @@ pub async fn openai_gpt(
 
             if !tool_calls.is_empty() {
                 for tc in tool_calls {
-                    let call_id = tc.get("call_id")
+                    let call_id = tc
+                        .get("call_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let fn_name = tc.get("name")
+                    let fn_name = tc
+                        .get("name")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let raw_args = tc.get("arguments")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("{}");
+                    let raw_args = tc.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
                     let parsed_args: Value = serde_json::from_str(raw_args).unwrap_or(json!({}));
 
                     println!("🛠  OpenAI tool call: {}({})", fn_name, parsed_args);
@@ -1506,6 +1736,61 @@ pub async fn openai_gpt(
                         "output": result
                     }));
                 }
+
+                if is_last_iteration {
+                    eprintln!(
+                        "⚠️ Tool loop limit reached while model still requested tools. \
+                         Running final synthesis pass without tools."
+                    );
+
+                    input_messages.push(json!({
+                        "role": "user",
+                        "content": [
+                            { "type": "input_text", "text": final_synthesis_request() }
+                        ]
+                    }));
+
+                    let final_payload = json!({
+                        "model": vendor_model_lang[1],
+                        "input": input_messages,
+                    });
+
+                    debug_note!(
+                        "Final synthesis payload for OpenAI Responses API is {:?}",
+                        final_payload
+                    );
+
+                    let (tx, rx) = oneshot::channel();
+                    let spinner = tokio::spawn(spinning_beer(rx));
+
+                    let final_response = client
+                        .post(format!("{}v1/responses", get_openai_url()))
+                        .bearer_auth(&api_key)
+                        .header("Content-Type", "application/json")
+                        .json(&final_payload)
+                        .send()
+                        .await?;
+
+                    let _ = tx.send(());
+                    let _ = spinner.await;
+
+                    if !final_response.status().is_success() {
+                        eprintln!("Error during final synthesis: {}", final_response.status());
+                        eprintln!("{}", final_response.text().await.unwrap_or_default());
+                        break;
+                    }
+
+                    let final_json: Value = final_response.json().await?;
+                    last_usage = final_json.get("usage").cloned().unwrap_or(Value::Null);
+                    last_finish = final_json
+                        .pointer("/output/0/finish_reason")
+                        .cloned()
+                        .or_else(|| final_json.get("finish_reason").cloned())
+                        .unwrap_or(Value::Null);
+                    final_content = extract_openai_responses_text(&final_json);
+                    break;
+                }
+
                 continue;
             }
         }

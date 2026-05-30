@@ -4947,7 +4947,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
     plotly_html = plotly_html.replace(
         "<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">", 
         &format!("{}{}{}\n\t\t</script>\n{}\n\t\t</script>\n\t</div>\n{}\n{}<div id=\"plotly-html-element\" class=\"plotly-graph-div\" style=\"height:100%; width:100%;\">",
-        highlight_title, 
+        highlight_title,
         "<button id=\"show-lpmore-button\" class=\"button-JASMIN-small\" role=\"button\"><span class=\"text\">LP More</span><span>LP More</span></button>",
         plot_highlight.to_inline_html(Some("highlight-html-element")),
         plot_highlight2.to_inline_html(Some("highlight2-html-element")),
