@@ -116,6 +116,240 @@ Rules:
 "#
 }
 
+fn estimate_tokens_from_value(value: &Value) -> usize {
+    let payload_str = serde_json::to_string(value).unwrap_or_default();
+    estimate_tokens_from_str(&payload_str)
+}
+
+fn openrouter_bad_response_path(response_file: &str, context: &str) -> String {
+    let safe_context = context.replace(' ', "_");
+    format!("{response_file}.{safe_context}.bad_response.json")
+}
+
+fn parse_openrouter_response_json(
+    body: &str,
+    response_file: &str,
+    context: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    match serde_json::from_str(body) {
+        Ok(json) => Ok(json),
+        Err(e) => {
+            let debug_path = openrouter_bad_response_path(response_file, context);
+            let _ = fs::write(&debug_path, body.as_bytes());
+            Err(format!(
+                "OpenRouter returned malformed JSON during {context}: {e}. \
+                 Raw response saved to {debug_path} ({} chars).",
+                body.chars().count()
+            )
+            .into())
+        }
+    }
+}
+
+fn openrouter_payload_tokens(model: &str, messages: &[Value], tools: Option<&Value>) -> usize {
+    let mut payload = json!({
+        "model": model,
+        "messages": messages,
+        "reasoning": { "effort": "high" },
+        "stream": false
+    });
+
+    if let Some(tools) = tools {
+        payload["tools"] = tools.clone();
+        payload["tool_choice"] = json!("auto");
+    }
+
+    estimate_tokens_from_value(&payload)
+}
+
+fn gemini_payload_tokens(spell: &str, contents: &[Value], tools: Option<&Value>) -> usize {
+    let mut payload = json!({
+        "systemInstruction": {
+            "parts": [{ "text": format!("### SYSTEM INSTRUCTIONS\n{spell}") }]
+        },
+        "contents": contents,
+        "generationConfig": {
+            "thinkingConfig": {
+                "thinkingBudget": -1
+            }
+        }
+    });
+
+    if let Some(tools) = tools {
+        payload["tools"] = tools.clone();
+        payload["toolConfig"] = json!({
+            "functionCallingConfig": { "mode": "AUTO" }
+        });
+    }
+
+    estimate_tokens_from_value(&payload)
+}
+
+fn openai_responses_payload_tokens(
+    model: &str,
+    input_messages: &[Value],
+    tools: Option<&Value>,
+) -> usize {
+    let mut payload = json!({
+        "model": model,
+        "input": input_messages,
+    });
+
+    if let Some(tools) = tools {
+        payload["tools"] = tools.clone();
+        payload["tool_choice"] = json!("auto");
+    }
+
+    estimate_tokens_from_value(&payload)
+}
+
+fn compact_openrouter_tool_results_for_budget(
+    model: &str,
+    messages: &mut Vec<Value>,
+    budget_tokens: usize,
+) -> usize {
+    let mut compacted = 0;
+
+    while openrouter_payload_tokens(model, messages, None) > budget_tokens {
+        let largest_tool_message = messages
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, msg)| {
+                if msg.get("role").and_then(|v| v.as_str()) != Some("tool") {
+                    return None;
+                }
+
+                let len = msg
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0);
+
+                Some((idx, len))
+            })
+            .max_by_key(|(_, len)| *len);
+
+        let Some((idx, len)) = largest_tool_message else {
+            break;
+        };
+
+        if len <= 2048 {
+            break;
+        }
+
+        let original = messages[idx]
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let prefix: String = original.chars().take(2048).collect();
+        messages[idx]["content"] = json!(format!(
+            "{}\n\n[Tool result truncated by JAS-MIN token budget guard. Original length: {} chars.]",
+            prefix, len
+        ));
+        compacted += 1;
+    }
+
+    compacted
+}
+
+fn compact_gemini_tool_results_for_budget(
+    spell: &str,
+    contents: &mut Vec<Value>,
+    budget_tokens: usize,
+) -> usize {
+    let mut compacted = 0;
+
+    while gemini_payload_tokens(spell, contents, None) > budget_tokens {
+        let largest_tool_response = contents
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, content)| {
+                let response = content.pointer("/parts/0/functionResponse/response")?;
+                let len = serde_json::to_string(response)
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0);
+                Some((idx, len))
+            })
+            .max_by_key(|(_, len)| *len);
+
+        let Some((idx, len)) = largest_tool_response else {
+            break;
+        };
+
+        if len <= 2048 {
+            break;
+        }
+
+        let original = contents[idx]
+            .pointer("/parts/0/functionResponse/response")
+            .and_then(|v| serde_json::to_string(v).ok())
+            .unwrap_or_default();
+        let prefix: String = original.chars().take(2048).collect();
+
+        if let Some(response) = contents[idx].pointer_mut("/parts/0/functionResponse/response") {
+            *response = json!({
+                "truncated_by_jasmin_token_budget": true,
+                "original_length_chars": len,
+                "prefix": prefix
+            });
+            compacted += 1;
+        } else {
+            break;
+        }
+    }
+
+    compacted
+}
+
+fn compact_openai_tool_results_for_budget(
+    model: &str,
+    input_messages: &mut Vec<Value>,
+    budget_tokens: usize,
+) -> usize {
+    let mut compacted = 0;
+
+    while openai_responses_payload_tokens(model, input_messages, None) > budget_tokens {
+        let largest_tool_output = input_messages
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| {
+                if item.get("type").and_then(|v| v.as_str()) != Some("function_call_output") {
+                    return None;
+                }
+
+                let len = item
+                    .get("output")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0);
+
+                Some((idx, len))
+            })
+            .max_by_key(|(_, len)| *len);
+
+        let Some((idx, len)) = largest_tool_output else {
+            break;
+        };
+
+        if len <= 2048 {
+            break;
+        }
+
+        let original = input_messages[idx]
+            .get("output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let prefix: String = original.chars().take(2048).collect();
+        input_messages[idx]["output"] = json!(format!(
+            "{}\n\n[Tool result truncated by JAS-MIN token budget guard. Original length: {} chars.]",
+            prefix, len
+        ));
+        compacted += 1;
+    }
+
+    compacted
+}
+
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct StatisticsDescription {
     pub dbcpu_dbtime: String,
@@ -1005,6 +1239,18 @@ pub async fn gemini(
         json!([])
     };
 
+    let gemini_tool_payload_budget = if tools_mode {
+        let initial_payload_tokens = gemini_payload_tokens(&spell, &contents, Some(&tools));
+        let budget = initial_payload_tokens.saturating_add(args.tokens_budget);
+        println!(
+            "Gemini tools token guard: initial payload ~{} tokens, tool headroom {}, stop threshold ~{} tokens.",
+            initial_payload_tokens, args.tokens_budget, budget
+        );
+        budget
+    } else {
+        args.tokens_budget
+    };
+
     let mut final_content = String::new();
     let mut last_usage: Value = Value::Null;
     let mut last_finish: Value = Value::Null;
@@ -1037,6 +1283,103 @@ pub async fn gemini(
             payload["toolConfig"] = json!({
                 "functionCallingConfig": { "mode": "AUTO" }
             });
+        }
+
+        if tools_mode {
+            let estimated_payload_tokens = estimate_tokens_from_value(&payload);
+            println!(
+                "Estimated Gemini tool payload tokens: {}/{}",
+                estimated_payload_tokens, gemini_tool_payload_budget
+            );
+
+            if estimated_payload_tokens > gemini_tool_payload_budget {
+                eprintln!(
+                    "⚠️ Gemini tools token budget reached before iteration {}/{}. \
+                     Running final synthesis without more tool calls.",
+                    iteration + 1,
+                    max_iterations
+                );
+
+                contents.push(json!({
+                    "role": "user",
+                    "parts": [{ "text": final_synthesis_request() }]
+                }));
+
+                let compacted = compact_gemini_tool_results_for_budget(
+                    &spell,
+                    &mut contents,
+                    gemini_tool_payload_budget,
+                );
+
+                if compacted > 0 {
+                    eprintln!(
+                        "⚠️ Compacted {} large Gemini tool result(s) to fit the final synthesis budget.",
+                        compacted
+                    );
+                }
+
+                let final_payload = json!({
+                    "systemInstruction": {
+                        "parts": [{ "text": format!("### SYSTEM INSTRUCTIONS\n{spell}") }]
+                    },
+                    "contents": contents.clone(),
+                    "generationConfig": {
+                        "thinkingConfig": {
+                            "thinkingBudget": -1
+                        }
+                    }
+                });
+                let final_payload_tokens = estimate_tokens_from_value(&final_payload);
+
+                if final_payload_tokens > gemini_tool_payload_budget {
+                    return Err(format!(
+                        "Gemini tools token budget exhausted: final synthesis payload is ~{} tokens, budget is ~{} tokens. \
+                         Increase --tokens-budget or reduce the initial report/tool scope.",
+                        final_payload_tokens, gemini_tool_payload_budget
+                    )
+                    .into());
+                }
+
+                println!(
+                    "Estimated Gemini final synthesis tokens: {}/{}",
+                    final_payload_tokens, gemini_tool_payload_budget
+                );
+
+                let (tx, rx) = oneshot::channel();
+                let spinner = tokio::spawn(spinning_beer(rx));
+
+                let final_response = client
+                    .post(format!(
+                        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                        vendor_model_lang[1],
+                        api_key
+                    ))
+                    .header("Content-Type", "application/json")
+                    .json(&final_payload)
+                    .send()
+                    .await?;
+
+                let _ = tx.send(());
+                let _ = spinner.await;
+
+                if !final_response.status().is_success() {
+                    eprintln!("Error during final synthesis: {}", final_response.status());
+                    eprintln!("{}", final_response.text().await.unwrap_or_default());
+                    break;
+                }
+
+                let final_json: Value = final_response.json().await?;
+                last_usage = final_json
+                    .get("usageMetadata")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                last_finish = final_json
+                    .pointer("/candidates/0/finishReason")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                final_content = extract_gemini_text(&final_json);
+                break;
+            }
         }
 
         debug_note!("Payload for Gemini API is {:?}", payload);
@@ -1117,6 +1460,19 @@ pub async fn gemini(
                         "parts": [{ "text": final_synthesis_request() }]
                     }));
 
+                    let compacted = compact_gemini_tool_results_for_budget(
+                        &spell,
+                        &mut contents,
+                        gemini_tool_payload_budget,
+                    );
+
+                    if compacted > 0 {
+                        eprintln!(
+                            "⚠️ Compacted {} large Gemini tool result(s) to fit the final synthesis budget.",
+                            compacted
+                        );
+                    }
+
                     let final_payload = json!({
                         "systemInstruction": {
                             "parts": [{ "text": format!("### SYSTEM INSTRUCTIONS\n{spell}") }]
@@ -1128,6 +1484,21 @@ pub async fn gemini(
                             }
                         }
                     });
+                    let final_payload_tokens = estimate_tokens_from_value(&final_payload);
+
+                    if final_payload_tokens > gemini_tool_payload_budget {
+                        return Err(format!(
+                            "Gemini tools token budget exhausted: final synthesis payload is ~{} tokens, budget is ~{} tokens. \
+                             Increase --tokens-budget or reduce the initial report/tool scope.",
+                            final_payload_tokens, gemini_tool_payload_budget
+                        )
+                        .into());
+                    }
+
+                    println!(
+                        "Estimated Gemini final synthesis tokens: {}/{}",
+                        final_payload_tokens, gemini_tool_payload_budget
+                    );
 
                     let (tx, rx) = oneshot::channel();
                     let spinner = tokio::spawn(spinning_beer(rx));
@@ -1262,6 +1633,25 @@ pub async fn openrouter(
         1 // without tools we always have one iteration.
     };
 
+    let tools = if tools_mode {
+        tools_schema(stem)
+    } else {
+        json!([])
+    };
+
+    let openrouter_tool_payload_budget = if tools_mode {
+        let initial_payload_tokens =
+            openrouter_payload_tokens(vendor_model_lang[1], &messages, Some(&tools));
+        let budget = initial_payload_tokens.saturating_add(args.tokens_budget);
+        println!(
+            "OpenRouter tools token guard: initial payload ~{} tokens, tool headroom {}, stop threshold ~{} tokens.",
+            initial_payload_tokens, args.tokens_budget, budget
+        );
+        budget
+    } else {
+        args.tokens_budget
+    };
+
     let mut final_content = String::new();
     let mut last_usage: Value = Value::Null;
     let mut last_finish: String = String::new();
@@ -1286,8 +1676,112 @@ pub async fn openrouter(
         });
 
         if tools_mode {
-            payload["tools"] = tools_schema(stem);
+            payload["tools"] = tools.clone();
             payload["tool_choice"] = json!("auto");
+        }
+
+        if tools_mode {
+            let estimated_payload_tokens = estimate_tokens_from_value(&payload);
+            println!(
+                "Estimated OpenRouter tool payload tokens: {}/{}",
+                estimated_payload_tokens, openrouter_tool_payload_budget
+            );
+
+            if estimated_payload_tokens > openrouter_tool_payload_budget {
+                eprintln!(
+                    "⚠️ OpenRouter tools token budget reached before iteration {}/{}. \
+                     Running final synthesis without more tool calls.",
+                    iteration + 1,
+                    max_iterations
+                );
+
+                messages.push(json!({
+                    "role": "user",
+                    "content": final_synthesis_request()
+                }));
+
+                let compacted = compact_openrouter_tool_results_for_budget(
+                    vendor_model_lang[1],
+                    &mut messages,
+                    openrouter_tool_payload_budget,
+                );
+
+                if compacted > 0 {
+                    eprintln!(
+                        "⚠️ Compacted {} large tool result(s) to fit the final synthesis budget.",
+                        compacted
+                    );
+                }
+
+                let final_payload = json!({
+                    "model": vendor_model_lang[1],
+                    "messages": messages,
+                    "reasoning": { "effort": "high" },
+                    "stream": false
+                });
+                let final_payload_tokens = estimate_tokens_from_value(&final_payload);
+
+                if final_payload_tokens > openrouter_tool_payload_budget {
+                    return Err(format!(
+                        "OpenRouter tools token budget exhausted: final synthesis payload is ~{} tokens, budget is ~{} tokens. \
+                         Increase --tokens-budget or reduce the initial report/tool scope.",
+                        final_payload_tokens, openrouter_tool_payload_budget
+                    )
+                    .into());
+                }
+
+                println!(
+                    "Estimated OpenRouter final synthesis tokens: {}/{}",
+                    final_payload_tokens, openrouter_tool_payload_budget
+                );
+
+                let (tx, rx) = oneshot::channel();
+                let spinner = tokio::spawn(spinning_beer(rx));
+
+                let final_resp = client
+                    .post("https://openrouter.ai/api/v1/chat/completions")
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("Content-Type", "application/json")
+                    .header("X-Title", "jas-min")
+                    .json(&final_payload)
+                    .send()
+                    .await?;
+
+                let _ = tx.send(());
+                let _ = spinner.await;
+
+                if !final_resp.status().is_success() {
+                    eprintln!("Error during final synthesis: {}", final_resp.status());
+                    eprintln!("{}", final_resp.text().await.unwrap_or_default());
+                    break;
+                }
+
+                let final_body = final_resp.text().await?;
+                let final_json =
+                    parse_openrouter_response_json(&final_body, &response_file, "final_synthesis")?;
+
+                let final_choice = &final_json["choices"][0];
+                let final_msg = &final_choice["message"];
+
+                last_usage = final_json["usage"].clone();
+                last_finish = final_choice["finish_reason"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+
+                final_content = extract_chat_message_content(final_msg);
+
+                if final_content.is_empty() {
+                    eprintln!("⚠️ Final synthesis message had no extractable content:");
+                    eprintln!(
+                        "{}",
+                        serde_json::to_string_pretty(final_msg)
+                            .unwrap_or_else(|_| final_msg.to_string())
+                    );
+                }
+
+                break;
+            }
         }
 
         debug_note!("Payload for AI is {:?}", payload);
@@ -1314,7 +1808,7 @@ pub async fn openrouter(
         }
 
         let body = resp.text().await?;
-        let json: Value = serde_json::from_str(&body)?;
+        let json = parse_openrouter_response_json(&body, &response_file, "tool_loop")?;
 
         let choice = &json["choices"][0];
         let msg = &choice["message"];
@@ -1369,12 +1863,40 @@ pub async fn openrouter(
                             "content": final_synthesis_request()
                         }));
 
+                        let compacted = compact_openrouter_tool_results_for_budget(
+                            vendor_model_lang[1],
+                            &mut messages,
+                            openrouter_tool_payload_budget,
+                        );
+
+                        if compacted > 0 {
+                            eprintln!(
+                                "⚠️ Compacted {} large tool result(s) to fit the final synthesis budget.",
+                                compacted
+                            );
+                        }
+
                         let final_payload = json!({
                             "model": vendor_model_lang[1],
                             "messages": messages,
                             "reasoning": { "effort": "high" },
                             "stream": false
                         });
+                        let final_payload_tokens = estimate_tokens_from_value(&final_payload);
+
+                        if final_payload_tokens > openrouter_tool_payload_budget {
+                            return Err(format!(
+                                "OpenRouter tools token budget exhausted: final synthesis payload is ~{} tokens, budget is ~{} tokens. \
+                                 Increase --tokens-budget or reduce the initial report/tool scope.",
+                                final_payload_tokens, openrouter_tool_payload_budget
+                            )
+                            .into());
+                        }
+
+                        println!(
+                            "Estimated OpenRouter final synthesis tokens: {}/{}",
+                            final_payload_tokens, openrouter_tool_payload_budget
+                        );
 
                         debug_note!("Final synthesis payload for AI is {:?}", final_payload);
 
@@ -1400,7 +1922,11 @@ pub async fn openrouter(
                         }
 
                         let final_body = final_resp.text().await?;
-                        let final_json: Value = serde_json::from_str(&final_body)?;
+                        let final_json = parse_openrouter_response_json(
+                            &final_body,
+                            &response_file,
+                            "final_synthesis",
+                        )?;
 
                         let final_choice = &final_json["choices"][0];
                         let final_msg = &final_choice["message"];
@@ -1631,6 +2157,19 @@ pub async fn openai_gpt(
         json!([])
     };
 
+    let openai_tool_payload_budget = if tools_mode {
+        let initial_payload_tokens =
+            openai_responses_payload_tokens(vendor_model_lang[1], &input_messages, Some(&tools));
+        let budget = initial_payload_tokens.saturating_add(args.tokens_budget);
+        println!(
+            "OpenAI tools token guard: initial payload ~{} tokens, tool headroom {}, stop threshold ~{} tokens.",
+            initial_payload_tokens, args.tokens_budget, budget
+        );
+        budget
+    } else {
+        args.tokens_budget
+    };
+
     let client = Client::new();
     let mut final_content = String::new();
     let mut last_usage: Value = Value::Null;
@@ -1657,11 +2196,97 @@ pub async fn openai_gpt(
             payload["tool_choice"] = json!("auto");
         }
 
-        let payload_str = serde_json::to_string(&payload).unwrap();
-        println!(
-            "The whole estimated number of tokens is: {}",
-            estimate_tokens_from_str(&payload_str)
-        );
+        let estimated_payload_tokens = estimate_tokens_from_value(&payload);
+        if tools_mode {
+            println!(
+                "Estimated OpenAI tool payload tokens: {}/{}",
+                estimated_payload_tokens, openai_tool_payload_budget
+            );
+
+            if estimated_payload_tokens > openai_tool_payload_budget {
+                eprintln!(
+                    "⚠️ OpenAI tools token budget reached before iteration {}/{}. \
+                     Running final synthesis without more tool calls.",
+                    iteration + 1,
+                    max_iterations
+                );
+
+                input_messages.push(json!({
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": final_synthesis_request() }
+                    ]
+                }));
+
+                let compacted = compact_openai_tool_results_for_budget(
+                    vendor_model_lang[1],
+                    &mut input_messages,
+                    openai_tool_payload_budget,
+                );
+
+                if compacted > 0 {
+                    eprintln!(
+                        "⚠️ Compacted {} large OpenAI tool result(s) to fit the final synthesis budget.",
+                        compacted
+                    );
+                }
+
+                let final_payload = json!({
+                    "model": vendor_model_lang[1],
+                    "input": input_messages,
+                });
+                let final_payload_tokens = estimate_tokens_from_value(&final_payload);
+
+                if final_payload_tokens > openai_tool_payload_budget {
+                    return Err(format!(
+                        "OpenAI tools token budget exhausted: final synthesis payload is ~{} tokens, budget is ~{} tokens. \
+                         Increase --tokens-budget or reduce the initial report/tool scope.",
+                        final_payload_tokens, openai_tool_payload_budget
+                    )
+                    .into());
+                }
+
+                println!(
+                    "Estimated OpenAI final synthesis tokens: {}/{}",
+                    final_payload_tokens, openai_tool_payload_budget
+                );
+
+                let (tx, rx) = oneshot::channel();
+                let spinner = tokio::spawn(spinning_beer(rx));
+
+                let final_response = client
+                    .post(format!("{}v1/responses", get_openai_url()))
+                    .bearer_auth(&api_key)
+                    .header("Content-Type", "application/json")
+                    .json(&final_payload)
+                    .send()
+                    .await?;
+
+                let _ = tx.send(());
+                let _ = spinner.await;
+
+                if !final_response.status().is_success() {
+                    eprintln!("Error during final synthesis: {}", final_response.status());
+                    eprintln!("{}", final_response.text().await.unwrap_or_default());
+                    break;
+                }
+
+                let final_json: Value = final_response.json().await?;
+                last_usage = final_json.get("usage").cloned().unwrap_or(Value::Null);
+                last_finish = final_json
+                    .pointer("/output/0/finish_reason")
+                    .cloned()
+                    .or_else(|| final_json.get("finish_reason").cloned())
+                    .unwrap_or(Value::Null);
+                final_content = extract_openai_responses_text(&final_json);
+                break;
+            }
+        } else {
+            println!(
+                "The whole estimated number of tokens is: {}",
+                estimated_payload_tokens
+            );
+        }
         debug_note!("Payload for OpenAI Responses API is {:?}", payload);
 
         let (tx, rx) = oneshot::channel();
@@ -1750,10 +2375,38 @@ pub async fn openai_gpt(
                         ]
                     }));
 
+                    let compacted = compact_openai_tool_results_for_budget(
+                        vendor_model_lang[1],
+                        &mut input_messages,
+                        openai_tool_payload_budget,
+                    );
+
+                    if compacted > 0 {
+                        eprintln!(
+                            "⚠️ Compacted {} large OpenAI tool result(s) to fit the final synthesis budget.",
+                            compacted
+                        );
+                    }
+
                     let final_payload = json!({
                         "model": vendor_model_lang[1],
                         "input": input_messages,
                     });
+                    let final_payload_tokens = estimate_tokens_from_value(&final_payload);
+
+                    if final_payload_tokens > openai_tool_payload_budget {
+                        return Err(format!(
+                            "OpenAI tools token budget exhausted: final synthesis payload is ~{} tokens, budget is ~{} tokens. \
+                             Increase --tokens-budget or reduce the initial report/tool scope.",
+                            final_payload_tokens, openai_tool_payload_budget
+                        )
+                        .into());
+                    }
+
+                    println!(
+                        "Estimated OpenAI final synthesis tokens: {}/{}",
+                        final_payload_tokens, openai_tool_payload_budget
+                    );
 
                     debug_note!(
                         "Final synthesis payload for OpenAI Responses API is {:?}",
