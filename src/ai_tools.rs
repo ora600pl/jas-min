@@ -37,7 +37,7 @@ const MAX_XPLAN_BYTES: usize = 512 * 1024;
 ///
 /// Keep descriptions explicit: the model uses them as its routing table. Yes,
 /// apparently we now write documentation for probabilistic parrots. Here we are.
-pub fn jasmin_tools_schema(stem: &str) -> Value {
+pub fn tools_schema(stem: &str) -> Value {
     let mut tools = json!([
         // ====================================================================
         // 0. GLOBAL OVERVIEW / TRIAGE

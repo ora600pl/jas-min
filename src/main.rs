@@ -157,7 +157,7 @@ struct Args {
     #[clap(short = 'G', long, default_value="", verbatim_doc_comment)]
 	gradient_custom: String,
 
-	 /// Enable TOOLS mode for OpenRouter (agentic loop with function calling)
+	 /// Enable TOOLS mode for AI providers that support function calling
     #[arg(long, default_value_t = false)]
     pub tools_mode: bool,
     
