@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
 use std::path::Path;
 use std::fs::File;
 use std::io::{self, Write};
@@ -10,8 +10,15 @@ use crate::make_notes;
 use colored::*;
 use open::*; 
 use crate::tools::*; 
-use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI,AppState};
+use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI};
 
+use std::cmp::Ordering;
+
+#[derive(Debug, Clone)]
+pub struct AnomalySummaryItem {
+    pub name: String,
+    pub mad_score: f64,
+}
 
 fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> HashMap<String, Vec<f64>> {
     //Create list of all events
@@ -509,20 +516,24 @@ pub fn detect_time_model_anomalies_mad(awrs: &Vec<AWR>, args: &Args) -> HashMap<
 }
 
 pub fn anomalies_join(
-    anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>,
+    anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<AnomalySummaryItem>>>,
     key: (u64, String),
     anomaly_type: &str,
     anomaly_detail: impl Into<String>,
+    mad_score: f64,
     ){
     let inner_map = anomalies_summary.entry(key).or_insert_with(BTreeMap::new);
     inner_map
         .entry(anomaly_type.to_string())
         .or_insert_with(Vec::new)
-        .push(anomaly_detail.into());
+        .push(AnomalySummaryItem {
+            name: anomaly_detail.into(),
+            mad_score,
+        });
 }
 
 pub fn save_anomalies_to_csv(
-    anomalies_summary: &BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>,
+    anomalies_summary: &BTreeMap<(u64, String), BTreeMap<String, Vec<AnomalySummaryItem>>>,
     output_dir: impl AsRef<Path>,
     ) -> io::Result<()> {
 
@@ -561,7 +572,7 @@ pub fn save_anomalies_to_csv(
 
 
 fn save_summary_csv(
-    anomalies_summary: &BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>,
+    anomalies_summary: &BTreeMap<(u64, String), BTreeMap<String, Vec<AnomalySummaryItem>>>,
     output_dir: &Path,
     ) -> io::Result<()> {
     ///
@@ -589,7 +600,7 @@ fn save_summary_csv(
 
 
 fn save_detailed_csv_files(
-    anomalies_summary: &BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>,
+    anomalies_summary: &BTreeMap<(u64, String), BTreeMap<String, Vec<AnomalySummaryItem>>>,
     output_dir: &Path,
     ) -> io::Result<()> {
     ///
@@ -608,7 +619,7 @@ fn save_detailed_csv_files(
         for (anomaly_type, details) in anomalies_map {
             for detail in details {
                 // Escape the detail string for CSV format
-                let escaped_detail = escape_csv_field(&format!("{}: {}", anomaly_type, detail));
+                let escaped_detail = escape_csv_field(&format!("{}: {}", anomaly_type, detail.name));
                 anomaly_lines.push(escaped_detail);
             }
         }
@@ -640,7 +651,7 @@ fn escape_csv_field(field: &str) -> String {
     }
 }
 
-pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<String>>>, args: &Args, logfile_name: &str, report_for_ai: &mut ReportForAI) -> String {
+pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<AnomalySummaryItem>>>, args: &Args, logfile_name: &str, report_for_ai: &mut ReportForAI) -> String {
     
     let mut table = Table::new();
     table.set_titles(Row::new(vec![
@@ -658,8 +669,8 @@ pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), 
 
         for (anomaly_type, details) in anomalies_map {
             for detail in details {
-                all_lines.push(format!("{}: {}", anomaly_type, detail));
-                anomaly_data.push(AnomalyDescription {area_of_anomaly: anomaly_type.clone(), statistic_name: detail.clone()});
+                all_lines.push(format!("{}: {}", anomaly_type, detail.name));
+                anomaly_data.push(AnomalyDescription {area_of_anomaly: anomaly_type.clone(), statistic_name: detail.name.clone()});
             }
         }
 
@@ -703,4 +714,77 @@ pub fn report_anomalies_summary(anomalies_summary: &mut BTreeMap<(u64, String), 
     }
 
     html_table
+}
+
+pub fn trim_anomalies_summary(
+    anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<AnomalySummaryItem>>>,
+    args: &Args,
+) {
+
+    /*
+        Step 1:
+        For each snapshot/date and each anomaly category, keep only top N anomalies
+        ordered by MAD score descending.
+        top_anomalies = 0 means: do not trim anomalies inside categories.
+    */
+    let top_n = args.mad_threshold; //mad_threshold is actually mad_top
+
+    if top_n == 0 {
+        return;
+    }
+
+    for (_snap_key, anomalies_by_category) in anomalies_summary.iter_mut() {
+        for (_category, anomalies) in anomalies_by_category.iter_mut() {
+            anomalies.sort_by(|left, right| {
+                right
+                    .mad_score
+                    .partial_cmp(&left.mad_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            anomalies.truncate(top_n);
+        }
+
+        anomalies_by_category.retain(|_category, anomalies| !anomalies.is_empty());
+    }
+
+    anomalies_summary.retain(|_snap_key, anomalies_by_category| !anomalies_by_category.is_empty());
+
+    /*
+        Step 2:
+        Keep only top N largest anomaly clusters.
+        A "cluster" here means one snapshot/date entry:
+            (begin_snap_id, begin_snap_date) -> categories -> anomalies
+        Cluster size is the total number of anomalies across all categories
+        for that snapshot/date.
+    */
+
+    let mut cluster_sizes: Vec<((u64, String), usize)> = anomalies_summary
+        .iter()
+        .map(|(snap_key, anomalies_by_category)| {
+            let cluster_size = anomalies_by_category
+                .values()
+                .map(|anomalies| anomalies.len())
+                .sum::<usize>();
+            (snap_key.clone(), cluster_size)
+        })
+        .collect();
+
+    cluster_sizes.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.0 .0.cmp(&right.0 .0))
+            .then_with(|| left.0 .1.cmp(&right.0 .1))
+    });
+
+    let keep_snap_keys: BTreeSet<(u64, String)> = cluster_sizes
+        .into_iter()
+        .take(args.top_cluster_anomalies)
+        .map(|(snap_key, _cluster_size)| snap_key)
+        .collect();
+
+    anomalies_summary.retain(|snap_key, _anomalies_by_category| {
+        keep_snap_keys.contains(snap_key)
+    });
 }

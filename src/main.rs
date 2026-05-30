@@ -25,7 +25,7 @@ mod gradient;
 mod ai_tools;
 
 use crate::reasonings::*;
-use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI,AppState};
+use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI};
 use crate::reasonings_modular::*;
 use crate::reasonings_modular::ModularLlmConfig;
 use crate::tools::*;
@@ -88,16 +88,6 @@ struct Args {
 	#[clap(short, long, default_value="", verbatim_doc_comment)]
 	ai: String,
 
-	///Base output token count is 8192 - you can update maximum number of output tokens by this factor
-	#[clap(short = 'C', long, default_value_t = 8)]
-	token_count_factor: usize,
-
-	///Launches the backend agent used by the JASMIN Assistant.
-	///-b <openai>|<google:model>
-	/// Configuration details such as API keys and the selected PORT number are loaded from the .env file
-	#[clap(short, long, default_value="", verbatim_doc_comment)]
-	backend_assistant: String,
-
 	///TOPn for detecting anomalies using MAD 
 	#[clap(short, long, default_value_t=10)]
 	mad_threshold: usize,
@@ -105,6 +95,11 @@ struct Args {
 	///Window size for detecting anomalies using MAD for local sliding window specified as % of probes
 	#[clap(short = 'W', long, default_value_t = 100)]
     mad_window_size: usize,
+
+	/// Keep only top N anomalies per category per snapshot date.
+	/// 0 means no trimming.
+	#[arg(long, default_value_t = 0)]
+	pub top_cluster_anomalies: usize,
 
 	///Parallelism level 
 	#[clap(short = 'P', long, default_value_t=4)]
@@ -147,6 +142,10 @@ struct Args {
 	///Convergence tolerance for coefficient change in Elastic Net
 	#[clap(short = 'T', long, default_value_t=1e-6)]
 	en_tol: f64,
+
+	/// Keep only top N results per regression model.
+	#[arg(long, default_value_t = 10)]
+	pub top_gradient: usize,
 
 	///Convert existing markdown file to HTML without calling AI model 
 	#[clap(short, long, default_value="", verbatim_doc_comment)]
@@ -268,11 +267,11 @@ fn main() {
 		};
 		
         if vendor_model_lang[0] == "openai" {
-            openai_gpt(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
+            openai_gpt(&reportfile, vendor_model_lang, events_sqls.clone(), &args, &toon_str).unwrap();
         } else if vendor_model_lang[0] == "google" { 
-            gemini(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
+            gemini(&reportfile, vendor_model_lang, events_sqls.clone(), &args, &toon_str).unwrap();
 		} else if vendor_model_lang[0] == "openrouter" { 
-            openrouter(&reportfile, vendor_model_lang, args.token_count_factor, events_sqls.clone(), &args, &toon_str).unwrap();
+            openrouter(&reportfile, vendor_model_lang, events_sqls.clone(), &args, &toon_str).unwrap();
 		} else if vendor_model_lang[0] == "openroutersmall" { 
             let cfg = ModularLlmConfig {
 					lang: vendor_model_lang[2].to_string(),
@@ -340,29 +339,6 @@ fn main() {
 		} else {
             println!("Unrecognized vendor. Supported vendors: openai, google, openrouter");
         }   
-    }
-	if !args.backend_assistant.is_empty() {
-		let bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
-		let backend_type = match parse_backend_type(&args.backend_assistant) {
-			Ok(backend) => backend,
-			Err(e) => {
-				eprintln!("❌ Error: {}", e);
-				std::process::exit(1);
-			}
-		};
-		let mut model_name = "gemini-2.5-flash".to_string();
-		if args.backend_assistant.contains(":") {
-			model_name = args.backend_assistant.split(":").collect::<Vec<&str>>()[1].to_string();
-		}
-
-		println!("{}",r#"==== STARTING ASISTANT BACKEND ==="#.bright_cyan());
-		println!("🤖 Starting JAS-MIN Assistant Backend using: {}",args.backend_assistant);
-		println!("📁 Report File: {}",&reportfile);
-        let j = serde_json::to_value(&report_for_ai).unwrap();
-		let toon_str = encode(&j, None);
-		let mut f = fs::File::create("report_for_ai.toon").unwrap();
-		f.write_all(toon_str.as_bytes()).unwrap();
-		backend_ai(reportfile, backend_type, model_name, toon_str);
     }
 
 	if !args.convert_md2html.is_empty() {

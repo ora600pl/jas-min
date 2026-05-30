@@ -778,7 +778,7 @@ async fn upload_log_file_gemini(api_key: &str, log_content: String, file_name: S
 }
 
 #[tokio::main]
-pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_factor: usize,events_sqls: HashMap<&str, HashSet<String>>,args: &crate::Args, report_for_ai: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,events_sqls: HashMap<&str, HashSet<String>>,args: &crate::Args, report_for_ai: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}{}{}", 
         "=== Consulting Google Gemini model: ".bright_cyan(), 
         vendor_model_lang[1], 
@@ -828,7 +828,6 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
                     ]
                 }],
                 "generationConfig": {
-                    "maxOutputTokens": 8192 * token_count_factor,
                     "thinkingConfig": {
                         "thinkingBudget": -1
                     }
@@ -887,11 +886,34 @@ pub async fn gemini(logfile_name: &str,vendor_model_lang: Vec<&str>,token_count_
     Ok(())
 }
 
+fn extract_chat_message_content(msg: &Value) -> String {
+    if let Some(s) = msg.get("content").and_then(|v| v.as_str()) {
+        return s.to_string();
+    }
+
+    if let Some(arr) = msg.get("content").and_then(|v| v.as_array()) {
+        let mut out = String::new();
+
+        for item in arr {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                out.push_str(text);
+                out.push('\n');
+            } else if let Some(text) = item.get("content").and_then(|v| v.as_str()) {
+                out.push_str(text);
+                out.push('\n');
+            }
+        }
+
+        return out.trim().to_string();
+    }
+
+    String::new()
+}
+
 #[tokio::main]
 pub async fn openrouter(
     logfile_name: &str,
     vendor_model_lang: Vec<&str>,
-    token_count_factor: usize,
     events_sqls: HashMap<&str, HashSet<String>>,
     args: &crate::Args,
     report_for_ai: &str,
@@ -984,129 +1006,344 @@ pub async fn openrouter(
     let mut last_finish: String = String::new();
 
     for iteration in 0..max_iterations {
-        if tools_mode {
-            println!("🔁 Tool loop iteration {}/{}", iteration + 1, max_iterations);
-        }
+    if tools_mode {
+        println!("🔁 Tool loop iteration {}/{}", iteration + 1, max_iterations);
+    }
 
-        // Payload — if tools mode is on we can add it to payload
-        let mut payload = json!({
-            "model": vendor_model_lang[1],
-            "messages": messages,
-            "reasoning": { "effort": "high" },
-            "stream": false
-        });
-        if tools_mode {
-            payload["tools"] = jasmin_tools_schema(stem);
-            payload["tool_choice"] = json!("auto");
-        }
+    let is_last_iteration = iteration + 1 == max_iterations;
 
-        debug_note!("Payload for AI is {:?}", payload);
+    // Payload — if tools mode is on we can add it to payload
+    let mut payload = json!({
+        "model": vendor_model_lang[1],
+        "messages": messages,
+        "reasoning": { "effort": "high" },
+        "stream": false
+    });
 
-        let (tx, rx) = oneshot::channel();
-        let spinner = tokio::spawn(spinning_beer(rx));
+    if tools_mode {
+        payload["tools"] = jasmin_tools_schema(stem);
+        payload["tool_choice"] = json!("auto");
+    }
 
-        let resp = client
-            .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .header("X-Title", "jas-min")
-            .json(&payload)
-            .send()
-            .await?;
+    debug_note!("Payload for AI is {:?}", payload);
 
-        let _ = tx.send(());
-        let _ = spinner.await;
+    let (tx, rx) = oneshot::channel();
+    let spinner = tokio::spawn(spinning_beer(rx));
 
-        if !resp.status().is_success() {
-            eprintln!("Error: {}", resp.status());
-            eprintln!("{}", resp.text().await.unwrap_or_default());
-            break;
-        }
+    let resp = client
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .header("X-Title", "jas-min")
+        .json(&payload)
+        .send()
+        .await?;
 
-        let body = resp.text().await?;
-        let json: Value = serde_json::from_str(&body)?;
-        let choice = &json["choices"][0];
-        let msg = &choice["message"];
-        last_usage  = json["usage"].clone();
-        last_finish = choice["finish_reason"].as_str().unwrap_or("").to_string();
+    let _ = tx.send(());
+    let _ = spinner.await;
 
-        // --- TOOLS: is model calling any tools? ---
-        if tools_mode {
-            if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-                if !tool_calls.is_empty() {
-                    messages.push(msg.clone());   // keep message history
-
-                    for tc in tool_calls {
-                        let tc_id    = tc["id"].as_str().unwrap_or("").to_string();
-                        let fn_name  = tc["function"]["name"].as_str().unwrap_or("").to_string();
-                        let raw_args = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                        let parsed_args: Value = serde_json::from_str(raw_args).unwrap_or(json!({}));
-
-                        println!("🛠  Tool call: {}({})", fn_name, parsed_args);
-
-                        let result = dispatch_tool_call(
-                            &fn_name,
-                            &parsed_args,
-                            collection.as_ref().unwrap(),
-                            stem
-                        );
-
-                        messages.push(json!({
-                            "role": "tool",
-                            "tool_call_id": tc_id,
-                            "name": fn_name,
-                            "content": result
-                        }));
-                    }
-                    continue;   // next rund
-                }
-            }
-        }
-
-        // --- No tool called or single-shot -> final answear ---
-        if let Some(content) = msg["content"].as_str() {
-            final_content = content.to_string();
-        }
+    if !resp.status().is_success() {
+        eprintln!("Error: {}", resp.status());
+        eprintln!("{}", resp.text().await.unwrap_or_default());
         break;
     }
 
-    if final_content.is_empty() {
-        eprintln!("⚠️  No final content produced");
-    } else {
-        fs::write(&response_file, final_content.as_bytes())?;
-        println!("🍻 OpenRouter response written to file: {}", &response_file);
-        convert_md_to_html_file(&response_file, events_sqls.clone());
-        println!("Total tokens: {}\nFinish reason: {}\n", last_usage, last_finish);
+    let body = resp.text().await?;
+    let json: Value = serde_json::from_str(&body)?;
+
+    let choice = &json["choices"][0];
+    let msg = &choice["message"];
+
+    last_usage = json["usage"].clone();
+    last_finish = choice["finish_reason"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    // --- TOOLS: is model calling any tools? ---
+    if tools_mode {
+        if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+            if !tool_calls.is_empty() {
+                messages.push(msg.clone()); // keep assistant tool-call message in history
+
+                for tc in tool_calls {
+                    let tc_id = tc["id"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+
+                    let fn_name = tc["function"]["name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+
+                    let raw_args = tc["function"]["arguments"]
+                        .as_str()
+                        .unwrap_or("{}");
+
+                    let parsed_args: Value =
+                        serde_json::from_str(raw_args).unwrap_or_else(|_| json!({}));
+
+                    println!("🛠  Tool call: {}({})", fn_name, parsed_args);
+
+                    let result = dispatch_tool_call(
+                        &fn_name,
+                        &parsed_args,
+                        collection.as_ref().unwrap(),
+                        stem,
+                    );
+
+                    let result_text = serde_json::to_string(&result)
+                        .unwrap_or_else(|_| {
+                            "{\"error\":\"failed to serialize tool result\"}".to_string()
+                        });
+
+                    messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": result_text
+                    }));
+                }
+
+                if is_last_iteration {
+                    eprintln!(
+                        "⚠️ Tool loop limit reached while model still requested tools. \
+                         Running final synthesis pass without tools."
+                    );
+
+                    messages.push(json!({
+                        "role": "user",
+                        "content": r#"
+You have reached the maximum number of allowed tool iterations.
+
+You must now write the final Oracle performance analysis report in Markdown.
+
+Rules:
+- Do not request or call any more tools.
+- Use the original ReportForAI / AWR / Statspack data already provided.
+- Use all tool results already returned in this conversation.
+- If some SQL texts or execution plans were not inspected, do not invent their details.
+- Focus on evidence-backed findings, impact, root causes, and concrete recommendations.
+- Do not mention that the tool budget was exhausted.
+- Produce the final Markdown report now.
+"#
+                    }));
+
+                    let final_payload = json!({
+                        "model": vendor_model_lang[1],
+                        "messages": messages,
+                        "reasoning": { "effort": "high" },
+                        "stream": false
+                    });
+
+                    debug_note!("Final synthesis payload for AI is {:?}", final_payload);
+
+                    let (tx, rx) = oneshot::channel();
+                    let spinner = tokio::spawn(spinning_beer(rx));
+
+                    let final_resp = client
+                        .post("https://openrouter.ai/api/v1/chat/completions")
+                        .header("Authorization", format!("Bearer {}", api_key))
+                        .header("Content-Type", "application/json")
+                        .header("X-Title", "jas-min")
+                        .json(&final_payload)
+                        .send()
+                        .await?;
+
+                    let _ = tx.send(());
+                    let _ = spinner.await;
+
+                    if !final_resp.status().is_success() {
+                        eprintln!("Error during final synthesis: {}", final_resp.status());
+                        eprintln!("{}", final_resp.text().await.unwrap_or_default());
+                        break;
+                    }
+
+                    let final_body = final_resp.text().await?;
+                    let final_json: Value = serde_json::from_str(&final_body)?;
+
+                    let final_choice = &final_json["choices"][0];
+                    let final_msg = &final_choice["message"];
+
+                    last_usage = final_json["usage"].clone();
+                    last_finish = final_choice["finish_reason"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+
+                    final_content = extract_chat_message_content(final_msg);
+
+                    if final_content.is_empty() {
+                        eprintln!("⚠️ Final synthesis message had no extractable content:");
+                        eprintln!(
+                            "{}",
+                            serde_json::to_string_pretty(final_msg)
+                                .unwrap_or_else(|_| final_msg.to_string())
+                        );
+                    }
+
+                    break;
+                }
+
+                continue; // next round, because tools were called
+            }
+        }
     }
+
+    // --- No tool called or single-shot -> final answer ---
+    final_content = extract_chat_message_content(msg);
+
+    if final_content.is_empty() {
+        eprintln!("⚠️ Assistant message had no extractable final content:");
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(msg).unwrap_or_else(|_| msg.to_string())
+        );
+    }
+
+    break;
+}
+
+    fs::write(&response_file, final_content.as_bytes())?;
+    println!("🍻 OpenRouter response written to file: {}", &response_file);
+    convert_md_to_html_file(&response_file, events_sqls.clone());
+    println!("Total tokens: {}\nFinish reason: {}\n", last_usage, last_finish);
+    
 
     Ok(())
 }
 
+fn jasmin_tools_schema_for_openai_responses(stem: &str) -> Value {
+    let tools = jasmin_tools_schema(stem);
+
+    let Some(arr) = tools.as_array() else {
+        return json!([]);
+    };
+
+    let converted: Vec<Value> = arr
+        .iter()
+        .filter_map(|tool| {
+            let function = tool.get("function")?;
+            let name = function.get("name")?.clone();
+            let description = function
+                .get("description")
+                .cloned()
+                .unwrap_or_else(|| json!(""));
+            let parameters = function
+                .get("parameters")
+                .cloned()
+                .unwrap_or_else(|| json!({
+                    "type": "object",
+                    "properties": {}
+                }));
+
+            Some(json!({
+                "type": "function",
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+                "strict": false
+            }))
+        })
+        .collect();
+
+    json!(converted)
+}
+
+fn extract_openai_responses_text(json: &Value) -> String {
+    if let Some(s) = json.get("output_text").and_then(|v| v.as_str()) {
+        return s.to_string();
+    }
+
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut chunks: Vec<String> = vec![];
+
+    if let Some(output_arr) = json.get("output").and_then(|o| o.as_array()) {
+        for item in output_arr {
+            if let Some(content_arr) = item.get("content").and_then(|c| c.as_array()) {
+                for c in content_arr {
+                    if let Some(t) = c.get("text").and_then(|t| t.as_str()) {
+                        if seen.insert(t.to_string()) {
+                            chunks.push(t.to_string());
+                        }
+                    } else if let Some(t) = c.get("output_text").and_then(|t| t.as_str()) {
+                        if seen.insert(t.to_string()) {
+                            chunks.push(t.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    chunks.join("\n")
+}
+
 #[tokio::main]
-pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_count_factor: usize, events_sqls: HashMap<&str, HashSet<String>>, args: &crate::Args, report_for_ai: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("{}{}{}", "=== Consulting OpenAI model: ".bright_cyan(), vendor_model_lang[1], " ===".bright_cyan());
+pub async fn openai_gpt(
+    logfile_name: &str,
+    vendor_model_lang: Vec<&str>,
+    events_sqls: HashMap<&str, HashSet<String>>,
+    args: &crate::Args,
+    report_for_ai: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tools_mode = args.tools_mode;
+    let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
+    println!(
+        "{}{}{}{}{}",
+        "=== Consulting OpenAI (".bright_cyan(),
+        mode_label,
+        ") model: ".bright_cyan(),
+        vendor_model_lang[1],
+        " ===".bright_cyan()
+    );
 
     let api_key = env::var("OPENAI_API_KEY")
         .expect("You have to set OPENAI_API_KEY env variable");
-
-    let log_content = fs::read_to_string(logfile_name)
-        .expect(&format!("Can't open file {}", logfile_name));
 
     let stem = logfile_name.split('.').collect::<Vec<&str>>()[0];
     let path = format!("{stem}.html_reports/stats/global_statistics.json");
     let load_profile = fs::read_to_string(&path).expect(&format!("Can't open file {}", path));
 
-    let response_file = format!("{}_{}.md", logfile_name, vendor_model_lang[1]);
+    let suffix = if tools_mode { "_tools" } else { "" };
+    let response_file = format!("{}_{}{}.md", logfile_name, vendor_model_lang[1], suffix);
 
     let mut spell: String = format!("{} {}", SPELL, vendor_model_lang[2]);
     let rag_context = private_reasonings();
 
     if !args.url_context_file.is_empty() {
         if let Some(urls) = url_context(&args.url_context_file, events_sqls.clone()) {
-            spell = format!("{spell}\n{urls}");
+            spell = format!("{spell}\n# URL CONTEXT\n{urls}");
         }
     }
-    
+
+    if tools_mode {
+        let xplan_dir = format!("{stem}_attachments");
+        let xplan_note = if Path::new(&xplan_dir).is_dir() {
+            format!(
+                "\nAvailable execution-plan attachment directory: `{}`. \
+                 If list_available_sql_plans is present, use it to discover SQL_IDs with plans.",
+                xplan_dir
+            )
+        } else {
+            String::new()
+        };
+
+        spell.push_str(&format!(
+            "\n\n# TOOLS MODE\n\
+             You have access to diagnostic tools that fetch detailed AWR/STATSPACK data on demand. \
+             Use tools proactively. Do not rely only on the initial summary when a precise tool call can verify or falsify a hypothesis. \
+             Start with get_database_load_summary unless the user request is already very narrow. \
+             For suspicious snapshots, call list_snapshots, compare_snapshots, top_wait_events_in_snapshot, top_sqls_in_snapshot, get_metric_time_series, get_sql_timeline, or get_wait_event_timeline as needed. \
+             For every SQL_ID that materially contributes to DB Time, elapsed time, DB CPU, I/O time, buffer gets, physical reads, anomalous waits, or regression symptoms, call get_sql_text and get_sql_timeline. \
+             If execution-plan tools are available, you are expected to use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations. \
+             When you fetch an execution plan, produce a dedicated SQL execution plan analysis covering: dominant operations, access paths, join methods and join order, cardinality estimate errors, partition pruning, parallel execution, adaptive plan notes, temp spills/sorts, index usage, and concrete remediation options. \
+             Recommendations must be specific and evidence-based: statistics refresh, histograms, extended statistics, SQL rewrite, indexing, partitioning, SQL Plan Management baseline/profile, bind/literal handling, or application-side change. \
+             Prefer multiple narrow tool calls over guessing. Stop calling tools only when you have enough evidence to produce the FINAL markdown report following the OUTPUT STRUCTURE.{}",
+             xplan_note
+        ));
+    }
+
     let mut input_messages = vec![
         json!({
             "role": "system",
@@ -1126,610 +1363,166 @@ pub async fn openai_gpt(logfile_name: &str, vendor_model_lang: Vec<&str>, token_
             ]
         }));
     }
-    
-    let mut log_and_images = vec![
+
+    let mut report_payload = vec![
         json!({"type":"input_text", "text":
             format!("### ATTACHED REPORT\n{report_for_ai}\n-- END ATTACHED REPORT --")
         }),
+        json!({
+            "type": "input_text",
+            "text": format!("### LOAD PROFILE STATISTICS JSON\n{}\n-- END JSON --", load_profile)
+        }),
     ];
 
-    log_and_images.push(json!({
-        "type": "input_text",
-        "text": format!("### LOAD PROFILE STATISTICS JSON\n{}\n-- END JSON --",load_profile
-        )
-    }));
-    
+    if tools_mode && Path::new(&format!("{stem}_attachments")).is_dir() {
+        report_payload.push(json!({
+            "type": "input_text",
+            "text": "### AVAILABLE ATTACHMENTS\nExecution plan attachments (*.xplan) may be available through tools. Use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations.\n-- END AVAILABLE ATTACHMENTS --"
+        }));
+    }
+
     input_messages.push(json!({
         "role": "user",
-        "content": log_and_images
+        "content": report_payload
     }));
 
-    let payload = json!({
-        "model": vendor_model_lang[1],
-        "input": input_messages,
-    });
+    let collection: Option<AWRSCollection> = if tools_mode {
+        let mut json_file = args.json_file.clone();
+        if json_file.is_empty() {
+            json_file = format!("{}.json", args.directory);
+        }
+        let s_json = fs::read_to_string(&json_file)
+            .expect(&format!("Can't read {}", json_file));
+        Some(serde_json::from_str(&s_json).expect("Wrong AWRSCollection JSON"))
+    } else {
+        None
+    };
 
-    let payload_str = serde_json::to_string(&payload).unwrap();
-    println!("The whole estimated number of tokens is: {}", estimate_tokens_from_str(&payload_str));
+    let max_iterations = if tools_mode {
+        args.max_tool_iterations
+    } else {
+        1
+    };
+
+    let tools = if tools_mode {
+        jasmin_tools_schema_for_openai_responses(stem)
+    } else {
+        json!([])
+    };
 
     let client = Client::new();
+    let mut final_content = String::new();
+    let mut last_usage: Value = Value::Null;
+    let mut last_finish: Value = Value::Null;
 
-    let (tx, rx) = oneshot::channel();
-    let spinner = tokio::spawn(spinning_beer(rx));
+    for iteration in 0..max_iterations {
+        if tools_mode {
+            println!("🔁 OpenAI tool loop iteration {}/{}", iteration + 1, max_iterations);
+        }
 
-    let response = client
-        .post(format!("{}v1/responses", get_openai_url()))
-        .bearer_auth(api_key)
-        .header("Content-Type", "application/json")
-        .json(&payload)
-        .send()
-        .await?;
+        let mut payload = json!({
+            "model": vendor_model_lang[1],
+            "input": input_messages,
+        });
 
-    let _ = tx.send(());
-    let _ = spinner.await;
+        if tools_mode {
+            payload["tools"] = tools.clone();
+            payload["tool_choice"] = json!("auto");
+        }
 
-    if response.status().is_success() {
+        let payload_str = serde_json::to_string(&payload).unwrap();
+        println!("The whole estimated number of tokens is: {}", estimate_tokens_from_str(&payload_str));
+        debug_note!("Payload for OpenAI Responses API is {:?}", payload);
+
+        let (tx, rx) = oneshot::channel();
+        let spinner = tokio::spawn(spinning_beer(rx));
+
+        let response = client
+            .post(format!("{}v1/responses", get_openai_url()))
+            .bearer_auth(&api_key)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        let _ = tx.send(());
+        let _ = spinner.await;
+
+        if !response.status().is_success() {
+            eprintln!("Error: {}", response.status());
+            eprintln!("{}", response.text().await.unwrap_or_default());
+            break;
+        }
+
         let json: Value = response.json().await?;
+        last_usage = json.get("usage").cloned().unwrap_or(Value::Null);
+        last_finish = json
+            .pointer("/output/0/finish_reason")
+            .cloned()
+            .or_else(|| json.get("finish_reason").cloned())
+            .unwrap_or(Value::Null);
 
-        let full_text = if let Some(s) = json.get("output_text").and_then(|v| v.as_str()) {
-            s.to_string()
-        } else {
-            let mut seen = std::collections::HashSet::<String>::new();
-            let mut chunks: Vec<String> = vec![];
+        if tools_mode {
+            let mut tool_calls: Vec<Value> = vec![];
             if let Some(output_arr) = json.get("output").and_then(|o| o.as_array()) {
                 for item in output_arr {
-                    if let Some(content_arr) = item.get("content").and_then(|c| c.as_array()) {
-                        for c in content_arr {
-                            if let Some(t) = c.get("text").and_then(|t| t.as_str()) {
-                                if seen.insert(t.to_string()) {
-                                    chunks.push(t.to_string());
-                                }
-                            } else if let Some(t) = c.get("output_text").and_then(|t| t.as_str()) {
-                                if seen.insert(t.to_string()) {
-                                    chunks.push(t.to_string());
-                                }
-                            }
-                        }
+                    if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
+                        tool_calls.push(item.clone());
                     }
                 }
+
+                // The Responses API requires passing model output items back,
+                // including reasoning items. Tiny detail, massive debugging party.
+                input_messages.extend(output_arr.iter().cloned());
             }
-            chunks.join("\n")
-        };
 
-        fs::write(&response_file, full_text.as_bytes())?;
-        println!("🧠 OpenAI response written to file: {}", &response_file);
+            if !tool_calls.is_empty() {
+                for tc in tool_calls {
+                    let call_id = tc.get("call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let fn_name = tc.get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let raw_args = tc.get("arguments")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("{}");
+                    let parsed_args: Value = serde_json::from_str(raw_args).unwrap_or(json!({}));
 
-        convert_md_to_html_file(&response_file, events_sqls);
+                    println!("🛠  OpenAI tool call: {}({})", fn_name, parsed_args);
 
-        if let Some(usage) = json.get("usage") {
-            println!("Total tokens (OpenAI): {}", usage);
+                    let result = dispatch_tool_call(
+                        &fn_name,
+                        &parsed_args,
+                        collection.as_ref().unwrap(),
+                        stem,
+                    );
+
+                    input_messages.push(json!({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": result
+                    }));
+                }
+                continue;
+            }
         }
-        if let Some(finish) = json.pointer("/output/0/finish_reason").or_else(|| json.get("finish_reason")) {
-            println!("Finish reason: {}", finish);
-        }
+
+        final_content = extract_openai_responses_text(&json);
+        break;
+    }
+
+    if final_content.is_empty() {
+        eprintln!("⚠️  No final content produced");
     } else {
-        eprintln!("Error: {}", response.status());
-        eprintln!("{}", response.text().await.unwrap_or_default());
+        fs::write(&response_file, final_content.as_bytes())?;
+        println!("🧠 OpenAI response written to file: {}", &response_file);
+        convert_md_to_html_file(&response_file, events_sqls);
+        println!("Total tokens (OpenAI): {}", last_usage);
+        println!("Finish reason: {}", last_finish);
     }
 
     Ok(())
-}
-
-// ###########################
-// JASMIN Assistant Backend
-// ###########################
-#[derive(Deserialize)]
-struct UserMessage {
-    message: String,
-}
-
-#[derive(Serialize)]
-struct AIResponse {
-    reply: String,
-}
-
-#[derive(Clone, Debug)]
-pub enum BackendType {
-    OpenAI,
-    Gemini,
-}
-
-#[async_trait::async_trait]
-trait AIBackend: Send + Sync {
-    async fn initialize(&mut self, toon_str: String) -> anyhow::Result<()>;
-    async fn send_message(&self, message: &str) -> anyhow::Result<String>;
-}
-
-struct OpenAIBackend {
-    client: reqwest::Client,
-    api_key: String,
-    assistant_id: String,
-    thread_id: Option<String>,
-}
-
-impl OpenAIBackend {
-    fn new(api_key: String, assistant_id: String) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_key,
-            assistant_id,
-            thread_id: None,
-        }
-    }
-
-    async fn create_thread_with_file(&self, toon_str: String) -> anyhow::Result<String> {
-        let file_bytes = toon_str.into_bytes();
-        let file_name = "jasmin_report.txt";
-
-        let file_part = Part::bytes(file_bytes)
-            .file_name(file_name)
-            .mime_str("text/plain")?;
-        let form = Form::new()
-            .part("file", file_part)
-            .text("purpose", "assistants");
-        
-        let upload_res = self.client
-            .post(format!("{}v1/files", get_openai_url()))
-            .bearer_auth(&self.api_key)
-            .multipart(form)
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
-        
-        let file_id = upload_res.get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Failed to upload file: {:?}", upload_res))?;
-        
-        println!("✅ File uploaded with ID: {}", file_id);
-
-        let thread_res = self.client
-            .post(format!("{}v1/threads", get_openai_url()))
-            .bearer_auth(&self.api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .json(&serde_json::json!({
-                "messages": [{
-                    "role": "user",
-                    "content": "Uploading file with performance report"
-                }]
-            }))
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
-        
-        let thread_id = thread_res.get("id")
-            .and_then(|id| id.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Failed to create thread: {:?}", thread_res))?;
-        
-        println!("✅ Thread created: {}", thread_id);
-
-        let message_url = format!("{}v1/threads/{}/messages", get_openai_url(), thread_id);
-        let file_msg_res = self.client
-            .post(&message_url)
-            .bearer_auth(&self.api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .json(&serde_json::json!({
-                "role": "user",
-                "content": "Please analyze the attached performance report.",
-                "attachments": [{
-                    "file_id": file_id,
-                    "tools": [{ "type": "file_search" }]
-                }]
-            }))
-            .send()
-            .await?;
-
-        if !file_msg_res.status().is_success() {
-            let status = file_msg_res.status();
-            let err_text = file_msg_res.text().await?;
-            eprintln!("Attach file failed. Status: {}, Response body: {}", status, err_text);
-            return Err(anyhow::anyhow!("Failed to attach file to thread."));
-        }
-
-        println!("📎 File attached to thread.");
-
-        println!("⏳ Waiting for file processing to complete...");
-        self.wait_for_file_processing(&thread_id).await?;
-        
-        println!("✅ File processing completed! Thread is ready for use.");
-        Ok(thread_id.to_string())
-    }
-
-    async fn wait_for_file_processing(&self, thread_id: &str) -> anyhow::Result<()> {
-        let mut attempts = 0;
-        let max_attempts = 30;
-        
-        loop {
-            let thread_url = format!("{}v1/threads/{}", get_openai_url(), thread_id);
-            let thread_res = self.client
-                .get(&thread_url)
-                .bearer_auth(&self.api_key)
-                .header("OpenAI-Beta", "assistants=v2")
-                .send()
-                .await?;
-                
-            if !thread_res.status().is_success() {
-                return Err(anyhow::anyhow!("Failed to get thread details"));
-            }
-            
-            let thread_data = thread_res.json::<serde_json::Value>().await?;
-            
-            if let Some(tool_resources) = thread_data.get("tool_resources") {
-                if let Some(file_search) = tool_resources.get("file_search") {
-                    if let Some(vector_store_ids) = file_search.get("vector_store_ids") {
-                        if let Some(vector_stores) = vector_store_ids.as_array() {
-                            if let Some(vs_id) = vector_stores.first().and_then(|v| v.as_str()) {
-                                match self.check_vector_store_status(vs_id).await? {
-                                    status if status == "completed" => {
-                                        println!("✅ Vector store processing completed!");
-                                        return Ok(());
-                                    }
-                                    status if status == "failed" => {
-                                        return Err(anyhow::anyhow!("Vector store processing failed"));
-                                    }
-                                    status => {
-                                        println!("📊 Vector store status: {} (attempt {}/{})", status, attempts + 1, max_attempts);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            if attempts >= max_attempts {
-                return Err(anyhow::anyhow!("File processing timeout after {} attempts", max_attempts));
-            }
-            
-            sleep(Duration::from_secs(5)).await;
-            attempts += 1;
-        }
-    }
-
-    async fn check_vector_store_status(&self, vector_store_id: &str) -> anyhow::Result<String> {
-        let url = format!("{}v1/vector_stores/{}", get_openai_url(), vector_store_id);
-        
-        let res = self.client
-            .get(&url)
-            .bearer_auth(&self.api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .send()
-            .await?;
-        
-        if !res.status().is_success() {
-            return Err(anyhow::anyhow!("Failed to check vector store status"));
-        }
-        
-        let json_res = res.json::<serde_json::Value>().await?;
-        
-        let status = json_res["status"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing status in vector store response"))?;
-        
-        Ok(status.to_string())
-    }
-
-    async fn create_message(&self, thread_id: &str, content: &str) -> anyhow::Result<()> {
-        let url = format!("{}v1/threads/{}/messages", get_openai_url(), thread_id);
-
-        let mut body = HashMap::new();
-        body.insert("role", "user");
-        body.insert("content", content);
-
-        self.client.post(&url)
-            .bearer_auth(&self.api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .json(&body)
-            .send().await?
-            .error_for_status()?;
-
-        Ok(())
-    }
-
-    async fn run_assistant(&self, thread_id: &str) -> anyhow::Result<String> {
-        let url = format!("{}v1/threads/{}/runs", get_openai_url(), thread_id);
-
-        let mut body = HashMap::new();
-        body.insert("assistant_id", &self.assistant_id);
-
-        let res = self.client.post(&url)
-            .bearer_auth(&self.api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .json(&body)
-            .send().await?;
-            
-        if !res.status().is_success() {
-            let status = res.status();
-            let error_text = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow::anyhow!("API request failed with status {}: {}", status, error_text));
-        }
-        
-        let json_res = res.json::<serde_json::Value>().await?;
-        let run_id = json_res["id"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'id' field in response: {}", json_res))?
-            .to_string();
-
-        Ok(run_id)
-    }
-
-    async fn wait_for_completion(&self, thread_id: &str, run_id: &str) -> anyhow::Result<()> {
-        loop {
-            let url = format!("{}v1/threads/{}/runs/{}", get_openai_url(), thread_id, run_id);
-            let res = self.client
-                .get(&url)
-                .bearer_auth(&self.api_key)
-                .header("OpenAI-Beta", "assistants=v2")
-                .send().await?
-                .json::<serde_json::Value>().await?;
-
-            let status = res.get("status").and_then(|s| s.as_str());
-
-            match status {
-                Some("completed") => return Ok(()),
-                Some("failed") | Some("cancelled") | Some("expired") => {
-                    return Err(anyhow::anyhow!("Run failed or was cancelled/expired:\n {:?}", res))
-                },
-                Some(_) => {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                },
-                None => {
-                    return Err(anyhow::anyhow!("Missing 'status' field in response:\n {:?}", res));
-                }
-            }
-        }
-    }
-
-    async fn get_reply(&self, thread_id: &str) -> anyhow::Result<String> {
-        let url = format!("{}v1/threads/{}/messages", get_openai_url(), thread_id);
-
-        let res = self.client
-            .get(&url)
-            .bearer_auth(&self.api_key)
-            .header("OpenAI-Beta", "assistants=v2")
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
-
-        if let Some(reply) = res["data"][0]["content"][0]["text"]["value"].as_str() {
-            Ok(reply.to_string())
-        } else {
-            Err(anyhow::anyhow!("Failed to extract assistant reply: {:?}", res))
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl AIBackend for OpenAIBackend {
-    async fn initialize(&mut self, file_path: String) -> anyhow::Result<()> {
-        let thread_id = self.create_thread_with_file(file_path).await?;
-        self.thread_id = Some(thread_id);
-        Ok(())
-    }
-
-    async fn send_message(&self, message: &str) -> anyhow::Result<String> {
-        let thread_id = self.thread_id.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Thread not initialized"))?;
-
-        self.create_message(thread_id, message).await?;
-        let run_id = self.run_assistant(thread_id).await?;
-        self.wait_for_completion(thread_id, &run_id).await?;
-        self.get_reply(thread_id).await
-    }
-}
-
-struct GeminiBackend {
-    client: reqwest::Client,
-    api_key: String,
-    model: String,
-    conversation_history: Vec<GeminiMessage>,
-    file_content: Option<String>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct GeminiMessage {
-    role: String,
-    parts: Vec<GeminiPart>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-enum GeminiPart {
-    Text { text: String },
-    InlineData { inline_data: InlineData },
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct InlineData {
-    mime_type: String,
-    data: String,
-}
-
-impl GeminiBackend {
-    fn new(api_key: String, gemini_model: String) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_key,
-            model: gemini_model, 
-            conversation_history: Vec::new(),
-            file_content: None,
-        }
-    }
-
-    async fn send_to_gemini(&self, messages: &[GeminiMessage]) -> anyhow::Result<String> {
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            self.model, self.api_key
-        );
-
-        let body = serde_json::json!({
-            "contents": messages,
-            "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 8192,
-            }
-        });
-
-        let res = self.client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await?;
-
-        if !res.status().is_success() {
-            let status = res.status();
-            let error_text = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow::anyhow!("Gemini API request failed with status {}: {}", status, error_text));
-        }
-
-        let json_res = res.json::<serde_json::Value>().await?;
-        
-        if let Some(candidates) = json_res["candidates"].as_array() {
-            if let Some(first_candidate) = candidates.first() {
-                if let Some(content) = first_candidate["content"]["parts"][0]["text"].as_str() {
-                    return Ok(content.to_string());
-                }
-            }
-        }
-
-        Err(anyhow::anyhow!("Failed to extract response from Gemini: {:?}", json_res))
-    }
-}
-
-#[async_trait::async_trait]
-impl AIBackend for GeminiBackend {
-    async fn initialize(&mut self, toon_str: String) -> anyhow::Result<()> {
-        self.file_content = Some(toon_str.clone());
-        
-        let mut spell: String = format!("{}", SPELL);
-        let pr = private_reasonings();
-        if pr.is_some() {
-            spell = format!("{}\n# ADVANCED RULES: {}", spell, pr.unwrap());
-        }
-
-        let initial_message = GeminiMessage {
-            role: "user".to_string(),
-            parts: vec![
-                GeminiPart::Text {
-                    text: format!(
-                        "# INITIALIZATION\n\n\
-                         I am providing you with an Oracle Database performance audit report generated \
-                         by JAS-MIN. This report contains aggregated AWR/STATSPACK statistics including \
-                         wait events, SQL analysis, I/O metrics, segment statistics, anomaly detection, \
-                         and gradient-based regression analysis.\n\n\
-                         ## Your Role\n\
-                         {}\n\n\
-                         ## Instructions\n\
-                         1. Ingest and understand the complete report below\n\
-                         2. Be prepared to answer detailed questions about any aspect of the data\n\
-                         3. When answering questions, always reference specific values, SQL_IDs, \
-                            event names, and snap_ids from the report\n\
-                         4. Detect the language of each question and respond in that same language\n\n\
-                         ## Report Content\n\
-                         ```\n{}\n```",
-                        spell, toon_str
-                    )
-                }
-            ],
-        };
-        
-        self.conversation_history.push(initial_message.clone());
-        
-        let response = self.send_to_gemini(&self.conversation_history).await?;
-        
-        self.conversation_history.push(GeminiMessage {
-            role: "model".to_string(),
-            parts: vec![GeminiPart::Text { text: response.clone() }],
-        });
-        
-        println!("✅ Gemini initialized with file content");
-        Ok(())
-    }
-
-    async fn send_message(&self, message: &str) -> anyhow::Result<String> {
-        let mut messages = self.conversation_history.clone();
-        
-        messages.push(GeminiMessage {
-            role: "user".to_string(),
-            parts: vec![GeminiPart::Text { text: message.to_string() }],
-        });
-        
-        let response = self.send_to_gemini(&messages).await?;
-        
-        Ok(response)
-    }
-}
-
-pub struct AppState {
-    backend: Arc<Mutex<Box<dyn AIBackend>>>,
-}
-
-#[tokio::main]
-pub async fn backend_ai(reportfile: String, backend_type: BackendType, model_name: String, toon_str: String) -> anyhow::Result<()> {    
-    let backend: Box<dyn AIBackend> = match backend_type {
-        BackendType::OpenAI => {
-            let api_key = env::var("OPENAI_API_KEY")
-                .expect("You have to set OPENAI_API_KEY variable in .env");
-            let assistant_id = env::var("OPENAI_ASST_ID")
-                .expect("You have to set OPENAI_ASST_ID variable in .env");
-            Box::new(OpenAIBackend::new(api_key, assistant_id))
-        },
-        BackendType::Gemini => {
-            let api_key = env::var("GEMINI_API_KEY")
-                .expect("You have to set GEMINI_API_KEY variable in .env");
-            
-            Box::new(GeminiBackend::new(api_key, model_name))
-        },
-    };
-    
-    let backend_port = env::var("PORT").unwrap_or("3000".to_string());
-    
-    let mut backend_mut = backend;
-    if let Err(e) = backend_mut.initialize(toon_str).await {
-        eprintln!("❌ Backend initialization failed: {:?}", e);
-        return Err(e);
-    }
-    
-    let state = Arc::new(AppState {
-        backend: Arc::new(Mutex::new(backend_mut)),
-    });
-
-    let app = Router::new()
-        .route("/api/chat", post(chat_handler))
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
-        .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", backend_port)).await?;
-    println!("🚀 Server running on http://127.0.0.1:{}", backend_port);
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-async fn chat_handler(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<UserMessage>,
-) -> impl IntoResponse {
-    let backend = state.backend.lock().await;
-    
-    match backend.send_message(&payload.message).await {
-        Ok(reply) => (StatusCode::OK, Json(AIResponse { reply })).into_response(),
-        Err(err) => {
-            eprintln!("Error processing message: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to process message").into_response()
-        }
-    }
-}
-
-pub fn parse_backend_type(args: &str) -> Result<BackendType, String> {
-    let mut btype = args; 
-    if args.contains(":") {
-        btype = args.split(":").collect::<Vec<&str>>()[0];
-    }
-    match btype {
-        "openai" => Ok(BackendType::OpenAI),
-        "google" => Ok(BackendType::Gemini),
-        _ => Err(format!("Backend must be 'openai' or 'google' -> found: {}",args)),
-    }
 }

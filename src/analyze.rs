@@ -26,6 +26,7 @@ use open::*;
 use regex::*;
 use crate::{anomalies, Args};
 use crate::anomalies::*;
+use crate::anomalies::AnomalySummaryItem;
 
 use crate::make_notes;
 use crate::debug_note;
@@ -52,7 +53,6 @@ use crate::reasonings::{StatisticsDescription,
                         AnomalyDescription,
                         AnomlyCluster,
                         ReportForAI,
-                        AppState,
                         GradientSettings,
                         GradientTopItem,
                         DbTimeGradientSection,
@@ -611,11 +611,6 @@ fn generate_events_plotfiles(awrs: &Vec<AWR>, top_events: &BTreeMap<String, u8>,
                     .rows(7)
                     .columns(1),
             )
-            //.legend(
-            //    Legend::new()
-            //        .x(0.0)
-            //        .x_anchor(Anchor::Left),
-            //)
             .x_axis(
                 Axis::new()
                     .domain(&[0.0, 1.0])
@@ -2909,7 +2904,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
 
     //This will hold anomalies summary join table indexed by (begin_snap_id, begin_snap_time) with anomalies value
     // like (42,12-Mar-2025 13:00:00) WAIT:db file sequential read (MAD,AVG,etc...)
-    let mut anomalies_summary: BTreeMap<(u64, String), BTreeMap<String, Vec<String>>> = BTreeMap::new();
+    let mut anomalies_summary: BTreeMap<(u64, String), BTreeMap<String, Vec<AnomalySummaryItem>>> = BTreeMap::new();
 
     //println!("{}","Foreground Wait Events");
     make_notes!(&logfile_name, false, 2, "\n{}\n","Foreground Wait Events".yellow());
@@ -3039,8 +3034,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("EVENT:    {}", key.1));
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"EVENT", &key.1);
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"EVENT", &key.1, a.1);
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, 0, "\t\t{}\n", table_line);
@@ -3265,8 +3259,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("BGEVENT:  {}", key.1));
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"BGEVENT", &key.1);
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"BGEVENT", &key.1, a.1);
 
             }
             for table_line in table.to_string().lines() {
@@ -3555,8 +3548,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("SQL:      {}", key.1));
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"SQL", &key.1);
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"SQL", &key.1, a.1);
             }
             for table_line in table.to_string().lines() {
                 make_notes!(&logfile_name, args.quiet, 0, "\t\t{}\n", table_line);
@@ -4033,8 +4025,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("STAT:     {}", s.0.clone()));
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"STAT", s.0.clone());
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"STAT", s.0.clone(), a.1);
 
             }
         }
@@ -4058,7 +4049,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"DC", s.clone());
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"DC", s.clone(), a.1);
 
             }
         }
@@ -4084,7 +4075,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"LC", s.clone());
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"LC", s.clone(), a.1);
 
             }
         }
@@ -4109,7 +4100,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"LATCH", s.clone());
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"LATCH", s.clone(), a.1);
 
             }
         }
@@ -4135,7 +4126,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"TM", s.clone());
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"TM", s.clone(), a.1);
 
             }
         }
@@ -4212,8 +4203,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                                                             .then(|| awr.snap_info.begin_snap_id)
                                                     }).unwrap();
 
-                //anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()), format!("LP:       {}", l.clone()));
-                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"LP", l.clone());
+                anomalies_join(&mut anomalies_summary, (begin_snap_id, a.0.clone()),"LP", l.clone(), a.1);
 
             }
             for table_line in table.to_string().lines() {
@@ -4226,6 +4216,8 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
     }
     /***********************************************/
     
+    trim_anomalies_summary(&mut anomalies_summary, &args);
+
     let anomalies_summary_html: String = format!(
         r#"
         <table id="anomalies-sum-table">
@@ -4621,12 +4613,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
         first_snap_time,
         last_snap_time
     );
-    
-    let mut bckend_port: String = String::new();
-    if !args.backend_assistant.is_empty() {
-        bckend_port = std::env::var("PORT").expect("You have to set backend PORT value in .env");
-    }
-    
+
     let jasmin_html_scripts: String = format!(
         r#"
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -4660,7 +4647,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
             input.value = '';
             const loadingDiv = showLoadingIndicator();
             try {{
-                const response = await fetch('http://localhost:{}/api/chat', {{
+                const response = await fetch('http://localhost:1234/api/chat', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ message: userMsg }})
@@ -4874,19 +4861,9 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                 }}
             }});
         }});
-        </script>"#,bckend_port
+        </script>"#
     );
-    let jasmin_assistant: String = format!(
-        r#"
-        <div> <br> </div>
-        <div id="chat-container" style="display: none;">
-            <div id="messages"></div>
-            <div id="input-area">
-                <input type="text" id="user-input" placeholder="message to JAS-MIN..." autofocus/>
-                <button id="send-btn">Send</button>
-            </div>
-        </div>"#
-    );
+    
     // Open plot_main HTML to inject Additional sections - Buttons, Tables, etc
     let mut plotly_html: String = fs::read_to_string(&fname)
         .expect("Failed to read jasmin-html file");
@@ -4902,7 +4879,7 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
     // Inject Buttons and Tables into Main HTML
     plotly_html = plotly_html.replace(
         "<body>",
-        &format!("<body>\n{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}",
+        &format!("<body>\n{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t",
             jasmin_logo,
             db_instance_info_html,
             "<button id=\"show-events-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait Events</span><span>TOP Wait Events</span></button>",
@@ -4931,11 +4908,6 @@ let user_calls_box_plot = BoxPlot::new(raw_values_of(&tracked_stats, TrackedStat
                     String::new()
                 }
             ),
-            if !args.backend_assistant.is_empty() { 
-                format!("{}","<button id=\"show-JASMINAI-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">JAS-MIN Assistant</span><span>JAS-MIN Assistant</span></button>")
-            }else{
-                format!("{}","<button id=\"show-JASMINAI-button\" class=\"button-JASMIN\" role=\"button\" style=\"display: none;\"><span class=\"text\">JAS-MIN Assistant</span><span>JAS-MIN Assistant</span></button>")},
-            jasmin_assistant,
             event_table_html,
             bgevent_table_html,
             anomalies_summary_html,

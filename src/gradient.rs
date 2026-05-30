@@ -20,7 +20,6 @@ use crate::reasonings::{StatisticsDescription,
                         AnomalyDescription,
                         AnomlyCluster,
                         ReportForAI,
-                        AppState,
                         GradientSettings,
                         GradientTopItem,
                         CrossModelClassification,
@@ -1287,6 +1286,7 @@ pub fn build_db_time_gradient_section(
     elastic_net_max_iter: usize,
     elastic_net_tol: f64,
     units_desc: &str,
+    top_n: usize
 ) -> Result<DbTimeGradientSection, String> {
     println!("\n\nBuilding gradient for {units_desc} - {} stats", event_series.len());
     if db_time_series.len() < 3 {
@@ -1314,7 +1314,7 @@ pub fn build_db_time_gradient_section(
     let make_top = |ranking: &[EventImpact], filter_zero: bool| -> Vec<GradientTopItem> {
         ranking.iter()
             .filter(|x| !filter_zero || x.gradient_coef != 0.0)
-            .take(50)
+            .take(top_n)
             .map(|x| GradientTopItem {
                 event_name: x.event_name.clone(),
                 gradient_coef: x.gradient_coef,
@@ -1355,11 +1355,11 @@ pub fn build_db_time_gradient_section(
 
     // VIF diagnostics
     section.vif_diagnostics = gradient_result.vif_by_event.iter()
-        .filter(|(_, &vif)| vif > 5.0)  // Only report VIF > 5 (moderate+)
+        .filter(|(_, &vif)| vif > 100.0)  // Only report VIF > 100 (high+)
         .map(|(name, &vif)| {
-            let interpretation = if vif > 100.0 {
+            let interpretation = if vif > 1000.0 {
                 "SEVERE_COLLINEARITY".to_string()
-            } else if vif > 10.0 {
+            } else if vif > 100.0 {
                 "HIGH_COLLINEARITY".to_string()
             } else {
                 "MODERATE_COLLINEARITY".to_string()
@@ -1372,6 +1372,7 @@ pub fn build_db_time_gradient_section(
         })
         .collect();
     section.vif_diagnostics.sort_by(|a, b| b.vif.partial_cmp(&a.vif).unwrap());
+    section.vif_diagnostics = section.vif_diagnostics.iter().take(top_n).cloned().collect();
 
     // Collinear group impacts
     section.collinear_group_impacts = gradient_result.collinear_groups.iter()
@@ -1589,6 +1590,7 @@ pub fn run_gradient_section(
         elastic_net_max_iter,
         elastic_net_tol,
         &spec.label,
+        args.top_gradient
     ) {
         Ok(section) => {
             make_notes!(

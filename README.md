@@ -202,15 +202,6 @@ export LOCAL_BASE_URL="http://localhost:1234/v1/chat/completions"
 jas-min -d ./awr_reports --ai local:my-model:EN
 ```
 
-### 4. Launch interactive AI assistant
-
-```bash
-# Create .env file with PORT and API keys first
-jas-min -d ./awr_reports -b google:gemini-2.5-flash
-```
-
----
-
 ## Usage Reference
 
 ### Parsing & Analysis
@@ -246,7 +237,7 @@ jas-min -d ./reports -s 1000-2000
 
 | Flag | Description | Default |
 |---|---|---|
-| `-m, --mad-threshold <FLOAT>` | MAD score threshold for flagging anomalies | `7.0` |
+| `-m, --mad-threshold <FLOAT>` | TOPn MAD flagging anomalies | `7.0` |
 | `-W, --mad-window-size <PCT>` | Sliding window size as percentage of total probes (100 = global) | `100` |
 
 ```bash
