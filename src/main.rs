@@ -118,7 +118,7 @@ struct Args {
 	url_context_file: String,
 
 	///Budget for token - used by modular LLM analyzes to minimize the number of tokens used by the model
-	#[clap(short = 'B', long, default_value_t=80000)]
+	#[clap(short = 'B', long, default_value_t=256000)]
 	tokens_budget: usize,
 
 	///For calculating gradient - ridge_lambda: L2 regularization strength (>= 0)
