@@ -34,6 +34,40 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | AI tools mode | Enables function/tool-call loops for OpenAI and OpenRouter with `--tools-mode`. |
 | Security | Controls whether object names and SQL text are stored with `--security-level`. |
 
+## Architecture Overview
+
+```text
++-----------------------------+
+| AWR / STATSPACK reports     |
+| .html files / .txt files    |
++--------------+--------------+
+               |
+               | parallel parsing with Rayon
+               v
++-----------------------------+
+| AWRSCollection JSON         |
+| SnapInfo, LoadProfile,      |
+| WaitEvents, SQL, Host CPU,  |
+| Instance Stats, I/O,        |
+| Latches, Segments, Params   |
++--------------+--------------+
+               |
+               v
++-----------------------------+
+| Analysis engine             |
+| Peak detection              |
+| MAD anomalies               |
+| Pearson correlations        |
+| Multi-model gradients       |
+| VIF and collinear groups    |
++------+----------------------+
+       |
+       +--> HTML dashboard and detail pages
+       +--> TXT analysis log
+       +--> CSV anomaly exports
+       +--> ReportForAI TOON/JSON for AI reports
+```
+
 ## Installation
 
 ### Requirements
@@ -161,6 +195,32 @@ jas-min -d ./awr_reports --ai openrouter:openai/gpt-4.1:EN --tools-mode
 
 If a sibling `<stem>_attachments/` directory exists, tools mode can also expose execution-plan attachments to the model.
 
+### One-Shot Batch Analysis
+
+For `google`, `openai`, and `openrouter`, JAS-MIN can send the compact `ReportForAI` structure plus Load Profile statistics to the selected model in one call. The report payload is serialized as TOON/JSON-like text to keep token usage lower than pretty JSON while preserving structure.
+
+Typical output files are named after the text log and model, for example:
+
+```text
+awr_reports.txt_gemini.md
+awr_reports.txt_o3.md
+awr_reports.txt_anthropic_claude-sonnet-4.md
+```
+
+The generated Markdown is converted to HTML with links back to JAS-MIN detail pages where possible.
+
+### Modular LLM Pipeline
+
+For `openroutersmall` and `local`, JAS-MIN uses a modular pipeline designed for smaller context windows:
+
+1. Split `ReportForAI` into focused sections such as baseline, foreground waits, background waits, SQLs, I/O, latches, segment statistics, correlations, anomaly clusters, and gradient sections.
+2. Attach a compact context capsule with general data and top spikes to each section.
+3. Trim section payloads to fit `--tokens-budget`.
+4. Ask the model for per-section notes.
+5. Compose the section notes into a final Markdown report.
+
+This is slower than one-shot mode, but it can produce useful reports with local or smaller-context models.
+
 ### URL Context and Custom Reasoning
 
 `--url-context-file` loads a JSON file used to add URL instructions for matching events or SQL IDs. The file is mainly useful with Gemini URL context workflows.
@@ -170,6 +230,41 @@ jas-min -d ./awr_reports --ai google:gemini-2.5-flash:EN -u url_context.json
 ```
 
 JAS-MIN also appends `reasonings.txt` to AI prompts when the file exists. If `JASMIN_HOME` is set, it reads `$JASMIN_HOME/reasonings.txt`; otherwise it tries `./reasonings.txt`.
+
+### ReportForAI Data Structure
+
+The `ReportForAI` document sent to AI providers is intentionally smaller than the full parsed JSON collection. It contains selected, analysis-oriented summaries:
+
+| Section | Content |
+|---|---|
+| `general_data` | Descriptions of the ratio and MAD analysis context. |
+| `top_spikes_marked` | Peak snapshots with DB Time, DB CPU, and DB CPU / DB Time ratio. |
+| `top_foreground_wait_events` | Foreground waits, descriptive statistics, correlations, and anomalies. |
+| `top_background_wait_events` | Background waits, descriptive statistics, and anomalies. |
+| `top_sqls_by_elapsed_time` | SQL elapsed-time metrics, CPU time, ASH events, correlations, and MAD summaries. |
+| `io_stats_by_function_summary` | Per-function I/O behavior such as DBWR, LGWR, and other Oracle components. |
+| `latch_activity_summary` | Latch activity and contention summaries. |
+| `top_10_segments_by_*` | Segment ranking sections when segment data is available and security level permits storing names. |
+| `instance_stats_pearson_correlation` | Instance statistics correlated with DB Time. |
+| `load_profile_anomalies` | MAD anomalies in Load Profile metrics. |
+| `anomaly_clusters` | Cross-domain anomaly groups around the same snapshot period. |
+| `db_time_gradient_*` | DB Time gradient sections with model results, VIF diagnostics, and group impact. |
+| `db_cpu_gradient_*` | DB CPU gradient sections with model results, VIF diagnostics, and group impact. |
+| `custom_gradient_*` | Custom SQL or wait-event gradient sections when `--gradient-custom` is used. |
+| `initialization_parameters` | Initialization parameters parsed from reports. |
+
+Each gradient section contains:
+
+| Field | Content |
+|---|---|
+| `settings` | Model hyperparameters and unit descriptions. |
+| `ridge_top` | Top Ridge regression rows. |
+| `elastic_net_top` | Top non-zero Elastic Net rows. |
+| `huber_top` | Top Huber robust regression rows. |
+| `quantile95_top` | Top Quantile-95 tail-risk rows. |
+| `cross_model_classifications` | Cross-model labels such as `CONFIRMED_BOTTLENECK` and `TAIL_RISK`. |
+| `vif_diagnostics` | Predictors with elevated VIF and interpretation labels. |
+| `collinear_group_impacts` | Combined impact for groups of strongly correlated predictors. |
 
 ## Markdown Conversion
 
@@ -190,6 +285,209 @@ The output is written next to the Markdown file with an `.html` extension.
 | 2 | `-S 2` | Also stores full SQL text from AWR/STATSPACK sections when parsed. |
 
 Default security level is `0`.
+
+## Statistical Algorithms
+
+### DB CPU / DB Time Ratio Analysis
+
+JAS-MIN identifies performance peaks by comparing **DB CPU** with **DB Time** from the Load Profile section of each snapshot:
+
+```text
+R = DB CPU (s/s) / DB Time (s/s)
+```
+
+- `R` close to `1.0` usually means the workload is CPU-bound.
+- `R` below the configured `--time-cpu-ratio` threshold means sessions spend a larger share of DB Time outside CPU, so wait events become more interesting.
+- `--filter-db-time` can be used to ignore low-volume periods where the ratio looks bad but the absolute DB Time is not operationally important.
+
+When `DB CPU / DB Time < --time-cpu-ratio` and the optional DB Time filter passes, the snapshot is marked as a peak period. JAS-MIN then selects the most relevant foreground waits, background waits, and SQL statements from those periods for deeper analysis and visualization.
+
+### Median Absolute Deviation (MAD)
+
+MAD is used as a robust anomaly detection method across several performance domains. It is less sensitive to extreme outliers than standard deviation, which makes it useful for bursty database workloads.
+
+For a time series:
+
+```text
+X = {x1, x2, ..., xn}
+```
+
+JAS-MIN computes:
+
+```text
+median = median(X)
+di     = |xi - median|
+MAD    = median({d1, d2, ..., dn})
+score  = |xi - median| / MAD
+```
+
+An observation is treated as anomalous when its MAD score is above the configured cutoff. In the current CLI this is controlled by `-m, --mad-threshold`, whose default is `10`.
+
+`-W, --mad-window-size` controls whether MAD is global or local:
+
+- `-W 100` uses the whole time series as the reference population.
+- Values below `100` use a sliding local window expressed as a percentage of probes, which helps detect anomalies relative to nearby behavior instead of the whole observation period.
+
+MAD analysis is applied to areas such as foreground and background wait events, SQL elapsed time, Load Profile metrics, instance activity statistics, dictionary cache, library cache, latch activity, and time model statistics. `--top-cluster-anomalies` can additionally trim anomaly clusters to the top N anomalies per category per snapshot.
+
+### Pearson Correlation Coefficient
+
+JAS-MIN computes Pearson correlation between DB Time and many candidate drivers:
+
+- foreground and background wait-event total wait time,
+- SQL elapsed time,
+- instance activity statistics.
+
+The coefficient is:
+
+```text
+r = sum((xi - mean(x)) * (yi - mean(y)))
+    / sqrt(sum((xi - mean(x))^2) * sum((yi - mean(y))^2))
+```
+
+The same idea is also used to correlate SQL elapsed time with foreground wait events, which helps identify which waits co-occur with specific SQL statements.
+
+If a metric has zero variance, the raw Pearson formula can produce a non-finite value. JAS-MIN guards against that case and treats non-finite correlations as not useful instead of letting them pollute the report.
+
+### Bonferroni-Corrected Significance Threshold
+
+When many instance statistics are checked against DB Time, JAS-MIN uses a Bonferroni-style correction to reduce false positives from multiple comparisons:
+
+```text
+r_threshold = max(0.5, r_bonferroni(k, alpha, n))
+```
+
+where:
+
+- `k` is the number of tested statistics,
+- `alpha` is the family-wise significance level,
+- `n` is the number of observations.
+
+Only statistics whose absolute correlation exceeds the threshold are promoted into the correlation report.
+
+### Multi-Model Gradient Regression
+
+The gradient analysis answers a slightly different question than correlation: **when DB Time changes, which metrics move in a way that best explains that change?**
+
+JAS-MIN first computes first-order differences:
+
+```text
+delta_y_t  = y_(t+1) - y_t
+delta_x_jt = x_j,(t+1) - x_j,t
+```
+
+The target delta is centered, and predictors are standardized using sample standard deviation with Bessel's correction:
+
+```text
+x_hat_jt = (delta_x_jt - mean(delta_x_j)) / s_j
+
+s_j = sqrt( sum((delta_x_jt - mean(delta_x_j))^2) / (N - 1) )
+```
+
+JAS-MIN then fits four complementary regression models:
+
+| Model | Method | What it is good for |
+|---|---|---|
+| Ridge | Dense linear solve with L2 regularization: `(X'X + lambda I) beta = X'y` | Stable ranking when predictors are numerous or correlated. |
+| Elastic Net | Coordinate descent with L1 and L2 penalties | Sparse ranking that highlights dominant drivers and suppresses redundant correlated predictors. |
+| Huber | Iteratively Reweighted Least Squares with Huber loss | Robust ranking that downweights extreme outlier snapshots. |
+| Quantile 95 | Quantile regression focused on the 95th percentile | Tail-risk analysis for the worst periods rather than average behavior. |
+
+The configurable parameters are:
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `-R, --ridge-lambda` | Ridge L2 regularization strength | `50` |
+| `-E, --en-lambda` | Elastic Net regularization strength | `30` |
+| `-A, --en-alpha` | Elastic Net L1/L2 mix; `1.0` is Lasso, `0.0` is Ridge-like | `0.333` |
+| `-I, --en-max-iter` | Coordinate descent iteration limit | `5000` |
+| `-T, --en-tol` | Elastic Net convergence tolerance | `0.000001` |
+| `--top-gradient` | Number of top rows kept per regression model | `10` |
+
+JAS-MIN calculates an impact score using the fitted coefficient and the MAD of the raw predictor deltas:
+
+```text
+impact_j = beta_j * MAD(delta_x_j)
+```
+
+The sign is preserved. Positive values indicate metrics associated with DB Time increases; negative values indicate metrics associated with DB Time decreases. This prevents idle or anti-correlated metrics from being reported as bottlenecks simply because their absolute coefficient is large.
+
+The standard gradient pages cover:
+
+1. DB Time vs foreground wait events.
+2. DB Time vs SQL elapsed time.
+3. DB Time vs instance statistic counters.
+4. DB Time vs instance statistic volumes.
+5. DB Time vs instance statistic time metrics.
+6. DB CPU vs CPU-related instance statistics.
+7. DB CPU vs SQL CPU time.
+
+`--gradient-custom` adds a targeted gradient for a selected SQL ID or wait event:
+
+```bash
+jas-min -d ./awr_reports -G SQL=0zv508wsas63c
+jas-min -d ./awr_reports -G "WAIT=log file sync"
+```
+
+### Multicollinearity Diagnostics (VIF)
+
+Oracle performance metrics are often highly collinear. For example, several enqueue waits, logical I/O metrics, or SQL elapsed-time series may rise and fall together. In that case, a multivariate model may know that the group matters but still struggle to assign impact cleanly to one member.
+
+JAS-MIN computes the **Variance Inflation Factor** for predictors:
+
+```text
+VIF_j = 1 / (1 - R_j^2)
+```
+
+`R_j^2` is computed by regressing predictor `j` against the other predictors. High VIF means the predictor can be explained by the other predictors and its individual coefficient is less reliable.
+
+| VIF range | Interpretation | How to read it |
+|---|---|---|
+| `1 - 5` | Acceptable | Individual coefficients are usually usable. |
+| `5 - 10` | Moderate collinearity | Interpret together with related metrics. |
+| `10 - 100` | High collinearity | Individual impact may be unstable; check group impact. |
+| `> 100` | Severe collinearity | Prefer collinear group impact over individual coefficient. |
+
+### Collinear Group Impact
+
+When predictors are strongly collinear, JAS-MIN groups them using pairwise correlation clustering and estimates a combined signal:
+
+```text
+delta_x_group,t = sum(delta_x_j,t for j in group)
+```
+
+Then it fits a univariate relationship between the combined group signal and target DB Time deltas:
+
+```text
+beta_group = Cov(delta_x_group, delta_y) / Var(delta_x_group)
+group_impact = |beta_group| * MAD(delta_x_group)
+```
+
+This helps with cases where each individual event looks weak because the model cannot separate it from its siblings, while the combined wait family is clearly important.
+
+### Cross-Model Triangulation
+
+After fitting Ridge, Elastic Net, Huber, and Quantile-95, JAS-MIN compares which predictors appear in each model's top results. The cross-model classification is intended to make the gradient output easier to read operationally:
+
+| Classification | Typical evidence | Interpretation |
+|---|---|---|
+| `CONFIRMED_BOTTLENECK` | Present across all four models | Robust systematic driver. |
+| `CONFIRMED_BOTTLENECK_EN_COLLINEAR` | Ridge, Huber, and Q95, but not Elastic Net | Likely real driver masked by sparse collinearity behavior. |
+| `STRONG_CONTRIBUTOR` | Ridge, Elastic Net, and Huber | Stable average contributor. |
+| `STABLE_CONTRIBUTOR` | Ridge and Huber | Persistent background contributor. |
+| `TAIL_RISK` | Quantile-95 only | Driver of worst-case periods rather than normal periods. |
+| `TAIL_OUTLIER` | Ridge and Quantile-95, but not Huber | Extreme snapshots influence the result. |
+| `OUTLIER_DRIVEN` | Ridge only | Possible impact from a few unusually large observations. |
+| `SPARSE_DOMINANT` | Elastic Net only | A sparse representative from a correlated group. |
+| `ROBUST_ONLY` | Huber only | Visible after downweighting outliers. |
+
+The VIF diagnostics and collinear group impact should be read together with these labels: classification says *what looks important*, while VIF and group impact help explain whether the importance is individually attributable or group-level.
+
+### Descriptive Statistics
+
+For wait events, SQL statements, Load Profile metrics, I/O, and latch activity, JAS-MIN computes descriptive statistics such as mean, standard deviation, median, quartiles, interquartile range, fences, minimum, maximum, variance, and weighted averages where appropriate.
+
+These statistics feed both the HTML dashboard and the compact `ReportForAI` data sent to AI models.
 
 ## Output Structure
 
