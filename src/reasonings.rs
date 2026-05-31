@@ -73,12 +73,22 @@ fn build_model_instructions(
 }
 
 fn tools_mode_instructions(stem: &str) -> String {
-    let xplan_dir = format!("{stem}_attachments");
-    let xplan_note = if Path::new(&xplan_dir).is_dir() {
+    let attachments_dir = format!("{stem}_attachments");
+    let xplan_note = if Path::new(&attachments_dir).is_dir() {
         format!(
             "\nAvailable execution-plan attachment directory: `{}`. \
              If list_available_sql_plans is present, use it to discover SQL_IDs with plans.",
-            xplan_dir
+            attachments_dir
+        )
+    } else {
+        String::new()
+    };
+    let alertlog_note = if Path::new(&attachments_dir).is_dir() {
+        format!(
+            "\nIf get_alertlog_errors is present, an alert.log-like file was found in `{}`. \
+             Use it as additional evidence when the report mentions parse errors, ORA/TNS errors, incidents, warnings, failed operations, disconnects, redo/log allocation issues, or any symptom that may be explained by alert.log messages. \
+             Query the narrowest relevant date range and request parse-error details when parse errors are suspected.",
+            attachments_dir
         )
     } else {
         String::new()
@@ -92,10 +102,11 @@ fn tools_mode_instructions(stem: &str) -> String {
          For suspicious snapshots, call list_snapshots, compare_snapshots, top_wait_events_in_snapshot, top_sqls_in_snapshot, get_metric_time_series, get_sql_timeline, or get_wait_event_timeline as needed. \
          For every SQL_ID that materially contributes to DB Time, elapsed time, DB CPU, I/O time, buffer gets, physical reads, anomalous waits, or regression symptoms, call get_sql_text and get_sql_timeline. \
          If execution-plan tools are available, you are expected to use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations. \
+         If alert.log tools are available, use get_alertlog_errors to verify error evidence for relevant date ranges, especially before dismissing parse errors or other reported failures as unrelated. \
          When you fetch an execution plan, produce a dedicated SQL execution plan analysis covering: dominant operations, access paths, join methods and join order, cardinality estimate errors, partition pruning, parallel execution, adaptive plan notes, temp spills/sorts, index usage, and concrete remediation options. \
          Recommendations must be specific and evidence-based: statistics refresh, histograms, extended statistics, SQL rewrite, indexing, partitioning, SQL Plan Management baseline/profile, bind/literal handling, or application-side change. \
          Prefer multiple narrow tool calls over guessing. Stop calling tools only when you have enough evidence to produce the FINAL markdown report following the OUTPUT STRUCTURE.{}",
-        xplan_note
+        format!("{xplan_note}{alertlog_note}")
     )
 }
 
