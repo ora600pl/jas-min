@@ -14,20 +14,26 @@
 //   * preserve backward-compatible aliases for older prompt/tool names.
 // ============================================================================
 
+use chrono::{NaiveDate, NaiveDateTime};
+use regex::Regex;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use toon::encode;
 
 use crate::awr::{AWRSCollection, AWR};
 
-const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-05-20.1";
+const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-05-31.1";
 const DEFAULT_LIMIT: usize = 50;
 const DEFAULT_TOP_N: usize = 10;
 const MAX_LIMIT: usize = 500;
 const MAX_TOP_N: usize = 100;
 const DEFAULT_XPLAN_LIMIT: usize = 100;
 const MAX_XPLAN_BYTES: usize = 512 * 1024;
+const DEFAULT_ALERTLOG_LIMIT: usize = 200;
+const MAX_ALERTLOG_LIMIT: usize = 1000;
 
 // ----------------------------------------------------------------------------
 // Tool schema (sent to the LLM)
@@ -483,6 +489,45 @@ pub fn tools_schema(stem: &str) -> Value {
 
         println!("✅ Found execution plans in {}", attachments_dir.display());
     }
+    if !list_alertlog_files(&attachments_dir).is_empty() {
+        tools.as_array_mut().expect("tools must be a JSON array").push(json!({
+            "type": "function",
+            "function": {
+                "name": "get_alertlog_errors",
+                "description": "Parses the Oracle alert.log attachment into a compact structured error stream and returns matching rows as TOON. Use this when the main report mentions parse errors, ORA/TNS errors, incidents, failures, warnings, disconnects, emergency flushes, redo/log allocation problems, or any suspicion that alert.log may contain missing context. Always call this for relevant date ranges before concluding that a reported error symptom has no supporting evidence.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "date_from": {
+                            "type": "string",
+                            "description": "Start date inclusive, format YYYY-MM-DD. Omit to start from the beginning of alert.log."
+                        },
+                        "date_to": {
+                            "type": "string",
+                            "description": "End date inclusive, format YYYY-MM-DD. Omit to read through the end of alert.log."
+                        },
+                        "code_pattern": {
+                            "type": "string",
+                            "description": "Optional case-insensitive substring filter for error code/type, e.g. ORA-00904, TNS-, PARSE_ERROR, WARNING."
+                        },
+                        "include_parse_error_details": {
+                            "type": "boolean",
+                            "description": "When true, includes parsed details from WARNING: too many parse errors blocks: ORA code, SQL hash, SQL ID, username, application and action."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum rows returned after filtering, default 200, max 1000."
+                        }
+                    }
+                }
+            }
+        }));
+
+        println!(
+            "✅ Found alert.log candidates in {}",
+            attachments_dir.display()
+        );
+    }
     tools
 }
 
@@ -513,6 +558,7 @@ pub fn dispatch_tool_call(
         }),
         "list_available_sql_plans" => tool_list_available_sql_plans(args, stem),
         "get_sql_execution_plan" => tool_get_sql_execution_plan(args, stem),
+        "get_alertlog_errors" => tool_get_alertlog_errors(args, stem),
 
         // Aggregations
         "list_snapshots" | "list_snapshots_in_range" => tool_list_snapshots(args, collection),
@@ -634,6 +680,230 @@ fn sql_id_from_xplan_path(path: &Path) -> Option<String> {
     path.file_stem()
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())
+}
+
+fn list_alertlog_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                if !path.is_file() {
+                    return false;
+                }
+                let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
+                    return false;
+                };
+                let filename_lc = filename.to_lowercase();
+                if !filename_lc.contains("alert") {
+                    return false;
+                }
+                match path.extension().and_then(|ext| ext.to_str()) {
+                    Some(ext) => matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "log" | "txt" | "trc" | "out"
+                    ),
+                    None => true,
+                }
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    files.sort_by(|a, b| {
+        let size_a = fs::metadata(a).map(|m| m.len()).unwrap_or(0);
+        let size_b = fs::metadata(b).map(|m| m.len()).unwrap_or(0);
+        size_b.cmp(&size_a).then_with(|| a.cmp(b))
+    });
+    files
+}
+
+fn parse_date_arg(args: &Value, key: &str) -> Result<Option<NaiveDate>, String> {
+    match arg_str(args, key) {
+        Some(value) if !value.trim().is_empty() => {
+            NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+                .map(Some)
+                .map_err(|_| format!("{key} must use YYYY-MM-DD format"))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn timestamp_from_alertlog_line(line: &str, ts_re: &Regex) -> Option<NaiveDateTime> {
+    let caps = ts_re.captures(line)?;
+    let date = caps.name("date")?.as_str();
+    let hour = caps.name("hour")?.as_str();
+    let minute = caps.name("minute")?.as_str();
+    let second = caps.name("second")?.as_str();
+    NaiveDateTime::parse_from_str(
+        &format!("{date} {hour}:{minute}:{second}"),
+        "%Y-%m-%d %H:%M:%S",
+    )
+    .ok()
+}
+
+fn ora_description(code: i64) -> &'static str {
+    match code {
+        904 => "invalid identifier",
+        942 => "table or view does not exist",
+        6550 => "PL/SQL compilation error",
+        1722 => "invalid number",
+        1403 => "no data found",
+        1008 => "not all variables bound",
+        1036 => "illegal variable name/number",
+        _ => "",
+    }
+}
+
+fn format_ora_code(code: i64) -> String {
+    format!("ORA-{code:05}")
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AlertlogEvent {
+    timestamp: String,
+    date: String,
+    code: String,
+    description: String,
+    occurrences: u64,
+    total: u64,
+    sample: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AlertlogParseDetail {
+    timestamp: String,
+    date: String,
+    code: String,
+    description: String,
+    count: u64,
+    sql_hash: String,
+    sqlid: String,
+    username: String,
+    application: String,
+    action: String,
+    sample: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AlertlogPayload {
+    schema_version: String,
+    source_file: String,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    code_pattern: Option<String>,
+    truncated: bool,
+    returned_events: usize,
+    returned_parse_error_details: usize,
+    matching_events_total: usize,
+    matching_parse_error_details_total: usize,
+    events: Vec<AlertlogEvent>,
+    parse_error_details: Vec<AlertlogParseDetail>,
+}
+
+#[derive(Debug)]
+struct PendingAlertlogParseDetail {
+    timestamp: NaiveDateTime,
+    count: u64,
+    sql_hash: String,
+    code: String,
+    description: String,
+    ospid: String,
+    sqlid: String,
+    username: String,
+    application: String,
+    action: String,
+    sample: String,
+    lines_seen: usize,
+}
+
+impl PendingAlertlogParseDetail {
+    fn to_detail(&self) -> AlertlogParseDetail {
+        AlertlogParseDetail {
+            timestamp: self.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            date: self.timestamp.date().to_string(),
+            code: self.code.clone(),
+            description: self.description.clone(),
+            count: self.count,
+            sql_hash: self.sql_hash.clone(),
+            sqlid: self.sqlid.clone(),
+            username: self.username.clone(),
+            application: self.application.clone(),
+            action: self.action.clone(),
+            sample: self.sample.clone(),
+        }
+    }
+}
+
+fn trim_sample(line: &str, max_chars: usize) -> String {
+    line.trim().chars().take(max_chars).collect()
+}
+
+fn detect_alertlog_event(
+    line: &str,
+    ora_re: &Regex,
+    tns_re: &Regex,
+    too_many_parse_errors_re: &Regex,
+    parse_error_re: &Regex,
+    special_patterns: &[(&str, Regex)],
+) -> Option<(String, String, u64)> {
+    let lower = line.to_lowercase();
+    if !(lower.contains("ora-")
+        || lower.contains("tns-")
+        || lower.contains("fatal ni connect error")
+        || lower.contains("cannot allocate new log")
+        || lower.contains("private strand flush not complete")
+        || lower.contains("emergency flush")
+        || lower.contains("warning")
+        || lower.contains("error")
+        || lower.contains("incident")
+        || lower.contains("failed")
+        || lower.contains("terminating"))
+    {
+        return None;
+    }
+
+    if let Some(caps) = too_many_parse_errors_re.captures(line) {
+        let count = caps
+            .name("count")
+            .and_then(|m| m.as_str().parse::<u64>().ok())
+            .unwrap_or(1);
+        return Some((
+            "WARNING_TOO_MANY_PARSE_ERRORS".to_string(),
+            format!("Oracle reported too many parse errors, count={count}"),
+            count,
+        ));
+    }
+
+    if let Some(caps) = parse_error_re.captures(line) {
+        let code_num = caps
+            .name("code")
+            .and_then(|m| m.as_str().parse::<i64>().ok())
+            .unwrap_or(0);
+        return Some((
+            format!("PARSE_ERROR_{}", format_ora_code(code_num)),
+            ora_description(code_num).to_string(),
+            1,
+        ));
+    }
+
+    if let Some(caps) = ora_re.captures(line) {
+        let code = caps.name("code")?.as_str().to_uppercase();
+        return Some((code.clone(), line.trim().to_string(), 1));
+    }
+
+    if let Some(caps) = tns_re.captures(line) {
+        let code = caps.name("code")?.as_str().to_uppercase();
+        return Some((code.clone(), line.trim().to_string(), 1));
+    }
+
+    for (event_type, pattern) in special_patterns {
+        if pattern.is_match(line) {
+            return Some((event_type.to_string(), line.trim().to_string(), 1));
+        }
+    }
+
+    None
 }
 
 fn db_time_of(awr: &AWR) -> f64 {
@@ -1090,6 +1360,326 @@ fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
         "limit": limit,
         "sql_ids_xplan": plans,
         "usage_hint": "For SQL_IDs that are material to DB Time, DB CPU, elapsed time, I/O, buffer gets, physical reads, or regressions, call get_sql_execution_plan and include a dedicated plan analysis with recommendations."
+    })
+}
+
+fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
+    let attachments_dir = attachments_dir_for_stem(stem);
+    let alertlogs = list_alertlog_files(&attachments_dir);
+    let Some(path) = alertlogs.first() else {
+        return json!({
+            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+            "available": false,
+            "attachments_dir": attachments_dir.display().to_string(),
+            "error": "No alert.log-like attachment found."
+        });
+    };
+
+    let date_from = match parse_date_arg(args, "date_from") {
+        Ok(v) => v,
+        Err(e) => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": e
+            })
+        }
+    };
+    let date_to = match parse_date_arg(args, "date_to") {
+        Ok(v) => v,
+        Err(e) => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": e
+            })
+        }
+    };
+    if let (Some(from), Some(to)) = (date_from, date_to) {
+        if from > to {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": "date_from cannot be later than date_to"
+            });
+        }
+    }
+
+    let code_pattern = arg_str(args, "code_pattern")
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+    let include_parse_error_details = args
+        .get("include_parse_error_details")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let limit = arg_limit(args, "limit", DEFAULT_ALERTLOG_LIMIT, MAX_ALERTLOG_LIMIT);
+
+    let ts_re = Regex::new(
+        r"^(?P<date>\d{4}-\d{2}-\d{2})T(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?",
+    )
+    .expect("valid timestamp regex");
+    let ora_re = Regex::new(r"(?i)\b(?P<code>ORA-\d{4,5})\b").expect("valid ORA regex");
+    let tns_re = Regex::new(r"(?i)\b(?P<code>TNS-\d{5})\b").expect("valid TNS regex");
+    let too_many_parse_errors_re =
+        Regex::new(r"(?i)\bWARNING:\s*too many parse errors,\s*count=(?P<count>\d+)\b")
+            .expect("valid parse warning regex");
+    let parse_error_re =
+        Regex::new(r"(?i)\bPARSE\s+ERROR:\s*ospid=(?P<ospid>\d+),\s*error=(?P<code>\d+)\b")
+            .expect("valid parse error regex");
+    let sql_hash_re =
+        Regex::new(r"(?i)\bSQL hash=(?P<sql_hash>0x[0-9a-f]+)\b").expect("valid sql hash regex");
+    let sqlid_re = Regex::new(r"(?i)\bsqlid=(?P<sqlid>[0-9a-z]+)\b").expect("valid sqlid regex");
+    let username_re =
+        Regex::new(r"(?i)\.\.\.Current username=(?P<username>\S+)").expect("valid username regex");
+    let app_action_re =
+        Regex::new(r"(?i)\.\.\.Application:\s*(?P<application>.*?)\s+Action:\s*(?P<action>.*)$")
+            .expect("valid application/action regex");
+    let special_patterns = vec![
+        ("FATAL_NI_CONNECT_ERROR", Regex::new(r"(?i)\bFatal NI connect error\b").unwrap()),
+        ("THREAD_CANNOT_ALLOCATE_NEW_LOG", Regex::new(r"(?i)\bThread \d+ cannot allocate new log\b").unwrap()),
+        ("PRIVATE_STRAND_FLUSH_NOT_COMPLETE", Regex::new(r"(?i)\bPrivate strand flush not complete\b").unwrap()),
+        (
+            "ASH_EMERGENCY_FLUSH",
+            Regex::new(r"(?i)\bASH\) performed an emergency flush\b|\bActive Session History \(ASH\) performed an emergency flush\b").unwrap(),
+        ),
+        ("WARNING", Regex::new(r"(?i)\bWARNING\b").unwrap()),
+        ("ERROR", Regex::new(r"(?i)\bERROR\b").unwrap()),
+        ("INCIDENT", Regex::new(r"(?i)\bincident\b").unwrap()),
+        (
+            "PROCESS_TERMINATING",
+            Regex::new(r"(?i)\bterminating (?:the )?instance\b|\bterminating process\b").unwrap(),
+        ),
+        ("FAILED", Regex::new(r"(?i)\bfailed\b").unwrap()),
+    ];
+
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "source_file": path.display().to_string(),
+                "error": format!("Failed to open alertlog attachment: {}", e)
+            })
+        }
+    };
+
+    let mut current_ts: Option<NaiveDateTime> = None;
+    let mut suppress_parse_error_detail_lines: usize = 0;
+    let mut pending_parse: Option<PendingAlertlogParseDetail> = None;
+    let mut events = Vec::new();
+    let mut parse_details = Vec::new();
+    let mut matching_events_total = 0usize;
+    let mut matching_parse_error_details_total = 0usize;
+
+    let mut flush_pending = |pending: &mut Option<PendingAlertlogParseDetail>,
+                             parse_details: &mut Vec<AlertlogParseDetail>,
+                             matching_total: &mut usize| {
+        if let Some(detail) = pending.take() {
+            let detail = detail.to_detail();
+            let matches_pattern = code_pattern
+                .as_ref()
+                .map(|p| {
+                    detail.code.to_lowercase().contains(p)
+                        || detail.description.to_lowercase().contains(p)
+                })
+                .unwrap_or(true);
+            if include_parse_error_details && matches_pattern {
+                *matching_total += 1;
+                if parse_details.len() < limit {
+                    parse_details.push(detail);
+                }
+            }
+        }
+    };
+
+    use std::io::{BufRead, BufReader};
+    for raw_line in BufReader::new(file).lines() {
+        let line = match raw_line {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if let Some(ts) = timestamp_from_alertlog_line(&line, &ts_re) {
+            flush_pending(
+                &mut pending_parse,
+                &mut parse_details,
+                &mut matching_parse_error_details_total,
+            );
+            current_ts = Some(ts);
+            suppress_parse_error_detail_lines = 0;
+            continue;
+        }
+
+        let Some(ts) = current_ts else {
+            continue;
+        };
+        let current_day = ts.date();
+        if date_from.map(|d| current_day < d).unwrap_or(false)
+            || date_to.map(|d| current_day > d).unwrap_or(false)
+        {
+            continue;
+        }
+
+        if let Some(caps) = too_many_parse_errors_re.captures(&line) {
+            flush_pending(
+                &mut pending_parse,
+                &mut parse_details,
+                &mut matching_parse_error_details_total,
+            );
+            let count = caps
+                .name("count")
+                .and_then(|m| m.as_str().parse::<u64>().ok())
+                .unwrap_or(1);
+            let sql_hash = sql_hash_re
+                .captures(&line)
+                .and_then(|c| c.name("sql_hash").map(|m| m.as_str().to_lowercase()))
+                .unwrap_or_else(|| "UNKNOWN".to_string());
+            pending_parse = Some(PendingAlertlogParseDetail {
+                timestamp: ts,
+                count,
+                sql_hash,
+                code: "UNKNOWN".to_string(),
+                description: String::new(),
+                ospid: "UNKNOWN".to_string(),
+                sqlid: "UNKNOWN".to_string(),
+                username: "UNKNOWN".to_string(),
+                application: "UNKNOWN".to_string(),
+                action: "UNKNOWN".to_string(),
+                sample: trim_sample(&line, 240),
+                lines_seen: 0,
+            });
+            suppress_parse_error_detail_lines = 8;
+        }
+
+        if let Some(pending) = pending_parse.as_mut() {
+            pending.lines_seen += 1;
+            if let Some(caps) = parse_error_re.captures(&line) {
+                let code_num = caps
+                    .name("code")
+                    .and_then(|m| m.as_str().parse::<i64>().ok())
+                    .unwrap_or(0);
+                pending.ospid = caps
+                    .name("ospid")
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| "UNKNOWN".to_string());
+                pending.code = format_ora_code(code_num);
+                pending.description = ora_description(code_num).to_string();
+            }
+            if let Some(caps) = sqlid_re.captures(&line) {
+                pending.sqlid = caps
+                    .name("sqlid")
+                    .map(|m| m.as_str().to_lowercase())
+                    .unwrap_or_else(|| "UNKNOWN".to_string());
+            }
+            if let Some(caps) = username_re.captures(&line) {
+                pending.username = caps
+                    .name("username")
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_else(|| "UNKNOWN".to_string());
+            }
+            if let Some(caps) = app_action_re.captures(&line) {
+                pending.application = caps
+                    .name("application")
+                    .map(|m| m.as_str().trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "UNKNOWN".to_string());
+                pending.action = caps
+                    .name("action")
+                    .map(|m| m.as_str().trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "UNKNOWN".to_string());
+            }
+            if pending.lines_seen >= 6 || app_action_re.is_match(&line) {
+                flush_pending(
+                    &mut pending_parse,
+                    &mut parse_details,
+                    &mut matching_parse_error_details_total,
+                );
+            }
+        }
+
+        if let Some((code, description, total)) = detect_alertlog_event(
+            &line,
+            &ora_re,
+            &tns_re,
+            &too_many_parse_errors_re,
+            &parse_error_re,
+            &special_patterns,
+        ) {
+            if code.starts_with("PARSE_ERROR_ORA_")
+                && suppress_parse_error_detail_lines > 0
+                && !include_parse_error_details
+            {
+                suppress_parse_error_detail_lines -= 1;
+                continue;
+            }
+
+            let matches_pattern = code_pattern
+                .as_ref()
+                .map(|p| code.to_lowercase().contains(p) || description.to_lowercase().contains(p))
+                .unwrap_or(true);
+            if matches_pattern {
+                matching_events_total += 1;
+                if events.len() < limit {
+                    events.push(AlertlogEvent {
+                        timestamp: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        date: current_day.to_string(),
+                        code,
+                        description,
+                        occurrences: 1,
+                        total,
+                        sample: trim_sample(&line, 180),
+                    });
+                }
+            }
+        }
+
+        if suppress_parse_error_detail_lines > 0 {
+            suppress_parse_error_detail_lines -= 1;
+        }
+    }
+    flush_pending(
+        &mut pending_parse,
+        &mut parse_details,
+        &mut matching_parse_error_details_total,
+    );
+
+    let truncated = matching_events_total > events.len()
+        || matching_parse_error_details_total > parse_details.len();
+    let payload = AlertlogPayload {
+        schema_version: JASMIN_TOOLS_SCHEMA_VERSION.to_string(),
+        source_file: path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("")
+            .to_string(),
+        date_from: date_from.map(|d| d.to_string()),
+        date_to: date_to.map(|d| d.to_string()),
+        code_pattern: code_pattern.clone(),
+        truncated,
+        returned_events: events.len(),
+        returned_parse_error_details: parse_details.len(),
+        matching_events_total,
+        matching_parse_error_details_total,
+        events,
+        parse_error_details: parse_details,
+    };
+    let payload_value = serde_json::to_value(&payload).unwrap_or_else(|_| json!({}));
+    let alertlog_errors_toon = encode(&payload_value, None);
+
+    json!({
+        "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+        "available": true,
+        "attachments_dir": attachments_dir.display().to_string(),
+        "source_file": payload.source_file,
+        "date_from": payload.date_from,
+        "date_to": payload.date_to,
+        "code_pattern": payload.code_pattern,
+        "truncated": payload.truncated,
+        "returned_events": payload.returned_events,
+        "returned_parse_error_details": payload.returned_parse_error_details,
+        "matching_events_total": payload.matching_events_total,
+        "matching_parse_error_details_total": payload.matching_parse_error_details_total,
+        "format": "TOON",
+        "alertlog_errors_toon": alertlog_errors_toon,
+        "usage_hint": "Use alertlog_errors_toon as the authoritative structured alert.log evidence for this date range. For parse-error investigations, call again with include_parse_error_details=true and the narrowest relevant date range."
     })
 }
 
