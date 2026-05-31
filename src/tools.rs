@@ -1,21 +1,21 @@
-use std::collections::BTreeMap;
-use std::{env, fs, collections::HashMap, path::Path, collections::HashSet};
-use std::fs::File;
-use std::fmt::Write;
-use std::io::{BufRead, BufReader, BufWriter, stdout, Write as Write2};
+use crate::awr::GetStats;
+use chrono::Local;
+use html_escape::encode_text;
 use ndarray::{iter, Array1, Array2};
-use ndarray_stats::{CorrelationExt, QuantileExt};
 use ndarray_stats::histogram::Grid;
 use ndarray_stats::interpolate::Linear;
+use ndarray_stats::{CorrelationExt, QuantileExt};
 use noisy_float::types::N64;
-use prettytable::{Table, Row, Cell};
-use html_escape::encode_text;
+use prettytable::{Cell, Row, Table};
 use pulldown_cmark::{html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use crate::awr::GetStats;
-use tokio::sync::oneshot;
-use serde::Serialize;
-use chrono::Local;
 use regex::Regex;
+use serde::Serialize;
+use std::collections::BTreeMap;
+use std::fmt::Write;
+use std::fs::File;
+use std::io::{stdout, BufRead, BufReader, BufWriter, Write as Write2};
+use std::{collections::HashMap, collections::HashSet, env, fs, path::Path};
+use tokio::sync::oneshot;
 
 /// Bonferroni-corrected correlation significance threshold.
 /// Returns the minimum |r| that is significant at family-wise alpha
@@ -35,10 +35,16 @@ pub fn bonferroni_significance_threshold(num_tests: usize, alpha: f64, sample_si
 
 /// Abramowitz & Stegun approximation for normal quantile
 fn normal_quantile(p: f64) -> f64 {
-    if p <= 0.0 { return f64::NEG_INFINITY; }
-    if p >= 1.0 { return f64::INFINITY; }
-    if p == 0.5 { return 0.0; }
-    
+    if p <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if p >= 1.0 {
+        return f64::INFINITY;
+    }
+    if p == 0.5 {
+        return 0.0;
+    }
+
     let (work_p, negate) = if p > 0.5 { (1.0 - p, false) } else { (p, true) };
     let t = (-2.0 * work_p.ln()).sqrt();
     let c0 = 2.515517;
@@ -48,7 +54,11 @@ fn normal_quantile(p: f64) -> f64 {
     let d2 = 0.189269;
     let d3 = 0.001308;
     let result = t - (c0 + c1 * t + c2 * t * t) / (1.0 + d1 * t + d2 * t * t + d3 * t * t * t);
-    if negate { -result } else { result }
+    if negate {
+        -result
+    } else {
+        result
+    }
 }
 
 pub fn get_timestamp() -> String {
@@ -57,12 +67,14 @@ pub fn get_timestamp() -> String {
 
 pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> String {
     let mut html = String::new();
-    html.push_str(&format!(r#"<p><span style="color:blue;font-weight:bold;">{title}<br></span>"#, title=title));
+    html.push_str(&format!(
+        r#"<p><span style="color:blue;font-weight:bold;">{title}<br></span>"#,
+        title = title
+    ));
 
     html.push_str("<table border=\"1\" cellpadding=\"4\" cellspacing=\"0\" >\n");
-    
 
-    // Headers    
+    // Headers
     html.push_str("  <thead><tr>");
     for &h in headers {
         write!(html, "<th>{}</th>", h).unwrap();
@@ -72,7 +84,6 @@ pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> Str
     html.push_str("  <tbody>\n");
     // The rest
     for (i, row) in table.row_iter().enumerate() {
-
         html.push_str("    <tr>");
         for cell in row.iter() {
             write!(html, "<td><code>{}</code></td>", cell.get_content()).unwrap();
@@ -100,10 +111,10 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
 
     // Prepare variables
     let mut toc: Vec<(usize, String)> = Vec::new(); // (level, id, title)
-    let mut html_output = String::new();    // Final HTML body
-    let mut parser_with_ids = Vec::new();   // Modified event stream
-    let mut heading_counter = 0;            // For generating unique IDs
-    let mut current_heading_level = 1;      // For closing tags manually
+    let mut html_output = String::new(); // Final HTML body
+    let mut parser_with_ids = Vec::new(); // Modified event stream
+    let mut heading_counter = 0; // For generating unique IDs
+    let mut current_heading_level = 1; // For closing tags manually
     let mut headings_map: HashMap<String, String> = HashMap::new();
 
     // Clear TOC before parsing
@@ -176,9 +187,7 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
         let label = encode_text(&headings_map[id]);
         toc_html.push_str(&format!(
             r##"<li class="level-{}"><a href="#{}">{}</a></li>"##,
-            level,
-            id,
-            label
+            level, id, label
         ));
     }
     toc_html.push_str("</ul></div>");
@@ -275,18 +284,32 @@ fn heading_level_to_int(level: &HeadingLevel) -> usize {
     }
 }
 
-pub fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String>>, html_dir: String, html_absolute_dir: String) -> String {
+pub fn add_links_to_html(
+    html: String,
+    events_sqls: HashMap<&str, HashSet<String>>,
+    html_dir: String,
+    html_absolute_dir: String,
+) -> String {
     let mut html_with_links: String = html;
     let bgevents = events_sqls.get("BG").unwrap().clone();
-    for (name_type, names) in events_sqls { //first deal with Forground events and SQLIDs
+    for (name_type, names) in events_sqls {
+        //first deal with Forground events and SQLIDs
         for name in names {
             if name_type == "FG" {
                 let file_name = get_safe_filename(name.clone(), "fg".to_string());
                 let path = Path::new(&html_dir).join(&file_name);
                 let absolute_path = Path::new(&html_absolute_dir).join(&file_name);
                 if absolute_path.exists() {
-                    let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
-                    let link_txt2 = format!(r#"<strong><a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
+                    let link_txt = format!(
+                        r#"<a href={} target="_blank">{}</a>"#,
+                        path.to_string_lossy(),
+                        &name
+                    );
+                    let link_txt2 = format!(
+                        r#"<strong><a href={} target="_blank">{}</a>"#,
+                        path.to_string_lossy(),
+                        &name
+                    );
                     let from_name = format!("<code>{}</code>", &name);
                     let from_name2 = format!("<strong>{}", &name);
                     html_with_links = html_with_links.replace(&from_name, &link_txt);
@@ -295,22 +318,33 @@ pub fn add_links_to_html(html: String, events_sqls: HashMap<&str, HashSet<String
                 }
             } else if name_type == "SQL" {
                 let file_name = format!("{}/sqlid/sqlid_{}.html", html_dir, &name);
-                let absolute_file_name= format!("{}/sqlid/sqlid_{}.html", html_absolute_dir, &name);
+                let absolute_file_name =
+                    format!("{}/sqlid/sqlid_{}.html", html_absolute_dir, &name);
                 let path = Path::new(&absolute_file_name);
                 if path.exists() {
-                    let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
+                    let link_txt =
+                        format!(r#"<a href={} target="_blank">{}</a>"#, file_name, &name);
                     html_with_links = html_with_links.replace(&name, &link_txt);
                 }
             }
         }
     }
-    for name in bgevents { //then check what's left for Background Events
+    for name in bgevents {
+        //then check what's left for Background Events
         let file_name = get_safe_filename(name.clone(), "bg".to_string());
         let path = Path::new(&html_dir).join(&file_name);
         let absolute_path = Path::new(&html_absolute_dir).join(&file_name);
         if absolute_path.exists() {
-            let link_txt = format!(r#"<a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
-            let link_txt2 = format!(r#"<strong><a href={} target="_blank">{}</a>"#, path.to_string_lossy(), &name);
+            let link_txt = format!(
+                r#"<a href={} target="_blank">{}</a>"#,
+                path.to_string_lossy(),
+                &name
+            );
+            let link_txt2 = format!(
+                r#"<strong><a href={} target="_blank">{}</a>"#,
+                path.to_string_lossy(),
+                &name
+            );
             let from_name = format!("<code>{}</code>", &name);
             let from_name2 = format!("<strong>{}", &name);
             html_with_links = html_with_links.replace(&from_name, &link_txt);
@@ -325,7 +359,10 @@ pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, Hash
     let markdown = fs::read_to_string(input_path)
         .unwrap_or_else(|_| panic!("Could not read file '{}'", input_path));
 
-    let mut html_dir = format!("{}.html_reports", input_path.split('.').collect::<Vec<&str>>()[0]);
+    let mut html_dir = format!(
+        "{}.html_reports",
+        input_path.split('.').collect::<Vec<&str>>()[0]
+    );
     let html_absolute_dir = html_dir.clone();
     if input_path.contains("_deep_") {
         html_dir = ".".to_string();
@@ -342,7 +379,6 @@ pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, Hash
     open::that(output_path);
 }
 
-
 //Calculate pearson correlation of 2 vectors and return simple result
 pub fn pearson_correlation_2v(vec1: &Vec<f64>, vec2: &Vec<f64>) -> f64 {
     let rows: usize = 2;
@@ -351,8 +387,9 @@ pub fn pearson_correlation_2v(vec1: &Vec<f64>, vec2: &Vec<f64>) -> f64 {
     let mut data: Vec<f64> = Vec::new();
     data.extend(vec1);
     data.extend(vec2);
-    
-    let a: ndarray::ArrayBase<ndarray::OwnedRepr<f64>, ndarray::Dim<[usize; 2]>> = Array2::from_shape_vec((rows, cols), data).unwrap();
+
+    let a: ndarray::ArrayBase<ndarray::OwnedRepr<f64>, ndarray::Dim<[usize; 2]>> =
+        Array2::from_shape_vec((rows, cols), data).unwrap();
     let crr = a.pearson_correlation().unwrap();
 
     crr.row(0)[1]
@@ -371,15 +408,19 @@ pub fn mean(data: Vec<f64>) -> Option<f64> {
 pub fn std_deviation(data: Vec<f64>) -> Option<f64> {
     match (mean(data.clone()), data.len()) {
         (Some(data_mean), count) if count > 0 => {
-            let variance: f64 = data.iter().map(|value| {
-                let diff: f64 = data_mean - (*value as f64);
+            let variance: f64 = data
+                .iter()
+                .map(|value| {
+                    let diff: f64 = data_mean - (*value as f64);
 
-                diff * diff
-            }).sum::<f64>() / count as f64;
+                    diff * diff
+                })
+                .sum::<f64>()
+                / count as f64;
 
             Some(variance.sqrt())
-        },
-        _ => None
+        }
+        _ => None,
     }
 }
 
@@ -393,10 +434,7 @@ pub fn median(data: &[f64]) -> f64 {
     if tmp.len() % 2 == 1 {
         tmp[mid]
     } else {
-        let lower_max = tmp[..mid]
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let lower_max = tmp[..mid].iter().copied().fold(f64::NEG_INFINITY, f64::max);
         (lower_max + tmp[mid]) * 0.5
     }
 }
@@ -418,15 +456,19 @@ pub fn mad_with_median(data: &[f64], med: f64) -> f64 {
     median(&deviations)
 }
 
-pub fn get_safe_filename(name: String, category: String ) -> String {
+pub fn get_safe_filename(name: String, category: String) -> String {
     // Replace invalid characters for filenames (e.g., slashes or spaces)
-    let safe_event_name: String = name.replace("/", "_").replace(" ", "_").replace(":","").replace("*","_");
+    let safe_event_name: String = name
+        .replace("/", "_")
+        .replace(" ", "_")
+        .replace(":", "")
+        .replace("*", "_");
     let mut file_name: String = String::new();
-    if category == "fg".to_string(){
+    if category == "fg".to_string() {
         file_name = format!("fg/fg_{}.html", safe_event_name);
-    } else if category == "bg".to_string(){
+    } else if category == "bg".to_string() {
         file_name = format!("bg/bg_{}.html", safe_event_name);
-    } else if category == "inst_stat".to_string(){
+    } else if category == "inst_stat".to_string() {
         file_name = format!("stats/stat_{}.html", safe_event_name);
     }
     file_name
@@ -439,56 +481,58 @@ pub fn get_statistics(data: Vec<f64>) -> Option<GetStats> {
 
     let samples = data.len() as u64;
     let arr = Array1::from(data);
-    
+
     // Calculate basic stats using ndarray methods
     let min = *arr.min().unwrap();
     let max = *arr.max().unwrap();
     let mean = arr.mean().unwrap();
     let variance = arr.var(0.0);
     let std_dev = arr.std(0.0);
-    
+
     // Convert to noisy_float for quantile calculations
     let mut arr_n64: Array1<N64> = arr.mapv(N64::new);
-    
+
     // Calculate quartiles
-    let q1 = arr_n64.quantile_axis_mut(
-        ndarray::Axis(0), 
-        N64::new(0.25), 
-        &Linear
-    ).unwrap().into_scalar().raw();
-    
-    let median = arr_n64.quantile_axis_mut(
-        ndarray::Axis(0), 
-        N64::new(0.5), 
-        &Linear
-    ).unwrap().into_scalar().raw();
-    
-    let q3 = arr_n64.quantile_axis_mut(
-        ndarray::Axis(0), 
-        N64::new(0.75), 
-        &Linear
-    ).unwrap().into_scalar().raw();
-    
+    let q1 = arr_n64
+        .quantile_axis_mut(ndarray::Axis(0), N64::new(0.25), &Linear)
+        .unwrap()
+        .into_scalar()
+        .raw();
+
+    let median = arr_n64
+        .quantile_axis_mut(ndarray::Axis(0), N64::new(0.5), &Linear)
+        .unwrap()
+        .into_scalar()
+        .raw();
+
+    let q3 = arr_n64
+        .quantile_axis_mut(ndarray::Axis(0), N64::new(0.75), &Linear)
+        .unwrap()
+        .into_scalar()
+        .raw();
+
     // Calculate theoretical fence boundaries
     let iqr = q3 - q1;
     let lower_fence_boundary = q1 - 1.5 * iqr;
     let upper_fence_boundary = q3 + 1.5 * iqr;
-    
+
     // Match Plotly's behavior: fences are the min/max data points within boundaries
-    let lower_fence = arr.iter()
+    let lower_fence = arr
+        .iter()
         .filter(|&&x| x >= lower_fence_boundary)
         .min_by(|a, b| a.partial_cmp(b).unwrap())
         .copied()
         .unwrap_or(min);
-    
-    let upper_fence = arr.iter()
+
+    let upper_fence = arr
+        .iter()
         .filter(|&&x| x <= upper_fence_boundary)
         .max_by(|a, b| a.partial_cmp(b).unwrap())
         .copied()
         .unwrap_or(max);
-    
+
     let round2 = |x: f64| (x * 100.0).round() / 100.0;
-    
+
     Some(GetStats {
         samples,
         min: round2(min),
@@ -500,7 +544,7 @@ pub fn get_statistics(data: Vec<f64>) -> Option<GetStats> {
         upper_fence: round2(upper_fence),
         max: round2(max),
         variance: round2(variance),
-        std_dev: round2(std_dev)
+        std_dev: round2(std_dev),
     })
 }
 
@@ -523,13 +567,15 @@ pub fn estimate_tokens_from_str(s: &str) -> usize {
 }
 
 /// Builds the "combined string" that we actually send (base prompt + capsule + input JSON).
-pub fn estimate_request_tokens(base_user_prompt_str: &str, capsule_json_str: &str, input_json: &serde_json::Value) -> usize {
+pub fn estimate_request_tokens(
+    base_user_prompt_str: &str,
+    capsule_json_str: &str,
+    input_json: &serde_json::Value,
+) -> usize {
     let input_str = serde_json::to_string(input_json).unwrap_or_default();
     let combined = format!(
         "{}\n{}\nINPUT:\n{}",
-        base_user_prompt_str,
-        capsule_json_str,
-        input_str
+        base_user_prompt_str, capsule_json_str, input_str
     );
     estimate_tokens_from_str(&combined)
 }
@@ -548,7 +594,9 @@ pub fn max_prefix_that_fits<T: Serialize>(
     }
 
     let fits = |k: usize| -> bool {
-        if k == 0 { return true; }
+        if k == 0 {
+            return true;
+        }
         let v = wrap(&items[..k]);
         estimate_request_tokens(base_user_prompt_str, capsule_json_str, &v) <= budget_tokens
     };
@@ -562,7 +610,11 @@ pub fn max_prefix_that_fits<T: Serialize>(
 
     while lo < hi {
         let mid = (lo + hi + 1) / 2;
-        if fits(mid) { lo = mid; } else { hi = mid - 1; }
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
     }
 
     lo
@@ -575,10 +627,7 @@ pub fn extract_tables_from_sql(sql: &str) -> Vec<String> {
     let mut tables: HashSet<String> = HashSet::new();
 
     // Normalize: collapse whitespace, remove newlines
-    let normalized = sql
-        .replace('\n', " ")
-        .replace('\r', " ")
-        .replace('\t', " ");
+    let normalized = sql.replace('\n', " ").replace('\r', " ").replace('\t', " ");
 
     // Remove single-line comments (-- ...)
     let re_single_comment = Regex::new(r"--[^\n]*").unwrap();
@@ -605,14 +654,49 @@ pub fn extract_tables_from_sql(sql: &str) -> Vec<String> {
 
     // Pseudo-tables and system schemas to exclude
     let exclude: HashSet<&str> = [
-        "DUAL", "SYS", "SYSTEM", "SELECT", "VALUES", "SET", "WHERE",
-        "AND", "OR", "ON", "USING", "TABLE", "INDEX", "VIEW",
-        "BEGIN", "END", "DECLARE", "EXCEPTION", "LOOP", "IF", "THEN",
-        "ELSE", "ELSIF", "RETURN", "NULL", "NOT", "IN", "EXISTS",
-        "PARTITION", "SUBPARTITION", "LATERAL", "XMLTABLE", "JSON_TABLE",
+        "DUAL",
+        "SYS",
+        "SYSTEM",
+        "SELECT",
+        "VALUES",
+        "SET",
+        "WHERE",
+        "AND",
+        "OR",
+        "ON",
+        "USING",
+        "TABLE",
+        "INDEX",
+        "VIEW",
+        "BEGIN",
+        "END",
+        "DECLARE",
+        "EXCEPTION",
+        "LOOP",
+        "IF",
+        "THEN",
+        "ELSE",
+        "ELSIF",
+        "RETURN",
+        "NULL",
+        "NOT",
+        "IN",
+        "EXISTS",
+        "PARTITION",
+        "SUBPARTITION",
+        "LATERAL",
+        "XMLTABLE",
+        "JSON_TABLE",
         // FOR UPDATE [SKIP LOCKED | NOWAIT | WAIT n] clause tokens
-        "SKIP", "LOCKED", "NOWAIT", "WAIT", "FOR",
-    ].iter().cloned().collect();
+        "SKIP",
+        "LOCKED",
+        "NOWAIT",
+        "WAIT",
+        "FOR",
+    ]
+    .iter()
+    .cloned()
+    .collect();
 
     for cap in table_pattern.captures_iter(&upper) {
         let table_name = cap[1].trim().to_string();
@@ -643,14 +727,14 @@ pub fn find_tables_for_sql_ids(
     sql_text: &HashMap<String, String>,
 ) -> Vec<String> {
     let mut all_tables: HashSet<String> = HashSet::new();
-    
+
     for sql_id in sql_ids {
         if let Some(text) = sql_text.get(sql_id) {
             let tables = extract_tables_from_sql(text);
             all_tables.extend(tables);
         }
     }
-    
+
     let mut result: Vec<String> = all_tables.into_iter().collect();
     result.sort();
     result
@@ -666,18 +750,26 @@ pub fn z_score_normalize(values: &[f64]) -> Vec<f64> {
         return vec![0.0; values.len()];
     }
     let avg = mean(finite.clone()).unwrap_or(0.0);
-    let sd  = std_deviation(finite).unwrap_or(0.0);
+    let sd = std_deviation(finite).unwrap_or(0.0);
     if sd.abs() < f64::EPSILON || !sd.is_finite() {
         return vec![0.0; values.len()];
     }
     values
         .iter()
-        .map(|v| if v.is_finite() { (v - avg) / sd } else { f64::NAN })
+        .map(|v| {
+            if v.is_finite() {
+                (v - avg) / sd
+            } else {
+                f64::NAN
+            }
+        })
         .collect()
 }
 
 pub fn robust_z_score(values: &[f64]) -> Vec<f64> {
-    if values.is_empty() { return Vec::new(); }
+    if values.is_empty() {
+        return Vec::new();
+    }
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median = sorted[sorted.len() / 2];
@@ -692,11 +784,7 @@ pub fn robust_z_score(values: &[f64]) -> Vec<f64> {
 }
 
 pub fn robust_minmax_0_100(values: &[f64], low_pct: f64, high_pct: f64) -> Vec<f64> {
-    let finite: Vec<f64> = values
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .collect();
+    let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
 
     if finite.is_empty() {
         return vec![0.0; values.len()];
@@ -723,11 +811,7 @@ pub fn robust_minmax_0_100(values: &[f64], low_pct: f64, high_pct: f64) -> Vec<f
 }
 
 pub fn percentile(values: &[f64], pct: f64) -> f64 {
-    let mut sorted: Vec<f64> = values
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .collect();
+    let mut sorted: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
 
     if sorted.is_empty() {
         return f64::NAN;
@@ -774,7 +858,8 @@ pub fn abs_percentile(series: &[f64], p: f64) -> f64 {
     if series.is_empty() {
         return 0.0;
     }
-    let mut abs_vals: Vec<f64> = series.iter()
+    let mut abs_vals: Vec<f64> = series
+        .iter()
         .map(|v| v.abs())
         .filter(|v| v.is_finite())
         .collect();

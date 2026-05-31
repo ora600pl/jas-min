@@ -16,10 +16,10 @@
 
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
-use crate::awr::{AWR, AWRSCollection};
+use crate::awr::{AWRSCollection, AWR};
 
 const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-05-20.1";
 const DEFAULT_LIMIT: usize = 50;
@@ -482,7 +482,7 @@ pub fn tools_schema(stem: &str) -> Value {
         }));
 
         println!("✅ Found execution plans in {}", attachments_dir.display());
-    }    
+    }
     tools
 }
 
@@ -492,7 +492,12 @@ pub fn tools_schema(stem: &str) -> Value {
 
 /// Routes a tool call from the LLM to the matching implementation and returns a
 /// JSON-encoded string suitable for a `role: "tool"` chat message.
-pub fn dispatch_tool_call(name: &str, args: &Value, collection: &AWRSCollection, stem: &str) -> String {
+pub fn dispatch_tool_call(
+    name: &str,
+    args: &Value,
+    collection: &AWRSCollection,
+    stem: &str,
+) -> String {
     let result: Value = match name {
         // Global overview
         "get_database_load_summary" => tool_get_database_load_summary(args, collection),
@@ -553,7 +558,10 @@ pub fn dispatch_tool_call(name: &str, args: &Value, collection: &AWRSCollection,
 // ----------------------------------------------------------------------------
 
 fn find_awr(collection: &AWRSCollection, snap_id: u64) -> Option<&AWR> {
-    collection.awrs.iter().find(|a| a.snap_info.begin_snap_id == snap_id)
+    collection
+        .awrs
+        .iter()
+        .find(|a| a.snap_info.begin_snap_id == snap_id)
 }
 
 fn arg_u64(args: &Value, key: &str) -> Option<u64> {
@@ -786,10 +794,12 @@ fn tool_get_snapshot_summary(args: &Value, c: &AWRSCollection) -> Value {
     };
     let awr = match find_awr(c, snap_id) {
         Some(a) => a,
-        None => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("snap_id {} not found", snap_id)
-        }),
+        None => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("snap_id {} not found", snap_id)
+            })
+        }
     };
 
     let mut top_waits = awr.foreground_wait_events.clone();
@@ -815,16 +825,20 @@ fn tool_get_snapshot_details(args: &Value, c: &AWRSCollection) -> Value {
     };
     let awr = match find_awr(c, snap_id) {
         Some(a) => a,
-        None => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("snap_id {} not found", snap_id)
-        }),
+        None => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("snap_id {} not found", snap_id)
+            })
+        }
     };
 
-    let sections: Option<HashSet<String>> = args
-        .get("sections")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+    let sections: Option<HashSet<String>> =
+        args.get("sections").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        });
 
     let include = |key: &str| sections.as_ref().map_or(true, |s| s.contains(key));
 
@@ -1079,7 +1093,6 @@ fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
     })
 }
 
-
 // ============================================================================
 // 2. AGGREGATIONS
 // ============================================================================
@@ -1129,10 +1142,12 @@ fn tool_top_sqls_in_snapshot(args: &Value, c: &AWRSCollection) -> Value {
 
     let awr = match find_awr(c, snap_id) {
         Some(a) => a,
-        None => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("snap_id {} not found", snap_id)
-        }),
+        None => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("snap_id {} not found", snap_id)
+            })
+        }
     };
 
     let items: Vec<Value> = match metric {
@@ -1161,10 +1176,12 @@ fn tool_top_sqls_in_snapshot(args: &Value, c: &AWRSCollection) -> Value {
             v.sort_by(|a, b| cmp_desc(a.physical_reads, b.physical_reads));
             v.into_iter().take(top_n).map(|s| json!(s)).collect()
         }
-        other => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("Unknown metric '{}'", other)
-        }),
+        other => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("Unknown metric '{}'", other)
+            })
+        }
     };
 
     json!({
@@ -1187,10 +1204,12 @@ fn tool_top_wait_events(args: &Value, c: &AWRSCollection) -> Value {
 
     let awr = match find_awr(c, snap_id) {
         Some(a) => a,
-        None => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("snap_id {} not found", snap_id)
-        }),
+        None => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("snap_id {} not found", snap_id)
+            })
+        }
     };
 
     let mut events = if kind == "background" {
@@ -1232,10 +1251,12 @@ fn tool_top_segments(args: &Value, c: &AWRSCollection) -> Value {
 
     let awr = match find_awr(c, snap_id) {
         Some(a) => a,
-        None => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("snap_id {} not found", snap_id)
-        }),
+        None => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("snap_id {} not found", snap_id)
+            })
+        }
     };
 
     match awr.segment_stats.get(category) {
@@ -1268,10 +1289,12 @@ fn tool_top_latches(args: &Value, c: &AWRSCollection) -> Value {
 
     let awr = match find_awr(c, snap_id) {
         Some(a) => a,
-        None => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("snap_id {} not found", snap_id)
-        }),
+        None => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("snap_id {} not found", snap_id)
+            })
+        }
     };
 
     let mut v = awr.latch_activity.clone();
@@ -1526,7 +1549,9 @@ fn tool_find_sqls_by_module(args: &Value, c: &AWRSCollection) -> Value {
 
     for a in &c.awrs {
         for s in &a.sql_elapsed_time {
-            if s.sql_module.to_lowercase().contains(&module_pattern) && seen.insert(s.sql_id.clone()) {
+            if s.sql_module.to_lowercase().contains(&module_pattern)
+                && seen.insert(s.sql_id.clone())
+            {
                 matches.push(json!({
                     "sql_id": s.sql_id,
                     "module": s.sql_module,
@@ -1536,7 +1561,9 @@ fn tool_find_sqls_by_module(args: &Value, c: &AWRSCollection) -> Value {
             }
         }
         for s in a.sql_cpu_time.values() {
-            if s.sql_module.to_lowercase().contains(&module_pattern) && seen.insert(s.sql_id.clone()) {
+            if s.sql_module.to_lowercase().contains(&module_pattern)
+                && seen.insert(s.sql_id.clone())
+            {
                 matches.push(json!({
                     "sql_id": s.sql_id,
                     "module": s.sql_module,
@@ -1836,23 +1863,31 @@ fn tool_compare_snapshots(args: &Value, c: &AWRSCollection) -> Value {
 
     let a = match find_awr(c, snap_a) {
         Some(a) => a,
-        None => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("snap_id_a {} not found", snap_a)
-        }),
+        None => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("snap_id_a {} not found", snap_a)
+            })
+        }
     };
     let b = match find_awr(c, snap_b) {
         Some(b) => b,
-        None => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("snap_id_b {} not found", snap_b)
-        }),
+        None => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("snap_id_b {} not found", snap_b)
+            })
+        }
     };
 
     let focus: HashSet<String> = args
         .get("focus")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| {
             ["load_profile", "waits", "sqls", "latches", "host_cpu", "io"]
                 .iter()
@@ -2027,10 +2062,12 @@ fn tool_get_wait_event_histogram(args: &Value, c: &AWRSCollection) -> Value {
 
     let awr = match find_awr(c, snap_id) {
         Some(a) => a,
-        None => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("snap_id {} not found", snap_id)
-        }),
+        None => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("snap_id {} not found", snap_id)
+            })
+        }
     };
 
     let events = if kind == "background" {
@@ -2175,10 +2212,12 @@ fn tool_list_available_metrics(args: &Value, c: &AWRSCollection) -> Value {
                 }
             }
         }
-        other => return json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("Unknown kind '{}'", other)
-        }),
+        other => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("Unknown kind '{}'", other)
+            })
+        }
     }
 
     let mut filtered: Vec<String> = names

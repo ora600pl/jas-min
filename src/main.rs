@@ -1,174 +1,178 @@
 #![allow(dead_code, unused)]
-use std::collections::{HashMap, HashSet};
-use std::io::Read;
-use std::io::Write;
-use std::str;
-use std::fs;
-use std::env;
-use std::path::PathBuf;
-use dotenvy::from_path;
-use colored::*;
 use clap::Parser;
+use colored::*;
+use dotenvy::from_path;
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::fs;
+use std::io::Read;
+use std::io::Write;
+use std::path::PathBuf;
+use std::str;
 
-
-mod awr;
-mod analyze;
-mod staticdata;
-mod reasonings;
-mod macros;
-mod anomalies;
-mod tools;
-mod reasonings_modular;
-mod gradient;
 mod ai_tools;
+mod analyze;
+mod anomalies;
+mod awr;
+mod gradient;
+mod macros;
+mod reasonings;
+mod reasonings_modular;
+mod staticdata;
+mod tools;
 
 use crate::reasonings::*;
-use crate::reasonings::{StatisticsDescription,TopPeaksSelected,MadAnomaliesEvents,MadAnomaliesSQL,TopForegroundWaitEvents,TopBackgroundWaitEvents,PctOfTimesThisSQLFoundInOtherTopSections,WaitEventsWithStrongCorrelation,WaitEventsFromASH,TopSQLsByElapsedTime,StatsSummary,IOStatsByFunctionSummary,LatchActivitySummary,Top10SegmentStats,InstanceStatisticCorrelation,LoadProfileAnomalies,AnomalyDescription,AnomlyCluster,ReportForAI};
-use crate::reasonings_modular::*;
+use crate::reasonings::{
+    AnomalyDescription, AnomlyCluster, IOStatsByFunctionSummary, InstanceStatisticCorrelation,
+    LatchActivitySummary, LoadProfileAnomalies, MadAnomaliesEvents, MadAnomaliesSQL,
+    PctOfTimesThisSQLFoundInOtherTopSections, ReportForAI, StatisticsDescription, StatsSummary,
+    Top10SegmentStats, TopBackgroundWaitEvents, TopForegroundWaitEvents, TopPeaksSelected,
+    TopSQLsByElapsedTime, WaitEventsFromASH, WaitEventsWithStrongCorrelation,
+};
 use crate::reasonings_modular::ModularLlmConfig;
+use crate::reasonings_modular::*;
 use crate::tools::*;
 
 use toon::encode;
 
 ///This tool will parse STATSPACK or AWR report into JSON format which can be used by visualization tool of your choice.
-///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also. 
+///The assumption is that text file is a STATSPACK report and HTML is AWR, but it tries to parse AWR report also.
 /// It was tested only against 19c reports
 /// The tool is under development and it has a lot of bugs, so please test it and don't hasitate to suggest some code changes :)
 #[derive(Parser, Debug, Clone)]
 #[clap(author, version, about, long_about = None, verbatim_doc_comment)]
 struct Args {
     ///Parse a single text or html file
-    #[clap(long, default_value="")]
+    #[clap(long, default_value = "")]
     file: String,
 
     ///Parse whole directory of files
-	#[clap(short, long, default_value="")]
+    #[clap(short, long, default_value = "")]
     directory: String,
 
-	///Write output to nondefault file? Default is directory_name.json
-	#[clap(short, long, default_value="")]
-	outfile: String,
+    ///Write output to nondefault file? Default is directory_name.json
+    #[clap(short, long, default_value = "")]
+    outfile: String,
 
-	///Ratio of DB CPU / DB TIME
-	#[clap(short, long, default_value_t=0.666)]
-	time_cpu_ratio: f64,
+    ///Ratio of DB CPU / DB TIME
+    #[clap(short, long, default_value_t = 0.666)]
+    time_cpu_ratio: f64,
 
-	///Filter only for DBTIME greater than (if zero the filter is not effective)
-	#[clap(short, long, default_value_t=0.0)]
-	filter_db_time: f64,
+    ///Filter only for DBTIME greater than (if zero the filter is not effective)
+    #[clap(short, long, default_value_t = 0.0)]
+    filter_db_time: f64,
 
-	///Include indicated SQL_IDs as TOP SQL in fomrat SQL_ID1, SQL_ID2,...
-	///This is experimental function
-	#[clap(short, long, default_value="",verbatim_doc_comment)]
-	id_sqls: String,
+    ///Include indicated SQL_IDs as TOP SQL in fomrat SQL_ID1, SQL_ID2,...
+    ///This is experimental function
+    #[clap(short, long, default_value = "", verbatim_doc_comment)]
+    id_sqls: String,
 
-	///Analyze provided JSON file
-	#[clap(short, long, default_value="")]
-	json_file: String,
+    ///Analyze provided JSON file
+    #[clap(short, long, default_value = "")]
+    json_file: String,
 
-	///Filter snapshots, based on SNAP IDs in format BEGIN_ID- END_ID
-	#[clap(short, long, default_value="0-666666666")]
-	snap_range: String,
+    ///Filter snapshots, based on SNAP IDs in format BEGIN_ID- END_ID
+    #[clap(short, long, default_value = "0-666666666")]
+    snap_range: String,
 
-	///Should I be quiet? This mode suppresses terminal output but still writes to log file
-	#[clap(short, long)]
+    ///Should I be quiet? This mode suppresses terminal output but still writes to log file
+    #[clap(short, long)]
     quiet: bool,
 
-	///Use AI model to interpret collected statistics and describe them. 
-	///Environment variable [OPENAI_API_KEY | GEMINI_API_KEY | OPENROUTER_API_KEY | LOCAL_API_KEY] should be set to your personal API key 
-	///The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL)
-	/// Currently supported vendors are:
-	///		- openai 
-	///		- google 
-	///		- openrouter 
-	///		- openroutersmall - use this one if the model has small context window 
-	///		- local - for your local models compatible with OpenAI API
-	#[clap(short, long, default_value="", verbatim_doc_comment)]
-	ai: String,
+    ///Use AI model to interpret collected statistics and describe them.
+    ///Environment variable [OPENAI_API_KEY | GEMINI_API_KEY | OPENROUTER_API_KEY | LOCAL_API_KEY] should be set to your personal API key
+    ///The parameter should be set to the value in format: VENDOR:MODEL_NAME:LANGUAGE_CODE (for example openai:gpt-4-turbo:PL or google:gemini-2.0-flash:PL)
+    /// Currently supported vendors are:
+    ///		- openai
+    ///		- google
+    ///		- openrouter
+    ///		- openroutersmall - use this one if the model has small context window
+    ///		- local - for your local models compatible with OpenAI API
+    #[clap(short, long, default_value = "", verbatim_doc_comment)]
+    ai: String,
 
-	///TOPn for detecting anomalies using MAD 
-	#[clap(short, long, default_value_t=10)]
-	mad_threshold: usize,
+    ///TOPn for detecting anomalies using MAD
+    #[clap(short, long, default_value_t = 10)]
+    mad_threshold: usize,
 
-	///Window size for detecting anomalies using MAD for local sliding window specified as % of probes
-	#[clap(short = 'W', long, default_value_t = 100)]
+    ///Window size for detecting anomalies using MAD for local sliding window specified as % of probes
+    #[clap(short = 'W', long, default_value_t = 100)]
     mad_window_size: usize,
 
-	/// Keep only top N anomalies per category per snapshot date.
-	/// 0 means no trimming.
-	#[arg(long, default_value_t = 0)]
-	pub top_cluster_anomalies: usize,
+    /// Keep only top N anomalies per category per snapshot date.
+    /// 0 means no trimming.
+    #[arg(long, default_value_t = 0)]
+    pub top_cluster_anomalies: usize,
 
-	///Parallelism level 
-	#[clap(short = 'P', long, default_value_t=4)]
+    ///Parallelism level
+    #[clap(short = 'P', long, default_value_t = 4)]
     parallel: usize,
 
-	///Security level: 
-	///		0 - JAS-MIN will not store any object names, database names or any other sensitive data
-	///		1 - JAS-MIN will store segment_names from Segment Statistics section
-	///		2 - JAS-MIN will store Full SQL Text from AWR reports
-	#[clap(short = 'S', long, default_value_t=0,verbatim_doc_comment)]
+    ///Security level:
+    ///		0 - JAS-MIN will not store any object names, database names or any other sensitive data
+    ///		1 - JAS-MIN will store segment_names from Segment Statistics section
+    ///		2 - JAS-MIN will store Full SQL Text from AWR reports
+    #[clap(short = 'S', long, default_value_t = 0, verbatim_doc_comment)]
     security_level: usize,
 
-	///This can be used with Gemini models - Using the URL context tool, you can provide Gemini with URLs as additional context for your prompt. The model can then retrieve content from the URLs and use that content to inform and shape its response.
-	///Check Google Documentation for more info: https://ai.google.dev/gemini-api/docs/url-context
-	#[clap(short, long, default_value="",verbatim_doc_comment)]
-	url_context_file: String,
+    ///This can be used with Gemini models - Using the URL context tool, you can provide Gemini with URLs as additional context for your prompt. The model can then retrieve content from the URLs and use that content to inform and shape its response.
+    ///Check Google Documentation for more info: https://ai.google.dev/gemini-api/docs/url-context
+    #[clap(short, long, default_value = "", verbatim_doc_comment)]
+    url_context_file: String,
 
-	///Budget for token - used by modular LLM analyzes to minimize the number of tokens used by the model
-	#[clap(short = 'B', long, default_value_t=256000)]
-	tokens_budget: usize,
+    ///Budget for token - used by modular LLM analyzes to minimize the number of tokens used by the model
+    #[clap(short = 'B', long, default_value_t = 256000)]
+    tokens_budget: usize,
 
-	///For calculating gradient - ridge_lambda: L2 regularization strength (>= 0)
-	#[clap(short = 'R', long, default_value_t=50.0)]
-	ridge_lambda: f64,
+    ///For calculating gradient - ridge_lambda: L2 regularization strength (>= 0)
+    #[clap(short = 'R', long, default_value_t = 50.0)]
+    ridge_lambda: f64,
 
-	///For calculating gradient - overall regularization strength for Elastic Net (>= 0)
-	#[clap(short = 'E', long, default_value_t=30.0)]
-	en_lambda: f64,
+    ///For calculating gradient - overall regularization strength for Elastic Net (>= 0)
+    #[clap(short = 'E', long, default_value_t = 30.0)]
+    en_lambda: f64,
 
-	///For calculating gradient - mixing between L1 and L2 in Elastic Net:
-	///     alpha = 1.0 -> Lasso (pure L1)
-	///     alpha = 0.0 -> Ridge-like (pure L2)
-	#[clap(short = 'A', long, default_value_t=0.333,verbatim_doc_comment)]
-	en_alpha: f64,
+    ///For calculating gradient - mixing between L1 and L2 in Elastic Net:
+    ///     alpha = 1.0 -> Lasso (pure L1)
+    ///     alpha = 0.0 -> Ridge-like (pure L2)
+    #[clap(short = 'A', long, default_value_t = 0.333, verbatim_doc_comment)]
+    en_alpha: f64,
 
-	///Max iterations for coordinate descent in Elastic Net
-	#[clap(short = 'I', long, default_value_t=5000)]
-	en_max_iter: usize,
+    ///Max iterations for coordinate descent in Elastic Net
+    #[clap(short = 'I', long, default_value_t = 5000)]
+    en_max_iter: usize,
 
-	///Convergence tolerance for coefficient change in Elastic Net
-	#[clap(short = 'T', long, default_value_t=1e-6)]
-	en_tol: f64,
+    ///Convergence tolerance for coefficient change in Elastic Net
+    #[clap(short = 'T', long, default_value_t = 1e-6)]
+    en_tol: f64,
 
-	/// Keep only top N results per regression model.
-	#[arg(long, default_value_t = 10)]
-	pub top_gradient: usize,
+    /// Keep only top N results per regression model.
+    #[arg(long, default_value_t = 10)]
+    pub top_gradient: usize,
 
-	///Convert existing markdown file to HTML without calling AI model 
-	#[clap(short, long, default_value="", verbatim_doc_comment)]
-	convert_md2html: String,
+    ///Convert existing markdown file to HTML without calling AI model
+    #[clap(short, long, default_value = "", verbatim_doc_comment)]
+    convert_md2html: String,
 
-	///Build customer gradient analyze for given SQL_ID or wait event
-	/// Usage: SQL=0zv508wsas63c
-	///        EVENT='log file sync'
-    #[clap(short = 'G', long, default_value="", verbatim_doc_comment)]
-	gradient_custom: String,
+    ///Build customer gradient analyze for given SQL_ID or wait event
+    /// Usage: SQL=0zv508wsas63c
+    ///        EVENT='log file sync'
+    #[clap(short = 'G', long, default_value = "", verbatim_doc_comment)]
+    gradient_custom: String,
 
-	 /// Enable TOOLS mode for AI providers that support function calling
+    /// Enable TOOLS mode for AI providers that support function calling
     #[arg(long, default_value_t = false)]
     pub tools_mode: bool,
-    
+
     /// Maximum number of tool-call iterations
-    #[arg(long, default_value_t=10)]
+    #[arg(long, default_value_t = 10)]
     pub max_tool_iterations: usize,
 }
 
-
 fn load_env() {
-    // 1.Check existense of $JASMIN_HOME 
+    // 1.Check existense of $JASMIN_HOME
     let env_loaded = if let Ok(jasmin_home) = env::var("JASMIN_HOME") {
         let mut path = PathBuf::from(jasmin_home);
         path.push(".env");
@@ -198,151 +202,185 @@ fn load_env() {
 }
 
 fn main() {
-	load_env();
-	let mut reportfile: String = "".to_string();
-	let args = Args::parse(); 
-	println!("{}{} (Running with parallel degree: {})","JAS-MIN v".bright_yellow(),env!("CARGO_PKG_VERSION").bright_yellow(), args.parallel);
+    load_env();
+    let mut reportfile: String = "".to_string();
+    let args = Args::parse();
+    println!(
+        "{}{} (Running with parallel degree: {})",
+        "JAS-MIN v".bright_yellow(),
+        env!("CARGO_PKG_VERSION").bright_yellow(),
+        args.parallel
+    );
 
-	let mut report_for_ai = ReportForAI::default();
+    let mut report_for_ai = ReportForAI::default();
 
-	//This creates a global pool configuration for rayon to limit threads for par_iter
-	ThreadPoolBuilder::new()
+    //This creates a global pool configuration for rayon to limit threads for par_iter
+    ThreadPoolBuilder::new()
         .num_threads(args.parallel)
         .build_global()
         .expect("Can't create rayon pool");
 
-	//This is map that will be used to generate and insert appropriate links to html AI output
-	let mut events_sqls: &mut HashMap<&str, HashSet<String>> = &mut HashMap::new();
+    //This is map that will be used to generate and insert appropriate links to html AI output
+    let mut events_sqls: &mut HashMap<&str, HashSet<String>> = &mut HashMap::new();
 
-	if !args.file.is_empty() {
-		let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
-		println!("{}", awr_doc);
-	} else if !args.directory.is_empty() {
-		if PathBuf::from(&args.directory).exists(){
-			let mut fname = PathBuf::from(&args.directory).with_extension("json").to_string_lossy().into_owned();
-			reportfile = PathBuf::from(&args.directory).with_extension("txt").to_string_lossy().into_owned();
-			if !args.outfile.is_empty() {
-				fname = args.outfile.clone();
-			}
-			debug_note!("Starting to parse directory: {}", &args.directory);
-			report_for_ai = awr::parse_awr_dir(args.clone(), events_sqls, &fname);
-		} else {
-			eprintln!("ERROR: Directory: '{}' does not exists!",args.directory);
-		}
-		
-	} else if !args.json_file.is_empty() {
-		if PathBuf::from(&args.json_file).exists(){
-			report_for_ai = awr::prarse_json_file(args.clone(), events_sqls);
-			//let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
-			reportfile = match PathBuf::from(&args.json_file).file_stem() {
-				Some(stem) => 
-					PathBuf::from(stem).with_extension("txt").to_string_lossy().into_owned(),
-				None => {
-					eprintln!("Invalid filename: {}", args.json_file);
-					std::process::exit(10);
-				}
-			};
-		} else {
-			eprintln!("ERROR: JSON file: '{}' does not exists!",args.json_file);
-		}
-	}
-
-	let j = serde_json::to_value(&report_for_ai).unwrap();
-	let toon_str = encode(&j, None);
-	if toon_str.len() > 128 {
-		let mut f = fs::File::create("report_for_ai.toon").unwrap();
-		f.write_all(toon_str.as_bytes()).unwrap();
-		println!("\n🎲 The TOON file alone will consume around {} tokens. Take it under consideration if you want to use AI processing.", estimate_tokens_from_str(&toon_str));
-	}
-	
-	if !args.ai.is_empty() {
-        let vendor_model_lang_parts = args.ai.split(":").collect::<Vec<&str>>();
-		let vendor_model_lang = if vendor_model_lang_parts.len() > 3 {
-			let vendor = vendor_model_lang_parts[0];
-			let lang = vendor_model_lang_parts[vendor_model_lang_parts.len() - 1];
-			let model = &args.ai[vendor.len() + 1..args.ai.len() - lang.len() - 1];
-			vec![vendor, model, lang]
-		} else {
-			vendor_model_lang_parts
-		};
-		
-        if vendor_model_lang[0] == "openai" {
-            openai_gpt(&reportfile, vendor_model_lang, events_sqls.clone(), &args, &toon_str).unwrap();
-        } else if vendor_model_lang[0] == "google" { 
-            gemini(&reportfile, vendor_model_lang, events_sqls.clone(), &args, &toon_str).unwrap();
-		} else if vendor_model_lang[0] == "openrouter" { 
-            openrouter(&reportfile, vendor_model_lang, events_sqls.clone(), &args, &toon_str).unwrap();
-		} else if vendor_model_lang[0] == "openroutersmall" { 
-            let cfg = ModularLlmConfig {
-					lang: vendor_model_lang[2].to_string(),
-					top_spikes_n: 64,
-					temperature: 0.2,
-					max_tokens_per_call: args.tokens_budget,
-					enable_reasoning_prompt: true,
-
-					waits_top_n: 64,
-					sqls_top_n: 64,
-					anomalies_top_n: 128,
-					mad_per_item_top_n: 128,
-
-					tokens_budget: (args.tokens_budget as f64 * 0.5) as usize,
-					use_openrouter: true,
-				};
-
-			
-			match analyze_report_modular_lmstudio(&report_for_ai, &cfg, vendor_model_lang[1]) {
-				Ok((notes, final_md)) => {
-					if let Err(e) = write_outputs(&reportfile, &final_md) {
-						eprintln!("❌ write_outputs failed: {e}");
-					} else {
-						convert_md_to_html_file(&format!("{reportfile}.final.md"), events_sqls.clone());
-					}
-				}
-				Err(e) => {
-					eprintln!("❌ modular analysis failed: {e}");
-					std::process::exit(1);
-				}
-			}
-
-		} else if vendor_model_lang[0] == "local" { 
-            let cfg = ModularLlmConfig {
-					lang: vendor_model_lang[2].to_string(),
-					top_spikes_n: 64,
-					temperature: 0.2,
-					max_tokens_per_call: args.tokens_budget,
-					enable_reasoning_prompt: true,
-
-					waits_top_n: 64,
-					sqls_top_n: 64,
-					anomalies_top_n: 128,
-					mad_per_item_top_n: 128,
-
-					tokens_budget: (args.tokens_budget as f64 * 0.5) as usize,
-					use_openrouter: false,
-				};
-
-			
-			match analyze_report_modular_lmstudio(&report_for_ai, &cfg, vendor_model_lang[1]) {
-				Ok((notes, final_md)) => {
-					if let Err(e) = write_outputs(&reportfile, &final_md) {
-						eprintln!("❌ write_outputs failed: {e}");
-					} else {
-						convert_md_to_html_file(&format!("{reportfile}.final.md"), events_sqls.clone());
-					}
-				}
-				Err(e) => {
-					eprintln!("❌ modular analysis failed: {e}");
-					std::process::exit(1);
-				}
-			}
-
-		} else {
-            println!("Unrecognized vendor. Supported vendors: openai, google, openrouter");
-        }   
+    if !args.file.is_empty() {
+        let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
+        println!("{}", awr_doc);
+    } else if !args.directory.is_empty() {
+        if PathBuf::from(&args.directory).exists() {
+            let mut fname = PathBuf::from(&args.directory)
+                .with_extension("json")
+                .to_string_lossy()
+                .into_owned();
+            reportfile = PathBuf::from(&args.directory)
+                .with_extension("txt")
+                .to_string_lossy()
+                .into_owned();
+            if !args.outfile.is_empty() {
+                fname = args.outfile.clone();
+            }
+            debug_note!("Starting to parse directory: {}", &args.directory);
+            report_for_ai = awr::parse_awr_dir(args.clone(), events_sqls, &fname);
+        } else {
+            eprintln!("ERROR: Directory: '{}' does not exists!", args.directory);
+        }
+    } else if !args.json_file.is_empty() {
+        if PathBuf::from(&args.json_file).exists() {
+            report_for_ai = awr::prarse_json_file(args.clone(), events_sqls);
+            //let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
+            reportfile = match PathBuf::from(&args.json_file).file_stem() {
+                Some(stem) => PathBuf::from(stem)
+                    .with_extension("txt")
+                    .to_string_lossy()
+                    .into_owned(),
+                None => {
+                    eprintln!("Invalid filename: {}", args.json_file);
+                    std::process::exit(10);
+                }
+            };
+        } else {
+            eprintln!("ERROR: JSON file: '{}' does not exists!", args.json_file);
+        }
     }
 
-	if !args.convert_md2html.is_empty() {
-		convert_md_to_html_file(&args.convert_md2html, events_sqls.clone());
-	}
-	
+    let j = serde_json::to_value(&report_for_ai).unwrap();
+    let toon_str = encode(&j, None);
+    if toon_str.len() > 128 {
+        let mut f = fs::File::create("report_for_ai.toon").unwrap();
+        f.write_all(toon_str.as_bytes()).unwrap();
+        println!("\n🎲 The TOON file alone will consume around {} tokens. Take it under consideration if you want to use AI processing.", estimate_tokens_from_str(&toon_str));
+    }
+
+    if !args.ai.is_empty() {
+        let vendor_model_lang_parts = args.ai.split(":").collect::<Vec<&str>>();
+        let vendor_model_lang = if vendor_model_lang_parts.len() > 3 {
+            let vendor = vendor_model_lang_parts[0];
+            let lang = vendor_model_lang_parts[vendor_model_lang_parts.len() - 1];
+            let model = &args.ai[vendor.len() + 1..args.ai.len() - lang.len() - 1];
+            vec![vendor, model, lang]
+        } else {
+            vendor_model_lang_parts
+        };
+
+        if vendor_model_lang[0] == "openai" {
+            openai_gpt(
+                &reportfile,
+                vendor_model_lang,
+                events_sqls.clone(),
+                &args,
+                &toon_str,
+            )
+            .unwrap();
+        } else if vendor_model_lang[0] == "google" {
+            gemini(
+                &reportfile,
+                vendor_model_lang,
+                events_sqls.clone(),
+                &args,
+                &toon_str,
+            )
+            .unwrap();
+        } else if vendor_model_lang[0] == "openrouter" {
+            openrouter(
+                &reportfile,
+                vendor_model_lang,
+                events_sqls.clone(),
+                &args,
+                &toon_str,
+            )
+            .unwrap();
+        } else if vendor_model_lang[0] == "openroutersmall" {
+            let cfg = ModularLlmConfig {
+                lang: vendor_model_lang[2].to_string(),
+                top_spikes_n: 64,
+                temperature: 0.2,
+                max_tokens_per_call: args.tokens_budget,
+                enable_reasoning_prompt: true,
+
+                waits_top_n: 64,
+                sqls_top_n: 64,
+                anomalies_top_n: 128,
+                mad_per_item_top_n: 128,
+
+                tokens_budget: (args.tokens_budget as f64 * 0.5) as usize,
+                use_openrouter: true,
+            };
+
+            match analyze_report_modular_lmstudio(&report_for_ai, &cfg, vendor_model_lang[1]) {
+                Ok((notes, final_md)) => {
+                    if let Err(e) = write_outputs(&reportfile, &final_md) {
+                        eprintln!("❌ write_outputs failed: {e}");
+                    } else {
+                        convert_md_to_html_file(
+                            &format!("{reportfile}.final.md"),
+                            events_sqls.clone(),
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ modular analysis failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else if vendor_model_lang[0] == "local" {
+            let cfg = ModularLlmConfig {
+                lang: vendor_model_lang[2].to_string(),
+                top_spikes_n: 64,
+                temperature: 0.2,
+                max_tokens_per_call: args.tokens_budget,
+                enable_reasoning_prompt: true,
+
+                waits_top_n: 64,
+                sqls_top_n: 64,
+                anomalies_top_n: 128,
+                mad_per_item_top_n: 128,
+
+                tokens_budget: (args.tokens_budget as f64 * 0.5) as usize,
+                use_openrouter: false,
+            };
+
+            match analyze_report_modular_lmstudio(&report_for_ai, &cfg, vendor_model_lang[1]) {
+                Ok((notes, final_md)) => {
+                    if let Err(e) = write_outputs(&reportfile, &final_md) {
+                        eprintln!("❌ write_outputs failed: {e}");
+                    } else {
+                        convert_md_to_html_file(
+                            &format!("{reportfile}.final.md"),
+                            events_sqls.clone(),
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ modular analysis failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            println!("Unrecognized vendor. Supported vendors: openai, google, openrouter");
+        }
+    }
+
+    if !args.convert_md2html.is_empty() {
+        convert_md_to_html_file(&args.convert_md2html, events_sqls.clone());
+    }
 }
