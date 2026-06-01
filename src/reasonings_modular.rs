@@ -1484,7 +1484,7 @@ pub async fn analyze_report_modular_lmstudio(
         input_json: Value,
     ) -> Result<String, Box<dyn std::error::Error>> {
         //let input_pretty = serde_json::to_string_pretty(&input_json).unwrap_or_else(|_| "{}".to_string());
-        let input_pretty = encode(&input_json, None); //TOON string for minimizing tokens
+        let input_pretty = encode(&rounded_json_for_toon(input_json), None); //TOON string for minimizing tokens
 
         let user = user_prompt_for_section(section, capsule_json, &input_pretty);
         println!("Analyzing secion: {:?}", section);

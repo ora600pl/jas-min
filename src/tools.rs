@@ -10,6 +10,7 @@ use prettytable::{Cell, Row, Table};
 use pulldown_cmark::{html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use serde::Serialize;
+use serde_json::{Number, Value};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs::File;
@@ -566,13 +567,71 @@ pub fn estimate_tokens_from_str(s: &str) -> usize {
     (s.chars().count() + 3) / 4
 }
 
+pub fn round_json_floats(value: &mut Value, decimal_places: u32) {
+    let factor = 10_f64.powi(decimal_places as i32);
+
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                round_json_floats(value, decimal_places);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                round_json_floats(value, decimal_places);
+            }
+        }
+        Value::Number(number) if number.is_f64() => {
+            if let Some(float_value) = number.as_f64() {
+                let mut rounded = (float_value * factor).round() / factor;
+                if rounded == -0.0 {
+                    rounded = 0.0;
+                }
+                if let Some(rounded_number) = Number::from_f64(rounded) {
+                    *number = rounded_number;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn rounded_json_for_toon(mut value: Value) -> Value {
+    round_json_floats(&mut value, 3);
+    value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn round_json_floats_rounds_nested_float_values_only() {
+        let mut value = json!({
+            "float": 23.54664676448,
+            "integer": 23,
+            "text": "23.54664676448",
+            "nested": [{ "negative_zero": -0.0001 }]
+        });
+
+        round_json_floats(&mut value, 3);
+
+        assert_eq!(value["float"], json!(23.547));
+        assert_eq!(value["integer"], json!(23));
+        assert_eq!(value["text"], json!("23.54664676448"));
+        assert_eq!(value["nested"][0]["negative_zero"], json!(0.0));
+    }
+}
+
 /// Builds the "combined string" that we actually send (base prompt + capsule + input JSON).
 pub fn estimate_request_tokens(
     base_user_prompt_str: &str,
     capsule_json_str: &str,
     input_json: &serde_json::Value,
 ) -> usize {
-    let input_str = serde_json::to_string(input_json).unwrap_or_default();
+    let input_str =
+        serde_json::to_string(&rounded_json_for_toon(input_json.clone())).unwrap_or_default();
     let combined = format!(
         "{}\n{}\nINPUT:\n{}",
         base_user_prompt_str, capsule_json_str, input_str

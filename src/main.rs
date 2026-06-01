@@ -263,7 +263,7 @@ fn main() {
         }
     }
 
-    let j = serde_json::to_value(&report_for_ai).unwrap();
+    let j = rounded_json_for_toon(serde_json::to_value(&report_for_ai).unwrap());
     let toon_str = encode(&j, None);
     if toon_str.len() > 128 {
         let mut f = fs::File::create("report_for_ai.toon").unwrap();
