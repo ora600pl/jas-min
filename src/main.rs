@@ -16,6 +16,7 @@ mod ai_tools;
 mod analyze;
 mod anomalies;
 mod awr;
+mod degradation;
 mod gradient;
 mod macros;
 mod reasonings;
