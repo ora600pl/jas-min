@@ -53,6 +53,10 @@ use crate::reasonings::{
 };
 use crate::tools::*;
 
+use crate::degradation::{
+    build_db_time_degradation_html, build_db_time_degradation_report,
+    find_degraded_sqls_for_analysis,
+};
 use crate::gradient::*;
 use crate::gradient::{
     DbTimeGradientResult, EventImpact, EventScalarMap, EventSeriesMap, GradientHtmlSection,
@@ -3021,7 +3025,7 @@ pub fn main_report_builder(
     let mut x_vals: Vec<String> = Vec::new();
 
     println!("{}", "\n==== ANALYZING ===".bold().bright_cyan());
-    let top_stats: TopStats = find_top_stats(
+    let mut top_stats: TopStats = find_top_stats(
         &collection.awrs,
         db_time_cpu_ratio,
         filter_db_time,
@@ -3030,6 +3034,20 @@ pub fn main_report_builder(
         &args,
         &mut report_for_ai,
     );
+    let degraded_sqls_for_analysis =
+        find_degraded_sqls_for_analysis(&collection, &snap_range, args.top_gradient);
+    if !degraded_sqls_for_analysis.is_empty() {
+        println!(
+            "Additional SQLs from DB Time degradation considered: {:?}",
+            degraded_sqls_for_analysis
+                .iter()
+                .map(|(sql_id, _)| sql_id.clone())
+                .collect::<Vec<String>>()
+        );
+        for (sql_id, module) in degraded_sqls_for_analysis {
+            top_stats.sqls.entry(sql_id).or_insert(module);
+        }
+    }
 
     println!("{}", "\n==== CREATING PLOTS ===".bold().bright_cyan());
     generate_events_plotfiles(
@@ -5920,63 +5938,65 @@ pub fn main_report_builder(
         const messages = document.getElementById('messages');
         const input = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
-        messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Report<br>What is the most important Wait Event</div>`;
-        function showLoadingIndicator() {{
-            const loadingDiv = document.createElement('div');
-            loadingDiv.className = 'message ai-msg loading-message';
-            loadingDiv.id = 'loading-indicator';
-            loadingDiv.innerHTML = '<span class="loading-dots"></span>';
-            messages.appendChild(loadingDiv);
-            messages.scrollTop = messages.scrollHeight;
-            return loadingDiv;
-        }}        
-        function removeLoadingIndicator() {{
-            const loadingDiv = document.getElementById('loading-indicator');
-            if (loadingDiv) {{
-                loadingDiv.remove();
-            }}
-        }}
-        async function sendMessage() {{
-            const userMsg = input.value.trim();
-            if (userMsg === '') return;
-            input.disabled = true;
-            sendBtn.disabled = true;
-            messages.innerHTML += `<div class="message user-msg">${{userMsg}}</div>`;
-            messages.scrollTop = messages.scrollHeight;
-            input.value = '';
-            const loadingDiv = showLoadingIndicator();
-            try {{
-                const response = await fetch('http://localhost:1234/api/chat', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ message: userMsg }})
-                }});
-                const data = await response.json();
-                removeLoadingIndicator();
-                messages.innerHTML += `<div class="message ai-msg">${{marked.parse(data.reply)}}</div>`;
+        if (messages && input && sendBtn) {{
+            messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Report<br>What is the most important Wait Event</div>`;
+            function showLoadingIndicator() {{
+                const loadingDiv = document.createElement('div');
+                loadingDiv.className = 'message ai-msg loading-message';
+                loadingDiv.id = 'loading-indicator';
+                loadingDiv.innerHTML = '<span class="loading-dots"></span>';
+                messages.appendChild(loadingDiv);
                 messages.scrollTop = messages.scrollHeight;
-            }} catch (error) {{
-                removeLoadingIndicator();
-                messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
+                return loadingDiv;
+            }}        
+            function removeLoadingIndicator() {{
+                const loadingDiv = document.getElementById('loading-indicator');
+                if (loadingDiv) {{
+                    loadingDiv.remove();
+                }}
+            }}
+            async function sendMessage() {{
+                const userMsg = input.value.trim();
+                if (userMsg === '') return;
+                input.disabled = true;
+                sendBtn.disabled = true;
+                messages.innerHTML += `<div class="message user-msg">${{userMsg}}</div>`;
                 messages.scrollTop = messages.scrollHeight;
-            }} finally {{
-                // Re-enable input and button
-                input.disabled = false;
-                sendBtn.disabled = false;
-                input.focus();
+                input.value = '';
+                showLoadingIndicator();
+                try {{
+                    const response = await fetch('http://localhost:1234/api/chat', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ message: userMsg }})
+                    }});
+                    const data = await response.json();
+                    removeLoadingIndicator();
+                    messages.innerHTML += `<div class="message ai-msg">${{marked.parse(data.reply)}}</div>`;
+                    messages.scrollTop = messages.scrollHeight;
+                }} catch (error) {{
+                    removeLoadingIndicator();
+                    messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
+                    messages.scrollTop = messages.scrollHeight;
+                }} finally {{
+                    input.disabled = false;
+                    sendBtn.disabled = false;
+                    input.focus();
+                }}
             }}
+            input.addEventListener('keydown', function(event) {{
+                if (event.key === 'Enter' && !input.disabled) {{
+                    sendMessage();
+                }}
+            }});
+            sendBtn.addEventListener('click', sendMessage);
         }}
-        input.addEventListener('keydown', function(event) {{
-            if (event.key === 'Enter' && !input.disabled) {{
-                sendMessage();
-            }}
-        }});
-        sendBtn.addEventListener('click', sendMessage);
         </script>
         <script>//JAS-MIN scripts
         function toggleTable(buttonId, tableId) {{
             const button = document.getElementById(buttonId);
             const table = document.getElementById(tableId);
+            if (!button || !table) return;
         
             button.addEventListener('click', () => {{
                 if (table.style.display === 'none' || table.style.display === '') {{
@@ -6117,6 +6137,7 @@ pub fn main_report_builder(
         function toggleElementWithCheckbox(checkboxId, elementId) {{
             const checkbox = document.getElementById(checkboxId);
             const element = document.getElementById(elementId);
+            if (!checkbox || !element) return;
             checkbox.addEventListener('change', () => {{
                 if (checkbox.checked) {{
                     element.style.display = 'block';
@@ -6163,6 +6184,34 @@ pub fn main_report_builder(
         </script>"#
     );
 
+    let db_time_degradation_report = build_db_time_degradation_report(
+        &collection,
+        &snap_range,
+        &x_vals,
+        &y_vals_dbtime,
+        &y_vals_dbcpu,
+        &y_vals_events,
+        &y_vals_sqls,
+        &instance_stats,
+        &args,
+    );
+    let db_time_degradation_button = if let Some(report) = db_time_degradation_report.as_ref() {
+        let degradation_html = build_db_time_degradation_html(report);
+        let degradation_filename = format!("{}/stats/db_time_degradation.html", &html_dir);
+        if let Err(e) = fs::write(&degradation_filename, degradation_html) {
+            eprintln!("Error writing file {}: {}", degradation_filename, e);
+            String::new()
+        } else {
+            "<a href=\"stats/db_time_degradation.html\" target=\"_blank\" style=\"text-decoration: none;\">
+                <button id=\"show-dbtime-degradation-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">DB Time Degradation</span><span>DB Time Degradation</span></button>
+            </a>"
+            .to_string()
+        }
+    } else {
+        String::new()
+    };
+    report_for_ai.db_time_degradation_report = db_time_degradation_report;
+
     // Open plot_main HTML to inject Additional sections - Buttons, Tables, etc
     let mut plotly_html: String =
         fs::read_to_string(&fname).expect("Failed to read jasmin-html file");
@@ -6195,7 +6244,9 @@ pub fn main_report_builder(
                 <a href=\"stats/gradient_cpu.html\" target=\"_blank\" style=\"text-decoration: none;\">
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">DB CPU Gradient Analyzes</span><span>DB CPU Gradient Analyzes</span></button>
                 </a>
+                {}
                 {}",
+                db_time_degradation_button,
                 if !args.gradient_custom.is_empty() {
                     format!(
                         "<a href=\"stats/gradient_sqlid.html\" target=\"_blank\" style=\"text-decoration: none;\">

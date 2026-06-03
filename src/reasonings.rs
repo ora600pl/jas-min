@@ -603,6 +603,51 @@ pub struct CollinearGroupImpact {
 }
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
+pub struct DbTimeDegradationReport {
+    pub is_degradation_detected: bool,
+    pub verdict: String,
+    pub baseline_start: String,
+    pub baseline_end: String,
+    pub degraded_start: String,
+    pub degraded_end: String,
+    pub baseline_samples: usize,
+    pub degraded_samples: usize,
+    pub db_time_baseline_avg: f64,
+    pub db_time_degraded_avg: f64,
+    pub db_time_delta_avg: f64,
+    pub db_time_delta_pct: f64,
+    pub db_time_robust_z_score: f64,
+    pub db_cpu_baseline_avg: f64,
+    pub db_cpu_degraded_avg: f64,
+    pub db_cpu_delta_avg: f64,
+    pub db_cpu_delta_pct: f64,
+    pub dominant_domains: Vec<DbTimeDegradationDomainSummary>,
+    pub findings: Vec<DbTimeDegradationFinding>,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+pub struct DbTimeDegradationDomainSummary {
+    pub domain: String,
+    pub findings_count: usize,
+    pub total_positive_delta: f64,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+pub struct DbTimeDegradationFinding {
+    pub domain: String,
+    pub name: String,
+    pub baseline_avg: f64,
+    pub degraded_avg: f64,
+    pub delta_avg: f64,
+    pub delta_pct: f64,
+    pub robust_z_score: f64,
+    pub correlation_with_db_time: f64,
+    pub estimated_db_time_delta_share: f64,
+    pub severity: String,
+    pub evidence: String,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct ReportForAI {
     pub general_data: StatisticsDescription,
     pub top_spikes_marked: Vec<TopPeaksSelected>,
@@ -631,6 +676,7 @@ pub struct ReportForAI {
     pub db_cpu_gradient_sql_cpu_time: Option<DbTimeGradientSection>,
     pub custom_gradient_wait_events: Option<DbTimeGradientSection>,
     pub custom_gradient_instance_stats: Option<DbTimeGradientSection>,
+    pub db_time_degradation_report: Option<DbTimeDegradationReport>,
     pub initialization_parameters: HashMap<String, String>,
 }
 
@@ -694,6 +740,10 @@ The ReportForAI contains these analytical sections:
 - `instance_stats_pearson_correlation` — instance statistics correlated with DB Time (abs(rho) >= 0.5)
 - `load_profile_anomalies` — MAD-detected load profile anomalies
 - `anomaly_clusters` — temporally grouped anomalies across multiple domains
+- `db_time_degradation_report` — baseline-vs-recent statistical degradation report for DB Time.
+  Use it to state whether the latest snapshots statistically departed from the prior baseline,
+  and to list the SQL IDs, wait events, instance statistics, time-model metrics, and load-profile
+  counters that increased together with DB Time.
 - `initialization_parameters` — Oracle instance initialization parameters (name-value pairs). 
   Contains both explicit (user-set) and default parameter values from the analyzed instance.
 

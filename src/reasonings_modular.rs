@@ -388,6 +388,10 @@ The ReportForAI contains these analytical sections:
 - `instance_stats_pearson_correlation` — instance statistics correlated with DB Time (|ρ| ≥ 0.5)
 - `load_profile_anomalies` — MAD-detected load profile anomalies
 - `anomaly_clusters` — temporally grouped anomalies across multiple domains
+- `db_time_degradation_report` — baseline-vs-recent statistical degradation report for DB Time.
+  Use it to state whether the latest snapshots statistically departed from the prior baseline,
+  and to list the SQL IDs, wait events, instance statistics, time-model metrics, and load-profile
+  counters that increased together with DB Time.
 - `initialization_parameters` — Oracle instance initialization parameters (name-value pairs). 
   Contains both explicit (user-set) and default parameter values from the analyzed instance.
 
