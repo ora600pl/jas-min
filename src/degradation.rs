@@ -20,6 +20,8 @@ const MIN_FINDING_DELTA_PCT: f64 = 20.0;
 const STRONG_FINDING_DELTA_PCT: f64 = 100.0;
 const MIN_FINDING_CORR: f64 = 0.30;
 
+// A named metric time series: SQL_ID / wait event / stat name -> one value per snapshot.
+// All series scored by this module must be aligned with the DB Time vector.
 type SeriesMap = BTreeMap<String, Vec<f64>>;
 
 pub fn build_db_time_degradation_report(
@@ -44,6 +46,9 @@ pub fn build_db_time_degradation_report(
 
     let db_time_stats = compare_windows(db_time, &baseline, &degraded)?;
     let db_cpu_stats = compare_windows(db_cpu, &baseline, &degraded).unwrap_or_default();
+    // Positive DB Time delta is used as the denominator for the "share" score. If DB Time
+    // did not rise, contributors can still be listed by z-score/correlation, but their
+    // estimated DB Time share is intentionally forced to 0.
     let db_time_delta = db_time_stats.delta_avg.max(0.0);
 
     let load_profile = load_profile_series(collection, snap_range, db_time.len());
@@ -53,6 +58,9 @@ pub fn build_db_time_degradation_report(
         sql_elapsed_wide.insert(sql_id.clone(), series.clone());
     }
 
+    // Keep a separate top-N per domain. A single unit-heavy domain, especially SQL elapsed
+    // time, can otherwise dominate the global ranking and hide waits/statistics that changed
+    // at the same time as DB Time.
     let per_domain_limit = args.top_gradient.max(10);
     let mut findings = Vec::new();
     findings.extend(top_findings(
@@ -170,6 +178,9 @@ pub fn find_degraded_sqls_for_analysis(
     snap_range: &(u64, u64),
     limit: usize,
 ) -> Vec<(String, String)> {
+    // This is an early, SQL-only pass used before the main report builds SQL plots/tables.
+    // It reuses the same baseline-vs-recent math as the full degradation report, then returns
+    // SQL_IDs that should be promoted into the normal TOP SQL analysis pipeline.
     let db_time = db_time_series(collection, snap_range);
     if db_time.len() < MIN_BASELINE_SAMPLES + MIN_RECENT_SAMPLES {
         return Vec::new();
@@ -392,6 +403,9 @@ struct WindowComparison {
 }
 
 fn split_windows(len: usize) -> (Vec<usize>, Vec<usize>) {
+    // The recent window represents the suspected degradation period. A 25% tail works well
+    // for "last few days vs previous week" reports while the hard cap prevents long inputs
+    // from diluting the recent signal with too many older snapshots.
     let mut recent_len = ((len as f64) * 0.25).ceil() as usize;
     recent_len = recent_len.clamp(MIN_RECENT_SAMPLES, MAX_RECENT_SAMPLES);
     if len.saturating_sub(recent_len) < MIN_BASELINE_SAMPLES {
@@ -416,6 +430,8 @@ fn compare_windows(
     let baseline_p90 = percentile(&baseline_values, 0.90);
     let degraded_peak = degraded_values.iter().copied().fold(0.0, f64::max);
     let delta_avg = degraded_avg - baseline_avg;
+    // Percent delta captures level shifts that users see on charts. It complements robust
+    // z-score because a noisy baseline can make z-score modest even when the average doubled.
     let delta_pct = if baseline_avg.abs() < 1e-9 {
         if delta_avg > 0.0 {
             100.0
@@ -428,6 +444,10 @@ fn compare_windows(
     let baseline_median = median(&baseline_values);
     let baseline_mad = mad(&baseline_values);
     let degraded_median = median(&degraded_values);
+    // Robust z-score uses median and MAD instead of mean/stddev:
+    //   z = (recent_median - baseline_median) / (1.4826 * baseline_MAD)
+    // 1.4826 rescales MAD to be comparable to standard deviation under a normal distribution.
+    // This makes the test less sensitive to isolated baseline spikes.
     let robust_z_score = if baseline_mad <= 1e-9 {
         if delta_avg > 0.0 {
             99.0
@@ -472,6 +492,9 @@ fn score_domain(
         if !is_degraded_finding(&stats, corr) {
             continue;
         }
+        // This is a ranking heuristic, not a strict accounting identity. Some domains use
+        // different units (for example SQL elapsed seconds vs DB Time s/s), so the value is
+        // best read as "relative pressure compared with the DB Time level shift".
         let share = if db_time_delta > 1e-9 {
             (stats.delta_avg / db_time_delta).clamp(0.0, 9.99)
         } else {
@@ -522,6 +545,14 @@ fn percentile(values: &[f64], p: f64) -> f64 {
 }
 
 fn is_db_time_degraded(stats: &WindowComparison) -> bool {
+    // DB Time degradation is detected by a hybrid rule:
+    // 1. robust statistical shift (MAD-based z-score),
+    // 2. very strong average level shift, or
+    // 3. recent tail breakout above the historical baseline p90.
+    //
+    // The OR combination is intentional. In real AWR series the baseline may already contain
+    // some bursts, which inflates MAD and can hide an obvious chart-level degradation if only
+    // z-score is used.
     let robust_signal =
         stats.robust_z_score >= MIN_DB_TIME_Z && stats.delta_pct >= MIN_DB_TIME_DELTA_PCT;
     let strong_level_shift =
@@ -533,6 +564,9 @@ fn is_db_time_degraded(stats: &WindowComparison) -> bool {
 }
 
 fn is_degraded_finding(stats: &WindowComparison, corr: f64) -> bool {
+    // A parameter is considered degraded if it has its own robust shift, a very strong level
+    // shift, a moderate shift correlated with DB Time, or a recent tail breakout. This allows
+    // bursty SQL/wait patterns to be captured even when their median remains relatively low.
     let robust_signal = stats.robust_z_score >= MIN_FINDING_Z;
     let strong_level_shift =
         stats.delta_pct >= STRONG_FINDING_DELTA_PCT && stats.degraded_avg > stats.baseline_avg;
@@ -553,6 +587,10 @@ fn safe_pearson(a: &[f64], b: &[f64]) -> f64 {
     let mut num = 0.0;
     let mut den_a = 0.0;
     let mut den_b = 0.0;
+    // Pearson correlation:
+    //   r = cov(a,b) / (std(a) * std(b))
+    // We compute the numerator and denominator directly so constant series return 0 instead
+    // of panicking in the ndarray helper used elsewhere in the project.
     for (&x, &y) in a.iter().zip(b.iter()) {
         let dx = x - mean_a;
         let dy = y - mean_b;
@@ -569,6 +607,9 @@ fn safe_pearson(a: &[f64], b: &[f64]) -> f64 {
 }
 
 fn classify_severity(z: f64, delta_pct: f64, share: f64, corr: f64) -> String {
+    // Severity is deliberately conservative: the highest tiers require agreement between
+    // magnitude (delta_pct), statistical abnormality (z), DB Time relationship (corr), and
+    // ranking impact (share). This reduces false "critical" labels for isolated noisy metrics.
     if z >= 6.0 && delta_pct >= 100.0 && share >= 0.25 && corr >= 0.5 {
         "critical".to_string()
     } else if z >= 3.0 && delta_pct >= 50.0 && (share >= 0.10 || corr >= 0.4) {
@@ -607,6 +648,8 @@ fn top_findings(
     mut findings: Vec<DbTimeDegradationFinding>,
     limit: usize,
 ) -> Vec<DbTimeDegradationFinding> {
+    // Rank first by contribution-like pressure score, then by robust abnormality. This puts
+    // large DB Time-aligned shifts above tiny but statistically neat changes.
     findings.sort_by(|a, b| {
         b.estimated_db_time_delta_share
             .partial_cmp(&a.estimated_db_time_delta_share)
