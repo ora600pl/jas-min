@@ -176,7 +176,7 @@ pub fn build_db_time_degradation_report(
 pub fn find_degraded_sqls_for_analysis(
     collection: &AWRSCollection,
     snap_range: &(u64, u64),
-    limit: usize,
+    _limit: usize,
 ) -> Vec<(String, String)> {
     // This is an early, SQL-only pass used before the main report builds SQL plots/tables.
     // It reuses the same baseline-vs-recent math as the full degradation report, then returns
@@ -194,31 +194,40 @@ pub fn find_degraded_sqls_for_analysis(
     let Some(db_time_stats) = compare_windows(&db_time, &baseline, &degraded) else {
         return Vec::new();
     };
-    if !is_db_time_degraded(&db_time_stats) {
-        return Vec::new();
-    }
 
     let sql_elapsed = sql_elapsed_series(collection, snap_range, db_time.len());
     let sql_modules = sql_module_map(collection, snap_range);
     let db_time_delta = db_time_stats.delta_avg.max(0.0);
 
-    top_findings(
-        score_domain(
-            "SQL elapsed time",
-            &sql_elapsed,
-            &db_time,
-            &baseline,
-            &degraded,
-            db_time_delta,
-        ),
-        limit.max(10),
-    )
-    .into_iter()
-    .map(|f| {
-        let module = sql_modules.get(&f.name).cloned().unwrap_or_default();
-        (f.name, module)
-    })
-    .collect()
+    // Do not cap this list with --top-gradient. The goal here is not presentation ranking;
+    // it is coverage: every SQL_ID identified as degraded should be available to the regular
+    // SQL analysis pipeline, otherwise the detailed pages/tables/gradients can miss it.
+    let mut sql_findings = score_domain(
+        "SQL elapsed time",
+        &sql_elapsed,
+        &db_time,
+        &baseline,
+        &degraded,
+        db_time_delta,
+    );
+    sql_findings.sort_by(|a, b| {
+        b.estimated_db_time_delta_share
+            .partial_cmp(&a.estimated_db_time_delta_share)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                b.robust_z_score
+                    .partial_cmp(&a.robust_z_score)
+                    .unwrap_or(Ordering::Equal)
+            })
+    });
+
+    sql_findings
+        .into_iter()
+        .map(|f| {
+            let module = sql_modules.get(&f.name).cloned().unwrap_or_default();
+            (f.name, module)
+        })
+        .collect()
 }
 
 pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> String {

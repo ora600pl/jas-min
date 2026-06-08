@@ -26,7 +26,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | HTML dashboard | Generates `<input>.html_reports/jasmin_main.html` and detail pages for waits, SQL IDs, statistics, I/O, latches, segments, anomalies, and gradients. |
 | Peak detection | Marks snapshots where `DB CPU / DB Time` is below `--time-cpu-ratio`, optionally requiring DB Time above `--filter-db-time`. |
 | Snap filtering | Limits analysis to a snapshot range with `--snap-range BEGIN-END`. |
-| Anomalies | Uses MAD-based anomaly detection with configurable threshold, sliding-window percentage, and optional per-cluster trimming. |
+| Anomalies | Uses MAD-based anomaly detection with configurable threshold, sliding-window percentage, and optional trimming to the largest anomaly clusters. |
 | Correlation | Computes Pearson correlations between DB Time and wait events, SQL elapsed time, and instance statistics. |
 | Gradient analysis | Runs Ridge, Elastic Net, Huber, and Quantile-95 regression models over DB Time and DB CPU drivers. |
 | Custom gradient | Builds extra gradient pages for a selected SQL ID or wait event with `--gradient-custom`. |
@@ -329,7 +329,7 @@ An observation is treated as anomalous when its MAD score is above the configure
 - `-W 100` uses the whole time series as the reference population.
 - Values below `100` use a sliding local window expressed as a percentage of probes, which helps detect anomalies relative to nearby behavior instead of the whole observation period.
 
-MAD analysis is applied to areas such as foreground and background wait events, SQL elapsed time, Load Profile metrics, instance activity statistics, dictionary cache, library cache, latch activity, and time model statistics. `--top-cluster-anomalies` can additionally trim anomaly clusters to the top N anomalies per category per snapshot.
+MAD analysis is applied to areas such as foreground and background wait events, SQL elapsed time, Load Profile metrics, instance activity statistics, dictionary cache, library cache, latch activity, and time model statistics. `--top-cluster-anomalies` can additionally keep only the top N largest anomaly clusters in the summary. A cluster is one snapshot date grouped across anomaly categories, ranked by the total number of retained anomalies in that snapshot.
 
 ### Pearson Correlation Coefficient
 
@@ -574,7 +574,7 @@ Options:
   -a, --ai <AI>                              AI mode: VENDOR:MODEL:LANG
   -m, --mad-threshold <MAD_THRESHOLD>        TOPn/MAD anomaly parameter [default: 10]
   -W, --mad-window-size <MAD_WINDOW_SIZE>    MAD window size as percent of probes [default: 100]
-      --top-cluster-anomalies <N>            Keep top N anomalies per category per snapshot [default: 0]
+  -T, --top-cluster-anomalies <N>            Keep top N largest anomaly clusters in the summary [default: 0]
   -P, --parallel <PARALLEL>                  Rayon parallelism level [default: 4]
   -S, --security-level <SECURITY_LEVEL>      Security level: 0, 1, or 2 [default: 0]
   -u, --url-context-file <URL_CONTEXT_FILE>  URL context JSON file
