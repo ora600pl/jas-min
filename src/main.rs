@@ -102,9 +102,10 @@ struct Args {
     #[clap(short = 'W', long, default_value_t = 100)]
     mad_window_size: usize,
 
-    /// Keep only top N anomalies per category per snapshot date.
-    /// 0 means no trimming.
-    #[arg(long, default_value_t = 0)]
+    /// Keep only top N largest anomaly clusters in the summary.
+    /// A cluster is one snapshot date grouped across anomaly categories.
+    /// 0 means no cluster trimming.
+    #[arg(short = 'T', long, default_value_t = 0)]
     pub top_cluster_anomalies: usize,
 
     ///Parallelism level
@@ -146,7 +147,7 @@ struct Args {
     en_max_iter: usize,
 
     ///Convergence tolerance for coefficient change in Elastic Net
-    #[clap(short = 'T', long, default_value_t = 1e-6)]
+    #[clap(long, default_value_t = 1e-6)]
     en_tol: f64,
 
     /// Keep only top N results per regression model.
