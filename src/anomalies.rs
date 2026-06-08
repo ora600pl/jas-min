@@ -799,6 +799,10 @@ pub fn trim_anomalies_summary(
 
     anomalies_summary.retain(|_snap_key, anomalies_by_category| !anomalies_by_category.is_empty());
 
+    if args.top_cluster_anomalies == 0 {
+        return;
+    }
+
     /*
         Step 2:
         Keep only top N largest anomaly clusters.
