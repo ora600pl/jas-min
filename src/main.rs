@@ -94,9 +94,9 @@ struct Args {
     #[clap(short, long, default_value = "", verbatim_doc_comment)]
     ai: String,
 
-    ///TOPn for detecting anomalies using MAD
+    ///TOPn for retaining anomalies detected using MAD
     #[clap(short, long, default_value_t = 10)]
-    mad_threshold: usize,
+    mad_top: usize,
 
     ///Window size for detecting anomalies using MAD for local sliding window specified as % of probes
     #[clap(short = 'W', long, default_value_t = 100)]

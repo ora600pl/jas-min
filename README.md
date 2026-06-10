@@ -127,10 +127,10 @@ This marks snapshots where `DB CPU / DB Time < 0.75` and DB Time is above `5`.
 ### Tune MAD anomaly detection
 
 ```bash
-jas-min -d ./awr_reports -m 10 -W 25 --top-cluster-anomalies 5
+jas-min -d ./awr_reports --mad-top 10 -W 25 --top-cluster-anomalies 5
 ```
 
-`-m` is a numeric TOPn/MAD cutoff used by the current anomaly logic. `-W` is the local sliding-window size as a percentage of probes. `100` means global behavior.
+`-m, --mad-top` controls how many highest-scoring MAD anomalies are retained by the current anomaly logic. `-W` is the local sliding-window size as a percentage of probes. `100` means global behavior.
 
 ### Include specific SQL IDs in TOP SQL analysis
 
@@ -322,7 +322,7 @@ MAD    = median({d1, d2, ..., dn})
 score  = |xi - median| / MAD
 ```
 
-An observation is treated as anomalous when its MAD score is above the configured cutoff. In the current CLI this is controlled by `-m, --mad-threshold`, whose default is `10`.
+An observation is treated as anomalous when its MAD score is above the current fixed score cutoff of `7.0`. `-m, --mad-top` does not change that cutoff; it controls how many highest-scoring MAD anomalies are retained, with a default of `10`.
 
 `-W, --mad-window-size` controls whether MAD is global or local:
 
@@ -572,9 +572,10 @@ Options:
   -s, --snap-range <SNAP_RANGE>              Snapshot filter BEGIN-END [default: 0-666666666]
   -q, --quiet                                Suppress terminal output, still write log
   -a, --ai <AI>                              AI mode: VENDOR:MODEL:LANG
-  -m, --mad-threshold <MAD_THRESHOLD>        TOPn/MAD anomaly parameter [default: 10]
+  -m, --mad-top <MAD_TOP>                   TOPn for retaining anomalies detected using MAD [default: 10]
   -W, --mad-window-size <MAD_WINDOW_SIZE>    MAD window size as percent of probes [default: 100]
-  -T, --top-cluster-anomalies <N>            Keep top N largest anomaly clusters in the summary [default: 0]
+  -T, --top-cluster-anomalies <TOP_CLUSTER_ANOMALIES>
+                                               Keep top N largest anomaly clusters in the summary [default: 0]
   -P, --parallel <PARALLEL>                  Rayon parallelism level [default: 4]
   -S, --security-level <SECURITY_LEVEL>      Security level: 0, 1, or 2 [default: 0]
   -u, --url-context-file <URL_CONTEXT_FILE>  URL context JSON file

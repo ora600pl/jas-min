@@ -346,8 +346,8 @@ fn detect_anomalies_mad_sliding(
         return anomalies;
     }
 
-    let threshold = 7.0; //args.mad_threshold;
-    let top_n = args.mad_threshold;
+    let threshold = 7.0;
+    let top_n = args.mad_top;
     let len = awrs.len();
     let mut full_window_size = ((args.mad_window_size as f32 / 100.0) * len as f32) as usize;
     if full_window_size % 2 == 1 {
@@ -415,8 +415,8 @@ fn detect_anomalies_mad(
 ) -> HashMap<String, Vec<(String, f64)>> {
     let mut anomalies: HashMap<String, Vec<(String, f64)>> = HashMap::new();
     //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
-    let threshold = 7.0; //args.mad_threshold;
-    let top_n = args.mad_threshold;
+    let threshold = 7.0;
+    let top_n = args.mad_top;
 
     for (stat_name, values) in stats_vector {
         let med = median(values);
@@ -776,7 +776,7 @@ pub fn trim_anomalies_summary(
         ordered by MAD score descending.
         top_anomalies = 0 means: do not trim anomalies inside categories.
     */
-    let top_n = args.mad_threshold; //mad_threshold is actually mad_top
+    let top_n = args.mad_top;
 
     if top_n == 0 {
         return;
