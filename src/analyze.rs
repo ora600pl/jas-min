@@ -148,16 +148,16 @@ fn find_top_stats(
         &logfile_name,
         false,
         0,
-        "\nMAD threshold = {}\nMAD window size={}% ({} of probes out of {})\n\n",
-        args.mad_threshold,
+        "\nMAD score threshold = 7.0\nMAD top = {}\nMAD window size={}% ({} of probes out of {})\n\n",
+        args.mad_top,
         args.mad_window_size,
         full_window_size,
         awrs.len()
     );
 
     stats_description.median_absolute_deviation = format!(
-        "MAD threshold = {}\nMAD window size={}% ({} of probes out of {})\n\n",
-        args.mad_threshold,
+        "MAD score threshold = 7.0\nMAD top = {}\nMAD window size={}% ({} of probes out of {})\n\n",
+        args.mad_top,
         args.mad_window_size,
         full_window_size,
         awrs.len()
@@ -3935,10 +3935,8 @@ pub fn main_report_builder(
                 make_notes!(&logfile_name, args.quiet, 0, "\t\t{}\n", table_line);
             }
         } else {
-            let no_anomalies_txt = format!(
-                "\t\tNo anomalies detected based on MAD threshold: {}\n",
-                args.mad_threshold
-            );
+            let no_anomalies_txt =
+                format!("\t\tNo anomalies detected based on MAD score threshold: 7.0\n");
             anomalies_flag = false;
             make_notes!(
                 &logfile_name,
@@ -4261,10 +4259,8 @@ pub fn main_report_builder(
                 make_notes!(&logfile_name, args.quiet, 0, "\t\t{}\n", table_line);
             }
         } else {
-            let no_anomalies_txt = format!(
-                "\t\tNo anomalies detected based on MAD threshold: {}\n",
-                args.mad_threshold
-            );
+            let no_anomalies_txt =
+                format!("\t\tNo anomalies detected based on MAD score threshold: 7.0\n");
             anomalies_flag = false;
             make_notes!(
                 &logfile_name,
@@ -4698,10 +4694,8 @@ pub fn main_report_builder(
                 make_notes!(&logfile_name, args.quiet, 0, "\t\t{}\n", table_line);
             }
         } else {
-            let no_anomalies_txt = format!(
-                "\t\tNo anomalies detected based on MAD threshold: {}\n",
-                args.mad_threshold
-            );
+            let no_anomalies_txt =
+                format!("\t\tNo anomalies detected based on MAD score threshold: 7.0\n");
             anomalies_flag = false;
             make_notes!(
                 &logfile_name,
@@ -5410,9 +5404,11 @@ pub fn main_report_builder(
         &logfile_name,
         false,
         2,
-        "\n{} {}\n",
-        "Load Profile Anomalies detection using Median Absolute Deviation threshold:".yellow(),
-        args.mad_threshold
+        "\n{} 7.0, {} {}\n",
+        "Load Profile Anomalies detection using Median Absolute Deviation score threshold:"
+            .yellow(),
+        "MAD top:".yellow(),
+        args.mad_top
     );
 
     let all_loadprofile: HashSet<String> = collection
@@ -5465,7 +5461,7 @@ pub fn main_report_builder(
                 let c_mad = Cell::new(&format!("{:.2}", a.1));
                 let c_per_second = Cell::new(&format!("{}", per_second_this_date));
                 let c_avg_per_second = Cell::new(&format!("{:.2}", mean_per_s));
-                let c_mad_threshold = Cell::new(&format!("{}", args.mad_threshold));
+                let c_mad_threshold = Cell::new("7.0");
                 table.add_row(Row::new(vec![
                     c_date,
                     c_mad,
