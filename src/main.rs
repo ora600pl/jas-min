@@ -124,7 +124,7 @@ struct Args {
     #[clap(short, long, default_value = "", verbatim_doc_comment)]
     url_context_file: String,
 
-    ///Budget for token - used by modular LLM analyzes to minimize the number of tokens used by the model
+    ///Token budget for AI analysis; in tools mode, extra payload headroom used by the tool-call guard
     #[clap(short = 'B', long, default_value_t = 256000)]
     tokens_budget: usize,
 
