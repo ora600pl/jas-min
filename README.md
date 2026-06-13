@@ -579,7 +579,7 @@ Options:
   -P, --parallel <PARALLEL>                  Rayon parallelism level [default: 4]
   -S, --security-level <SECURITY_LEVEL>      Security level: 0, 1, or 2 [default: 0]
   -u, --url-context-file <URL_CONTEXT_FILE>  URL context JSON file
-  -B, --tokens-budget <TOKENS_BUDGET>        Token budget for modular LLM analysis [default: 80000]
+  -B, --tokens-budget <TOKENS_BUDGET>        Token budget for AI analysis; in tools mode, extra payload headroom used by the tool-call guard [default: 256000]
   -R, --ridge-lambda <RIDGE_LAMBDA>          Ridge L2 regularization [default: 50]
   -E, --en-lambda <EN_LAMBDA>                Elastic Net regularization [default: 30]
   -A, --en-alpha <EN_ALPHA>                  Elastic Net L1/L2 mix [default: 0.333]
