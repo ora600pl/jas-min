@@ -1,7 +1,7 @@
 use crate::ai_tools::*;
 use crate::awr::{
-    AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads,
-    SegmentStats, WaitEvents, AWR,
+    load_awrs_collection_from_json_str, AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime,
+    SQLGets, SQLIOTime, SQLReads, SegmentStats, WaitEvents, AWR,
 };
 use crate::{debug_note, tools::*};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
@@ -43,7 +43,7 @@ fn load_tools_collection(args: &crate::Args) -> AWRSCollection {
         json_file = format!("{}.json", args.directory);
     }
     let s_json = fs::read_to_string(&json_file).expect(&format!("Can't read {}", json_file));
-    serde_json::from_str(&s_json).expect("Wrong AWRSCollection JSON")
+    load_awrs_collection_from_json_str(&s_json).expect("Wrong AWRSCollection JSON")
 }
 
 fn build_model_instructions(

@@ -249,9 +249,11 @@ def parse_int(value, default=0):
     if not value or value in ("-", "."):
         return default
     try:
-        return int(float(value))
+        parsed = int(float(value))
     except ValueError:
         return default
+    # The JSON schema stores these AWR counters in unsigned Rust fields.
+    return parsed if parsed >= 0 else default
 
 
 def parse_count(value):

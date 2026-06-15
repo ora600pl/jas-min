@@ -14,6 +14,10 @@ spec.loader.exec_module(collector)
 
 
 class CollectorZipPackageTests(unittest.TestCase):
+    def test_parse_int_uses_default_for_negative_unsigned_values(self):
+        self.assertEqual(collector.parse_int("-4,254,126,895"), 0)
+        self.assertEqual(collector.parse_int("1,234"), 1234)
+
     def test_zip_package_preserves_report_and_attachment_directories(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
