@@ -22,6 +22,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Area | What JAS-MIN does |
 |---|---|
 | Parsing | Parses a single report with `--file`, or a directory of `.html` and `.txt` reports with `--directory`. |
+| Collection helper | Uses `jas-min-collector.py` to generate AWR/STATSPACK reports from a local Oracle environment and package reports, JSON, alert logs, and optional SQL execution plans. |
 | Cached analysis | Re-analyzes an existing JAS-MIN JSON file with `--json-file`. |
 | HTML dashboard | Generates `<input>.html_reports/jasmin_main.html` and detail pages for waits, SQL IDs, statistics, I/O, latches, segments, anomalies, and gradients. |
 | Peak detection | Marks snapshots where `DB CPU / DB Time` is below `--time-cpu-ratio`, optionally requiring DB Time above `--filter-db-time`. |
@@ -195,6 +196,8 @@ jas-min -d ./awr_reports --ai openrouter:openai/gpt-4.1:EN --tools-mode
 ```
 
 If a sibling `<stem>_attachments/` directory exists, tools mode can also expose execution-plan attachments to the model.
+
+Execution plans are expected as `<stem>_attachments/<SQL_ID>.xplan`. The collector can create these files automatically for the SQL IDs that appear most often in `SQLs Ordered by Elapsed time` sections, plus any SQL IDs entered manually.
 
 ### One-Shot Batch Analysis
 
@@ -614,8 +617,36 @@ docker run --rm \
 - STATSPACK: use the included `gen_statspack_reps.sh`.
 - AWR through SQL*Plus: use the included `awr-generator.sql`.
 - AWR through ORDS: use the included `awr-ords-generator.sh`.
+- Interactive local collection: use `jas-min-collector.py`.
 
 For useful statistics, collect a meaningful run of consecutive reports. A week or more is usually better than a few isolated snapshots.
+
+### Interactive Collector
+
+`jas-min-collector.py` is a Python standard-library helper for environments where the reports should be generated directly from the target Oracle host. It expects `ORACLE_HOME`, `ORACLE_SID`, and a working `$ORACLE_HOME/bin/sqlplus` connection as `/ as sysdba`.
+
+```bash
+python3 jas-min-collector.py
+```
+
+The collector asks for:
+
+- report type: AWR or STATSPACK
+- date range
+- whether to include alert log excerpts
+- whether to attach SQL execution plans
+- ZIP package content: reports, JSON, or both
+- JSON security level when JSON is requested or needed for execution-plan selection
+
+When execution plans are requested, the collector parses the generated reports to JAS-MIN JSON even if the ZIP package was set to reports-only. It counts SQL IDs found in `SQLs Ordered by Elapsed time`, selects the top 10 by appearance count, allows extra comma-separated SQL IDs, and writes plans to `<collection_stem>_attachments/<sql_id>.xplan`.
+
+Execution plans are fetched with:
+
+```sql
+select * from table(dbms_xplan.display_cursor('sqlid',null));
+```
+
+The resulting ZIP package includes generated reports according to the selected package mode, the JSON sidecar when produced, alert log attachments when requested, execution-plan attachments when available, and `manifest.txt` with the selected SQL IDs and any plan-collection failures.
 
 ## Further Reading
 
