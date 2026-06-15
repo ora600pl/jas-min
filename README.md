@@ -629,7 +629,35 @@ For useful statistics, collect a meaningful run of consecutive reports. A week o
 python3 jas-min-collector.py
 ```
 
-The collector asks for:
+The collector can also receive the same choices as command-line options. Questions are only shown for required choices not covered by the command line, so mixed usage is supported:
+
+```bash
+python3 jas-min-collector.py \
+  --report-type awr \
+  --start "2026-06-14 00:00" \
+  --end "2026-06-15 14:00" \
+  --include-alert-log \
+  --execution-plans \
+  --sql-id abc123,def456 \
+  --package-content both \
+  --security-level 1
+```
+
+Available collector options:
+
+- `-h`, `--help` - show help
+- `-t`, `--report-type {awr,statspack}` - report source type
+- `--start "YYYY-MM-DD HH24:MI"` - collection start timestamp
+- `--end "YYYY-MM-DD HH24:MI"` - collection end timestamp
+- `--include-alert-log`, `--alert-log`, `--no-alert-log` - alert log attachment
+- `--execution-plans`, `--include-execution-plans`, `--no-execution-plans` - SQL execution plan attachments
+- `--sql-id SQL_ID[,SQL_ID...]`, `--sql-ids SQL_ID[,SQL_ID...]` - additional SQL IDs for execution plans; may be repeated
+- `-p`, `--package-content {both,json,reports}` - ZIP package content
+- `-S`, `--security-level {0,1,2}` - JSON security level
+
+When `--execution-plans` is used without `--sql-id`, the collector attaches plans for the top elapsed SQL IDs found in the generated reports and does not ask for manual additions.
+
+Without options, or for required options not provided in a mixed run, the collector asks for:
 
 - report type: AWR or STATSPACK
 - date range

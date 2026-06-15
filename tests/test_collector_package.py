@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import tempfile
 import unittest
 import zipfile
@@ -67,3 +69,68 @@ class CollectorZipPackageTests(unittest.TestCase):
                 ]
             ),
         )
+
+
+class CollectorCliTests(unittest.TestCase):
+    def test_help_lists_non_interactive_collector_options(self):
+        help_text = collector.build_arg_parser().format_help()
+
+        self.assertIn("--report-type", help_text)
+        self.assertIn("--start", help_text)
+        self.assertIn("--end", help_text)
+        self.assertIn("--include-alert-log", help_text)
+        self.assertIn("--execution-plans", help_text)
+        self.assertIn("--package-content", help_text)
+        self.assertIn("--security-level", help_text)
+
+    def test_parse_collector_args_normalizes_cli_values(self):
+        args = collector.parse_collector_args(
+            [
+                "--report-type",
+                "statspack",
+                "--start",
+                "2026-06-14 00:00",
+                "--end",
+                "2026-06-15 14:00",
+                "--no-alert-log",
+                "--execution-plans",
+                "--sql-id",
+                "ABC123,def456",
+                "--sql-id",
+                "abc123",
+                "--package-content",
+                "json",
+                "--security-level",
+                "2",
+            ]
+        )
+
+        self.assertEqual(args.report_type, "STATSPACK")
+        self.assertEqual(collector.datetime_sql(args.start_dt), "2026-06-14 00:00")
+        self.assertEqual(collector.datetime_sql(args.end_dt), "2026-06-15 14:00")
+        self.assertFalse(args.include_alert)
+        self.assertTrue(args.include_sql_plans)
+        self.assertEqual(args.manual_sql_ids, ["abc123", "def456"])
+        self.assertEqual(args.package_mode, collector.PACKAGE_JSON)
+        self.assertEqual(args.security_level, 2)
+
+    def test_sql_id_argument_implies_execution_plan_collection(self):
+        args = collector.parse_collector_args(["--sql-id", "ABC123"])
+
+        self.assertTrue(args.include_sql_plans)
+        self.assertEqual(args.manual_sql_ids, ["abc123"])
+
+    def test_end_must_be_later_than_start(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as exc:
+                collector.parse_collector_args(
+                    [
+                        "--start",
+                        "2026-06-15 14:00",
+                        "--end",
+                        "2026-06-14 00:00",
+                    ]
+                )
+
+        self.assertNotEqual(exc.exception.code, 0)

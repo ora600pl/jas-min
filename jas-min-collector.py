@@ -2,11 +2,12 @@
 """
 JAS-MIN report collector.
 
-Interactive helper for collecting Oracle AWR or Statspack reports for a date
-range detected from ORACLE_HOME and ORACLE_SID. The script intentionally uses
-only Python standard library modules.
+Interactive and command-line helper for collecting Oracle AWR or Statspack
+reports for a date range detected from ORACLE_HOME and ORACLE_SID. The script
+intentionally uses only Python standard library modules.
 """
 
+import argparse
 import os
 import re
 import shutil
@@ -48,6 +49,13 @@ def parse_datetime(value):
         raise CollectorError("Invalid date format. Expected: {}".format(DATE_FORMAT_LABEL))
 
 
+def parse_datetime_arg(value):
+    try:
+        return parse_datetime(value)
+    except CollectorError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
 def datetime_sql(value):
     return value.strftime(DATE_FORMAT)
 
@@ -62,17 +70,55 @@ def ask_report_type():
         print("Please choose AWR or Statspack.")
 
 
+def parse_report_type_arg(value):
+    normalized = (value or "").strip().lower()
+    if normalized in ("awr", "a"):
+        return "AWR"
+    if normalized in ("statspack", "stat", "sp", "s"):
+        return "STATSPACK"
+    raise argparse.ArgumentTypeError("Expected AWR or STATSPACK.")
+
+
+def ask_datetime(prompt):
+    while True:
+        value = input(prompt).strip()
+        try:
+            return parse_datetime(value)
+        except CollectorError as exc:
+            print(exc)
+
+
 def ask_date_range():
     print("Let's choose date range")
     while True:
-        start_value = input("  Start ({}): ".format(DATE_FORMAT_LABEL)).strip()
-        end_value = input("  End   ({}): ".format(DATE_FORMAT_LABEL)).strip()
-        try:
-            start_dt = parse_datetime(start_value)
-            end_dt = parse_datetime(end_value)
-        except CollectorError as exc:
-            print(exc)
+        start_dt = ask_datetime("  Start ({}): ".format(DATE_FORMAT_LABEL))
+        end_dt = ask_datetime("  End   ({}): ".format(DATE_FORMAT_LABEL))
+        if end_dt <= start_dt:
+            print("End must be later than start.")
             continue
+        return start_dt, end_dt
+
+
+def resolve_date_range(start_dt, end_dt):
+    if start_dt is None and end_dt is None:
+        return ask_date_range()
+
+    if start_dt is not None and end_dt is not None:
+        if end_dt <= start_dt:
+            raise CollectorError("End must be later than start.")
+        return start_dt, end_dt
+
+    print("Let's choose date range")
+    if start_dt is None:
+        while True:
+            start_dt = ask_datetime("  Start ({}): ".format(DATE_FORMAT_LABEL))
+            if end_dt <= start_dt:
+                print("End must be later than start.")
+                continue
+            return start_dt, end_dt
+
+    while True:
+        end_dt = ask_datetime("  End   ({}): ".format(DATE_FORMAT_LABEL))
         if end_dt <= start_dt:
             print("End must be later than start.")
             continue
@@ -105,6 +151,17 @@ def ask_package_mode():
         print("Please choose reports, json, or both.")
 
 
+def parse_package_mode_arg(value):
+    normalized = (value or "").strip().lower()
+    if normalized in ("both", "b"):
+        return PACKAGE_BOTH
+    if normalized in ("json", "j"):
+        return PACKAGE_JSON
+    if normalized in ("reports", "report", "awr", "full", "r"):
+        return PACKAGE_REPORTS
+    raise argparse.ArgumentTypeError("Expected reports, json, or both.")
+
+
 def normalize_sql_id(value):
     return normalize_cell(value).lower()
 
@@ -129,6 +186,29 @@ def parse_sql_id_list(value):
             seen.add(sql_id)
             sql_ids.append(sql_id)
     return sql_ids, rejected
+
+
+def parse_sql_ids_arg(value):
+    sql_ids, rejected = parse_sql_id_list(value)
+    if rejected:
+        raise argparse.ArgumentTypeError(
+            "Invalid SQL_ID value(s): {}".format(", ".join(rejected))
+        )
+    return sql_ids
+
+
+def merge_cli_sql_ids(sql_id_groups):
+    if sql_id_groups is None:
+        return None
+
+    sql_ids = []
+    seen = set()
+    for group in sql_id_groups:
+        for sql_id in group:
+            if sql_id not in seen:
+                seen.add(sql_id)
+                sql_ids.append(sql_id)
+    return sql_ids
 
 
 def ask_sql_execution_plans():
@@ -163,6 +243,124 @@ def ask_security_level():
         if value in ("1", "2"):
             return int(value)
         print("Please choose 0, 1, or 2.")
+
+
+def parse_security_level_arg(value):
+    try:
+        level = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("Expected 0, 1, or 2.")
+    if level not in (0, 1, 2):
+        raise argparse.ArgumentTypeError("Expected 0, 1, or 2.")
+    return level
+
+
+def build_arg_parser():
+    examples = """examples:
+  python3 jas-min-collector.py --report-type awr --start "2026-06-14 00:00" --end "2026-06-15 14:00"
+  python3 jas-min-collector.py --report-type statspack --start "2026-06-14 00:00" --end "2026-06-15 14:00" --no-alert-log --no-execution-plans --package-content reports
+  python3 jas-min-collector.py --report-type awr --start "2026-06-14 00:00" --end "2026-06-15 14:00" --include-alert-log --execution-plans --sql-id abc123,def456 --package-content both --security-level 1
+"""
+    parser = argparse.ArgumentParser(
+        description="Collect Oracle AWR or Statspack reports and package them for JAS-MIN.",
+        epilog=examples,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-t",
+        "--report-type",
+        metavar="{awr,statspack}",
+        type=parse_report_type_arg,
+        help="report source type; asks interactively when omitted",
+    )
+    parser.add_argument(
+        "--start",
+        metavar=DATE_FORMAT_LABEL,
+        dest="start_dt",
+        type=parse_datetime_arg,
+        help="collection start timestamp; asks interactively when omitted",
+    )
+    parser.add_argument(
+        "--end",
+        metavar=DATE_FORMAT_LABEL,
+        dest="end_dt",
+        type=parse_datetime_arg,
+        help="collection end timestamp; asks interactively when omitted",
+    )
+
+    alert_group = parser.add_mutually_exclusive_group()
+    alert_group.add_argument(
+        "--include-alert-log",
+        "--alert-log",
+        dest="include_alert",
+        action="store_true",
+        default=None,
+        help="include an alert log excerpt",
+    )
+    alert_group.add_argument(
+        "--no-alert-log",
+        dest="include_alert",
+        action="store_false",
+        help="do not include an alert log excerpt",
+    )
+
+    xplan_group = parser.add_mutually_exclusive_group()
+    xplan_group.add_argument(
+        "--include-execution-plans",
+        "--execution-plans",
+        dest="include_sql_plans",
+        action="store_true",
+        default=None,
+        help="attach execution plans for top elapsed SQL_IDs",
+    )
+    xplan_group.add_argument(
+        "--no-execution-plans",
+        dest="include_sql_plans",
+        action="store_false",
+        help="do not attach SQL execution plans",
+    )
+    parser.add_argument(
+        "--sql-id",
+        "--sql-ids",
+        dest="sql_id_groups",
+        metavar="SQL_ID[,SQL_ID...]",
+        action="append",
+        type=parse_sql_ids_arg,
+        help="additional SQL_IDs for execution-plan collection; may be repeated",
+    )
+    parser.add_argument(
+        "-p",
+        "--package-content",
+        "--package-mode",
+        dest="package_mode",
+        metavar="{both,json,reports}",
+        type=parse_package_mode_arg,
+        help="ZIP package content; asks interactively when omitted",
+    )
+    parser.add_argument(
+        "-S",
+        "--security-level",
+        metavar="{0,1,2}",
+        type=parse_security_level_arg,
+        help="JSON security level; asks when JSON is required and omitted",
+    )
+    return parser
+
+
+def parse_collector_args(argv=None):
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    args.manual_sql_ids = merge_cli_sql_ids(args.sql_id_groups)
+
+    if args.start_dt is not None and args.end_dt is not None and args.end_dt <= args.start_dt:
+        parser.error("--end must be later than --start")
+    if args.manual_sql_ids is not None:
+        if args.include_sql_plans is False:
+            parser.error("--sql-id can only be used when execution plans are enabled")
+        if args.include_sql_plans is None:
+            args.include_sql_plans = True
+
+    return args
 
 
 def require_oracle_context():
@@ -1706,22 +1904,31 @@ def create_zip_package(output_dir, stem, reports, json_path, alert_info, xplan_i
     return zip_path
 
 
-def main():
+def main(argv=None):
     try:
+        args = parse_collector_args(argv)
         ctx = require_oracle_context()
         print("Detected database from environment:")
         print("  ORACLE_SID={}".format(ctx["oracle_sid"]))
         print("  ORACLE_HOME={}".format(ctx["oracle_home"]))
 
-        report_type = ask_report_type()
-        start_dt, end_dt = ask_date_range()
-        include_alert = ask_yes_no("Include alertlog? (Y/N): ")
-        include_sql_plans, manual_sql_ids = ask_sql_execution_plans()
-        package_mode = ask_package_mode()
+        report_type = args.report_type if args.report_type is not None else ask_report_type()
+        start_dt, end_dt = resolve_date_range(args.start_dt, args.end_dt)
+        include_alert = (
+            args.include_alert
+            if args.include_alert is not None
+            else ask_yes_no("Include alertlog? (Y/N): ")
+        )
+        if args.include_sql_plans is None:
+            include_sql_plans, manual_sql_ids = ask_sql_execution_plans()
+        else:
+            include_sql_plans = args.include_sql_plans
+            manual_sql_ids = args.manual_sql_ids or []
+        package_mode = args.package_mode if args.package_mode is not None else ask_package_mode()
         json_required = package_includes_json(package_mode) or include_sql_plans
-        security_level = None
+        security_level = args.security_level
         if json_required:
-            security_level = ask_security_level()
+            security_level = security_level if security_level is not None else ask_security_level()
 
         stem = collection_stem(report_type, ctx["oracle_sid"], start_dt, end_dt)
         output_dir = unique_output_dir(report_type, ctx["oracle_sid"], start_dt, end_dt)
