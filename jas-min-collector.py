@@ -1574,8 +1574,10 @@ def json_attachments_dir(output_dir, json_path):
 
 
 def relative_package_path(output_dir, path):
+    output_dir = Path(output_dir).resolve()
+    path = Path(path).resolve()
     try:
-        return str(path.relative_to(output_dir))
+        return path.relative_to(output_dir).as_posix()
     except ValueError:
         return path.name
 
