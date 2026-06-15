@@ -4,6 +4,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::char;
 use std::clone;
 use std::collections::HashSet;
@@ -285,6 +286,79 @@ pub struct AWRSCollection {
     pub initialization_parameters: HashMap<String, String>,
     pub awrs: Vec<AWR>,
     pub sql_text: HashMap<String, String>,
+}
+
+const UNSIGNED_JSON_FIELDS: &[&str] = &[
+    "begin_snap_id",
+    "cores",
+    "cpus",
+    "db_block_size",
+    "db_id",
+    "end_snap_id",
+    "executions",
+    "final_usage",
+    "get_requests",
+    "instance_num",
+    "memory",
+    "obj",
+    "objd",
+    "pin_requests",
+    "plan_hash_value",
+    "samples",
+    "sockets",
+    "total",
+    "waits",
+    "waits_count",
+];
+
+pub fn load_awrs_collection_from_json_str(data: &str) -> Result<AWRSCollection, serde_json::Error> {
+    match serde_json::from_str::<AWRSCollection>(data) {
+        Ok(collection) => Ok(collection),
+        Err(original_error) => {
+            let mut value: Value = serde_json::from_str(data)?;
+            // Collector JSON can contain wrapped Oracle counters as negative values.
+            // Existing HTML/TXT parsers already treat invalid unsigned counters as zero.
+            if normalize_unsigned_json_fields(&mut value) == 0 {
+                return Err(original_error);
+            }
+            serde_json::from_value(value)
+        }
+    }
+}
+
+fn normalize_unsigned_json_fields(value: &mut Value) -> usize {
+    match value {
+        Value::Object(map) => {
+            let mut normalized = 0;
+            for (key, child) in map.iter_mut() {
+                if UNSIGNED_JSON_FIELDS.contains(&key.as_str()) && normalize_unsigned_number(child)
+                {
+                    normalized += 1;
+                }
+                normalized += normalize_unsigned_json_fields(child);
+            }
+            normalized
+        }
+        Value::Array(items) => items.iter_mut().map(normalize_unsigned_json_fields).sum(),
+        _ => 0,
+    }
+}
+
+fn normalize_unsigned_number(value: &mut Value) -> bool {
+    let normalized = match value {
+        Value::Number(number) => match number.as_i64() {
+            Some(n) if n < 0 => Some(0),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    if let Some(n) = normalized {
+        *value = Value::Number(n.into());
+        true
+    } else {
+        false
+    }
 }
 
 #[derive(Debug)]
@@ -3376,7 +3450,7 @@ pub fn prarse_json_file(
     //fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String
     let json_file = fs::read_to_string(&args.json_file)
         .expect(&format!("Something wrong with a file {} ", &args.json_file));
-    let mut collection: AWRSCollection = serde_json::from_str(&json_file).expect("\nJAS-MIN JSON format not known\nConsider running jasmin -d <DIR> before using -j json\n\n");
+    let mut collection: AWRSCollection = load_awrs_collection_from_json_str(&json_file).expect("\nJAS-MIN JSON format not known\nConsider running jasmin -d <DIR> before using -j json\n\n");
     collection
         .awrs
         .clone()
@@ -3410,4 +3484,87 @@ pub fn prarse_json_file(
     events_sqls.insert("SQL", sqls);
     let report_for_ai = main_report_builder(collection, args.clone(), events_sqls.clone());
     report_for_ai
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn load_awrs_collection_json_clamps_negative_unsigned_collector_values() {
+        let payload = json!({
+            "db_instance_information": {
+                "db_id": 1,
+                "instance_num": 1,
+                "startup_time": "",
+                "release": "",
+                "rac": "",
+                "platform": "",
+                "cpus": 1,
+                "cores": 1,
+                "sockets": 1,
+                "memory": 1,
+                "db_block_size": 8192
+            },
+            "initialization_parameters": {},
+            "awrs": [{
+                "file_name": "awr.html",
+                "snap_info": {
+                    "begin_snap_id": 1,
+                    "end_snap_id": 2,
+                    "begin_snap_time": "",
+                    "end_snap_time": ""
+                },
+                "status": "",
+                "load_profile": [],
+                "instance_efficiency": [],
+                "redo_log": {
+                    "stat_name": "",
+                    "per_hour": 0.0
+                },
+                "wait_classes": [],
+                "host_cpu": {
+                    "cpus": 1,
+                    "cores": 1,
+                    "sockets": 1,
+                    "load_avg_begin": 0.0,
+                    "load_avg_end": 0.0,
+                    "pct_user": 0.0,
+                    "pct_system": 0.0,
+                    "pct_wio": 0.0,
+                    "pct_idle": 0.0
+                },
+                "time_model_stats": [],
+                "foreground_wait_events": [],
+                "background_wait_events": [],
+                "sql_elapsed_time": [],
+                "sql_cpu_time": {},
+                "sql_io_time": {},
+                "sql_gets": {},
+                "sql_reads": {},
+                "top_sql_with_top_events": {},
+                "instance_stats": [{
+                    "statname": "wrapped counter",
+                    "total": -1
+                }],
+                "dictionary_cache": [],
+                "io_stats_byfunc": {},
+                "library_cache": [{
+                    "statname": "SQL AREA",
+                    "get_requests": 5_588_409,
+                    "get_pct_miss": 5.16,
+                    "pin_requests": -4_254_126_895i64
+                }],
+                "latch_activity": [],
+                "segment_stats": {}
+            }],
+            "sql_text": {}
+        });
+
+        let collection = load_awrs_collection_from_json_str(&payload.to_string()).unwrap();
+
+        assert_eq!(collection.awrs[0].library_cache[0].pin_requests, 0);
+        assert_eq!(collection.awrs[0].instance_stats[0].total, 0);
+    }
 }
