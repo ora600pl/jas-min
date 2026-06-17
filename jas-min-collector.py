@@ -1428,6 +1428,7 @@ with snapshots as (
       join v$database d on d.dbid = s.dbid
      where s.end_interval_time >= to_date('{start_value}', 'YYYY-MM-DD HH24:MI')
        and s.end_interval_time <= to_date('{end_value}', 'YYYY-MM-DD HH24:MI')
+       and s.instance_number = (select instance_number from v$instance)
 )
 select dbid || '|' || instance_number || '|' || begin_snap || '|' || end_snap
   from snapshots

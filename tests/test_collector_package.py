@@ -120,6 +120,17 @@ class CollectorCliTests(unittest.TestCase):
         self.assertTrue(args.include_sql_plans)
         self.assertEqual(args.manual_sql_ids, ["abc123"])
 
+    def test_awr_pair_discovery_uses_current_instance_only(self):
+        sql = collector.awr_pairs_sql(
+            collector.parse_datetime("2026-06-14 00:00"),
+            collector.parse_datetime("2026-06-15 14:00"),
+        )
+
+        self.assertIn(
+            "s.instance_number = (select instance_number from v$instance)",
+            sql,
+        )
+
     def test_end_must_be_later_than_start(self):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
