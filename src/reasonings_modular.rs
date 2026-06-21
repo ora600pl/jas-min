@@ -462,6 +462,7 @@ Follow this reasoning sequence:
 ## Step 1: Establish Performance Profile
 - Interpret DB CPU / DB Time ratio across all spikes (< 0.66 = wait-bound, ~1.0 = CPU-bound)
 - Assess ratio variance for mixed/intermittent problems
+- AIX caveat: if the platform is AIX, do not decide CPU-bound from DB CPU/DB Time or AWR Host CPU %CPU alone. Entc%/%entc/ec, physc/pc, EC, capped/uncapped and shared/dedicated LPAR data are required; if Entc%/ec is high, classify it as CPU entitlement/physical-capacity pressure even when AWR idle is nonzero or the LPAR is uncapped.
 
 ## Step 2: Map Temporal Patterns
 - Connect anomaly_clusters to top_spikes_marked via snap_id and dates

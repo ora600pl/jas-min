@@ -34,6 +34,11 @@ const DEFAULT_XPLAN_LIMIT: usize = 100;
 const MAX_XPLAN_BYTES: usize = 512 * 1024;
 const DEFAULT_ALERTLOG_LIMIT: usize = 200;
 const MAX_ALERTLOG_LIMIT: usize = 1000;
+const DEFAULT_AIX_FILE_LIMIT: usize = 100;
+const DEFAULT_AIX_RECORD_LIMIT: usize = 200;
+const MAX_AIX_FILE_BYTES: usize = 512 * 1024;
+const MAX_AIX_SUMMARY_BYTES_PER_FILE: usize = 2 * 1024 * 1024;
+const MAX_AIX_RECURSION_DEPTH: usize = 4;
 
 // ----------------------------------------------------------------------------
 // Tool schema (sent to the LLM)
@@ -528,6 +533,78 @@ pub fn tools_schema(stem: &str) -> Value {
             attachments_dir.display()
         );
     }
+    let aix_dir = aix_dir_for_stem(stem);
+    if !list_aix_files(&aix_dir).is_empty() {
+        tools.as_array_mut().expect("tools must be a JSON array").push(json!({
+            "type": "function",
+            "function": {
+                "name": "list_aix_os_attachments",
+                "description": "Lists AIX operating-system attachment files collected under <stem>_attachments/AIX, typically from the oraix collector. If these tools are present, use them before deciding whether an AIX database host is CPU-bound.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Optional case-insensitive filter over relative path or filename, e.g. lparstat, nmon, vmstat, sar, topas, entc."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum files returned, default 100, max 500."
+                        }
+                    }
+                }
+            }
+        }));
+
+        tools.as_array_mut().expect("tools must be a JSON array").push(json!({
+            "type": "function",
+            "function": {
+                "name": "get_aix_os_attachment",
+                "description": "Returns a bounded text excerpt from one AIX OS attachment under <stem>_attachments/AIX. Use this to inspect raw oraix evidence such as lparstat, nmon, sar, vmstat, topas or processor entitlement details.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "relative_path": {
+                            "type": "string",
+                            "description": "Relative path returned by list_aix_os_attachments. Path traversal and absolute paths are rejected."
+                        },
+                        "max_bytes": {
+                            "type": "integer",
+                            "description": "Maximum bytes to return, default 65536, max 524288."
+                        }
+                    },
+                    "required": ["relative_path"]
+                }
+            }
+        }));
+
+        tools.as_array_mut().expect("tools must be a JSON array").push(json!({
+            "type": "function",
+            "function": {
+                "name": "get_aix_cpu_entitlement_summary",
+                "description": "Scans AIX OS attachments for CPU entitlement evidence such as Entc%, %entc, physc/pc, entitled capacity/ec, user/sys/wait/idle/busy. On AIX LPARs this is required before classifying the system as CPU-bound because AWR Host CPU %CPU can look low while Entc% is saturated.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Optional case-insensitive filter over relative path or filename. Use it to narrow to lparstat/nmon/sar/vmstat files."
+                        },
+                        "max_files": {
+                            "type": "integer",
+                            "description": "Maximum matching files to scan, default 100, max 500."
+                        },
+                        "limit_records": {
+                            "type": "integer",
+                            "description": "Maximum parsed sample records returned for inspection, default 200, max 500."
+                        }
+                    }
+                }
+            }
+        }));
+
+        println!("✅ Found AIX OS attachments in {}", aix_dir.display());
+    }
     tools
 }
 
@@ -559,6 +636,9 @@ pub fn dispatch_tool_call(
         "list_available_sql_plans" => tool_list_available_sql_plans(args, stem),
         "get_sql_execution_plan" => tool_get_sql_execution_plan(args, stem),
         "get_alertlog_errors" => tool_get_alertlog_errors(args, stem),
+        "list_aix_os_attachments" => tool_list_aix_os_attachments(args, stem),
+        "get_aix_os_attachment" => tool_get_aix_os_attachment(args, stem),
+        "get_aix_cpu_entitlement_summary" => tool_get_aix_cpu_entitlement_summary(args, stem),
 
         // Aggregations
         "list_snapshots" | "list_snapshots_in_range" => tool_list_snapshots(args, collection),
@@ -643,6 +723,10 @@ fn attachments_dir_for_stem(stem: &str) -> PathBuf {
     PathBuf::from(format!("{stem}_attachments"))
 }
 
+fn aix_dir_for_stem(stem: &str) -> PathBuf {
+    attachments_dir_for_stem(stem).join("AIX")
+}
+
 fn is_safe_sql_id(sql_id: &str) -> bool {
     let s = sql_id.trim();
 
@@ -716,6 +800,494 @@ fn list_alertlog_files(dir: &Path) -> Vec<PathBuf> {
         size_b.cmp(&size_a).then_with(|| a.cmp(b))
     });
     files
+}
+
+fn collect_files_recursive(dir: &Path, depth: usize, files: &mut Vec<PathBuf>) {
+    if depth > MAX_AIX_RECURSION_DEPTH {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+
+        if file_type.is_file() {
+            files.push(path);
+        } else if file_type.is_dir() {
+            collect_files_recursive(&path, depth + 1, files);
+        }
+    }
+}
+
+fn list_aix_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_files_recursive(dir, 0, &mut files);
+    files.sort();
+    files
+}
+
+fn relative_display_path(base: &Path, path: &Path) -> String {
+    path.strip_prefix(base)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn is_safe_relative_path(relative_path: &str) -> bool {
+    let trimmed = relative_path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let path = Path::new(trimmed);
+    if path.is_absolute() {
+        return false;
+    }
+
+    path.components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn read_limited_lossy(path: &Path, max_bytes: usize) -> Result<(String, u64, bool), String> {
+    let mut bytes = fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let size_bytes = bytes.len() as u64;
+    let truncated = bytes.len() > max_bytes;
+    if truncated {
+        bytes.truncate(max_bytes);
+    }
+
+    Ok((
+        String::from_utf8_lossy(&bytes).to_string(),
+        size_bytes,
+        truncated,
+    ))
+}
+
+fn clean_aix_line(line: &str) -> String {
+    let mut cleaned = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            while let Some(next) = chars.next() {
+                if next.is_ascii_alphabetic() || next == '@' || next == '~' {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if ch.is_control() {
+            if ch == '\t' {
+                cleaned.push(' ');
+            }
+            continue;
+        }
+
+        cleaned.push(ch);
+    }
+
+    cleaned
+}
+
+fn split_aix_fields(line: &str) -> Vec<String> {
+    let cleaned = clean_aix_line(line);
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let parts: Vec<&str> = if trimmed.contains(',') {
+        trimmed.split(',').collect()
+    } else {
+        trimmed.split_whitespace().collect()
+    };
+
+    parts
+        .into_iter()
+        .map(|part| {
+            part.trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim()
+                .to_string()
+        })
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+fn normalize_aix_key(key: &str) -> String {
+    key.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn parse_aix_number(value: &str) -> Option<f64> {
+    let cleaned = value
+        .trim()
+        .trim_matches('%')
+        .trim_matches('[')
+        .trim_matches(']')
+        .trim_matches(',')
+        .trim_matches(';')
+        .trim_matches(':')
+        .trim_matches('=');
+
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    cleaned.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct AixCpuObservation {
+    source_file: String,
+    line_number: usize,
+    timestamp_hint: Option<String>,
+    entc_pct: Option<f64>,
+    cpu_busy_pct: Option<f64>,
+    cpu_user_pct: Option<f64>,
+    cpu_sys_pct: Option<f64>,
+    cpu_wait_pct: Option<f64>,
+    cpu_idle_pct: Option<f64>,
+    physc: Option<f64>,
+    entitled_capacity: Option<f64>,
+    raw_sample: String,
+}
+
+fn apply_aix_metric(obs: &mut AixCpuObservation, key: &str, value: f64) -> bool {
+    let normalized = normalize_aix_key(key);
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if normalized.contains("entc") {
+        obs.entc_pct = Some(value);
+    } else if normalized == "physc"
+        || normalized == "pc"
+        || (normalized.contains("physicalcpu") && !normalized.contains("percentage"))
+        || normalized.contains("physicalprocessor")
+    {
+        obs.physc = Some(value);
+    } else if normalized == "ec" {
+        obs.entc_pct = Some(value);
+    } else if normalized == "ent"
+        || normalized == "entitled"
+        || normalized.contains("entitledcapacity")
+        || normalized.contains("entitlement")
+    {
+        obs.entitled_capacity = Some(value);
+    } else if normalized.contains("user") || normalized == "usr" || normalized == "us" {
+        obs.cpu_user_pct = Some(value);
+    } else if normalized == "kern" || normalized == "kernel" {
+        obs.cpu_sys_pct = Some(value);
+    } else if normalized == "sys"
+        || normalized == "sy"
+        || normalized.ends_with("sys")
+        || normalized.contains("system")
+    {
+        obs.cpu_sys_pct = Some(value);
+    } else if normalized.contains("wait") || normalized == "wio" || normalized == "wa" {
+        obs.cpu_wait_pct = Some(value);
+    } else if normalized.contains("idle") || normalized == "id" {
+        obs.cpu_idle_pct = Some(value);
+    } else if normalized == "busy" || normalized == "lbusy" || normalized.contains("cpubusy") {
+        obs.cpu_busy_pct = Some(value);
+    } else {
+        return false;
+    }
+
+    true
+}
+
+fn finalize_aix_observation(mut obs: AixCpuObservation) -> Option<AixCpuObservation> {
+    if obs.entc_pct.is_none() {
+        if let (Some(physc), Some(entitled_capacity)) = (obs.physc, obs.entitled_capacity) {
+            if entitled_capacity > 0.0 {
+                obs.entc_pct = Some((physc / entitled_capacity) * 100.0);
+            }
+        }
+    }
+
+    if obs.cpu_busy_pct.is_none() {
+        if let Some(idle) = obs.cpu_idle_pct {
+            if (0.0..=100.0).contains(&idle) {
+                obs.cpu_busy_pct = Some(100.0 - idle);
+            }
+        }
+    }
+
+    let has_metric = obs.entc_pct.is_some()
+        || obs.cpu_busy_pct.is_some()
+        || obs.cpu_user_pct.is_some()
+        || obs.cpu_sys_pct.is_some()
+        || obs.cpu_wait_pct.is_some()
+        || obs.cpu_idle_pct.is_some()
+        || obs.physc.is_some()
+        || obs.entitled_capacity.is_some();
+
+    has_metric.then_some(obs)
+}
+
+fn looks_like_aix_header(fields: &[String]) -> bool {
+    let mut has_metric_label = false;
+    let mut has_non_numeric = false;
+
+    for field in fields {
+        if parse_aix_number(field).is_none() {
+            has_non_numeric = true;
+        }
+
+        let normalized = normalize_aix_key(field);
+        if normalized.contains("entc")
+            || normalized == "physc"
+            || normalized == "pc"
+            || normalized == "ec"
+            || normalized.contains("entitledcapacity")
+            || normalized.contains("user")
+            || normalized == "usr"
+            || normalized == "sys"
+            || normalized.contains("system")
+            || normalized.contains("wait")
+            || normalized == "wio"
+            || normalized.contains("idle")
+            || normalized == "busy"
+            || normalized == "lbusy"
+            || normalized.contains("cpubusy")
+        {
+            has_metric_label = true;
+        }
+    }
+
+    has_metric_label && has_non_numeric
+}
+
+fn timestamp_hint_from_fields(fields: &[String]) -> Option<String> {
+    let time_re = Regex::new(r"^\d{1,2}:\d{2}(?::\d{2})?$").expect("valid time regex");
+    let date_re =
+        Regex::new(r"^\d{4}-\d{2}-\d{2}$|^\d{1,2}/\d{1,2}/\d{2,4}$").expect("valid date regex");
+
+    let mut hints = Vec::new();
+    for field in fields.iter().take(6) {
+        if time_re.is_match(field) || date_re.is_match(field) || field.starts_with('T') {
+            hints.push(field.clone());
+        }
+    }
+
+    if hints.is_empty() {
+        None
+    } else {
+        Some(hints.join(" "))
+    }
+}
+
+fn parse_aix_row_with_header(
+    source_file: &str,
+    line_number: usize,
+    line: &str,
+    header: &[String],
+    fields: &[String],
+) -> Option<AixCpuObservation> {
+    if fields.is_empty() || header.is_empty() {
+        return None;
+    }
+
+    let mut obs = AixCpuObservation {
+        source_file: source_file.to_string(),
+        line_number,
+        timestamp_hint: timestamp_hint_from_fields(fields),
+        raw_sample: trim_sample(line, 240),
+        ..Default::default()
+    };
+
+    let mut matched = false;
+    for (idx, key) in header.iter().enumerate() {
+        let Some(value_field) = fields.get(idx) else {
+            continue;
+        };
+        let Some(value) = parse_aix_number(value_field) else {
+            continue;
+        };
+        matched |= apply_aix_metric(&mut obs, key, value);
+    }
+
+    matched
+        .then_some(())
+        .and_then(|_| finalize_aix_observation(obs))
+}
+
+fn parse_aix_key_value_line(
+    source_file: &str,
+    line_number: usize,
+    line: &str,
+    fields: &[String],
+) -> Option<AixCpuObservation> {
+    if fields.is_empty() {
+        return None;
+    }
+
+    let mut obs = AixCpuObservation {
+        source_file: source_file.to_string(),
+        line_number,
+        timestamp_hint: timestamp_hint_from_fields(fields),
+        raw_sample: trim_sample(line, 240),
+        ..Default::default()
+    };
+
+    let mut matched = false;
+    for idx in 0..fields.len() {
+        let field = &fields[idx];
+
+        if let Some((key, value)) = field.split_once('=').or_else(|| field.split_once(':')) {
+            if let Some(number) = parse_aix_number(value) {
+                matched |= apply_aix_metric(&mut obs, key, number);
+                continue;
+            }
+        }
+
+        if let Some(next) = fields.get(idx + 1) {
+            if let Some(number) = parse_aix_number(next) {
+                matched |= apply_aix_metric(&mut obs, field, number);
+            }
+        }
+    }
+
+    matched
+        .then_some(())
+        .and_then(|_| finalize_aix_observation(obs))
+}
+
+fn parse_topas_cpu_line(
+    source_file: &str,
+    line_number: usize,
+    line: &str,
+) -> Option<AixCpuObservation> {
+    let fields = split_aix_fields(line);
+    if fields.is_empty() {
+        return None;
+    }
+
+    let starts_with_total = fields
+        .first()
+        .map(|field| field.eq_ignore_ascii_case("total"))
+        .unwrap_or(false);
+    let starts_with_whitespace = line
+        .chars()
+        .next()
+        .map(|ch| ch.is_whitespace())
+        .unwrap_or(false);
+
+    if !starts_with_total && !starts_with_whitespace {
+        return None;
+    }
+
+    let numeric_values: Vec<f64> = fields
+        .iter()
+        .filter_map(|field| parse_aix_number(field))
+        .collect();
+
+    if numeric_values.len() < 6 {
+        return None;
+    }
+
+    let values = &numeric_values[0..6];
+
+    let user = values[0];
+    let sys = values[1];
+    let wait = values[2];
+    let idle = values[3];
+    let physc = values[4];
+    let entc = values[5];
+    let pct_sum = user + sys + wait + idle;
+
+    if !(0.0..=100.0).contains(&user)
+        || !(0.0..=100.0).contains(&sys)
+        || !(0.0..=100.0).contains(&wait)
+        || !(0.0..=100.0).contains(&idle)
+        || !(80.0..=120.0).contains(&pct_sum)
+        || !(0.0..=64.0).contains(&physc)
+        || !(0.0..=200.0).contains(&entc)
+    {
+        return None;
+    }
+
+    finalize_aix_observation(AixCpuObservation {
+        source_file: source_file.to_string(),
+        line_number,
+        timestamp_hint: timestamp_hint_from_fields(&fields),
+        entc_pct: Some(entc),
+        cpu_busy_pct: Some(user + sys + wait),
+        cpu_user_pct: Some(user),
+        cpu_sys_pct: Some(sys),
+        cpu_wait_pct: Some(wait),
+        cpu_idle_pct: Some(idle),
+        physc: Some(physc),
+        entitled_capacity: None,
+        raw_sample: trim_sample(line, 240),
+    })
+}
+
+fn aix_stat(values: &[f64]) -> Value {
+    let mut finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    finite.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    if finite.is_empty() {
+        return Value::Null;
+    }
+
+    let count = finite.len();
+    let min = finite[0];
+    let max = finite[count - 1];
+    let avg = finite.iter().sum::<f64>() / count as f64;
+    let p95_idx = ((count as f64 * 0.95).ceil() as usize)
+        .saturating_sub(1)
+        .min(count - 1);
+
+    json!({
+        "count": count,
+        "min": min,
+        "avg": avg,
+        "p95": finite[p95_idx],
+        "max": max
+    })
+}
+
+fn aix_threshold_counts(values: &[f64]) -> Value {
+    let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    let count = finite.len();
+
+    if count == 0 {
+        return Value::Null;
+    }
+
+    let count_ge = |threshold: f64| finite.iter().filter(|v| **v >= threshold).count();
+    let pct = |n: usize| (n as f64 / count as f64) * 100.0;
+
+    let ge_90 = count_ge(90.0);
+    let ge_95 = count_ge(95.0);
+    let ge_98 = count_ge(98.0);
+
+    json!({
+        "sample_count": count,
+        "ge_90_count": ge_90,
+        "ge_90_pct": pct(ge_90),
+        "ge_95_count": ge_95,
+        "ge_95_pct": pct(ge_95),
+        "ge_98_count": ge_98,
+        "ge_98_pct": pct(ge_98)
+    })
+}
+
+fn stat_value(stats: &Value, key: &str) -> Option<f64> {
+    stats.get(key).and_then(|v| v.as_f64())
 }
 
 fn parse_date_arg(args: &Value, key: &str) -> Result<Option<NaiveDate>, String> {
@@ -1360,6 +1932,272 @@ fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
         "limit": limit,
         "sql_ids_xplan": plans,
         "usage_hint": "For SQL_IDs that are material to DB Time, DB CPU, elapsed time, I/O, buffer gets, physical reads, or regressions, call get_sql_execution_plan and include a dedicated plan analysis with recommendations."
+    })
+}
+
+fn tool_list_aix_os_attachments(args: &Value, stem: &str) -> Value {
+    let aix_dir = aix_dir_for_stem(stem);
+    let pattern = arg_str(args, "pattern").map(|s| s.trim().to_lowercase());
+    let limit = arg_limit(args, "limit", DEFAULT_AIX_FILE_LIMIT, MAX_LIMIT);
+
+    let mut files: Vec<Value> = list_aix_files(&aix_dir)
+        .into_iter()
+        .filter_map(|path| {
+            let relative_path = relative_display_path(&aix_dir, &path);
+            let filename = path.file_name()?.to_str()?.to_string();
+            let haystack = format!(
+                "{} {}",
+                relative_path.to_lowercase(),
+                filename.to_lowercase()
+            );
+
+            if let Some(pattern) = &pattern {
+                if !haystack.contains(pattern) {
+                    return None;
+                }
+            }
+
+            let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            Some(json!({
+                "relative_path": relative_path,
+                "filename": filename,
+                "size_bytes": size_bytes
+            }))
+        })
+        .collect();
+
+    files.sort_by(|a, b| {
+        a["relative_path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["relative_path"].as_str().unwrap_or(""))
+    });
+
+    let total_matches = files.len();
+    files.truncate(limit);
+
+    json!({
+        "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+        "available": aix_dir.is_dir(),
+        "aix_dir": aix_dir.display().to_string(),
+        "pattern": pattern,
+        "total_matches": total_matches,
+        "returned": files.len(),
+        "limit": limit,
+        "files": files,
+        "usage_hint": "If the database platform is AIX, inspect these OS attachments before CPU-bound conclusions. Prefer get_aix_cpu_entitlement_summary first, then get_aix_os_attachment for the most relevant raw files."
+    })
+}
+
+fn tool_get_aix_os_attachment(args: &Value, stem: &str) -> Value {
+    let relative_path = match arg_str(args, "relative_path") {
+        Some(v) if is_safe_relative_path(v) => v.trim(),
+        Some(v) => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": "Invalid relative_path. Only simple relative paths under the AIX attachment directory are accepted.",
+                "relative_path": v
+            });
+        }
+        None => return error_missing_arg("relative_path"),
+    };
+
+    let max_bytes = arg_limit(args, "max_bytes", 64 * 1024, MAX_AIX_FILE_BYTES);
+    let aix_dir = aix_dir_for_stem(stem);
+    let path = aix_dir.join(relative_path);
+
+    if !path.is_file() {
+        return json!({
+            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+            "available": aix_dir.is_dir(),
+            "aix_dir": aix_dir.display().to_string(),
+            "relative_path": relative_path,
+            "text": null,
+            "error": "AIX attachment file was not found."
+        });
+    }
+
+    let (text, size_bytes, truncated) = match read_limited_lossy(&path, max_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "aix_dir": aix_dir.display().to_string(),
+                "relative_path": relative_path,
+                "error": e
+            });
+        }
+    };
+
+    json!({
+        "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+        "aix_dir": aix_dir.display().to_string(),
+        "relative_path": relative_path,
+        "size_bytes": size_bytes,
+        "truncated": truncated,
+        "max_bytes": max_bytes,
+        "text": text,
+        "usage_hint": "Use this raw AIX OS evidence to verify CPU entitlement, capped/shared LPAR behavior, physc/pc usage, and Entc% before declaring the system CPU-bound."
+    })
+}
+
+fn tool_get_aix_cpu_entitlement_summary(args: &Value, stem: &str) -> Value {
+    let aix_dir = aix_dir_for_stem(stem);
+    let pattern = arg_str(args, "pattern").map(|s| s.trim().to_lowercase());
+    let max_files = arg_limit(args, "max_files", DEFAULT_AIX_FILE_LIMIT, MAX_LIMIT);
+    let limit_records = arg_limit(args, "limit_records", DEFAULT_AIX_RECORD_LIMIT, MAX_LIMIT);
+
+    let mut candidate_files: Vec<PathBuf> = list_aix_files(&aix_dir)
+        .into_iter()
+        .filter(|path| {
+            let relative_path = relative_display_path(&aix_dir, path);
+            let haystack = relative_path.to_lowercase();
+            pattern
+                .as_ref()
+                .map(|pattern| haystack.contains(pattern))
+                .unwrap_or(true)
+        })
+        .collect();
+    candidate_files.truncate(max_files);
+
+    let mut observations = Vec::new();
+    let mut scanned_files = Vec::new();
+    let mut truncated_files = Vec::new();
+
+    for path in &candidate_files {
+        let relative_path = relative_display_path(&aix_dir, path);
+        let is_topas_file = relative_path.to_lowercase().contains("topas");
+        let (text, size_bytes, truncated) =
+            match read_limited_lossy(path, MAX_AIX_SUMMARY_BYTES_PER_FILE) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+        scanned_files.push(json!({
+            "relative_path": relative_path,
+            "size_bytes": size_bytes,
+            "truncated": truncated
+        }));
+        if truncated {
+            truncated_files.push(relative_display_path(&aix_dir, path));
+        }
+
+        let mut header: Option<Vec<String>> = None;
+        for (idx, line) in text.split(|c| c == '\n' || c == '\r').enumerate() {
+            let line_number = idx + 1;
+            let clean_line = clean_aix_line(line);
+            let fields = split_aix_fields(&clean_line);
+            if fields.is_empty() {
+                continue;
+            }
+
+            if is_topas_file {
+                if let Some(obs) = parse_topas_cpu_line(&relative_path, line_number, &clean_line) {
+                    observations.push(obs);
+                    continue;
+                }
+            }
+
+            if looks_like_aix_header(&fields) {
+                if let Some(obs) =
+                    parse_aix_key_value_line(&relative_path, line_number, &clean_line, &fields)
+                {
+                    observations.push(obs);
+                    continue;
+                }
+                header = Some(fields.clone());
+                continue;
+            }
+
+            if let Some(header_fields) = &header {
+                if let Some(obs) = parse_aix_row_with_header(
+                    &relative_path,
+                    line_number,
+                    &clean_line,
+                    header_fields,
+                    &fields,
+                ) {
+                    observations.push(obs);
+                    continue;
+                }
+            }
+
+            if let Some(obs) =
+                parse_aix_key_value_line(&relative_path, line_number, &clean_line, &fields)
+            {
+                observations.push(obs);
+            }
+        }
+    }
+
+    let entc_values: Vec<f64> = observations.iter().filter_map(|o| o.entc_pct).collect();
+    let busy_values: Vec<f64> = observations.iter().filter_map(|o| o.cpu_busy_pct).collect();
+    let user_values: Vec<f64> = observations.iter().filter_map(|o| o.cpu_user_pct).collect();
+    let sys_values: Vec<f64> = observations.iter().filter_map(|o| o.cpu_sys_pct).collect();
+    let wait_values: Vec<f64> = observations.iter().filter_map(|o| o.cpu_wait_pct).collect();
+    let idle_values: Vec<f64> = observations.iter().filter_map(|o| o.cpu_idle_pct).collect();
+    let physc_values: Vec<f64> = observations.iter().filter_map(|o| o.physc).collect();
+    let entitled_values: Vec<f64> = observations
+        .iter()
+        .filter_map(|o| o.entitled_capacity)
+        .collect();
+
+    let entc_stats = aix_stat(&entc_values);
+    let busy_stats = aix_stat(&busy_values);
+    let max_entc = stat_value(&entc_stats, "max");
+    let p95_entc = stat_value(&entc_stats, "p95");
+    let avg_entc = stat_value(&entc_stats, "avg");
+    let max_busy = stat_value(&busy_stats, "max");
+
+    let entc_pressure = aix_threshold_counts(&entc_values);
+
+    let cpu_bound_assessment = if let Some(max_entc) = max_entc {
+        if max_entc >= 98.0 || p95_entc.unwrap_or(0.0) >= 95.0 {
+            "AIX CPU entitlement/physical-capacity saturation is confirmed. Treat the host as CPU-bound or CPU-constrained even if AWR Host CPU %CPU/idle looks lower, the LPAR is uncapped, or the shared pool has theoretical spare capacity. Entc% and physc/pc are the controlling evidence."
+        } else if max_entc >= 90.0 || p95_entc.unwrap_or(0.0) >= 85.0 {
+            "AIX CPU entitlement saturation is likely. Treat the host as CPU-bound or CPU-constrained unless a narrower time-window proves otherwise; do not dismiss this because AWR Host CPU %CPU is lower."
+        } else if avg_entc.unwrap_or(0.0) >= 75.0 || max_busy.unwrap_or(0.0) >= 85.0 {
+            "AIX CPU pressure is possible but not conclusively saturated. Correlate Entc%, physc/pc, busy/idle and DB CPU timelines before declaring CPU-bound."
+        } else {
+            "Parsed Entc% does not show LPAR entitlement saturation. Do not call the system CPU-bound from AIX entitlement data alone."
+        }
+    } else if max_busy.unwrap_or(0.0) >= 85.0 {
+        "High CPU busy was parsed, but Entc% was not found. On AIX this is insufficient for a final CPU-bound decision; ask for Entc%, physc/pc, EC, capped/uncapped and shared/dedicated LPAR details."
+    } else {
+        "No Entc%/LPAR entitlement metric was parsed. On AIX, do not conclude CPU-bound from DB CPU/DB Time or AWR Host CPU %CPU alone; ask for Entc%, physc/pc, EC, capped/uncapped and shared/dedicated LPAR details."
+    };
+
+    let total_observations = observations.len();
+    let records: Vec<AixCpuObservation> = observations.into_iter().take(limit_records).collect();
+    let records_value = serde_json::to_value(&records).unwrap_or_else(|_| json!([]));
+    let records_toon = encode(&records_value, None);
+
+    json!({
+        "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+        "available": aix_dir.is_dir(),
+        "aix_dir": aix_dir.display().to_string(),
+        "pattern": pattern,
+        "scanned_file_count": scanned_files.len(),
+        "scanned_files": scanned_files,
+        "truncated_files": truncated_files,
+        "total_observations": total_observations,
+        "returned_records": records.len(),
+        "stats": {
+            "entc_pct": entc_stats,
+            "cpu_busy_pct": busy_stats,
+            "cpu_user_pct": aix_stat(&user_values),
+            "cpu_sys_pct": aix_stat(&sys_values),
+            "cpu_wait_pct": aix_stat(&wait_values),
+            "cpu_idle_pct": aix_stat(&idle_values),
+            "physc": aix_stat(&physc_values),
+            "entitled_capacity": aix_stat(&entitled_values)
+        },
+        "entc_pressure": entc_pressure,
+        "cpu_bound_assessment": cpu_bound_assessment,
+        "decision_guardrail": "On AIX, high Entc%/%entc/ec or physc/pc near entitled/max capacity overrides apparently comfortable AWR Host CPU idle. Do not conclude 'not CPU-bound' from uncapped mode, shared-pool spare capacity, or AWR %CPU alone.",
+        "format": "TOON",
+        "aix_cpu_records_toon": records_toon,
+        "usage_hint": "For AIX, Entc%/%entc/ec is required evidence for CPU-bound decisions. If Entc% is high (commonly >= 90%, and especially p95 >= 95% or max >= 98%), report CPU entitlement/physical-capacity pressure even when AWR Host CPU idle is nonzero. If Entc% is absent, derive it from physc/pc divided by entitled capacity when possible; otherwise ask for AIX LPAR entitlement details before final CPU-bound classification."
     })
 }
 
@@ -2831,4 +3669,141 @@ fn tool_list_available_metrics(args: &Value, c: &AWRSCollection) -> Value {
         "limit": limit,
         "names": filtered
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aix_parser_reads_lparstat_entitlement_columns() {
+        let header = split_aix_fields("%user %sys %wait %idle physc %entc lbusy app vcsw phint");
+        let fields = split_aix_fields("10.0 5.0 0.0 85.0 3.8 95.0 40.0 0.2 123 4");
+
+        let obs = parse_aix_row_with_header("lparstat.out", 2, "", &header, &fields)
+            .expect("expected lparstat observation");
+
+        assert_eq!(obs.entc_pct, Some(95.0));
+        assert_eq!(obs.physc, Some(3.8));
+        assert_eq!(obs.cpu_user_pct, Some(10.0));
+        assert_eq!(obs.cpu_sys_pct, Some(5.0));
+        assert_eq!(obs.cpu_idle_pct, Some(85.0));
+    }
+
+    #[test]
+    fn aix_parser_reads_key_value_metrics_and_rejects_unsafe_paths() {
+        let fields = split_aix_fields("Entc%=92.5 physc=3.4 ent=4.0 idle=70.0");
+
+        let obs = parse_aix_key_value_line("oraix.txt", 1, "", &fields)
+            .expect("expected key-value observation");
+
+        assert_eq!(obs.entc_pct, Some(92.5));
+        assert_eq!(obs.physc, Some(3.4));
+        assert_eq!(obs.entitled_capacity, Some(4.0));
+        assert_eq!(obs.cpu_busy_pct, Some(30.0));
+
+        assert!(is_safe_relative_path("host1/lparstat.out"));
+        assert!(!is_safe_relative_path("../lparstat.out"));
+        assert!(!is_safe_relative_path("/tmp/lparstat.out"));
+    }
+
+    #[test]
+    fn aix_parser_reads_vmstat_pc_ec_columns() {
+        let header = split_aix_fields("r b avm fre re pi po fr sr cy in sy cs us sy id wa pc ec");
+        let fields = split_aix_fields(
+            "36 0 104145618 2648516 0 0 0 0 0 0 638 43926 18364 31 42 28 0 8.93 89.3",
+        );
+
+        let obs = parse_aix_row_with_header("vmstat.out", 5, "", &header, &fields)
+            .expect("expected vmstat observation");
+
+        assert_eq!(obs.cpu_user_pct, Some(31.0));
+        assert_eq!(obs.cpu_sys_pct, Some(42.0));
+        assert_eq!(obs.cpu_idle_pct, Some(28.0));
+        assert_eq!(obs.cpu_busy_pct, Some(72.0));
+        assert_eq!(obs.physc, Some(8.93));
+        assert_eq!(obs.entc_pct, Some(89.3));
+    }
+
+    #[test]
+    fn aix_parser_reads_nmon_lpar_rows() {
+        let header = split_aix_fields("LPAR,Logical Partition di-ora-prd,PhysicalCPU,virtualCPUs,logicalCPUs,poolCPUs,entitled,weight,PoolIdle,usedAllCPU%,usedPoolCPU%,SharedCPU,Capped,EC_User%,EC_Sys%,EC_Wait%,EC_Idle%,VP_User%,VP_Sys%,VP_Wait%,VP_Idle%,Folded,Pool_id");
+        let fields = split_aix_fields("LPAR,T0001,9.81,10,40,28,10.00,172,0,20.4,35.0,1,0,30.0,43.0,0.0,27.0,30.0,43.0,0.0,27.0,0,1");
+
+        let obs = parse_aix_row_with_header("nmon.nmon", 500, "", &header, &fields)
+            .expect("expected nmon LPAR observation");
+
+        assert_eq!(obs.physc, Some(9.81));
+        assert_eq!(obs.entitled_capacity, Some(10.0));
+        assert!((obs.entc_pct.unwrap_or(0.0) - 98.1).abs() < 0.0001);
+        assert_eq!(obs.cpu_user_pct, Some(30.0));
+        assert_eq!(obs.cpu_sys_pct, Some(43.0));
+        assert_eq!(obs.cpu_wait_pct, Some(0.0));
+        assert_eq!(obs.cpu_idle_pct, Some(27.0));
+    }
+
+    #[test]
+    fn aix_parser_reads_topas_entc_with_terminal_codes() {
+        let header = split_aix_fields("\u{1b}[;7mCPU User% Kern% Wait% Idle% Physc Entc%");
+        let fields = split_aix_fields("Total 29.1 45.0 0.3 25.6 9.85 98.5292924");
+
+        let obs = parse_aix_row_with_header("topas.out", 10, "", &header, &fields)
+            .expect("expected topas observation");
+
+        assert_eq!(obs.cpu_user_pct, Some(29.1));
+        assert_eq!(obs.cpu_sys_pct, Some(45.0));
+        assert_eq!(obs.cpu_wait_pct, Some(0.3));
+        assert_eq!(obs.cpu_idle_pct, Some(25.6));
+        assert_eq!(obs.physc, Some(9.85));
+        assert_eq!(obs.entc_pct, Some(98.5292924));
+    }
+
+    #[test]
+    fn aix_fixture_dir_exposes_entitlement_when_env_is_set() {
+        let Ok(aix_dir) = std::env::var("JASMIN_AIX_FIXTURE_DIR") else {
+            return;
+        };
+        let aix_dir = PathBuf::from(aix_dir);
+        let attachments_dir = aix_dir
+            .parent()
+            .expect("fixture AIX dir should have parent attachments dir");
+        let stem_path = attachments_dir
+            .to_string_lossy()
+            .strip_suffix("_attachments")
+            .expect("fixture parent should be named <stem>_attachments")
+            .to_string();
+
+        let result = tool_get_aix_cpu_entitlement_summary(
+            &json!({
+                "pattern": "vmstat",
+                "limit_records": 5
+            }),
+            &stem_path,
+        );
+
+        assert!(
+            result["total_observations"].as_u64().unwrap_or(0) > 0,
+            "expected observations from fixture: {result}"
+        );
+        assert!(
+            result["stats"]["entc_pct"]["max"].as_f64().unwrap_or(0.0) > 90.0,
+            "expected Entc%/ec from fixture: {result}"
+        );
+
+        let topas_result = tool_get_aix_cpu_entitlement_summary(
+            &json!({
+                "pattern": "topas",
+                "limit_records": 5
+            }),
+            &stem_path,
+        );
+
+        assert!(
+            topas_result["stats"]["entc_pct"]["max"]
+                .as_f64()
+                .unwrap_or(0.0)
+                > 98.0,
+            "expected Entc% from topas fixture: {topas_result}"
+        );
+    }
 }

@@ -74,6 +74,7 @@ fn build_model_instructions(
 
 fn tools_mode_instructions(stem: &str) -> String {
     let attachments_dir = format!("{stem}_attachments");
+    let aix_dir = format!("{attachments_dir}/AIX");
     let xplan_note = if Path::new(&attachments_dir).is_dir() {
         format!(
             "\nAvailable execution-plan attachment directory: `{}`. \
@@ -93,6 +94,18 @@ fn tools_mode_instructions(stem: &str) -> String {
     } else {
         String::new()
     };
+    let aix_note = if Path::new(&aix_dir).is_dir() {
+        format!(
+            "\nAIX OS attachment directory is available: `{}`. \
+             If AIX tools are present, you MUST call get_db_instance_info and get_aix_cpu_entitlement_summary before deciding whether the system is CPU-bound. \
+             On AIX LPARs, AWR Host CPU %CPU and DB CPU/DB Time can be misleading when Entc%/%entc is high. \
+             If Entc%/ec is near saturation, do NOT dismiss CPU pressure because the LPAR is uncapped, because AWR Host CPU idle is nonzero, or because the shared pool has theoretical spare capacity. \
+             If Entc%/physc/pc/EC/capped/shared-dedicated details are not available from tools, ask the user for those OS details and do not make a final CPU-bound classification.",
+            aix_dir
+        )
+    } else {
+        String::new()
+    };
 
     format!(
         "\n\n# TOOLS MODE\n\
@@ -103,11 +116,35 @@ fn tools_mode_instructions(stem: &str) -> String {
          For every SQL_ID that materially contributes to DB Time, elapsed time, DB CPU, I/O time, buffer gets, physical reads, anomalous waits, or regression symptoms, call get_sql_text and get_sql_timeline. \
          If execution-plan tools are available, you are expected to use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations. \
          If alert.log tools are available, use get_alertlog_errors to verify error evidence for relevant date ranges, especially before dismissing parse errors or other reported failures as unrelated. \
+         If AIX OS tools are available or get_db_instance_info reports an AIX platform, use get_aix_cpu_entitlement_summary before any CPU-bound conclusion; never rely only on %CPU, DB CPU, or DB CPU/DB Time on AIX. High Entc%/%entc/ec or physc/pc near entitlement is CPU entitlement/physical-capacity pressure even on uncapped LPARs and even when AWR Host CPU idle is nonzero. \
          When you fetch an execution plan, produce a dedicated SQL execution plan analysis covering: dominant operations, access paths, join methods and join order, cardinality estimate errors, partition pruning, parallel execution, adaptive plan notes, temp spills/sorts, index usage, and concrete remediation options. \
          Recommendations must be specific and evidence-based: statistics refresh, histograms, extended statistics, SQL rewrite, indexing, partitioning, SQL Plan Management baseline/profile, bind/literal handling, or application-side change. \
          Prefer multiple narrow tool calls over guessing. Stop calling tools only when you have enough evidence to produce the FINAL markdown report following the OUTPUT STRUCTURE.{}",
-        format!("{xplan_note}{alertlog_note}")
+        format!("{xplan_note}{alertlog_note}{aix_note}")
     )
+}
+
+fn available_attachments_prompt(stem: &str) -> Option<String> {
+    let attachments_dir = format!("{stem}_attachments");
+    let aix_dir = format!("{attachments_dir}/AIX");
+    let mut lines = Vec::new();
+
+    if Path::new(&attachments_dir).is_dir() {
+        lines.push("Execution plan attachments (*.xplan) may be available through tools. Use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations.".to_string());
+    }
+
+    if Path::new(&aix_dir).is_dir() {
+        lines.push("AIX OS attachments were found under the AIX subdirectory. If the database platform is AIX, use get_db_instance_info and get_aix_cpu_entitlement_summary before deciding whether the system is CPU-bound. Entc%/%entc/ec is mandatory evidence on shared/capped/uncapped LPARs; low %CPU, nonzero AWR Host CPU idle, uncapped mode, or shared-pool spare capacity do not clear CPU saturation when Entc% is high.".to_string());
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "### AVAILABLE ATTACHMENTS\n{}\n-- END AVAILABLE ATTACHMENTS --",
+            lines.join("\n")
+        ))
+    }
 }
 
 fn final_synthesis_request() -> &'static str {
@@ -893,6 +930,7 @@ Follow this reasoning sequence:
 ## Step 1: Establish Performance Profile
 - Interpret DB CPU / DB Time ratio across all spikes (< 0.66 = wait-bound, ~1.0 = CPU-bound)
 - Assess ratio variance for mixed/intermittent problems
+- AIX caveat: if the platform is AIX, do not decide CPU-bound from DB CPU/DB Time or AWR Host CPU %CPU alone. Entc%/%entc/ec, physc/pc, EC, capped/uncapped and shared/dedicated LPAR data are required; if Entc%/ec is high, classify it as CPU entitlement/physical-capacity pressure even when AWR idle is nonzero or the LPAR is uncapped.
 
 ## Step 2: Map Temporal Patterns
 - Connect anomaly_clusters to top_spikes_marked via snap_id and dates
@@ -1271,10 +1309,12 @@ pub async fn gemini(
         }),
     ];
 
-    if tools_mode && Path::new(&format!("{stem}_attachments")).is_dir() {
-        initial_parts.push(json!({
-            "text": "### AVAILABLE ATTACHMENTS\nExecution plan attachments (*.xplan) may be available through tools. Use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations.\n-- END AVAILABLE ATTACHMENTS --"
-        }));
+    if tools_mode {
+        if let Some(note) = available_attachments_prompt(stem) {
+            initial_parts.push(json!({
+                "text": note
+            }));
+        }
     }
 
     let mut contents: Vec<Value> = vec![json!({
@@ -1674,11 +1714,19 @@ pub async fn openrouter(
         build_model_instructions(vendor_model_lang[2], args, &events_sqls, stem, tools_mode);
 
     // --- common - history begins ---
+    let attachment_note = if tools_mode {
+        available_attachments_prompt(stem)
+            .map(|note| format!("\n\n{note}"))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     let mut messages: Vec<Value> = vec![
         json!({ "role": "system", "content": format!("### SYSTEM INSTRUCTIONS\n{}", spell) }),
         json!({ "role": "user", "content": format!(
-            "MAIN REPORT (toon/json-as-text):\n```\n{}\n```\n\nGLOBAL PROFILE:\n```json\n{}\n```",
-            report_for_ai, load_profile
+            "MAIN REPORT (toon/json-as-text):\n```\n{}\n```\n\nGLOBAL PROFILE:\n```json\n{}\n```{}",
+            report_for_ai, load_profile, attachment_note
         )}),
     ];
 
@@ -2188,11 +2236,13 @@ pub async fn openai_gpt(
         }),
     ];
 
-    if tools_mode && Path::new(&format!("{stem}_attachments")).is_dir() {
-        report_payload.push(json!({
-            "type": "input_text",
-            "text": "### AVAILABLE ATTACHMENTS\nExecution plan attachments (*.xplan) may be available through tools. Use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations.\n-- END AVAILABLE ATTACHMENTS --"
-        }));
+    if tools_mode {
+        if let Some(note) = available_attachments_prompt(stem) {
+            report_payload.push(json!({
+                "type": "input_text",
+                "text": note
+            }));
+        }
     }
 
     input_messages.push(json!({
