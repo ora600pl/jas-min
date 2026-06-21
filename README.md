@@ -195,9 +195,13 @@ jas-min -d ./awr_reports --ai google:gemini-2.5-flash:EN --tools-mode
 jas-min -d ./awr_reports --ai openrouter:openai/gpt-4.1:EN --tools-mode
 ```
 
-If a sibling `<stem>_attachments/` directory exists, tools mode can also expose execution-plan attachments to the model.
+If a sibling `<stem>_attachments/` directory exists, tools mode can also expose execution-plan, alert log, and AIX OS attachments to the model.
 
 Execution plans are expected as `<stem>_attachments/<SQL_ID>.xplan`. The collector can create these files automatically for the SQL IDs that appear most often in `SQLs Ordered by Elapsed time` sections, plus any SQL IDs entered manually.
+
+AIX OS data collected by the `oraix` project can be placed under `<stem>_attachments/AIX/`. When files are present there, tools mode exposes AIX-specific tools such as `list_aix_os_attachments`, `get_aix_os_attachment`, and `get_aix_cpu_entitlement_summary`. These tools scan for LPAR CPU entitlement evidence including `Entc%`, `%entc`, `physc`/`pc`, entitled capacity/`ec`, busy, idle, user, system, and wait CPU metrics.
+
+For AIX systems, JAS-MIN instructs the AI model not to classify a database as CPU-bound from DB CPU, DB CPU / DB Time, or AWR Host CPU `%CPU` alone. The model must check AIX entitlement data first; if `Entc%` and related LPAR details are missing, it should ask for those operating-system details before making a final CPU-bound decision.
 
 ### One-Shot Batch Analysis
 
