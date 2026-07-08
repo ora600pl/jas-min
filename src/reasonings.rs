@@ -311,16 +311,24 @@ fn compact_gemini_tool_results_for_budget(
         let largest_tool_response = contents
             .iter()
             .enumerate()
-            .filter_map(|(idx, content)| {
-                let response = content.pointer("/parts/0/functionResponse/response")?;
-                let len = serde_json::to_string(response)
-                    .map(|s| s.chars().count())
-                    .unwrap_or(0);
-                Some((idx, len))
+            .filter_map(|(msg_idx, content)| {
+                let parts = content.get("parts")?.as_array()?;
+                let mut max_part: Option<(usize, usize)> = None; // (part_idx, len)
+                for (part_idx, part) in parts.iter().enumerate() {
+                    if let Some(response) = part.pointer("/functionResponse/response") {
+                        let len = serde_json::to_string(response)
+                            .map(|s| s.chars().count())
+                            .unwrap_or(0);
+                        if max_part.is_none() || len > max_part.unwrap().1 {
+                            max_part = Some((part_idx, len));
+                        }
+                    }
+                }
+                max_part.map(|(part_idx, len)| (msg_idx, part_idx, len))
             })
-            .max_by_key(|(_, len)| *len);
+            .max_by_key(|&(_, _, len)| len);
 
-        let Some((idx, len)) = largest_tool_response else {
+        let Some((msg_idx, part_idx, len)) = largest_tool_response else {
             break;
         };
 
@@ -328,13 +336,13 @@ fn compact_gemini_tool_results_for_budget(
             break;
         }
 
-        let original = contents[idx]
-            .pointer("/parts/0/functionResponse/response")
+        let original = contents[msg_idx]
+            .pointer(&format!("/parts/{}/functionResponse/response", part_idx))
             .and_then(|v| serde_json::to_string(v).ok())
             .unwrap_or_default();
         let prefix: String = original.chars().take(2048).collect();
 
-        if let Some(response) = contents[idx].pointer_mut("/parts/0/functionResponse/response") {
+        if let Some(response) = contents[msg_idx].pointer_mut(&format!("/parts/{}/functionResponse/response", part_idx)) {
             *response = json!({
                 "truncated_by_jasmin_token_budget": true,
                 "original_length_chars": len,
@@ -1521,6 +1529,7 @@ pub async fn gemini(
                     contents.push(model_content);
                 }
 
+                let mut responses = Vec::new();
                 for tc in tool_calls {
                     let fn_name = tc
                         .get("name")
@@ -1540,16 +1549,18 @@ pub async fn gemini(
                     let result_json: Value = serde_json::from_str(&result_text)
                         .unwrap_or_else(|_| json!({ "result": result_text }));
 
-                    contents.push(json!({
-                        "role": "user",
-                        "parts": [{
-                            "functionResponse": {
-                                "name": fn_name,
-                                "response": result_json
-                            }
-                        }]
+                    responses.push(json!({
+                        "functionResponse": {
+                            "name": fn_name,
+                            "response": result_json
+                        }
                     }));
                 }
+
+                contents.push(json!({
+                    "role": "user",
+                    "parts": responses
+                }));
 
                 if is_last_iteration {
                     eprintln!(
