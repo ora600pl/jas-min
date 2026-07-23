@@ -2064,11 +2064,11 @@ fn generate_iostats_plotfile(
     functions_to_plot
 }
 
-// Get Requests – popularność latcha (jak często był używany).
-// Pct Get Miss – jak często proces się “odbijał” od latcha (wskazuje kontencję).
-// Avg Slps/Miss – czy procesy musiały iść spać (jeśli > 0 → latch contention naprawdę boli).
-// Wait Time (s) – łączny koszt dla systemu (sumaryczna strata czasu).
-// NoWait Requests / Pct NoWait Miss – zwykle mniej krytyczne, ale czasem pokazują krótkie zatory.
+// Get Requests – latch popularity (how often it was used).
+// Pct Get Miss – how often a process failed to acquire the latch (indicates contention).
+// Avg Slps/Miss – whether processes had to sleep (values above zero indicate costly contention).
+// Wait Time (s) – the total system cost (aggregate time lost).
+// NoWait Requests / Pct NoWait Miss – usually less critical, but can expose brief bottlenecks.
 fn generate_latchstats_plotfiles(
     awrs: &Vec<AWR>,
     snap_range: &(u64, u64),

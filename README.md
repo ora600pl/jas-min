@@ -31,8 +31,8 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Correlation | Computes Pearson correlations between DB Time and wait events, SQL elapsed time, and instance statistics. |
 | Gradient analysis | Runs Ridge, Elastic Net, Huber, and Quantile-95 regression models over DB Time and DB CPU drivers. |
 | Custom gradient | Builds extra gradient pages for a selected SQL ID or wait event with `--gradient-custom`. |
-| AI reports | Supports OpenAI, Google Gemini, OpenRouter, OpenRouter small-context modular mode, and local OpenAI-compatible models. |
-| AI tools mode | Enables function/tool-call loops for OpenAI, Google Gemini, and OpenRouter with `--tools-mode`. |
+| AI reports | Supports OpenAI, Google Gemini, OpenRouter, and a two-session local agent served by LM Studio. |
+| AI tools mode | Enables function/tool-call loops for cloud providers with `--tools-mode`; local analysis always uses tools. |
 | Security | Controls whether object names and SQL text are stored with `--security-level`. |
 
 ## Architecture Overview
@@ -163,8 +163,7 @@ Supported vendor prefixes are:
 | `openai` | OpenAI Responses API | `OPENAI_API_KEY` |
 | `google` | Google Gemini API | `GEMINI_API_KEY` |
 | `openrouter` | OpenRouter chat completions | `OPENROUTER_API_KEY` |
-| `openroutersmall` | Modular pipeline through OpenRouter | `OPENROUTER_API_KEY` |
-| `local` | Modular pipeline through an OpenAI-compatible local endpoint | `LOCAL_BASE_URL`, optional `LOCAL_API_KEY` |
+| `local` | Two-session evidence-driven agent through LM Studio | `LOCAL_BASE_URL`, optional `LOCAL_API_KEY` |
 
 Examples:
 
@@ -178,16 +177,17 @@ jas-min -d ./awr_reports --ai openai:o3:EN
 export OPENROUTER_API_KEY="your-key"
 jas-min -d ./awr_reports --ai openrouter:anthropic/claude-sonnet-4:EN
 
-export LOCAL_BASE_URL="http://localhost:1234/v1/chat/completions"
+export LOCAL_BASE_URL="http://localhost:1234/v1"
 export LOCAL_API_KEY="lm-studio"
-jas-min -d ./awr_reports --ai local:qwen3-32b:EN -B 60000
+export LOCAL_CONTEXT_TOKENS="128000" # must not exceed the context used when loading the model
+jas-min -d ./awr_reports --ai local:qwen/qwen3.6-35b-a3b:EN -B 128000 --max-tool-iterations 8
 ```
 
 The language code, for example `EN` or `PL`, controls the requested report language.
 
 ### Tools Mode
 
-For `openai`, `google`, and `openrouter`, `--tools-mode` enables an iterative tool-call loop. In this mode the model can request focused diagnostic data from the parsed collection instead of relying only on the initial summary.
+For `openai`, `google`, and `openrouter`, `--tools-mode` enables an iterative tool-call loop. In this mode the model can request focused diagnostic data from the parsed collection instead of relying only on the initial summary. The `local` backend always uses tools and ignores `--tools-mode`.
 
 ```bash
 jas-min -d ./awr_reports --ai openai:o3:EN --tools-mode --max-tool-iterations 12
@@ -217,17 +217,22 @@ awr_reports.txt_anthropic_claude-sonnet-4.md
 
 The generated Markdown is converted to HTML with links back to JAS-MIN detail pages where possible.
 
-### Modular LLM Pipeline
+### Local Two-Session Investigation
 
-For `openroutersmall` and `local`, JAS-MIN uses a modular pipeline designed for smaller context windows:
+The `local` backend uses a tool-driven workflow designed for LM Studio:
 
-1. Split `ReportForAI` into focused sections such as baseline, foreground waits, background waits, SQLs, I/O, latches, segment statistics, correlations, anomaly clusters, and gradient sections.
-2. Attach a compact context capsule with general data and top spikes to each section.
-3. Trim section payloads to fit `--tokens-budget`.
-4. Ask the model for per-section notes.
-5. Compose the section notes into a final Markdown report.
+1. Session 1 receives only a compact seed containing gradient analyses, DB Time degradation, and DB CPU / DB Time ratios for detected peaks.
+2. The investigator receives a small triage tool catalog first. Later rounds expose deeper timeline, plan, parameter, segment, latch, and attachment tools only when there is room to use them. Duplicate calls in one session return a short reference instead of repeating a large cached result.
+3. When `reasonings.txt` is available, relevant §x.y sections are retrieved for detected symptoms. They remain methodology rather than database evidence.
+4. The investigator submits a compact checkpoint. Qwen uses JSON Schema plus LM Studio's `reasoning_content` channel because live tests showed its forced checkpoint tool call repeatedly exhausted 4096 tokens; other models can use the dedicated checkpoint tool with the structured fallback.
+5. Session 2 starts with a fresh context containing the original seed and checkpoint. A skeptical reviewer re-queries evidence and attempts to falsify the first session's findings.
+6. Before synthesis, deterministic coverage states distinguish inspected, available-but-not-inspected, unavailable, and unknown data.
+7. Checkpoint and report synthesis use a fresh compact case file assembled from the evidence store rather than the verbose tool transcript. Full tool results remain in the audit JSON while each model-visible evidence item receives a bounded share of the closing context.
+8. The reviewer emits Markdown directly. If LM Studio returns `finish_reason=length`, JAS-MIN continues the report; it refuses to publish after exhausted continuation attempts rather than writing a truncated file. JAS-MIN also writes checkpoint, evidence, diagnostic-guidance, and token-usage audit files.
 
-This is slower than one-shot mode, but it can produce useful reports with local or smaller-context models.
+The local runner reserves context for thinking and final synthesis instead of filling the whole context window. `--tokens-budget` is treated as the local context ceiling and can be overridden with `LOCAL_CONTEXT_TOKENS`. Tool result size, sampling, and model settings can be controlled with `LOCAL_MAX_TOOL_RESULT_CHARS`, `LOCAL_MAX_GUIDANCE_CHARS`, `LOCAL_TEMPERATURE`, `LOCAL_TOP_P`, and `LOCAL_TOP_K`. Defaults are tuned for Qwen 3.6: tool results 16384 characters, guidance 8192 characters, `top_k=20`, `LOCAL_TOOL_OUTPUT_TOKENS=3072`, `LOCAL_CHECKPOINT_OUTPUT_TOKENS=4096`, and `LOCAL_FINAL_OUTPUT_TOKENS=12288`. Non-Qwen models retain `top_k=64`. Context guards begin with `LOCAL_TOKEN_ESTIMATE_SAFETY_FACTOR` (default 2.0) and calibrate upward from LM Studio's actual prompt-token usage. Thinking is enabled during evidence gathering but disabled during checkpoint serialization and final formatting. Session 1 artifacts are persisted before Session 2 starts, so a later model or transport failure does not discard the completed investigation. For MLX on a single workstation, LM Studio parallelism `1` avoids dividing the KV cache between concurrent slots.
+
+For local analysis, `reasonings.txt` is parsed into individual §x.y sections and exposed through `get_diagnostic_guidance`; the full file is never appended to every model request. Guidance calls receive `S1-G...` or `S2-G...` references and are written to `*.local_agent.guidance.json`. They are methodology, not measurements: factual claims must still cite `SEED-E0001` or an `S*-E...` database evidence record. If the file is absent, the tool is not advertised and analysis continues without it.
 
 ### URL Context and Custom Reasoning
 
@@ -237,7 +242,7 @@ This is slower than one-shot mode, but it can produce useful reports with local 
 jas-min -d ./awr_reports --ai google:gemini-2.5-flash:EN -u url_context.json
 ```
 
-JAS-MIN also appends `reasonings.txt` to AI prompts when the file exists. If `JASMIN_HOME` is set, it reads `$JASMIN_HOME/reasonings.txt`; otherwise it tries `./reasonings.txt`.
+For cloud-provider analysis, JAS-MIN appends `reasonings.txt` to the model instructions when the file exists. Local two-session analysis instead exposes individual sections through `get_diagnostic_guidance` to preserve context. If `JASMIN_HOME` is set, both modes read `$JASMIN_HOME/reasonings.txt`; otherwise they try `./reasonings.txt`.
 
 ### ReportForAI Data Structure
 
@@ -552,7 +557,18 @@ OPENAI_URL=https://api.openai.com/
 
 # Local OpenAI-compatible chat endpoint used by --ai local:...
 LOCAL_API_KEY=lm-studio
-LOCAL_BASE_URL=http://localhost:1234/v1/chat/completions
+LOCAL_BASE_URL=http://localhost:1234/v1
+LOCAL_CONTEXT_TOKENS=128000
+# Optional Qwen/local-agent tuning:
+# LOCAL_MAX_TOOL_RESULT_CHARS=16384
+# LOCAL_MAX_GUIDANCE_CHARS=8192
+# LOCAL_TEMPERATURE=1.0
+# LOCAL_TOP_P=0.95
+# LOCAL_TOP_K=20
+# LOCAL_TOOL_OUTPUT_TOKENS=3072
+# LOCAL_CHECKPOINT_OUTPUT_TOKENS=4096
+# LOCAL_FINAL_OUTPUT_TOKENS=12288
+# LOCAL_TOKEN_ESTIMATE_SAFETY_FACTOR=2.0
 
 # Optional centralized home for .env and reasonings.txt
 JASMIN_HOME=/path/to/jasmin_home
@@ -586,7 +602,7 @@ Options:
   -P, --parallel <PARALLEL>                  Rayon parallelism level [default: 4]
   -S, --security-level <SECURITY_LEVEL>      Security level: 0, 1, or 2 [default: 0]
   -u, --url-context-file <URL_CONTEXT_FILE>  URL context JSON file
-  -B, --tokens-budget <TOKENS_BUDGET>        Token budget for AI analysis; in tools mode, extra payload headroom used by the tool-call guard [default: 256000]
+  -B, --tokens-budget <TOKENS_BUDGET>        Token budget for AI analysis; local mode treats it as the context ceiling [default: 256000]
   -R, --ridge-lambda <RIDGE_LAMBDA>          Ridge L2 regularization [default: 50]
   -E, --en-lambda <EN_LAMBDA>                Elastic Net regularization [default: 30]
   -A, --en-alpha <EN_ALPHA>                  Elastic Net L1/L2 mix [default: 0.333]
@@ -595,7 +611,7 @@ Options:
       --top-gradient <TOP_GRADIENT>          Top N rows per regression model [default: 10]
   -c, --convert-md2html <CONVERT_MD2HTML>    Convert Markdown to HTML without AI call
   -G, --gradient-custom <GRADIENT_CUSTOM>    Custom gradient: SQL=<sql_id> or WAIT=<event>
-      --tools-mode                           Enable AI tools mode for OpenAI/Google/OpenRouter
+      --tools-mode                           Enable AI tools mode for cloud providers; local mode always uses tools
       --max-tool-iterations <N>              Max tool-call iterations [default: 10]
   -h, --help                                 Print help
   -V, --version                              Print version
