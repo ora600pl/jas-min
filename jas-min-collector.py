@@ -9,6 +9,7 @@ intentionally uses only Python standard library modules.
 
 import argparse
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -133,6 +134,106 @@ def ask_yes_no(prompt):
         if value in ("n", "no"):
             return False
         print("Please answer Y or N.")
+
+
+def ask_os_stats_dir():
+    while True:
+        value = input("Enter OS statistics directory: ").strip()
+        try:
+            return validate_existing_dir(value)
+        except CollectorError as exc:
+            print(exc)
+
+
+def validate_existing_dir(value):
+    if not value:
+        raise CollectorError("Directory path cannot be empty.")
+    path = Path(value).expanduser()
+    if not path.is_dir():
+        raise CollectorError("Directory does not exist or is not a directory: {}".format(value))
+    return path.resolve()
+
+
+def parse_existing_dir_arg(value):
+    try:
+        return validate_existing_dir(value)
+    except CollectorError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
+def os_stats_platform_dir_name(system_name=None):
+    system_name = system_name if system_name is not None else platform.system()
+    normalized = (system_name or "").strip().lower()
+    if normalized == "aix":
+        return "AIX"
+    if normalized == "linux":
+        return "linux"
+    raise CollectorError(
+        "OS statistics attachments are supported only on AIX and Linux (detected: {}).".format(
+            system_name or "unknown"
+        )
+    )
+
+
+def list_os_stats_files(source_dir):
+    source_dir = Path(source_dir)
+    files = sorted([path for path in source_dir.rglob("*") if path.is_file()])
+    if not files:
+        raise CollectorError("No OS statistics files found under {}".format(source_dir))
+    return files
+
+
+def ask_os_stats_options(include_os_stats, os_stats_dir):
+    if include_os_stats is None:
+        include_os_stats = ask_yes_no("Include OS statistics? (Y/N): ")
+    if not include_os_stats:
+        return None, []
+
+    if os_stats_dir is not None:
+        try:
+            return os_stats_dir, list_os_stats_files(os_stats_dir)
+        except OSError as exc:
+            raise CollectorError("Could not read OS statistics directory {}: {}".format(os_stats_dir, exc))
+
+    while True:
+        source_dir = ask_os_stats_dir()
+        try:
+            return source_dir, list_os_stats_files(source_dir)
+        except CollectorError as exc:
+            print(exc)
+        except OSError as exc:
+            print("Could not read OS statistics directory {}: {}".format(source_dir, exc))
+
+
+def attachments_dir(output_dir, stem):
+    return output_dir / "{}_attachments".format(stem)
+
+
+def copy_os_stats(source_dir, source_files, output_dir, stem, platform_dir_name=None):
+    platform_dir_name = platform_dir_name or os_stats_platform_dir_name()
+    target_dir = attachments_dir(output_dir, stem) / platform_dir_name
+    copied_files = []
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for source_file in source_files:
+            relative_path = source_file.relative_to(source_dir)
+            target_file = target_dir / relative_path
+            if source_file.resolve() == target_file.resolve():
+                raise CollectorError("OS statistics source and target file are the same: {}".format(source_file))
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(source_file), str(target_file))
+            copied_files.append(target_file)
+    except OSError as exc:
+        raise CollectorError("Could not copy OS statistics from {}: {}".format(source_dir, exc))
+
+    return {
+        "requested": True,
+        "source_dir": source_dir,
+        "platform": platform_dir_name,
+        "target_dir": target_dir,
+        "files": copied_files,
+    }
 
 
 def ask_package_mode():
@@ -260,6 +361,7 @@ def build_arg_parser():
   python3 jas-min-collector.py --report-type awr --start "2026-06-14 00:00" --end "2026-06-15 14:00"
   python3 jas-min-collector.py --report-type statspack --start "2026-06-14 00:00" --end "2026-06-15 14:00" --no-alert-log --no-execution-plans --package-content reports
   python3 jas-min-collector.py --report-type awr --start "2026-06-14 00:00" --end "2026-06-15 14:00" --include-alert-log --execution-plans --sql-id abc123,def456 --package-content both --security-level 1
+  python3 jas-min-collector.py --report-type awr --start "2026-06-14 00:00" --end "2026-06-15 14:00" --os-stats-dir /path/to/os-stats --package-content reports
 """
     parser = argparse.ArgumentParser(
         description="Collect Oracle AWR or Statspack reports and package them for JAS-MIN.",
@@ -344,6 +446,28 @@ def build_arg_parser():
         type=parse_security_level_arg,
         help="JSON security level; asks when JSON is required and omitted",
     )
+    os_stats_group = parser.add_mutually_exclusive_group()
+    os_stats_group.add_argument(
+        "--include-os-stats",
+        "--os-stats",
+        dest="include_os_stats",
+        action="store_true",
+        default=None,
+        help="include operating system statistics",
+    )
+    os_stats_group.add_argument(
+        "--no-os-stats",
+        dest="include_os_stats",
+        action="store_false",
+        help="do not include operating system statistics",
+    )
+    parser.add_argument(
+        "--os-stats-dir",
+        dest="os_stats_dir",
+        metavar="DIR",
+        type=parse_existing_dir_arg,
+        help="directory containing prepared operating system statistics files",
+    )
     return parser
 
 
@@ -359,6 +483,12 @@ def parse_collector_args(argv=None):
             parser.error("--sql-id can only be used when execution plans are enabled")
         if args.include_sql_plans is None:
             args.include_sql_plans = True
+
+    if args.os_stats_dir is not None:
+        if args.include_os_stats is False:
+            parser.error("--os-stats-dir can only be used when OS stats are enabled")
+        if args.include_os_stats is None:
+            args.include_os_stats = True
 
     return args
 
@@ -1771,7 +1901,7 @@ def package_mode_label(package_mode):
 
 
 def json_attachments_dir(output_dir, json_path):
-    return output_dir / "{}_attachments".format(json_path.stem)
+    return attachments_dir(output_dir, json_path.stem)
 
 
 def relative_package_path(output_dir, path):
@@ -1799,6 +1929,7 @@ def write_manifest(
     json_path,
     security_level,
     xplan_info,
+    os_stats_info=None,
 ):
     manifest = output_dir / "manifest.txt"
     mask_manifest = should_mask_manifest(package_mode, security_level)
@@ -1812,6 +1943,10 @@ def write_manifest(
     if xplan_info:
         packaged_files.extend(
             [relative_package_path(output_dir, xplan_file) for xplan_file in xplan_info.get("files", [])]
+        )
+    if os_stats_info:
+        packaged_files.extend(
+            [relative_package_path(output_dir, stats_file) for stats_file in os_stats_info.get("files", [])]
         )
     packaged_files.append(manifest.name)
 
@@ -1839,6 +1974,24 @@ def write_manifest(
             alert_path, alert_note = alert_info
             fh.write("  {}\n".format(relative_package_path(output_dir, alert_path)))
             fh.write("  {}\n".format(alert_note))
+        else:
+            fh.write("  not requested\n")
+        fh.write("\nOS statistics:\n")
+        if os_stats_info and os_stats_info.get("requested"):
+            source_dir = os_stats_info.get("source_dir")
+            files = os_stats_info.get("files", [])
+            fh.write(
+                "  source_dir={}\n".format(
+                    "masked by security level 0" if mask_manifest else source_dir
+                )
+            )
+            fh.write("  platform={}\n".format(os_stats_info.get("platform", "")))
+            if files:
+                fh.write("  copied files:\n")
+                for stats_file in files:
+                    fh.write("    {}\n".format(relative_package_path(output_dir, stats_file)))
+            else:
+                fh.write("  copied files: none\n")
         else:
             fh.write("  not requested\n")
         fh.write("\nExecution plans:\n")
@@ -1885,7 +2038,17 @@ def write_manifest(
     return manifest
 
 
-def create_zip_package(output_dir, stem, reports, json_path, alert_info, xplan_info, manifest, package_mode):
+def create_zip_package(
+    output_dir,
+    stem,
+    reports,
+    json_path,
+    alert_info,
+    xplan_info,
+    manifest,
+    package_mode,
+    os_stats_info=None,
+):
     zip_name = "jasmin_package_{}.zip".format(stem)
     zip_path = output_dir / zip_name
     files = []
@@ -1897,6 +2060,8 @@ def create_zip_package(output_dir, stem, reports, json_path, alert_info, xplan_i
         files.append(alert_info[0])
     if xplan_info:
         files.extend(xplan_info.get("files", []))
+    if os_stats_info:
+        files.extend(os_stats_info.get("files", []))
     files.append(manifest)
 
     with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as archive:
@@ -1925,6 +2090,10 @@ def main(argv=None):
         else:
             include_sql_plans = args.include_sql_plans
             manual_sql_ids = args.manual_sql_ids or []
+        os_stats_dir, os_stats_source_files = ask_os_stats_options(
+            args.include_os_stats,
+            args.os_stats_dir,
+        )
         package_mode = args.package_mode if args.package_mode is not None else ask_package_mode()
         json_required = package_includes_json(package_mode) or include_sql_plans
         security_level = args.security_level
@@ -2003,6 +2172,17 @@ def main(argv=None):
             alert_info = collect_alert_log(ctx, alert_target_dir, start_dt, end_dt)
             print("Alert log: {}".format(alert_info[1]))
 
+        os_stats_info = None
+        if os_stats_dir is not None:
+            print("Copying OS statistics...")
+            os_stats_info = copy_os_stats(os_stats_dir, os_stats_source_files, output_dir, stem)
+            print(
+                "OS statistics attachment(s): {} in {}".format(
+                    len(os_stats_info.get("files", [])),
+                    os_stats_info.get("target_dir"),
+                )
+            )
+
         manifest = write_manifest(
             ctx,
             output_dir,
@@ -2015,6 +2195,7 @@ def main(argv=None):
             json_path,
             security_level,
             xplan_info,
+            os_stats_info,
         )
         zip_path = create_zip_package(
             output_dir,
@@ -2025,6 +2206,7 @@ def main(argv=None):
             xplan_info,
             manifest,
             package_mode,
+            os_stats_info,
         )
         print("Manifest: {}".format(manifest))
         print("ZIP package: {}".format(zip_path))

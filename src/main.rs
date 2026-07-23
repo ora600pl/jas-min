@@ -18,12 +18,13 @@ mod anomalies;
 mod awr;
 mod degradation;
 mod gradient;
+mod local_agent;
 mod macros;
 mod reasonings;
-mod reasonings_modular;
 mod staticdata;
 mod tools;
 
+use crate::local_agent::{analyze_report_local_agent, write_local_agent_outputs};
 use crate::reasonings::*;
 use crate::reasonings::{
     AnomalyDescription, AnomlyCluster, IOStatsByFunctionSummary, InstanceStatisticCorrelation,
@@ -32,8 +33,6 @@ use crate::reasonings::{
     Top10SegmentStats, TopBackgroundWaitEvents, TopForegroundWaitEvents, TopPeaksSelected,
     TopSQLsByElapsedTime, WaitEventsFromASH, WaitEventsWithStrongCorrelation,
 };
-use crate::reasonings_modular::ModularLlmConfig;
-use crate::reasonings_modular::*;
 use crate::tools::*;
 
 use toon::encode;
@@ -89,8 +88,7 @@ struct Args {
     ///		- openai
     ///		- google
     ///		- openrouter
-    ///		- openroutersmall - use this one if the model has small context window
-    ///		- local - for your local models compatible with OpenAI API
+    ///		- local - for local models served by LM Studio; always uses the two-session tools workflow
     #[clap(short, long, default_value = "", verbatim_doc_comment)]
     ai: String,
 
@@ -124,7 +122,7 @@ struct Args {
     #[clap(short, long, default_value = "", verbatim_doc_comment)]
     url_context_file: String,
 
-    ///Token budget for AI analysis; in tools mode, extra payload headroom used by the tool-call guard
+    ///Token budget for AI analysis; for local models this is the configured context ceiling
     #[clap(short = 'B', long, default_value_t = 256000)]
     tokens_budget: usize,
 
@@ -164,7 +162,7 @@ struct Args {
     #[clap(short = 'G', long, default_value = "", verbatim_doc_comment)]
     gradient_custom: String,
 
-    /// Enable TOOLS mode for AI providers that support function calling
+    /// Enable TOOLS mode for cloud AI providers; local mode always uses tools
     #[arg(long, default_value_t = false)]
     pub tools_mode: bool,
 
@@ -311,60 +309,17 @@ fn main() {
                 &toon_str,
             )
             .unwrap();
-        } else if vendor_model_lang[0] == "openroutersmall" {
-            let cfg = ModularLlmConfig {
-                lang: vendor_model_lang[2].to_string(),
-                top_spikes_n: 64,
-                temperature: 0.2,
-                max_tokens_per_call: args.tokens_budget,
-                enable_reasoning_prompt: true,
-
-                waits_top_n: 64,
-                sqls_top_n: 64,
-                anomalies_top_n: 128,
-                mad_per_item_top_n: 128,
-
-                tokens_budget: (args.tokens_budget as f64 * 0.5) as usize,
-                use_openrouter: true,
-            };
-
-            match analyze_report_modular_lmstudio(&report_for_ai, &cfg, vendor_model_lang[1]) {
-                Ok((notes, final_md)) => {
-                    if let Err(e) = write_outputs(&reportfile, &final_md) {
-                        eprintln!("❌ write_outputs failed: {e}");
-                    } else {
-                        convert_md_to_html_file(
-                            &format!("{reportfile}.final.md"),
-                            events_sqls.clone(),
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!("❌ modular analysis failed: {e}");
-                    std::process::exit(1);
-                }
-            }
         } else if vendor_model_lang[0] == "local" {
-            let cfg = ModularLlmConfig {
-                lang: vendor_model_lang[2].to_string(),
-                top_spikes_n: 64,
-                temperature: 0.2,
-                max_tokens_per_call: args.tokens_budget,
-                enable_reasoning_prompt: true,
-
-                waits_top_n: 64,
-                sqls_top_n: 64,
-                anomalies_top_n: 128,
-                mad_per_item_top_n: 128,
-
-                tokens_budget: (args.tokens_budget as f64 * 0.5) as usize,
-                use_openrouter: false,
-            };
-
-            match analyze_report_modular_lmstudio(&report_for_ai, &cfg, vendor_model_lang[1]) {
-                Ok((notes, final_md)) => {
-                    if let Err(e) = write_outputs(&reportfile, &final_md) {
-                        eprintln!("❌ write_outputs failed: {e}");
+            match analyze_report_local_agent(
+                &report_for_ai,
+                &args,
+                &reportfile,
+                vendor_model_lang[1],
+                vendor_model_lang[2],
+            ) {
+                Ok(outcome) => {
+                    if let Err(e) = write_local_agent_outputs(&reportfile, &outcome) {
+                        eprintln!("❌ writing local agent outputs failed: {e}");
                     } else {
                         convert_md_to_html_file(
                             &format!("{reportfile}.final.md"),
@@ -373,12 +328,12 @@ fn main() {
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ modular analysis failed: {e}");
+                    eprintln!("❌ local agent analysis failed: {e}");
                     std::process::exit(1);
                 }
             }
         } else {
-            println!("Unrecognized vendor. Supported vendors: openai, google, openrouter");
+            println!("Unrecognized vendor. Supported vendors: openai, google, openrouter, local");
         }
     }
 
