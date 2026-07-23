@@ -89,7 +89,7 @@ pub const KEY_STATS_VOLUME: [&str; 22] = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COUNTERS — liczniki opisujące zachowanie i obciążenie
+// COUNTERS — statistics describing database behavior and workload
 // ─────────────────────────────────────────────────────────────────────────────
 pub const KEY_STATS_COUNTERS: [&str; 104] = [
     // Session / cursor churn
@@ -213,8 +213,8 @@ pub const KEY_STATS_COUNTERS: [&str; 104] = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CPU — statystyki najlepiej tłumaczące zużycie DB CPU
-// (do budowy gradientu DB CPU, NIE DB Time)
+// CPU — statistics that best explain DB CPU consumption
+// (used to build the DB CPU gradient, NOT the DB Time gradient)
 // ─────────────────────────────────────────────────────────────────────────────
 pub const KEY_STATS_CPU: [&str; 47] = [
     // ── CPU time (direct) ────────────────────────────────────────────

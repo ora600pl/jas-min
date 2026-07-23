@@ -40,6 +40,22 @@ class CollectorZipPackageTests(unittest.TestCase):
             xplan = attachments_dir / "abc123.xplan"
             xplan.write_text("plan\n", encoding="utf-8")
 
+            os_stats_dir = output_dir / "prepared_os_stats"
+            os_stats_dir.mkdir()
+            vmstat = os_stats_dir / "vmstat.out"
+            vmstat.write_text("vmstat\n", encoding="utf-8")
+            nested_os_stats_dir = os_stats_dir / "nested"
+            nested_os_stats_dir.mkdir()
+            iostat = nested_os_stats_dir / "iostat.out"
+            iostat.write_text("iostat\n", encoding="utf-8")
+            os_stats_info = collector.copy_os_stats(
+                os_stats_dir,
+                collector.list_os_stats_files(os_stats_dir),
+                output_dir,
+                stem,
+                platform_dir_name="linux",
+            )
+
             manifest = output_dir / "manifest.txt"
             manifest.write_text("manifest\n", encoding="utf-8")
 
@@ -52,6 +68,7 @@ class CollectorZipPackageTests(unittest.TestCase):
                 {"files": [xplan]},
                 manifest,
                 collector.PACKAGE_BOTH,
+                os_stats_info,
             )
 
             with zipfile.ZipFile(str(zip_path), "r") as archive:
@@ -66,6 +83,8 @@ class CollectorZipPackageTests(unittest.TestCase):
                     "{}/awrrpt_1_252_253.html".format(stem),
                     "{}_attachments/abc123.xplan".format(stem),
                     "{}_attachments/alert_szpital.log".format(stem),
+                    "{}_attachments/linux/nested/iostat.out".format(stem),
+                    "{}_attachments/linux/vmstat.out".format(stem),
                 ]
             ),
         )
@@ -82,6 +101,8 @@ class CollectorCliTests(unittest.TestCase):
         self.assertIn("--execution-plans", help_text)
         self.assertIn("--package-content", help_text)
         self.assertIn("--security-level", help_text)
+        self.assertIn("--include-os-stats", help_text)
+        self.assertIn("--os-stats-dir", help_text)
 
     def test_parse_collector_args_normalizes_cli_values(self):
         args = collector.parse_collector_args(
@@ -113,6 +134,26 @@ class CollectorCliTests(unittest.TestCase):
         self.assertEqual(args.manual_sql_ids, ["abc123", "def456"])
         self.assertEqual(args.package_mode, collector.PACKAGE_JSON)
         self.assertEqual(args.security_level, 2)
+
+    def test_os_stats_dir_argument_implies_os_stats_collection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = collector.parse_collector_args(["--os-stats-dir", tmpdir])
+
+        self.assertTrue(args.include_os_stats)
+        self.assertEqual(args.os_stats_dir, Path(tmpdir).resolve())
+
+    def test_os_stats_dir_cannot_be_used_when_disabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as exc:
+                    collector.parse_collector_args(["--no-os-stats", "--os-stats-dir", tmpdir])
+
+        self.assertNotEqual(exc.exception.code, 0)
+
+    def test_os_stats_platform_directory_names_match_supported_systems(self):
+        self.assertEqual(collector.os_stats_platform_dir_name("AIX"), "AIX")
+        self.assertEqual(collector.os_stats_platform_dir_name("Linux"), "linux")
 
     def test_sql_id_argument_implies_execution_plan_collection(self):
         args = collector.parse_collector_args(["--sql-id", "ABC123"])
