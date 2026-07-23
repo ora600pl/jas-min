@@ -20,12 +20,13 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use toon::encode;
 
 use crate::awr::{AWRSCollection, AWR};
 
-const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-05-31.1";
+const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-07-08.1";
 const DEFAULT_LIMIT: usize = 50;
 const DEFAULT_TOP_N: usize = 10;
 const MAX_LIMIT: usize = 500;
@@ -37,7 +38,7 @@ const MAX_ALERTLOG_LIMIT: usize = 1000;
 const DEFAULT_AIX_FILE_LIMIT: usize = 100;
 const DEFAULT_AIX_RECORD_LIMIT: usize = 200;
 const MAX_AIX_FILE_BYTES: usize = 512 * 1024;
-const MAX_AIX_SUMMARY_BYTES_PER_FILE: usize = 2 * 1024 * 1024;
+const MAX_AIX_SUMMARY_BYTES_PER_FILE: usize = 8 * 1024 * 1024;
 const MAX_AIX_RECURSION_DEPTH: usize = 4;
 
 // ----------------------------------------------------------------------------
@@ -539,7 +540,7 @@ pub fn tools_schema(stem: &str) -> Value {
             "type": "function",
             "function": {
                 "name": "list_aix_os_attachments",
-                "description": "Lists AIX operating-system attachment files collected under <stem>_attachments/AIX, typically from the oraix collector. If these tools are present, use them before deciding whether an AIX database host is CPU-bound.",
+                "description": "Lists AIX operating-system attachment files collected under <stem>_attachments/AIX, including oraix, topas/topas_nmon, nmon, lparstat, vmstat and sar output. If these tools are present, use them before deciding whether an AIX database host is CPU-bound.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -560,7 +561,7 @@ pub fn tools_schema(stem: &str) -> Value {
             "type": "function",
             "function": {
                 "name": "get_aix_os_attachment",
-                "description": "Returns a bounded text excerpt from one AIX OS attachment under <stem>_attachments/AIX. Use this to inspect raw oraix evidence such as lparstat, nmon, sar, vmstat, topas or processor entitlement details.",
+                "description": "Returns a bounded text excerpt from one AIX OS attachment under <stem>_attachments/AIX. Use this to inspect raw AIX evidence such as topas/topas_nmon CSV, nmon, lparstat, sar, vmstat or processor entitlement details.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -582,7 +583,7 @@ pub fn tools_schema(stem: &str) -> Value {
             "type": "function",
             "function": {
                 "name": "get_aix_cpu_entitlement_summary",
-                "description": "Scans AIX OS attachments for CPU entitlement evidence such as Entc%, %entc, physc/pc, entitled capacity/ec, user/sys/wait/idle/busy. On AIX LPARs this is required before classifying the system as CPU-bound because AWR Host CPU %CPU can look low while Entc% is saturated.",
+                "description": "Scans AIX OS attachments for CPU entitlement evidence such as Entc%, %entc, physc/pc, entitled capacity/ec, user/sys/wait/idle/busy. Supports topas/topas_nmon and nmon CSV sections such as CPU_ALL, LPAR and ZZZZ timestamps. On AIX LPARs this is required before classifying the system as CPU-bound because AWR Host CPU %CPU can look low while Entc% is saturated.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -855,8 +856,15 @@ fn is_safe_relative_path(relative_path: &str) -> bool {
 }
 
 fn read_limited_lossy(path: &Path, max_bytes: usize) -> Result<(String, u64, bool), String> {
-    let mut bytes = fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
-    let size_bytes = bytes.len() as u64;
+    let size_bytes = fs::metadata(path)
+        .map_err(|e| format!("Failed to read file metadata: {}", e))?
+        .len();
+    let mut bytes = Vec::with_capacity(max_bytes.saturating_add(1).min(64 * 1024));
+    let mut file = fs::File::open(path).map_err(|e| format!("Failed to read file: {}", e))?;
+    file.by_ref()
+        .take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
     let truncated = bytes.len() > max_bytes;
     if truncated {
         bytes.truncate(max_bytes);
@@ -898,6 +906,10 @@ fn clean_aix_line(line: &str) -> String {
 
 fn split_aix_fields(line: &str) -> Vec<String> {
     let cleaned = clean_aix_line(line);
+    split_cleaned_aix_fields(&cleaned)
+}
+
+fn split_cleaned_aix_fields(cleaned: &str) -> Vec<String> {
     let trimmed = cleaned.trim();
     if trimmed.is_empty() {
         return Vec::new();
@@ -973,7 +985,9 @@ fn apply_aix_metric(obs: &mut AixCpuObservation, key: &str, value: f64) -> bool 
         obs.entc_pct = Some(value);
     } else if normalized == "physc"
         || normalized == "pc"
-        || (normalized.contains("physicalcpu") && !normalized.contains("percentage"))
+        || (normalized.contains("physicalcpu")
+            && !normalized.contains("percentage")
+            && !normalized.ends_with("cpus"))
         || normalized.contains("physicalprocessor")
     {
         obs.physc = Some(value);
@@ -1009,6 +1023,20 @@ fn apply_aix_metric(obs: &mut AixCpuObservation, key: &str, value: f64) -> bool 
 }
 
 fn finalize_aix_observation(mut obs: AixCpuObservation) -> Option<AixCpuObservation> {
+    let valid_pct = |value: Option<f64>| value.filter(|value| (0.0..=100.0).contains(value));
+    obs.cpu_busy_pct = valid_pct(obs.cpu_busy_pct);
+    obs.cpu_user_pct = valid_pct(obs.cpu_user_pct);
+    obs.cpu_sys_pct = valid_pct(obs.cpu_sys_pct);
+    obs.cpu_wait_pct = valid_pct(obs.cpu_wait_pct);
+    obs.cpu_idle_pct = valid_pct(obs.cpu_idle_pct);
+    obs.entc_pct = obs
+        .entc_pct
+        .filter(|value| (0.0..=10_000.0).contains(value));
+    obs.physc = obs.physc.filter(|value| (0.0..=4_096.0).contains(value));
+    obs.entitled_capacity = obs
+        .entitled_capacity
+        .filter(|value| (0.0..=4_096.0).contains(value));
+
     if obs.entc_pct.is_none() {
         if let (Some(physc), Some(entitled_capacity)) = (obs.physc, obs.entitled_capacity) {
             if entitled_capacity > 0.0 {
@@ -1071,13 +1099,10 @@ fn looks_like_aix_header(fields: &[String]) -> bool {
 }
 
 fn timestamp_hint_from_fields(fields: &[String]) -> Option<String> {
-    let time_re = Regex::new(r"^\d{1,2}:\d{2}(?::\d{2})?$").expect("valid time regex");
-    let date_re =
-        Regex::new(r"^\d{4}-\d{2}-\d{2}$|^\d{1,2}/\d{1,2}/\d{2,4}$").expect("valid date regex");
-
     let mut hints = Vec::new();
     for field in fields.iter().take(6) {
-        if time_re.is_match(field) || date_re.is_match(field) || field.starts_with('T') {
+        if looks_like_aix_time(field) || looks_like_aix_date(field) || is_nmon_snapshot_token(field)
+        {
             hints.push(field.clone());
         }
     }
@@ -1087,6 +1112,125 @@ fn timestamp_hint_from_fields(fields: &[String]) -> Option<String> {
     } else {
         Some(hints.join(" "))
     }
+}
+
+fn looks_like_aix_time(value: &str) -> bool {
+    let parts = value.split(':').collect::<Vec<_>>();
+    (parts.len() == 2 || parts.len() == 3)
+        && parts[0].len() <= 2
+        && parts[0].parse::<u8>().is_ok_and(|value| value < 24)
+        && parts[1].len() == 2
+        && parts[1].parse::<u8>().is_ok_and(|value| value < 60)
+        && (parts.len() == 2
+            || (parts[2].len() == 2 && parts[2].parse::<u8>().is_ok_and(|value| value < 60)))
+}
+
+fn looks_like_aix_date(value: &str) -> bool {
+    let (separator, year_first) = if value.contains('-') {
+        ('-', true)
+    } else if value.contains('/') {
+        ('/', false)
+    } else {
+        return false;
+    };
+    let parts = value.split(separator).collect::<Vec<_>>();
+    if parts.len() != 3 || !parts.iter().all(|part| part.parse::<u16>().is_ok()) {
+        return false;
+    }
+    if year_first {
+        parts[0].len() == 4 && parts[1].len() == 2 && parts[2].len() == 2
+    } else {
+        (1..=2).contains(&parts[0].len())
+            && (1..=2).contains(&parts[1].len())
+            && (2..=4).contains(&parts[2].len())
+    }
+}
+
+fn is_nmon_snapshot_token(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.len() >= 2
+        && trimmed.starts_with('T')
+        && trimmed[1..].chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn nmon_section_name(fields: &[String]) -> Option<String> {
+    let name = fields.first()?.trim();
+    if name.is_empty() || is_nmon_snapshot_token(name) || name.eq_ignore_ascii_case("ZZZZ") {
+        return None;
+    }
+
+    let valid = name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+    let has_alpha = name.chars().any(|ch| ch.is_ascii_alphabetic());
+
+    (valid && has_alpha && name.len() <= 32).then(|| name.to_ascii_uppercase())
+}
+
+fn is_nmon_data_row(fields: &[String]) -> bool {
+    fields
+        .get(1)
+        .map(|field| is_nmon_snapshot_token(field))
+        .unwrap_or(false)
+}
+
+fn nmon_timestamp(fields: &[String]) -> Option<(String, String)> {
+    if !fields
+        .first()
+        .map(|field| field.eq_ignore_ascii_case("ZZZZ"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    let snapshot = fields.get(1)?.trim();
+    if !is_nmon_snapshot_token(snapshot) {
+        return None;
+    }
+
+    let time = fields.get(2).map(|field| field.trim()).unwrap_or("");
+    let date = fields.get(3).map(|field| field.trim()).unwrap_or("");
+    let timestamp = match (date.is_empty(), time.is_empty()) {
+        (false, false) => format!("{snapshot} {date} {time}"),
+        (false, true) => format!("{snapshot} {date}"),
+        (true, false) => format!("{snapshot} {time}"),
+        (true, true) => snapshot.to_string(),
+    };
+
+    Some((snapshot.to_ascii_uppercase(), timestamp))
+}
+
+fn apply_nmon_timestamp_hint(
+    obs: &mut AixCpuObservation,
+    fields: &[String],
+    snapshot_timestamps: &HashMap<String, String>,
+) {
+    let Some(snapshot) = fields.get(1) else {
+        return;
+    };
+    let snapshot_key = snapshot.to_ascii_uppercase();
+    if let Some(timestamp) = snapshot_timestamps.get(&snapshot_key) {
+        obs.timestamp_hint = Some(timestamp.clone());
+    }
+}
+
+fn parse_nmon_row_with_headers(
+    source_file: &str,
+    line_number: usize,
+    line: &str,
+    fields: &[String],
+    section_headers: &HashMap<String, Vec<String>>,
+    snapshot_timestamps: &HashMap<String, String>,
+) -> Option<AixCpuObservation> {
+    let section = nmon_section_name(fields)?;
+    if !is_nmon_data_row(fields) {
+        return None;
+    }
+
+    let header = section_headers.get(&section)?;
+    let mut obs = parse_aix_row_with_header(source_file, line_number, line, header, fields)?;
+    apply_nmon_timestamp_hint(&mut obs, fields, snapshot_timestamps);
+    Some(obs)
 }
 
 fn parse_aix_row_with_header(
@@ -1233,6 +1377,88 @@ fn parse_topas_cpu_line(
         entitled_capacity: None,
         raw_sample: trim_sample(line, 240),
     })
+}
+
+fn parse_aix_cpu_observations_from_text(relative_path: &str, text: &str) -> Vec<AixCpuObservation> {
+    let is_topas_file = relative_path.to_lowercase().contains("topas");
+    let mut observations = Vec::new();
+    let mut generic_header: Option<Vec<String>> = None;
+    let mut section_headers: HashMap<String, Vec<String>> = HashMap::new();
+    let mut snapshot_timestamps: HashMap<String, String> = HashMap::new();
+
+    for (idx, line) in text.split(|c| c == '\n' || c == '\r').enumerate() {
+        let line_number = idx + 1;
+        let clean_line = clean_aix_line(line);
+        let fields = split_cleaned_aix_fields(&clean_line);
+        if fields.is_empty() {
+            continue;
+        }
+
+        if let Some((snapshot, timestamp)) = nmon_timestamp(&fields) {
+            snapshot_timestamps.insert(snapshot, timestamp);
+            continue;
+        }
+
+        if let Some(obs) = parse_nmon_row_with_headers(
+            relative_path,
+            line_number,
+            &clean_line,
+            &fields,
+            &section_headers,
+            &snapshot_timestamps,
+        ) {
+            observations.push(obs);
+            continue;
+        }
+
+        if is_nmon_data_row(&fields) {
+            continue;
+        }
+
+        if is_topas_file {
+            if let Some(obs) = parse_topas_cpu_line(relative_path, line_number, &clean_line) {
+                observations.push(obs);
+                continue;
+            }
+        }
+
+        if looks_like_aix_header(&fields) {
+            if let Some(section) = nmon_section_name(&fields) {
+                section_headers.insert(section, fields.clone());
+            }
+
+            if let Some(obs) =
+                parse_aix_key_value_line(relative_path, line_number, &clean_line, &fields)
+            {
+                observations.push(obs);
+                continue;
+            }
+
+            generic_header = Some(fields.clone());
+            continue;
+        }
+
+        if let Some(header_fields) = &generic_header {
+            if let Some(obs) = parse_aix_row_with_header(
+                relative_path,
+                line_number,
+                &clean_line,
+                header_fields,
+                &fields,
+            ) {
+                observations.push(obs);
+                continue;
+            }
+        }
+
+        if let Some(obs) =
+            parse_aix_key_value_line(relative_path, line_number, &clean_line, &fields)
+        {
+            observations.push(obs);
+        }
+    }
+
+    observations
 }
 
 fn aix_stat(values: &[f64]) -> Value {
@@ -1787,7 +2013,7 @@ fn tool_get_init_parameter(args: &Value, c: &AWRSCollection) -> Value {
                 .initialization_parameters
                 .get(name)
                 .cloned()
-                .unwrap_or_else(|| "<not present>".to_string());
+                .unwrap_or_else(|| "<not present in collected data>".to_string());
             result.insert(name.to_string(), json!(value));
         }
     }
@@ -1810,7 +2036,7 @@ fn tool_get_init_parameter(args: &Value, c: &AWRSCollection) -> Value {
     json!({
         "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
         "scope": "collection_level",
-        "note": "Initialization parameters are stored at collection level, not per snapshot.",
+        "note": "Initialization parameters are stored at collection level, not per snapshot. A value marked '<not present in collected data>' means unknown/not collected; it does not prove that Oracle uses a default or that the parameter is unset.",
         "parameters": result,
         "total_returned": total_returned,
         "total_available": c.initialization_parameters.len(),
@@ -2055,7 +2281,7 @@ fn tool_get_aix_cpu_entitlement_summary(args: &Value, stem: &str) -> Value {
             pattern
                 .as_ref()
                 .map(|pattern| haystack.contains(pattern))
-                .unwrap_or(true)
+                .unwrap_or_else(|| is_likely_aix_cpu_telemetry_path(&haystack))
         })
         .collect();
     candidate_files.truncate(max_files);
@@ -2066,7 +2292,6 @@ fn tool_get_aix_cpu_entitlement_summary(args: &Value, stem: &str) -> Value {
 
     for path in &candidate_files {
         let relative_path = relative_display_path(&aix_dir, path);
-        let is_topas_file = relative_path.to_lowercase().contains("topas");
         let (text, size_bytes, truncated) =
             match read_limited_lossy(path, MAX_AIX_SUMMARY_BYTES_PER_FILE) {
                 Ok(v) => v,
@@ -2082,52 +2307,7 @@ fn tool_get_aix_cpu_entitlement_summary(args: &Value, stem: &str) -> Value {
             truncated_files.push(relative_display_path(&aix_dir, path));
         }
 
-        let mut header: Option<Vec<String>> = None;
-        for (idx, line) in text.split(|c| c == '\n' || c == '\r').enumerate() {
-            let line_number = idx + 1;
-            let clean_line = clean_aix_line(line);
-            let fields = split_aix_fields(&clean_line);
-            if fields.is_empty() {
-                continue;
-            }
-
-            if is_topas_file {
-                if let Some(obs) = parse_topas_cpu_line(&relative_path, line_number, &clean_line) {
-                    observations.push(obs);
-                    continue;
-                }
-            }
-
-            if looks_like_aix_header(&fields) {
-                if let Some(obs) =
-                    parse_aix_key_value_line(&relative_path, line_number, &clean_line, &fields)
-                {
-                    observations.push(obs);
-                    continue;
-                }
-                header = Some(fields.clone());
-                continue;
-            }
-
-            if let Some(header_fields) = &header {
-                if let Some(obs) = parse_aix_row_with_header(
-                    &relative_path,
-                    line_number,
-                    &clean_line,
-                    header_fields,
-                    &fields,
-                ) {
-                    observations.push(obs);
-                    continue;
-                }
-            }
-
-            if let Some(obs) =
-                parse_aix_key_value_line(&relative_path, line_number, &clean_line, &fields)
-            {
-                observations.push(obs);
-            }
-        }
+        observations.extend(parse_aix_cpu_observations_from_text(&relative_path, &text));
     }
 
     let entc_values: Vec<f64> = observations.iter().filter_map(|o| o.entc_pct).collect();
@@ -2199,6 +2379,16 @@ fn tool_get_aix_cpu_entitlement_summary(args: &Value, stem: &str) -> Value {
         "aix_cpu_records_toon": records_toon,
         "usage_hint": "For AIX, Entc%/%entc/ec is required evidence for CPU-bound decisions. If Entc% is high (commonly >= 90%, and especially p95 >= 95% or max >= 98%), report CPU entitlement/physical-capacity pressure even when AWR Host CPU idle is nonzero. If Entc% is absent, derive it from physc/pc divided by entitled capacity when possible; otherwise ask for AIX LPAR entitlement details before final CPU-bound classification."
     })
+}
+
+fn is_likely_aix_cpu_telemetry_path(path: &str) -> bool {
+    const CPU_TELEMETRY_NAMES: &[&str] = &[
+        "nmon", "topas", "lparstat", "vmstat", "mpstat", "sar", "oraix",
+    ];
+    !path.ends_with(".bin")
+        && CPU_TELEMETRY_NAMES
+            .iter()
+            .any(|candidate| path.contains(candidate))
 }
 
 fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
@@ -3675,6 +3865,14 @@ fn tool_list_available_metrics(args: &Value, c: &AWRSCollection) -> Value {
 mod tests {
     use super::*;
 
+    fn assert_close(actual: Option<f64>, expected: f64) {
+        let actual = actual.expect("expected metric");
+        assert!(
+            (actual - expected).abs() < 0.0001,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     #[test]
     fn aix_parser_reads_lparstat_entitlement_columns() {
         let header = split_aix_fields("%user %sys %wait %idle physc %entc lbusy app vcsw phint");
@@ -3743,6 +3941,82 @@ mod tests {
     }
 
     #[test]
+    fn aix_parser_reads_topas_csv_sections_by_record_name() {
+        let text = "\
+CPU_ALL,CPU Total ,User%,Sys%,Wait%,Idle%,CPUs,
+LPAR,LPAR Stats,PhysicalCPU,VirtualCPUs,LogicalCPUs,poolCPUS,entitled,weight,poolIdle,UsedAllCPU%,UsedPoolCPU%,SharedCPU,
+ZZZZ,T0001,00:09:56,02-jul-2026,,
+CPU_ALL,T0001,7.25,1.34,0.33,91.08,40.00,
+LPAR,T0001,1.89,10.00,40.00,28.00,10.00,172.00,0.00,3.94,6.75,1.00,
+";
+
+        let observations =
+            parse_aix_cpu_observations_from_text("di-ora-prd_260702.topas.csv", text);
+
+        assert_eq!(observations.len(), 2);
+        let cpu = observations
+            .iter()
+            .find(|obs| obs.raw_sample.starts_with("CPU_ALL"))
+            .expect("expected CPU_ALL observation");
+        assert_close(cpu.cpu_user_pct, 7.25);
+        assert_close(cpu.cpu_sys_pct, 1.34);
+        assert_close(cpu.cpu_wait_pct, 0.33);
+        assert_close(cpu.cpu_idle_pct, 91.08);
+        assert_close(cpu.cpu_busy_pct, 8.92);
+        assert_eq!(cpu.physc, None);
+        assert_eq!(cpu.entc_pct, None);
+        assert_eq!(
+            cpu.timestamp_hint.as_deref(),
+            Some("T0001 02-jul-2026 00:09:56")
+        );
+
+        let lpar = observations
+            .iter()
+            .find(|obs| obs.raw_sample.starts_with("LPAR"))
+            .expect("expected LPAR observation");
+        assert_close(lpar.physc, 1.89);
+        assert_close(lpar.entitled_capacity, 10.0);
+        assert_close(lpar.entc_pct, 18.9);
+    }
+
+    #[test]
+    fn aix_parser_reads_topas_nmon_cpu_all_and_lpar_sections() {
+        let text = "\
+CPU_ALL,CPU Total di-ora-prd,User%,Sys%,Wait%,Idle%,Busy,PhysicalCPUs
+LPAR,Logical Partition di-ora-prd,PhysicalCPU,virtualCPUs,logicalCPUs,poolCPUs,entitled,weight,PoolIdle,usedAllCPU%,usedPoolCPU%,SharedCPU,Capped,EC_User%,EC_Sys%,EC_Wait%,EC_Idle%,VP_User%,VP_Sys%,VP_Wait%,VP_Idle%,Folded,Pool_id
+ZZZZ,T0001,10:01:30,23-JUN-2026
+CPU_ALL,T0001,52.5,4.6,1.5,41.5,57.0,40
+LPAR,T0001,9.115,10,40,28,10.00,172,0.00,18.99,32.55,1,0,52.48,4.56,1.19,32.93,52.48,4.56,1.19,32.93,0,1
+";
+
+        let observations = parse_aix_cpu_observations_from_text("topas_nmon.out", text);
+
+        assert_eq!(observations.len(), 2);
+        let cpu = observations
+            .iter()
+            .find(|obs| obs.raw_sample.starts_with("CPU_ALL"))
+            .expect("expected CPU_ALL observation");
+        assert_close(cpu.cpu_user_pct, 52.5);
+        assert_close(cpu.cpu_sys_pct, 4.6);
+        assert_close(cpu.cpu_wait_pct, 1.5);
+        assert_close(cpu.cpu_idle_pct, 41.5);
+        assert_close(cpu.cpu_busy_pct, 57.0);
+        assert_eq!(cpu.physc, None);
+
+        let lpar = observations
+            .iter()
+            .find(|obs| obs.raw_sample.starts_with("LPAR"))
+            .expect("expected LPAR observation");
+        assert_close(lpar.physc, 9.115);
+        assert_close(lpar.entitled_capacity, 10.0);
+        assert_close(lpar.entc_pct, 91.15);
+        assert_close(lpar.cpu_user_pct, 52.48);
+        assert_close(lpar.cpu_sys_pct, 4.56);
+        assert_close(lpar.cpu_wait_pct, 1.19);
+        assert_close(lpar.cpu_idle_pct, 32.93);
+    }
+
+    #[test]
     fn aix_parser_reads_topas_entc_with_terminal_codes() {
         let header = split_aix_fields("\u{1b}[;7mCPU User% Kern% Wait% Idle% Physc Entc%");
         let fields = split_aix_fields("Total 29.1 45.0 0.3 25.6 9.85 98.5292924");
@@ -3756,6 +4030,24 @@ mod tests {
         assert_eq!(obs.cpu_idle_pct, Some(25.6));
         assert_eq!(obs.physc, Some(9.85));
         assert_eq!(obs.entc_pct, Some(98.5292924));
+    }
+
+    #[test]
+    fn aix_timestamp_checks_do_not_require_per_line_regexes() {
+        assert!(looks_like_aix_time("7:05"));
+        assert!(looks_like_aix_time("17:05:59"));
+        assert!(!looks_like_aix_time("27:05"));
+        assert!(looks_like_aix_date("2026-07-23"));
+        assert!(looks_like_aix_date("23/07/2026"));
+        assert!(!looks_like_aix_date("not-a-date"));
+    }
+
+    #[test]
+    fn aix_entitlement_scan_skips_large_unrelated_diagnostics() {
+        assert!(is_likely_aix_cpu_telemetry_path("host/nmon.nmon"));
+        assert!(is_likely_aix_cpu_telemetry_path("host/topas.out"));
+        assert!(!is_likely_aix_cpu_telemetry_path("host/oratop.out"));
+        assert!(!is_likely_aix_cpu_telemetry_path("host/trace.bin"));
     }
 
     #[test]
