@@ -78,7 +78,9 @@ fn tools_mode_instructions(stem: &str) -> String {
     let xplan_note = if Path::new(&attachments_dir).is_dir() {
         format!(
             "\nAvailable execution-plan attachment directory: `{}`. \
-             If list_available_sql_plans is present, use it to discover SQL_IDs with plans.",
+             If list_available_sql_plans is present, use it to discover SQL_IDs with plans. \
+             If list_available_child_cursor_reasons is present, use it to discover TOP SQL_IDs \
+             for which decoded V$SQL_SHARED_CURSOR.REASON evidence was collected.",
             attachments_dir
         )
     } else {
@@ -115,6 +117,7 @@ fn tools_mode_instructions(stem: &str) -> String {
          For suspicious snapshots, call list_snapshots, compare_snapshots, top_wait_events_in_snapshot, top_sqls_in_snapshot, get_metric_time_series, get_sql_timeline, or get_wait_event_timeline as needed. \
          For every SQL_ID that materially contributes to DB Time, elapsed time, DB CPU, I/O time, buffer gets, physical reads, anomalous waits, or regression symptoms, call get_sql_text and get_sql_timeline. \
          If execution-plan tools are available, you are expected to use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations. \
+         If child-cursor reason tools are available, call list_available_child_cursor_reasons and get_child_cursor_reasons before explaining child cursor proliferation, version_count growth, parsing pressure, library cache or cursor mutex contention, optimizer/NLS/bind/authorization mismatches, or plan instability. Treat A/B values as comparison-vector sides, never chronological old/new values. \
          If alert.log tools are available, use get_alertlog_errors to verify error evidence for relevant date ranges, especially before dismissing parse errors or other reported failures as unrelated. \
          If AIX OS tools are available or get_db_instance_info reports an AIX platform, use get_aix_cpu_entitlement_summary before any CPU-bound conclusion; never rely only on %CPU, DB CPU, or DB CPU/DB Time on AIX. High Entc%/%entc/ec or physc/pc near entitlement is CPU entitlement/physical-capacity pressure even on uncapped LPARs and even when AWR Host CPU idle is nonzero. \
          When you fetch an execution plan, produce a dedicated SQL execution plan analysis covering: dominant operations, access paths, join methods and join order, cardinality estimate errors, partition pruning, parallel execution, adaptive plan notes, temp spills/sorts, index usage, and concrete remediation options. \
@@ -131,6 +134,7 @@ fn available_attachments_prompt(stem: &str) -> Option<String> {
 
     if Path::new(&attachments_dir).is_dir() {
         lines.push("Execution plan attachments (*.xplan) may be available through tools. Use list_available_sql_plans and get_sql_execution_plan for important SQL_IDs before making SQL tuning recommendations.".to_string());
+        lines.push("Decoded V$SQL_SHARED_CURSOR.REASON attachments (*.shared_cursor_reasons) may be available through tools. Use list_available_child_cursor_reasons and get_child_cursor_reasons before explaining child cursor proliferation, parsing pressure, cursor/library-cache contention, or plan instability.".to_string());
     }
 
     if Path::new(&aix_dir).is_dir() {

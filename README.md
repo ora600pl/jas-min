@@ -195,9 +195,11 @@ jas-min -d ./awr_reports --ai google:gemini-2.5-flash:EN --tools-mode
 jas-min -d ./awr_reports --ai openrouter:openai/gpt-4.1:EN --tools-mode
 ```
 
-If a sibling `<stem>_attachments/` directory exists, tools mode can also expose execution-plan, alert log, and AIX OS attachments to the model.
+If a sibling `<stem>_attachments/` directory exists, tools mode can also expose execution-plan, decoded child-cursor sharing reasons, alert log, and AIX OS attachments to the model.
 
 Execution plans are expected as `<stem>_attachments/<SQL_ID>.xplan`. The collector can create these files automatically for the SQL IDs that appear most often in `SQLs Ordered by Elapsed time` sections, plus any SQL IDs entered manually.
+
+Decoded child-cursor sharing reasons are stored as `<stem>_attachments/<SQL_ID>.shared_cursor_reasons`. For TOP SQL_IDs selected from `SQLs Ordered by Elapsed time`, the collector checks the current local `V$SQL`; when more than one distinct child number exists, it parses every `ChildNode` and diagnostic payload field from `V$SQL_SHARED_CURSOR.REASON`. Tools mode then exposes `list_available_child_cursor_reasons` and `get_child_cursor_reasons` so the model can inspect the exact criterion IDs, subcodes, fields, and comparison-vector values. A/B values are comparison-vector sides, not chronological old/new values.
 
 AIX OS data collected by the `oraix` project can be placed under `<stem>_attachments/AIX/`. When files are present there, tools mode exposes AIX-specific tools such as `list_aix_os_attachments`, `get_aix_os_attachment`, and `get_aix_cpu_entitlement_summary`. These tools scan for LPAR CPU entitlement evidence including `Entc%`, `%entc`, `physc`/`pc`, entitled capacity/`ec`, busy, idle, user, system, and wait CPU metrics.
 
@@ -688,13 +690,25 @@ Without options, or for required options not provided in a mixed run, the collec
 
 When execution plans are requested, the collector parses the generated reports to JAS-MIN JSON even if the ZIP package was set to reports-only. It counts SQL IDs found in `SQLs Ordered by Elapsed time`, selects the top 10 by appearance count, allows extra comma-separated SQL IDs, and writes plans to `<collection_stem>_attachments/<sql_id>.xplan`.
 
+For the automatically selected TOP SQL_IDs (not the manually added IDs), the collector also checks:
+
+```sql
+select sql_id, count(distinct child_number)
+from v$sql
+where sql_id in (...)
+group by sql_id
+having count(distinct child_number) > 1;
+```
+
+Each match is decoded from `V$SQL_SHARED_CURSOR.REASON` into `<collection_stem>_attachments/<sql_id>.shared_cursor_reasons`. Collection is best-effort: a missing/evicted cursor or an unavailable view does not prevent execution plans and the remaining package from being created; the manifest records discovery or per-SQL failures.
+
 Execution plans are fetched with:
 
 ```sql
 select * from table(dbms_xplan.display_cursor('sqlid',null));
 ```
 
-The resulting ZIP package includes generated reports according to the selected package mode, the JSON sidecar when produced, alert log attachments when requested, execution-plan attachments when available, and `manifest.txt` with the selected SQL IDs and any plan-collection failures.
+The resulting ZIP package includes generated reports according to the selected package mode, the JSON sidecar when produced, alert log attachments when requested, execution-plan and decoded child-cursor-reason attachments when available, and `manifest.txt` with the selected SQL IDs and any collection failures.
 
 ## Further Reading
 
