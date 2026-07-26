@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,8 @@ class CollectorZipPackageTests(unittest.TestCase):
             alert_log.write_text("alert\n", encoding="utf-8")
             xplan = attachments_dir / "abc123.xplan"
             xplan.write_text("plan\n", encoding="utf-8")
+            child_reasons = attachments_dir / "abc123.shared_cursor_reasons"
+            child_reasons.write_text("decoded reasons\n", encoding="utf-8")
 
             os_stats_dir = output_dir / "prepared_os_stats"
             os_stats_dir.mkdir()
@@ -65,7 +68,10 @@ class CollectorZipPackageTests(unittest.TestCase):
                 [report],
                 json_path,
                 (alert_log, "filtered alert log"),
-                {"files": [xplan]},
+                {
+                    "files": [xplan],
+                    "child_cursor_reason_files": [child_reasons],
+                },
                 manifest,
                 collector.PACKAGE_BOTH,
                 os_stats_info,
@@ -82,6 +88,7 @@ class CollectorZipPackageTests(unittest.TestCase):
                     "{}.json".format(stem),
                     "{}/awrrpt_1_252_253.html".format(stem),
                     "{}_attachments/abc123.xplan".format(stem),
+                    "{}_attachments/abc123.shared_cursor_reasons".format(stem),
                     "{}_attachments/alert_szpital.log".format(stem),
                     "{}_attachments/linux/nested/iostat.out".format(stem),
                     "{}_attachments/linux/vmstat.out".format(stem),
@@ -171,6 +178,61 @@ class CollectorCliTests(unittest.TestCase):
             "s.instance_number = (select instance_number from v$instance)",
             sql,
         )
+
+    def test_multi_child_cursor_discovery_is_limited_to_selected_top_sql_ids(self):
+        sql = collector.multi_child_cursor_sql(["ABC123", "def456"])
+
+        self.assertIn("where sql_id in ('ABC123', 'def456')", sql)
+        self.assertIn("count(distinct child_number) > 1", sql)
+
+        with mock.patch.object(
+            collector,
+            "run_sqlplus",
+            return_value="abc123|3\nnoise\ndef456|2\n",
+        ):
+            rows = collector.discover_multi_child_cursor_sqls(
+                {"sqlplus": "unused"}, ["abc123", "def456"]
+            )
+
+        self.assertEqual(
+            rows,
+            [
+                {"sql_id": "abc123", "child_count": 3},
+                {"sql_id": "def456", "child_count": 2},
+            ],
+        )
+
+    def test_shared_cursor_reason_sql_decodes_all_reason_nodes_and_payload_fields(self):
+        sql = collector.shared_cursor_reasons_sql("AbC123")
+
+        self.assertIn("where s.sql_id = 'AbC123'", sql)
+        self.assertIn("'/ReasonRoot/ChildNode'", sql)
+        self.assertIn("not(self::ChildNumber or self::ID or self::reason or self::size)", sql)
+        self.assertIn("A/B denote comparison-vector sides", sql)
+        self.assertIn("when p.reason_id = 44", sql)
+        self.assertIn("when p.reason_id = 3", sql)
+        self.assertIn("SUMMARY:", sql)
+
+    def test_child_cursor_reason_collection_writes_one_attachment_per_sql_id(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_dir = Path(tmpdir)
+            with mock.patch.object(
+                collector,
+                "run_sqlplus",
+                return_value="CHILD CURSOR 1\n+-- [01] Optimizer mismatch\n",
+            ):
+                files, failures = collector.collect_shared_cursor_reasons(
+                    {"sqlplus": "unused"},
+                    target_dir,
+                    [{"sql_id": "abc123", "child_count": 2}],
+                )
+
+            self.assertEqual(failures, [])
+            self.assertEqual(
+                [path.name for path in files],
+                ["abc123.shared_cursor_reasons"],
+            )
+            self.assertIn("Optimizer mismatch", files[0].read_text(encoding="utf-8"))
 
     def test_end_must_be_later_than_start(self):
         stderr = io.StringIO()

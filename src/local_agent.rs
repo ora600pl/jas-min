@@ -1278,6 +1278,11 @@ fn ensure_mandatory_evidence(
     {
         requests.push(("list_available_sql_plans", json!({"limit": 100})));
     }
+    if tool_available("list_available_child_cursor_reasons")
+        && !called("list_available_child_cursor_reasons", evidence_store)
+    {
+        requests.push(("list_available_child_cursor_reasons", json!({"limit": 100})));
+    }
     if (haystack.contains("enq: tx") || haystack.contains("row lock"))
         && !called("top_segments_in_snapshot", evidence_store)
         && !precomputed_sections.contains("segment_hotspots")
@@ -1412,6 +1417,7 @@ fn build_coverage_summary(
         "sql_metrics": status(inspected(&["top_sqls_in_snapshot", "get_sql_timeline", "find_snapshots_with_sql"]), Some(awr_available)),
         "sql_text": status(inspected(&["get_sql_text", "search_sql_text"]), Some(!collection.sql_text.is_empty())),
         "execution_plans": status(inspected(&["list_available_sql_plans", "get_sql_execution_plan"]), None),
+        "child_cursor_reasons": status(inspected(&["list_available_child_cursor_reasons", "get_child_cursor_reasons"]), None),
         "segments": status(inspected(&["top_segments_in_snapshot", "find_sqls_touching_object"]), Some(awr_available)),
         "latches": status(inspected(&["top_latches_in_snapshot"]), Some(awr_available)),
         "io_redo_load_profile": status(inspected(&["get_snapshot_details", "get_metric_time_series", "get_precomputed_analysis"]), Some(awr_available)),
@@ -1726,6 +1732,8 @@ fn tools_for_round(full_schema: &Value, round: usize) -> Value {
         "get_wait_event_histogram",
         "list_available_sql_plans",
         "get_sql_execution_plan",
+        "list_available_child_cursor_reasons",
+        "get_child_cursor_reasons",
         "get_precomputed_analysis",
         "get_diagnostic_guidance",
         "list_aix_os_attachments",
@@ -2576,7 +2584,7 @@ TRIGGER: enq: TX - row lock contention is significant.
     }
 
     #[test]
-    fn mandatory_evidence_inspects_relevant_parameters_and_plan_catalog() {
+    fn mandatory_evidence_inspects_relevant_parameters_and_sql_attachment_catalogs() {
         let collection = AWRSCollection {
             db_instance_information: DBInstance::default(),
             initialization_parameters: HashMap::from([(
@@ -2597,7 +2605,8 @@ TRIGGER: enq: TX - row lock contention is significant.
         });
         let tools = json!([
             {"type":"function","function":{"name":"get_init_parameter","parameters":{"type":"object"}}},
-            {"type":"function","function":{"name":"list_available_sql_plans","parameters":{"type":"object"}}}
+            {"type":"function","function":{"name":"list_available_sql_plans","parameters":{"type":"object"}}},
+            {"type":"function","function":{"name":"list_available_child_cursor_reasons","parameters":{"type":"object"}}}
         ]);
         let cfg = LocalAgentConfig {
             model: "test".to_string(),
@@ -2624,13 +2633,16 @@ TRIGGER: enq: TX - row lock contention is significant.
             &cfg,
             &tools,
         );
-        assert_eq!(outputs.len(), 4);
+        assert_eq!(outputs.len(), 5);
         assert!(store
             .records
             .iter()
             .any(|record| { record.session == 2 && record.tool_name == "get_init_parameter" }));
         assert!(store.records.iter().any(|record| {
             record.session == 2 && record.tool_name == "list_available_sql_plans"
+        }));
+        assert!(store.records.iter().any(|record| {
+            record.session == 2 && record.tool_name == "list_available_child_cursor_reasons"
         }));
         let sections = store
             .records

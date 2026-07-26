@@ -26,13 +26,15 @@ use toon::encode;
 
 use crate::awr::{AWRSCollection, AWR};
 
-const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-07-08.1";
+const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-07-26.1";
 const DEFAULT_LIMIT: usize = 50;
 const DEFAULT_TOP_N: usize = 10;
 const MAX_LIMIT: usize = 500;
 const MAX_TOP_N: usize = 100;
 const DEFAULT_XPLAN_LIMIT: usize = 100;
 const MAX_XPLAN_BYTES: usize = 512 * 1024;
+const SHARED_CURSOR_REASON_SUFFIX: &str = ".shared_cursor_reasons";
+const MAX_SHARED_CURSOR_REASON_BYTES: usize = 512 * 1024;
 const DEFAULT_ALERTLOG_LIMIT: usize = 200;
 const MAX_ALERTLOG_LIMIT: usize = 1000;
 const DEFAULT_AIX_FILE_LIMIT: usize = 100;
@@ -495,6 +497,51 @@ pub fn tools_schema(stem: &str) -> Value {
 
         println!("✅ Found execution plans in {}", attachments_dir.display());
     }
+    if !list_shared_cursor_reason_files(&attachments_dir).is_empty() {
+        tools.as_array_mut().expect("tools must be a JSON array").push(json!({
+            "type": "function",
+            "function": {
+                "name": "list_available_child_cursor_reasons",
+                "description": "Lists TOP SQL_IDs for which decoded V$SQL_SHARED_CURSOR.REASON attachments are available. These files are collected only when the SQL_ID had multiple current child cursors. Use this when investigating hard parsing, version_count growth, library cache or cursor mutex contention, bind sensitivity, optimizer/NLS differences, authorization mismatches, or plan instability.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Optional case-insensitive SQL_ID or filename filter."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum entries returned, default 100, max 500."
+                        }
+                    }
+                }
+            }
+        }));
+
+        tools.as_array_mut().expect("tools must be a JSON array").push(json!({
+            "type": "function",
+            "function": {
+                "name": "get_child_cursor_reasons",
+                "description": "Returns decoded V$SQL_SHARED_CURSOR.REASON data for one TOP SQL_ID with multiple child cursors. The report includes every ChildNode, criterion ID/subcode, diagnostic payload field, comparison-vector A/B values, and field meanings. Call this before explaining version_count growth, non-sharing, bind or optimizer environment mismatches, NLS differences, authorization mismatches, or child-cursor-related contention.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "sql_id": {
+                            "type": "string",
+                            "description": "SQL_ID returned by list_available_child_cursor_reasons."
+                        }
+                    },
+                    "required": ["sql_id"]
+                }
+            }
+        }));
+
+        println!(
+            "✅ Found decoded child cursor reasons in {}",
+            attachments_dir.display()
+        );
+    }
     if !list_alertlog_files(&attachments_dir).is_empty() {
         tools.as_array_mut().expect("tools must be a JSON array").push(json!({
             "type": "function",
@@ -636,6 +683,10 @@ pub fn dispatch_tool_call(
         }),
         "list_available_sql_plans" => tool_list_available_sql_plans(args, stem),
         "get_sql_execution_plan" => tool_get_sql_execution_plan(args, stem),
+        "list_available_child_cursor_reasons" => {
+            tool_list_available_child_cursor_reasons(args, stem)
+        }
+        "get_child_cursor_reasons" => tool_get_child_cursor_reasons(args, stem),
         "get_alertlog_errors" => tool_get_alertlog_errors(args, stem),
         "list_aix_os_attachments" => tool_list_aix_os_attachments(args, stem),
         "get_aix_os_attachment" => tool_get_aix_os_attachment(args, stem),
@@ -765,6 +816,34 @@ fn sql_id_from_xplan_path(path: &Path) -> Option<String> {
     path.file_stem()
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())
+}
+
+fn list_shared_cursor_reason_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| name.ends_with(SHARED_CURSOR_REASON_SUFFIX))
+                        .unwrap_or(false)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    files.sort();
+    files
+}
+
+fn sql_id_from_shared_cursor_reason_path(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(SHARED_CURSOR_REASON_SUFFIX))
+        .map(str::to_string)
 }
 
 fn list_alertlog_files(dir: &Path) -> Vec<PathBuf> {
@@ -2158,6 +2237,119 @@ fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
         "limit": limit,
         "sql_ids_xplan": plans,
         "usage_hint": "For SQL_IDs that are material to DB Time, DB CPU, elapsed time, I/O, buffer gets, physical reads, or regressions, call get_sql_execution_plan and include a dedicated plan analysis with recommendations."
+    })
+}
+
+fn tool_get_child_cursor_reasons(args: &Value, stem: &str) -> Value {
+    let sql_id = match arg_str(args, "sql_id") {
+        Some(v) if is_safe_sql_id(v) => v.trim(),
+        Some(v) => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": "Invalid sql_id. Only simple SQL_ID-like filenames are accepted.",
+                "sql_id": v
+            });
+        }
+        None => return error_missing_arg("sql_id"),
+    };
+
+    let attachments_dir = attachments_dir_for_stem(stem);
+    let path = attachments_dir.join(format!("{sql_id}{SHARED_CURSOR_REASON_SUFFIX}"));
+
+    if !path.is_file() {
+        return json!({
+            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+            "sql_id": sql_id,
+            "filename": path.display().to_string(),
+            "decoded_reasons": null,
+            "note": "Decoded child cursor reason attachment was not found."
+        });
+    }
+
+    let metadata = fs::metadata(&path).ok();
+    let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+    let mut text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "sql_id": sql_id,
+                "filename": path.display().to_string(),
+                "error": format!("Failed to read child cursor reason attachment: {}", e)
+            });
+        }
+    };
+
+    let truncated = text.len() > MAX_SHARED_CURSOR_REASON_BYTES;
+    if truncated {
+        text.truncate(MAX_SHARED_CURSOR_REASON_BYTES);
+        text.push_str(
+            "\n\n-- JAS-MIN NOTE: child cursor reason output was truncated at the tool payload limit.\n",
+        );
+    }
+
+    json!({
+        "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+        "sql_id": sql_id,
+        "filename": path.file_name().and_then(|f| f.to_str()).unwrap_or("").to_string(),
+        "size_bytes": size_bytes,
+        "truncated": truncated,
+        "max_bytes": MAX_SHARED_CURSOR_REASON_BYTES,
+        "interpretation_guidance": [
+            "Treat each ChildNode as Oracle evidence for a failed sharing comparison, not as proof that the reason remains active for every execution.",
+            "A/B values are comparison-vector sides and are never chronological old/new values.",
+            "Correlate reasons with SQL timeline, execution plans, parse statistics, library cache waits, and initialization parameters before assigning performance impact.",
+            "For optimizer, NLS, bind, authorization, or feedback mismatches, cite the exact reason ID, child number, field names, and raw or decoded values.",
+            "Do not infer unsupported build-specific flag meanings; preserve raw values when the report marks them authoritative."
+        ],
+        "decoded_reasons": text
+    })
+}
+
+fn tool_list_available_child_cursor_reasons(args: &Value, stem: &str) -> Value {
+    let attachments_dir = attachments_dir_for_stem(stem);
+    let pattern = arg_str(args, "pattern").map(|s| s.trim().to_lowercase());
+    let limit = arg_limit(args, "limit", DEFAULT_XPLAN_LIMIT, MAX_LIMIT);
+
+    let mut reports: Vec<Value> = list_shared_cursor_reason_files(&attachments_dir)
+        .into_iter()
+        .filter_map(|path| {
+            let filename = path.file_name()?.to_str()?.to_string();
+            let sql_id = sql_id_from_shared_cursor_reason_path(&path)?;
+            if let Some(pattern) = &pattern {
+                let haystack = format!("{} {}", sql_id.to_lowercase(), filename.to_lowercase());
+                if !haystack.contains(pattern) {
+                    return None;
+                }
+            }
+            let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            Some(json!({
+                "sql_id": sql_id,
+                "filename": filename,
+                "size_bytes": size_bytes
+            }))
+        })
+        .collect();
+
+    reports.sort_by(|a, b| {
+        a["sql_id"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["sql_id"].as_str().unwrap_or(""))
+    });
+    let total_matches = reports.len();
+    reports.truncate(limit);
+
+    json!({
+        "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+        "available": attachments_dir.is_dir(),
+        "attachments_dir": attachments_dir.display().to_string(),
+        "pattern": pattern,
+        "total_matches": total_matches,
+        "returned": reports.len(),
+        "limit": limit,
+        "sql_ids_with_child_cursor_reasons": reports,
+        "usage_hint": "For each material SQL_ID listed here, call get_child_cursor_reasons before explaining child cursor proliferation, version_count growth, parsing pressure, library cache contention, or plan instability."
     })
 }
 
@@ -4048,6 +4240,55 @@ LPAR,T0001,9.115,10,40,28,10.00,172,0.00,18.99,32.55,1,0,52.48,4.56,1.19,32.93,5
         assert!(is_likely_aix_cpu_telemetry_path("host/topas.out"));
         assert!(!is_likely_aix_cpu_telemetry_path("host/oratop.out"));
         assert!(!is_likely_aix_cpu_telemetry_path("host/trace.bin"));
+    }
+
+    #[test]
+    fn child_cursor_reason_attachments_publish_and_return_decoded_evidence() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "jasmin_child_cursor_reason_test_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        let stem = root.join("sample_report");
+        let attachments_dir = PathBuf::from(format!("{}_attachments", stem.display()));
+        fs::create_dir_all(&attachments_dir).expect("create test attachments");
+        let attachment = attachments_dir.join(format!("abc123{}", SHARED_CURSOR_REASON_SUFFIX));
+        fs::write(
+            &attachment,
+            "CHILD CURSOR 1\n+-- [01] Optimizer mismatch {ID=3}\n",
+        )
+        .expect("write child cursor reason fixture");
+        let stem = stem.to_string_lossy().to_string();
+
+        let schema = tools_schema(&stem);
+        let names = schema
+            .as_array()
+            .expect("tool schema array")
+            .iter()
+            .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
+            .collect::<HashSet<_>>();
+        assert!(names.contains("list_available_child_cursor_reasons"));
+        assert!(names.contains("get_child_cursor_reasons"));
+
+        let listed = tool_list_available_child_cursor_reasons(&json!({}), &stem);
+        assert_eq!(listed["total_matches"], 1);
+        assert_eq!(
+            listed["sql_ids_with_child_cursor_reasons"][0]["sql_id"],
+            "abc123"
+        );
+
+        let fetched = tool_get_child_cursor_reasons(&json!({"sql_id": "abc123"}), &stem);
+        assert_eq!(fetched["truncated"], false);
+        assert!(fetched["decoded_reasons"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Optimizer mismatch"));
+
+        fs::remove_dir_all(&root).expect("remove child cursor reason fixture");
     }
 
     #[test]
