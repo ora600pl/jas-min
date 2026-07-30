@@ -16,6 +16,14 @@
 .rustc_info.json
 /target/
 
+# JAS-MIN generated analysis and local test-run artifacts
+/test_runs/
+/jasmin/
+/report_for_ai.toon
+/*.html_reports/
+/*.final.md
+/*.local_agent.*.json
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
