@@ -22,7 +22,9 @@ colored = "3.0.0"
 open = "5"
 reqwest = { version = "0.11", features = ["json","multipart"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 axum = "0.7"
+rmcp = { version = "3.1.0", features = ["transport-streamable-http-server"] }
 dotenvy = "0.15.7"
 tower-http = { version = "0.5", features = ["cors"] }
 anyhow = "1"
