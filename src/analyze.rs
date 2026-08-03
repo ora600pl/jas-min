@@ -2926,7 +2926,7 @@ pub fn raw_values_of(
 }
 
 pub fn main_report_builder(
-    collection: AWRSCollection,
+    collection: &AWRSCollection,
     args: Args,
     events_sqls: HashMap<&str, HashSet<String>>,
 ) -> ReportForAI {
@@ -6688,6 +6688,6 @@ pub fn main_report_builder(
     strip_gradient_descriptions(&mut report_for_ai);
     /* ***************************************************** */
 
-    report_for_ai.initialization_parameters = collection.initialization_parameters;
+    report_for_ai.initialization_parameters = collection.initialization_parameters.clone();
     report_for_ai
 }

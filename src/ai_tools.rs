@@ -26,7 +26,7 @@ use toon::encode;
 
 use crate::awr::{AWRSCollection, AWR};
 
-const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-07-26.1";
+const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-08-03.1";
 const DEFAULT_LIMIT: usize = 50;
 const DEFAULT_TOP_N: usize = 10;
 const MAX_LIMIT: usize = 500;
@@ -645,6 +645,14 @@ pub fn tools_schema(stem: &str) -> Value {
                         "limit_records": {
                             "type": "integer",
                             "description": "Maximum parsed sample records returned for inspection, default 200, max 500."
+                        },
+                        "date_from": {
+                            "type": "string",
+                            "description": "Optional start date inclusive in YYYY-MM-DD format. Use the AWR collection range to avoid mixing unrelated OS periods."
+                        },
+                        "date_to": {
+                            "type": "string",
+                            "description": "Optional end date inclusive in YYYY-MM-DD format. Observations without a parseable timestamp are excluded when a date filter is active."
                         }
                     }
                 }
@@ -660,15 +668,18 @@ pub fn tools_schema(stem: &str) -> Value {
 // Dispatcher
 // ----------------------------------------------------------------------------
 
-/// Routes a tool call from the LLM to the matching implementation and returns a
-/// JSON-encoded string suitable for a `role: "tool"` chat message.
-pub fn dispatch_tool_call(
+/// Routes a tool call to the matching implementation and returns structured JSON.
+///
+/// Keeping the structured value as the canonical result lets the existing AI
+/// providers serialize it for chat APIs while the MCP adapter can publish it as
+/// `structuredContent` without parsing a JSON string back into a value.
+pub fn dispatch_tool_call_value(
     name: &str,
     args: &Value,
     collection: &AWRSCollection,
     stem: &str,
-) -> String {
-    let result: Value = match name {
+) -> Value {
+    match name {
         // Global overview
         "get_database_load_summary" => tool_get_database_load_summary(args, collection),
 
@@ -720,15 +731,25 @@ pub fn dispatch_tool_call(
             "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
             "error": format!("Unknown tool: {}", other)
         }),
-    };
+    }
+}
 
-    serde_json::to_string(&result).unwrap_or_else(|e| {
-        json!({
-            "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
-            "error": format!("Serialization failed: {}", e)
-        })
-        .to_string()
-    })
+/// Returns a JSON-encoded tool result for OpenAI-compatible chat messages.
+pub fn dispatch_tool_call(
+    name: &str,
+    args: &Value,
+    collection: &AWRSCollection,
+    stem: &str,
+) -> String {
+    serde_json::to_string(&dispatch_tool_call_value(name, args, collection, stem)).unwrap_or_else(
+        |e| {
+            json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": format!("Serialization failed: {}", e)
+            })
+            .to_string()
+        },
+    )
 }
 
 // ----------------------------------------------------------------------------
@@ -1606,6 +1627,23 @@ fn parse_date_arg(args: &Value, key: &str) -> Result<Option<NaiveDate>, String> 
     }
 }
 
+fn date_from_aix_timestamp_hint(timestamp_hint: &str) -> Option<NaiveDate> {
+    const FORMATS: &[&str] = &["%Y-%m-%d", "%d-%b-%Y", "%d/%m/%Y", "%m/%d/%Y"];
+    timestamp_hint
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .map(|token| {
+            token.trim_matches(|character: char| {
+                !character.is_alphanumeric() && character != '-' && character != '/'
+            })
+        })
+        .filter(|token| !token.is_empty())
+        .find_map(|token| {
+            FORMATS
+                .iter()
+                .find_map(|format| NaiveDate::parse_from_str(token, format).ok())
+        })
+}
+
 fn timestamp_from_alertlog_line(line: &str, ts_re: &Regex) -> Option<NaiveDateTime> {
     let caps = ts_re.captures(line)?;
     let date = caps.name("date")?.as_str();
@@ -2464,6 +2502,22 @@ fn tool_get_aix_cpu_entitlement_summary(args: &Value, stem: &str) -> Value {
     let pattern = arg_str(args, "pattern").map(|s| s.trim().to_lowercase());
     let max_files = arg_limit(args, "max_files", DEFAULT_AIX_FILE_LIMIT, MAX_LIMIT);
     let limit_records = arg_limit(args, "limit_records", DEFAULT_AIX_RECORD_LIMIT, MAX_LIMIT);
+    let date_from = match parse_date_arg(args, "date_from") {
+        Ok(value) => value,
+        Err(error) => return json!({"schema_version": JASMIN_TOOLS_SCHEMA_VERSION, "error": error}),
+    };
+    let date_to = match parse_date_arg(args, "date_to") {
+        Ok(value) => value,
+        Err(error) => return json!({"schema_version": JASMIN_TOOLS_SCHEMA_VERSION, "error": error}),
+    };
+    if let (Some(from), Some(to)) = (date_from, date_to) {
+        if from > to {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": "date_from cannot be later than date_to"
+            });
+        }
+    }
 
     let mut candidate_files: Vec<PathBuf> = list_aix_files(&aix_dir)
         .into_iter()
@@ -2500,6 +2554,23 @@ fn tool_get_aix_cpu_entitlement_summary(args: &Value, stem: &str) -> Value {
         }
 
         observations.extend(parse_aix_cpu_observations_from_text(&relative_path, &text));
+    }
+
+    let parsed_observations_total = observations.len();
+    let mut undated_observations_excluded = 0usize;
+    if date_from.is_some() || date_to.is_some() {
+        observations.retain(|observation| {
+            let Some(date) = observation
+                .timestamp_hint
+                .as_deref()
+                .and_then(date_from_aix_timestamp_hint)
+            else {
+                undated_observations_excluded += 1;
+                return false;
+            };
+            date_from.map(|from| date >= from).unwrap_or(true)
+                && date_to.map(|to| date <= to).unwrap_or(true)
+        });
     }
 
     let entc_values: Vec<f64> = observations.iter().filter_map(|o| o.entc_pct).collect();
@@ -2549,9 +2620,13 @@ fn tool_get_aix_cpu_entitlement_summary(args: &Value, stem: &str) -> Value {
         "available": aix_dir.is_dir(),
         "aix_dir": aix_dir.display().to_string(),
         "pattern": pattern,
+        "date_from": date_from.map(|date| date.to_string()),
+        "date_to": date_to.map(|date| date.to_string()),
         "scanned_file_count": scanned_files.len(),
         "scanned_files": scanned_files,
         "truncated_files": truncated_files,
+        "parsed_observations_total": parsed_observations_total,
+        "undated_observations_excluded": undated_observations_excluded,
         "total_observations": total_observations,
         "returned_records": records.len(),
         "stats": {
@@ -2569,7 +2644,7 @@ fn tool_get_aix_cpu_entitlement_summary(args: &Value, stem: &str) -> Value {
         "decision_guardrail": "On AIX, high Entc%/%entc/ec or physc/pc near entitled/max capacity overrides apparently comfortable AWR Host CPU idle. Do not conclude 'not CPU-bound' from uncapped mode, shared-pool spare capacity, or AWR %CPU alone.",
         "format": "TOON",
         "aix_cpu_records_toon": records_toon,
-        "usage_hint": "For AIX, Entc%/%entc/ec is required evidence for CPU-bound decisions. If Entc% is high (commonly >= 90%, and especially p95 >= 95% or max >= 98%), report CPU entitlement/physical-capacity pressure even when AWR Host CPU idle is nonzero. If Entc% is absent, derive it from physc/pc divided by entitled capacity when possible; otherwise ask for AIX LPAR entitlement details before final CPU-bound classification."
+        "usage_hint": "Align date_from/date_to with the AWR range. For AIX, Entc%/%entc/ec is required evidence for CPU-bound decisions. If Entc% is high (commonly >= 90%, and especially p95 >= 95% or max >= 98%), report CPU entitlement/physical-capacity pressure even when AWR Host CPU idle is nonzero. If Entc% is absent, derive it from physc/pc divided by entitled capacity when possible; otherwise ask for AIX LPAR entitlement details before final CPU-bound classification."
     })
 }
 
@@ -4206,6 +4281,22 @@ LPAR,T0001,9.115,10,40,28,10.00,172,0.00,18.99,32.55,1,0,52.48,4.56,1.19,32.93,5
         assert_close(lpar.cpu_sys_pct, 4.56);
         assert_close(lpar.cpu_wait_pct, 1.19);
         assert_close(lpar.cpu_idle_pct, 32.93);
+    }
+
+    #[test]
+    fn aix_timestamp_hints_support_topas_and_iso_dates() {
+        assert_eq!(
+            date_from_aix_timestamp_hint("T0001 02-jul-2026 00:09:56"),
+            NaiveDate::from_ymd_opt(2026, 7, 2)
+        );
+        assert_eq!(
+            date_from_aix_timestamp_hint("T0002 23-JUN-2026 10:01:30"),
+            NaiveDate::from_ymd_opt(2026, 6, 23)
+        );
+        assert_eq!(
+            date_from_aix_timestamp_hint("sample,2026-07-30,11:00:00"),
+            NaiveDate::from_ymd_opt(2026, 7, 30)
+        );
     }
 
     #[test]

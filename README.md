@@ -33,6 +33,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Custom gradient | Builds extra gradient pages for a selected SQL ID or wait event with `--gradient-custom`. |
 | AI reports | Supports OpenAI, Google Gemini, OpenRouter, and a two-session local agent served by LM Studio. |
 | AI tools mode | Enables function/tool-call loops for cloud providers with `--tools-mode`; local analysis always uses tools. |
+| MCP server | Retains a parsed collection in memory and exposes interactive evidence, diagnostic guidance, and stable report-building tools through local Streamable HTTP. |
 | Security | Controls whether object names and SQL text are stored with `--security-level`. |
 
 ## Architecture Overview
@@ -73,7 +74,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 
 ### Requirements
 
-- Rust toolchain, recommended 1.75 or newer.
+- Rust toolchain 1.88 or newer.
 
 ### Build
 
@@ -197,6 +198,8 @@ jas-min -d ./awr_reports --ai openrouter:openai/gpt-4.1:EN --tools-mode
 
 If a sibling `<stem>_attachments/` directory exists, tools mode can also expose execution-plan, decoded child-cursor sharing reasons, alert log, and AIX OS attachments to the model.
 
+OpenRouter requests are retried up to three times when the transport fails, the service returns a transient HTTP status, or a successful HTTP response contains empty or malformed JSON. Invalid response bodies are preserved next to the report as `*.bad_response.json` diagnostics. If all attempts fail, JAS-MIN exits with an error instead of panicking or publishing an empty report.
+
 Execution plans are expected as `<stem>_attachments/<SQL_ID>.xplan`. The collector can create these files automatically for the SQL IDs that appear most often in `SQLs Ordered by Elapsed time` sections, plus any SQL IDs entered manually.
 
 Decoded child-cursor sharing reasons are stored as `<stem>_attachments/<SQL_ID>.shared_cursor_reasons`. For TOP SQL_IDs selected from `SQLs Ordered by Elapsed time`, the collector checks the current local `V$SQL`; when more than one distinct child number exists, it parses every `ChildNode` and diagnostic payload field from `V$SQL_SHARED_CURSOR.REASON`. Tools mode then exposes `list_available_child_cursor_reasons` and `get_child_cursor_reasons` so the model can inspect the exact criterion IDs, subcodes, fields, and comparison-vector values. A/B values are comparison-vector sides, not chronological old/new values.
@@ -204,6 +207,19 @@ Decoded child-cursor sharing reasons are stored as `<stem>_attachments/<SQL_ID>.
 AIX OS data collected by the `oraix` project can be placed under `<stem>_attachments/AIX/`. When files are present there, tools mode exposes AIX-specific tools such as `list_aix_os_attachments`, `get_aix_os_attachment`, and `get_aix_cpu_entitlement_summary`. These tools scan for LPAR CPU entitlement evidence including `Entc%`, `%entc`, `physc`/`pc`, entitled capacity/`ec`, busy, idle, user, system, and wait CPU metrics.
 
 For AIX systems, JAS-MIN instructs the AI model not to classify a database as CPU-bound from DB CPU, DB CPU / DB Time, or AWR Host CPU `%CPU` alone. The model must check AIX entitlement data first; if `Entc%` and related LPAR details are missing, it should ask for those operating-system details before making a final CPU-bound decision.
+
+### Interactive MCP Server
+
+JAS-MIN can expose the parsed collection and the same evidence tools as a local Streamable HTTP MCP server:
+
+```bash
+jas-min --json-file ./awr_reports.json --security-level 2 \
+  --mcp 127.0.0.1:4242/mcp
+```
+
+The mandatory `start_performance_analysis` call teaches the model which statistical calculations and attachments are available, returns a compact high-signal seed, and creates an explicit analysis session. Subsequent calls retrieve focused evidence or relevant sections from `reasonings.txt`. Report tools maintain a stable eleven-section structure while allowing per-section detail and Markdown/JSON output preferences.
+
+See [JAS-MIN MCP Server](docs/mcp-server.md) for client lifecycle, tool groups, evidence rules, quality gates, and the report contract.
 
 ### One-Shot Batch Analysis
 
@@ -615,6 +631,7 @@ Options:
   -G, --gradient-custom <GRADIENT_CUSTOM>    Custom gradient: SQL=<sql_id> or WAIT=<event>
       --tools-mode                           Enable AI tools mode for cloud providers; local mode always uses tools
       --max-tool-iterations <N>              Max tool-call iterations [default: 10]
+      --mcp <ADDRESS/PATH>                   Start a loopback Streamable HTTP MCP server after parsing
   -h, --help                                 Print help
   -V, --version                              Print version
 ```

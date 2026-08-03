@@ -183,6 +183,17 @@ fn parse_openrouter_response_json(
     response_file: &str,
     context: &str,
 ) -> Result<Value, Box<dyn std::error::Error>> {
+    if body.trim().is_empty() {
+        let debug_path = openrouter_bad_response_path(response_file, context);
+        let _ = fs::write(&debug_path, body.as_bytes());
+        return Err(format!(
+            "OpenRouter returned an empty or whitespace-only response during {context}. \
+             Raw response saved to {debug_path} ({} chars).",
+            body.chars().count()
+        )
+        .into());
+    }
+
     match serde_json::from_str(body) {
         Ok(json) => Ok(json),
         Err(e) => {
@@ -196,6 +207,123 @@ fn parse_openrouter_response_json(
             .into())
         }
     }
+}
+
+const OPENROUTER_REQUEST_ATTEMPTS: usize = 3;
+
+fn openrouter_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+async fn request_openrouter_json(
+    client: &Client,
+    api_key: &str,
+    payload: &Value,
+    response_file: &str,
+    context: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut last_error = String::new();
+    let mut attempts_made = 0;
+
+    for attempt in 1..=OPENROUTER_REQUEST_ATTEMPTS {
+        attempts_made = attempt;
+        let (tx, rx) = oneshot::channel();
+        let spinner = tokio::spawn(spinning_beer(rx));
+
+        let response_result = client
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .header("X-Title", "jas-min")
+            .json(payload)
+            .send()
+            .await;
+
+        let _ = tx.send(());
+        let _ = spinner.await;
+
+        let response = match response_result {
+            Ok(response) => response,
+            Err(error) => {
+                last_error = format!("OpenRouter transport error during {context}: {error}");
+                if attempt < OPENROUTER_REQUEST_ATTEMPTS {
+                    eprintln!(
+                        "⚠️ {last_error}. Retrying ({}/{})...",
+                        attempt + 1,
+                        OPENROUTER_REQUEST_ATTEMPTS
+                    );
+                    sleep(Duration::from_secs(attempt as u64)).await;
+                    continue;
+                }
+                break;
+            }
+        };
+
+        let status = response.status();
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                last_error =
+                    format!("Could not read OpenRouter response body during {context}: {error}");
+                if attempt < OPENROUTER_REQUEST_ATTEMPTS {
+                    eprintln!(
+                        "⚠️ {last_error}. Retrying ({}/{})...",
+                        attempt + 1,
+                        OPENROUTER_REQUEST_ATTEMPTS
+                    );
+                    sleep(Duration::from_secs(attempt as u64)).await;
+                    continue;
+                }
+                break;
+            }
+        };
+
+        if !status.is_success() {
+            last_error = format!(
+                "OpenRouter returned HTTP {status} during {context}: {}",
+                body.trim()
+            );
+            if openrouter_retryable_status(status) && attempt < OPENROUTER_REQUEST_ATTEMPTS {
+                eprintln!(
+                    "⚠️ {last_error}. Retrying ({}/{})...",
+                    attempt + 1,
+                    OPENROUTER_REQUEST_ATTEMPTS
+                );
+                sleep(Duration::from_secs(attempt as u64)).await;
+                continue;
+            }
+            break;
+        }
+
+        let diagnostic_context = if attempt == OPENROUTER_REQUEST_ATTEMPTS {
+            context.to_string()
+        } else {
+            format!("{context}.attempt_{attempt}")
+        };
+
+        match parse_openrouter_response_json(&body, response_file, &diagnostic_context) {
+            Ok(json) => return Ok(json),
+            Err(error) => {
+                last_error = error.to_string();
+                if attempt < OPENROUTER_REQUEST_ATTEMPTS {
+                    eprintln!(
+                        "⚠️ {last_error} Retrying ({}/{})...",
+                        attempt + 1,
+                        OPENROUTER_REQUEST_ATTEMPTS
+                    );
+                    sleep(Duration::from_secs(attempt as u64)).await;
+                    continue;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "OpenRouter request failed during {context} after {attempts_made} attempt(s): {last_error}"
+    )
+    .into())
 }
 
 fn openrouter_payload_tokens(model: &str, messages: &[Value], tools: Option<&Value>) -> usize {
@@ -346,7 +474,9 @@ fn compact_gemini_tool_results_for_budget(
             .unwrap_or_default();
         let prefix: String = original.chars().take(2048).collect();
 
-        if let Some(response) = contents[msg_idx].pointer_mut(&format!("/parts/{}/functionResponse/response", part_idx)) {
+        if let Some(response) =
+            contents[msg_idx].pointer_mut(&format!("/parts/{}/functionResponse/response", part_idx))
+        {
             *response = json!({
                 "truncated_by_jasmin_token_budget": true,
                 "original_length_chars": len,
@@ -1714,8 +1844,8 @@ pub async fn openrouter(
         mode_label, vendor_model_lang[1]
     );
 
-    let api_key =
-        env::var("OPENROUTER_API_KEY").expect("You have to set OPENROUTER_API_KEY env variable");
+    let api_key = env::var("OPENROUTER_API_KEY")
+        .map_err(|_| "You have to set OPENROUTER_API_KEY env variable")?;
 
     let stem = stem_from_logfile(logfile_name);
     let load_profile = load_profile_for_stem(stem);
@@ -1859,30 +1989,14 @@ pub async fn openrouter(
                     final_payload_tokens, openrouter_tool_payload_budget
                 );
 
-                let (tx, rx) = oneshot::channel();
-                let spinner = tokio::spawn(spinning_beer(rx));
-
-                let final_resp = client
-                    .post("https://openrouter.ai/api/v1/chat/completions")
-                    .header("Authorization", format!("Bearer {}", api_key))
-                    .header("Content-Type", "application/json")
-                    .header("X-Title", "jas-min")
-                    .json(&final_payload)
-                    .send()
-                    .await?;
-
-                let _ = tx.send(());
-                let _ = spinner.await;
-
-                if !final_resp.status().is_success() {
-                    eprintln!("Error during final synthesis: {}", final_resp.status());
-                    eprintln!("{}", final_resp.text().await.unwrap_or_default());
-                    break;
-                }
-
-                let final_body = final_resp.text().await?;
-                let final_json =
-                    parse_openrouter_response_json(&final_body, &response_file, "final_synthesis")?;
+                let final_json = request_openrouter_json(
+                    &client,
+                    &api_key,
+                    &final_payload,
+                    &response_file,
+                    "final_synthesis",
+                )
+                .await?;
 
                 let final_choice = &final_json["choices"][0];
                 let final_msg = &final_choice["message"];
@@ -1910,29 +2024,9 @@ pub async fn openrouter(
 
         debug_note!("Payload for AI is {:?}", payload);
 
-        let (tx, rx) = oneshot::channel();
-        let spinner = tokio::spawn(spinning_beer(rx));
-
-        let resp = client
-            .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .header("X-Title", "jas-min")
-            .json(&payload)
-            .send()
-            .await?;
-
-        let _ = tx.send(());
-        let _ = spinner.await;
-
-        if !resp.status().is_success() {
-            eprintln!("Error: {}", resp.status());
-            eprintln!("{}", resp.text().await.unwrap_or_default());
-            break;
-        }
-
-        let body = resp.text().await?;
-        let json = parse_openrouter_response_json(&body, &response_file, "tool_loop")?;
+        let json =
+            request_openrouter_json(&client, &api_key, &payload, &response_file, "tool_loop")
+                .await?;
 
         let choice = &json["choices"][0];
         let msg = &choice["message"];
@@ -2024,33 +2118,14 @@ pub async fn openrouter(
 
                         debug_note!("Final synthesis payload for AI is {:?}", final_payload);
 
-                        let (tx, rx) = oneshot::channel();
-                        let spinner = tokio::spawn(spinning_beer(rx));
-
-                        let final_resp = client
-                            .post("https://openrouter.ai/api/v1/chat/completions")
-                            .header("Authorization", format!("Bearer {}", api_key))
-                            .header("Content-Type", "application/json")
-                            .header("X-Title", "jas-min")
-                            .json(&final_payload)
-                            .send()
-                            .await?;
-
-                        let _ = tx.send(());
-                        let _ = spinner.await;
-
-                        if !final_resp.status().is_success() {
-                            eprintln!("Error during final synthesis: {}", final_resp.status());
-                            eprintln!("{}", final_resp.text().await.unwrap_or_default());
-                            break;
-                        }
-
-                        let final_body = final_resp.text().await?;
-                        let final_json = parse_openrouter_response_json(
-                            &final_body,
+                        let final_json = request_openrouter_json(
+                            &client,
+                            &api_key,
+                            &final_payload,
                             &response_file,
                             "final_synthesis",
-                        )?;
+                        )
+                        .await?;
 
                         let final_choice = &final_json["choices"][0];
                         let final_msg = &final_choice["message"];
@@ -2589,4 +2664,65 @@ pub async fn openai_gpt(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod openrouter_response_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn whitespace_only_openrouter_response_is_identified_and_saved() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let response_file = std::env::temp_dir().join(format!(
+            "jas-min-openrouter-response-{}-{unique}.md",
+            std::process::id()
+        ));
+        let response_file = response_file.to_string_lossy().into_owned();
+        let body = "\n         \n\n       \n";
+
+        let error = parse_openrouter_response_json(body, &response_file, "tool_loop").unwrap_err();
+        let debug_path = openrouter_bad_response_path(&response_file, "tool_loop");
+
+        assert!(error
+            .to_string()
+            .contains("empty or whitespace-only response"));
+        assert_eq!(fs::read_to_string(&debug_path).unwrap(), body);
+
+        let _ = fs::remove_file(debug_path);
+    }
+
+    #[test]
+    fn valid_openrouter_response_json_is_accepted() {
+        let parsed = parse_openrouter_response_json(
+            r#"{"choices":[{"message":{"content":"ok"}}]}"#,
+            "unused.md",
+            "tool_loop",
+        )
+        .unwrap();
+
+        assert_eq!(parsed["choices"][0]["message"]["content"], "ok");
+    }
+
+    #[test]
+    fn openrouter_retries_only_transient_http_statuses() {
+        assert!(openrouter_retryable_status(
+            reqwest::StatusCode::REQUEST_TIMEOUT
+        ));
+        assert!(openrouter_retryable_status(
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(openrouter_retryable_status(
+            reqwest::StatusCode::BAD_GATEWAY
+        ));
+        assert!(!openrouter_retryable_status(
+            reqwest::StatusCode::BAD_REQUEST
+        ));
+        assert!(!openrouter_retryable_status(
+            reqwest::StatusCode::UNAUTHORIZED
+        ));
+    }
 }

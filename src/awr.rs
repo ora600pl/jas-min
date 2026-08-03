@@ -288,6 +288,15 @@ pub struct AWRSCollection {
     pub sql_text: HashMap<String, String>,
 }
 
+/// Keeps the detailed collection and its compact AI summary together.
+///
+/// MCP needs both views after parsing: `AWRSCollection` serves narrow evidence
+/// queries while `ReportForAI` provides the precomputed statistical seed.
+pub struct ParsedAnalysis {
+    pub collection: AWRSCollection,
+    pub report_for_ai: ReportForAI,
+}
+
 const UNSIGNED_JSON_FIELDS: &[&str] = &[
     "begin_snap_id",
     "cores",
@@ -3282,7 +3291,7 @@ pub fn parse_awr_dir(
     args: Args,
     events_sqls: &mut HashMap<&str, HashSet<String>>,
     file: &str,
-) -> ReportForAI {
+) -> ParsedAnalysis {
     println!("{}", "\n==== PARSING DIRECTORY DATA ===".bright_cyan());
     //let mut awr_vec: Vec<AWR> = Vec::new();
     let mut file_collection: Vec<String> = Vec::new();
@@ -3411,8 +3420,11 @@ pub fn parse_awr_dir(
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
     let mut f = fs::File::create(file).unwrap();
     f.write_all(json_str.as_bytes()).unwrap();
-    let report_for_ai = main_report_builder(collection, args.clone(), events_sqls.clone());
-    report_for_ai
+    let report_for_ai = main_report_builder(&collection, args.clone(), events_sqls.clone());
+    ParsedAnalysis {
+        collection,
+        report_for_ai,
+    }
 }
 
 pub fn parse_awr_report(
@@ -3445,7 +3457,7 @@ pub fn parse_awr_report(
 pub fn prarse_json_file(
     args: Args,
     events_sqls: &mut HashMap<&str, HashSet<String>>,
-) -> ReportForAI {
+) -> ParsedAnalysis {
     println!("{}", "\n==== PARSING JSON DATA ===".bright_cyan());
     //fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String
     let json_file = fs::read_to_string(&args.json_file)
@@ -3482,8 +3494,11 @@ pub fn prarse_json_file(
     events_sqls.insert("FG", fg_events);
     events_sqls.insert("BG", bg_events);
     events_sqls.insert("SQL", sqls);
-    let report_for_ai = main_report_builder(collection, args.clone(), events_sqls.clone());
-    report_for_ai
+    let report_for_ai = main_report_builder(&collection, args.clone(), events_sqls.clone());
+    ParsedAnalysis {
+        collection,
+        report_for_ai,
+    }
 }
 
 #[cfg(test)]

@@ -20,11 +20,13 @@ mod degradation;
 mod gradient;
 mod local_agent;
 mod macros;
+mod mcp_server;
 mod reasonings;
 mod staticdata;
 mod tools;
 
 use crate::local_agent::{analyze_report_local_agent, write_local_agent_outputs};
+use crate::mcp_server::{run_mcp_server, AnalysisRuntime, McpEndpoint};
 use crate::reasonings::*;
 use crate::reasonings::{
     AnomalyDescription, AnomlyCluster, IOStatsByFunctionSummary, InstanceStatisticCorrelation,
@@ -169,6 +171,11 @@ struct Args {
     /// Maximum number of tool-call iterations
     #[arg(long, default_value_t = 10)]
     pub max_tool_iterations: usize,
+
+    /// Start a loopback Streamable HTTP MCP server after parsing.
+    /// Example: --mcp 127.0.0.1:4242/mcp
+    #[arg(long, value_name = "ADDRESS/PATH")]
+    pub mcp: Option<McpEndpoint>,
 }
 
 fn load_env() {
@@ -213,6 +220,8 @@ fn main() {
     );
 
     let mut report_for_ai = ReportForAI::default();
+    let mut collection_for_mcp = None;
+    let mut analysis_stem = String::new();
 
     //This creates a global pool configuration for rayon to limit threads for par_iter
     ThreadPoolBuilder::new()
@@ -226,6 +235,10 @@ fn main() {
     if !args.file.is_empty() {
         let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
         println!("{}", awr_doc);
+        if args.mcp.is_some() {
+            eprintln!("ERROR: --mcp requires --directory or --json-file so that the full time series is available");
+            std::process::exit(2);
+        }
     } else if !args.directory.is_empty() {
         if PathBuf::from(&args.directory).exists() {
             let mut fname = PathBuf::from(&args.directory)
@@ -240,13 +253,22 @@ fn main() {
                 fname = args.outfile.clone();
             }
             debug_note!("Starting to parse directory: {}", &args.directory);
-            report_for_ai = awr::parse_awr_dir(args.clone(), events_sqls, &fname);
+            let parsed = awr::parse_awr_dir(args.clone(), events_sqls, &fname);
+            report_for_ai = parsed.report_for_ai;
+            collection_for_mcp = Some(parsed.collection);
+            analysis_stem = args.directory.clone();
         } else {
             eprintln!("ERROR: Directory: '{}' does not exists!", args.directory);
         }
     } else if !args.json_file.is_empty() {
         if PathBuf::from(&args.json_file).exists() {
-            report_for_ai = awr::prarse_json_file(args.clone(), events_sqls);
+            let parsed = awr::prarse_json_file(args.clone(), events_sqls);
+            report_for_ai = parsed.report_for_ai;
+            collection_for_mcp = Some(parsed.collection);
+            analysis_stem = PathBuf::from(&args.json_file)
+                .with_extension("")
+                .to_string_lossy()
+                .into_owned();
             //let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
             reportfile = match PathBuf::from(&args.json_file).file_stem() {
                 Some(stem) => PathBuf::from(stem)
@@ -301,14 +323,16 @@ fn main() {
             )
             .unwrap();
         } else if vendor_model_lang[0] == "openrouter" {
-            openrouter(
+            if let Err(error) = openrouter(
                 &reportfile,
                 vendor_model_lang,
                 events_sqls.clone(),
                 &args,
                 &toon_str,
-            )
-            .unwrap();
+            ) {
+                eprintln!("❌ OpenRouter analysis failed: {error}");
+                std::process::exit(1);
+            }
         } else if vendor_model_lang[0] == "local" {
             match analyze_report_local_agent(
                 &report_for_ai,
@@ -339,5 +363,22 @@ fn main() {
 
     if !args.convert_md2html.is_empty() {
         convert_md_to_html_file(&args.convert_md2html, events_sqls.clone());
+    }
+
+    if let Some(endpoint) = args.mcp.clone() {
+        let Some(collection) = collection_for_mcp else {
+            eprintln!("ERROR: --mcp did not receive a parsed AWR/STATSPACK collection");
+            std::process::exit(2);
+        };
+        let runtime = AnalysisRuntime::new(
+            collection,
+            report_for_ai,
+            analysis_stem,
+            args.security_level,
+        );
+        if let Err(error) = run_mcp_server(runtime, endpoint) {
+            eprintln!("ERROR: MCP server failed: {error:#}");
+            std::process::exit(1);
+        }
     }
 }

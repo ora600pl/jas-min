@@ -153,13 +153,13 @@ struct GuidanceSection {
 }
 
 #[derive(Debug, Clone, Default)]
-struct GuidanceLibrary {
+pub(crate) struct GuidanceLibrary {
     source_path: Option<PathBuf>,
     sections: Vec<GuidanceSection>,
 }
 
 impl GuidanceLibrary {
-    fn load() -> Self {
+    pub(crate) fn load() -> Self {
         let path = reasonings_path();
         match fs::read_to_string(&path) {
             Ok(content) => {
@@ -216,11 +216,11 @@ impl GuidanceLibrary {
         }
     }
 
-    fn is_available(&self) -> bool {
+    pub(crate) fn is_available(&self) -> bool {
         !self.sections.is_empty()
     }
 
-    fn catalog(&self) -> String {
+    pub(crate) fn catalog(&self) -> String {
         if self.sections.is_empty() {
             return "No external diagnostic guidance library is available.".to_string();
         }
@@ -246,7 +246,7 @@ impl GuidanceLibrary {
         }
     }
 
-    fn query(&self, arguments: &Value, max_chars: usize) -> Value {
+    pub(crate) fn query(&self, arguments: &Value, max_chars: usize) -> Value {
         let topic = arguments
             .get("topic")
             .and_then(Value::as_str)
@@ -274,6 +274,12 @@ impl GuidanceLibrary {
                 let normalized_id = normalize_guidance_id(&section.section_id);
                 let title_lower = section.title.to_lowercase();
                 let content_lower = section.content.to_lowercase();
+                let title_tokens = guidance_tokens(&section.title)
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                let content_tokens = guidance_tokens(&section.content)
+                    .into_iter()
+                    .collect::<HashSet<_>>();
                 let mut score = 0usize;
                 if normalized_topic == normalized_id {
                     score += 10_000;
@@ -284,9 +290,9 @@ impl GuidanceLibrary {
                     score += 250;
                 }
                 for token in &topic_tokens {
-                    if title_lower.contains(token) {
+                    if title_tokens.contains(token) {
                         score += 40;
-                    } else if content_lower.contains(token) {
+                    } else if content_tokens.contains(token) {
                         score += 5;
                     }
                 }
@@ -331,6 +337,19 @@ impl GuidanceLibrary {
             "methodology_only": true,
             "mandatory_rule": "Guidance is not evidence. Verify every trigger and required indicator using seed or tool evidence before accepting a diagnosis or action.",
             "matches": matches
+        })
+    }
+
+    /// Returns a compact machine-readable catalog for MCP bootstrap responses.
+    pub(crate) fn catalog_json(&self) -> Value {
+        json!({
+            "available": self.is_available(),
+            "section_count": self.sections.len(),
+            "sections": self.sections.iter().map(|section| json!({
+                "section_id": section.section_id,
+                "guidance_ref": format!("GUIDE-{}", section.section_id),
+                "title": section.title
+            })).collect::<Vec<_>>()
         })
     }
 }
@@ -1538,7 +1557,7 @@ fn write_local_agent_progress(
     Ok(())
 }
 
-fn build_case_seed(report: &ReportForAI) -> Value {
+pub(crate) fn build_case_seed(report: &ReportForAI) -> Value {
     let mut by_db_time = report.top_spikes_marked.clone();
     by_db_time.sort_by(|a, b| {
         b.db_time_value
@@ -1767,7 +1786,7 @@ fn tools_for_round(full_schema: &Value, round: usize) -> Value {
     )
 }
 
-fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) -> Value {
+pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) -> Value {
     let section = args.get("section").and_then(Value::as_str).unwrap_or("");
     let limit = args
         .get("limit")
@@ -2440,6 +2459,23 @@ TRIGGER: enq: TX - row lock contention is significant.
         let library = GuidanceLibrary::from_text(PathBuf::from("reasonings.txt"), content);
         let result = library.query(&json!({"topic": "enq TX row lock"}), 8_000);
         assert_eq!(result["matches"][0]["section_id"], "§1.2");
+    }
+
+    #[test]
+    fn guidance_search_does_not_treat_log_as_logon() {
+        let content = r#"§1.1 LOG FILE SYNC
+TRIGGER: log file sync. Compare redo and commit behavior.
+§3.2 LOGON STORMS
+TRIGGER: user logons and connection creation spike.
+"#;
+        let library = GuidanceLibrary::from_text(PathBuf::from("reasonings.txt"), content);
+        let result = library.query(
+            &json!({"topic": "log redo commit", "max_sections": 2}),
+            8_000,
+        );
+        let matches = result["matches"].as_array().unwrap();
+        assert_eq!(matches[0]["section_id"], "§1.1");
+        assert!(matches.iter().all(|entry| entry["section_id"] != "§3.2"));
     }
 
     #[test]
