@@ -22,7 +22,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Area | What JAS-MIN does |
 |---|---|
 | Parsing | Parses a single report with `--file`, or a directory of `.html` and `.txt` reports with `--directory`. |
-| Collection helper | Uses `jas-min-collector.py` to generate AWR/STATSPACK reports from a local Oracle environment and package reports, JSON, alert logs, and optional SQL execution plans. |
+| Collection helper | Uses `jas-min-collector.py` to generate AWR/STATSPACK reports from a local Oracle environment and package reports, JSON, alert logs, optional SQL execution plans, child-cursor diagnostics, and prepared AIX/Linux statistics. |
 | Cached analysis | Re-analyzes an existing JAS-MIN JSON file with `--json-file`. |
 | HTML dashboard | Generates `<input>.html_reports/jasmin_main.html` and detail pages for waits, SQL IDs, statistics, I/O, latches, segments, anomalies, and gradients. |
 | Peak detection | Marks snapshots where `DB CPU / DB Time` is below `--time-cpu-ratio`, optionally requiring DB Time above `--filter-db-time`. |
@@ -665,10 +665,12 @@ For useful statistics, collect a meaningful run of consecutive reports. A week o
 `jas-min-collector.py` is a Python standard-library helper for environments where the reports should be generated directly from the target Oracle host. It expects `ORACLE_HOME`, `ORACLE_SID`, and a working `$ORACLE_HOME/bin/sqlplus` connection as `/ as sysdba`.
 
 ```bash
+export ORACLE_HOME=/path/to/oracle/home
+export ORACLE_SID=ORCL
 python3 jas-min-collector.py
 ```
 
-The collector can also receive the same choices as command-line options. Questions are only shown for required choices not covered by the command line, so mixed usage is supported:
+The collector supports interactive, mixed, and fully non-interactive use. Questions are shown only for choices not covered by command-line options. For example, this command supplies every choice and does not prompt:
 
 ```bash
 python3 jas-min-collector.py \
@@ -678,21 +680,29 @@ python3 jas-min-collector.py \
   --include-alert-log \
   --execution-plans \
   --sql-id abc123,def456 \
+  --no-os-stats \
   --package-content both \
   --security-level 1
 ```
 
-Available collector options:
+Run `python3 jas-min-collector.py --help` for the generated CLI help. The complete option set is:
 
-- `-h`, `--help` - show help
-- `-t`, `--report-type {awr,statspack}` - report source type
-- `--start "YYYY-MM-DD HH24:MI"` - collection start timestamp
-- `--end "YYYY-MM-DD HH24:MI"` - collection end timestamp
-- `--include-alert-log`, `--alert-log`, `--no-alert-log` - alert log attachment
-- `--execution-plans`, `--include-execution-plans`, `--no-execution-plans` - SQL execution plan attachments
-- `--sql-id SQL_ID[,SQL_ID...]`, `--sql-ids SQL_ID[,SQL_ID...]` - additional SQL IDs for execution plans; may be repeated
-- `-p`, `--package-content {both,json,reports}` - ZIP package content
-- `-S`, `--security-level {0,1,2}` - JSON security level
+| Option | Meaning and interaction behavior |
+|---|---|
+| `-h`, `--help` | Show the generated help and exit. |
+| `-t`, `--report-type {awr,statspack}` | Select AWR or STATSPACK. The short input forms `a`, `stat`, `sp`, and `s` are also accepted. Prompts when omitted. |
+| `--start "YYYY-MM-DD HH24:MI"` | Set the beginning of the collection range. Prompts only for the start when omitted. |
+| `--end "YYYY-MM-DD HH24:MI"` | Set the end of the collection range; it must be later than `--start`. Prompts only for the end when omitted. |
+| `--include-alert-log`, `--alert-log` | Include an alert-log excerpt for the requested range. Mutually exclusive with `--no-alert-log`. |
+| `--no-alert-log` | Do not include an alert-log excerpt. |
+| `--include-execution-plans`, `--execution-plans` | Attach current cursor plans for the automatically selected top elapsed SQL IDs and any IDs supplied with `--sql-id`. Mutually exclusive with `--no-execution-plans`. |
+| `--no-execution-plans` | Do not collect SQL execution plans. |
+| `--sql-id SQL_ID[,SQL_ID...]`, `--sql-ids SQL_ID[,SQL_ID...]` | Add one or more SQL IDs; the option may be repeated. It implies `--execution-plans` and cannot be combined with `--no-execution-plans`. Values are normalized to lowercase and duplicates are removed. |
+| `-p`, `--package-content {both,json,reports}`, `--package-mode {both,json,reports}` | Select ZIP content. `both` is the interactive default; `b`, `j`, `r`, `report`, `awr`, and `full` are accepted input aliases. Prompts when omitted. |
+| `-S`, `--security-level {0,1,2}` | Set the [JSON security level](#security-levels). Prompts when JSON is requested or must be generated for execution-plan selection. |
+| `--include-os-stats`, `--os-stats` | Include prepared operating-system statistics. Prompts for their source directory unless `--os-stats-dir` is also supplied. Mutually exclusive with `--no-os-stats`. |
+| `--no-os-stats` | Do not include operating-system statistics. |
+| `--os-stats-dir DIR` | Recursively copy prepared OS-statistics files from `DIR`. It implies `--include-os-stats`, requires a non-empty existing directory, and cannot be combined with `--no-os-stats`. |
 
 When `--execution-plans` is used without `--sql-id`, the collector attaches plans for the top elapsed SQL IDs found in the generated reports and does not ask for manual additions.
 
@@ -702,8 +712,47 @@ Without options, or for required options not provided in a mixed run, the collec
 - date range
 - whether to include alert log excerpts
 - whether to attach SQL execution plans
+- optional additional SQL IDs when execution plans are enabled interactively
+- whether to include prepared OS statistics and, if enabled, their source directory
 - ZIP package content: reports, JSON, or both
 - JSON security level when JSON is requested or needed for execution-plan selection
+
+Common non-interactive examples:
+
+```bash
+# Reports-only STATSPACK package, with every optional attachment disabled.
+python3 jas-min-collector.py \
+  --report-type statspack \
+  --start "2026-06-14 00:00" \
+  --end "2026-06-15 14:00" \
+  --no-alert-log \
+  --no-execution-plans \
+  --no-os-stats \
+  --package-content reports
+
+# AWR reports plus a recursively copied directory of prepared OS statistics.
+python3 jas-min-collector.py \
+  --report-type awr \
+  --start "2026-06-14 00:00" \
+  --end "2026-06-15 14:00" \
+  --no-alert-log \
+  --no-execution-plans \
+  --os-stats-dir /path/to/os-stats \
+  --package-content reports
+
+# JSON-only AWR package at security level 2, including explicit SQL IDs.
+python3 jas-min-collector.py \
+  -t awr \
+  --start "2026-06-14 00:00" \
+  --end "2026-06-15 14:00" \
+  --no-alert-log \
+  --sql-id abc123,def456 \
+  --no-os-stats \
+  -p json \
+  -S 2
+```
+
+OS statistics are attachments, not telemetry collected by this script. On AIX they are copied under `<collection_stem>_attachments/AIX/`; on Linux they are copied under `<collection_stem>_attachments/linux/`. The source directory hierarchy is preserved. Other collector host operating systems are rejected when OS attachments are requested.
 
 When execution plans are requested, the collector parses the generated reports to JAS-MIN JSON even if the ZIP package was set to reports-only. It counts SQL IDs found in `SQLs Ordered by Elapsed time`, selects the top 10 by appearance count, allows extra comma-separated SQL IDs, and writes plans to `<collection_stem>_attachments/<sql_id>.xplan`.
 
@@ -725,7 +774,17 @@ Execution plans are fetched with:
 select * from table(dbms_xplan.display_cursor('sqlid',null));
 ```
 
-The resulting ZIP package includes generated reports according to the selected package mode, the JSON sidecar when produced, alert log attachments when requested, execution-plan and decoded child-cursor-reason attachments when available, and `manifest.txt` with the selected SQL IDs and any collection failures.
+The collector creates `jasmin_collect_<collection_stem>/` in the current directory, adding `_2`, `_3`, and so on instead of overwriting an existing collection. The directory contains the generated reports, optional JSON and attachment directory, `manifest.txt`, and `jasmin_package_<collection_stem>.zip`.
+
+The package mode controls the primary report payload:
+
+| Mode | ZIP contents |
+|---|---|
+| `reports` | Generated AWR/STATSPACK reports. If execution plans are requested, the JSON needed to select top SQL IDs is also produced and included. |
+| `json` | Parsed JAS-MIN JSON; generated source reports remain in the collection directory but are not included in the ZIP. |
+| `both` | Generated reports and parsed JAS-MIN JSON. |
+
+In every mode, requested alert-log and OS-statistics attachments, available execution plans and decoded child-cursor reasons, and `manifest.txt` are included. The manifest records the selected options, packaged paths, selected SQL IDs, and best-effort collection failures.
 
 ## Further Reading
 
