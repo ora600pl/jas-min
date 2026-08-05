@@ -9,6 +9,7 @@ use crate::ai_tools::{dispatch_tool_call_value, tools_schema};
 use crate::awr::AWRSCollection;
 use crate::local_agent::{build_case_seed, dispatch_precomputed_analysis, GuidanceLibrary};
 use crate::reasonings::ReportForAI;
+use crate::tools::render_markdown_html_document;
 use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
 use rmcp::{
@@ -28,7 +29,9 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    fs::OpenOptions,
     future::Future,
+    io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
@@ -36,12 +39,177 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::Instant,
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-03.1";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-05.1";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
+const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MCP_HTML_FILENAME_BYTES: usize = 200;
+const MAX_MCP_LOG_FIELD_CHARS: usize = 160;
+
+static MCP_TOOL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+/// One tool-call lifecycle record written to the terminal.
+///
+/// Only bounded metadata is retained here. Tool arguments and result bodies can
+/// contain SQL text, object names, host diagnostics, or a complete report, so
+/// they must never be copied into operational logs.
+struct McpToolCallLog {
+    call_id: u64,
+    rpc_id: String,
+    tool: String,
+    analysis_id: Option<String>,
+    request_bytes: usize,
+    started_at: Instant,
+    finished: bool,
+}
+
+impl McpToolCallLog {
+    fn start(
+        rpc_id: String,
+        tool: String,
+        analysis_id: Option<String>,
+        request_bytes: usize,
+    ) -> Self {
+        let call = Self {
+            call_id: MCP_TOOL_CALL_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            rpc_id,
+            tool,
+            analysis_id,
+            request_bytes,
+            started_at: Instant::now(),
+            finished: false,
+        };
+        call.write("START", None, None, None);
+        call
+    }
+
+    fn succeed(&mut self, response_bytes: usize) {
+        self.finished = true;
+        self.write(
+            "OK",
+            Some(self.started_at.elapsed().as_millis()),
+            Some(response_bytes),
+            None,
+        );
+    }
+
+    fn fail(&mut self, response_bytes: usize, error_code: &str) {
+        self.finished = true;
+        self.write(
+            "ERROR",
+            Some(self.started_at.elapsed().as_millis()),
+            Some(response_bytes),
+            Some(error_code),
+        );
+    }
+
+    fn write(
+        &self,
+        status: &str,
+        duration_ms: Option<u128>,
+        response_bytes: Option<usize>,
+        error_code: Option<&str>,
+    ) {
+        eprintln!(
+            "{}",
+            format_mcp_tool_log_line(
+                &mcp_log_timestamp(),
+                self.call_id,
+                &self.rpc_id,
+                &self.tool,
+                self.analysis_id.as_deref(),
+                status,
+                self.request_bytes,
+                duration_ms,
+                response_bytes,
+                error_code,
+            )
+        );
+    }
+}
+
+impl Drop for McpToolCallLog {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.write(
+                "ABORTED",
+                Some(self.started_at.elapsed().as_millis()),
+                None,
+                Some("CALL_DID_NOT_COMPLETE"),
+            );
+        }
+    }
+}
+
+fn mcp_log_timestamp() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn bounded_log_field(value: &str) -> String {
+    let mut chars = value.chars();
+    let mut bounded = chars
+        .by_ref()
+        .take(MAX_MCP_LOG_FIELD_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        bounded.push_str("...");
+    }
+    serde_json::to_string(&bounded).unwrap_or_else(|_| "\"<unavailable>\"".to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn format_mcp_tool_log_line(
+    timestamp: &str,
+    call_id: u64,
+    rpc_id: &str,
+    tool: &str,
+    analysis_id: Option<&str>,
+    status: &str,
+    request_bytes: usize,
+    duration_ms: Option<u128>,
+    response_bytes: Option<usize>,
+    error_code: Option<&str>,
+) -> String {
+    let analysis_id = analysis_id
+        .map(bounded_log_field)
+        .unwrap_or_else(|| "null".to_string());
+    let duration_ms = duration_ms
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let response_bytes = response_bytes
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let error_code = error_code
+        .map(bounded_log_field)
+        .unwrap_or_else(|| "null".to_string());
+    format!(
+        "{timestamp} [MCP] status={status} call_id={call_id} rpc_id={} tool={} analysis_id={analysis_id} request_bytes={request_bytes} response_bytes={response_bytes} duration_ms={duration_ms} error_code={error_code}",
+        bounded_log_field(rpc_id),
+        bounded_log_field(tool),
+    )
+}
+
+fn serialized_json_size<T: Serialize + ?Sized>(value: &T) -> usize {
+    serde_json::to_vec(value).map_or(0, |encoded| encoded.len())
+}
+
+const STABLE_MARKDOWN_HEADINGS: &[&str] = &[
+    "## 1. Executive Summary",
+    "## 2. Overall Performance Profile and DB Time Degradation",
+    "## 3. Wait Events",
+    "## 4. SQL-Level Analysis",
+    "## 5. Segments and Objects",
+    "## 6. Latches and Internal Contention",
+    "## 7. I/O and Disk Assessment",
+    "## 8. UNDO, Redo and Load Profile",
+    "## 9. Gradient and Anomaly Synthesis",
+    "## 10. Relevant Initialization Parameters",
+    "## 11. Prioritized Actions and Mandatory Assessments",
+];
 
 const REQUIRED_REPORT_CATEGORIES: &[&str] = &[
     "performance_profile",
@@ -222,6 +390,8 @@ pub struct AnalysisRuntime {
     stem: Arc<String>,
     security_level: usize,
     guidance: Arc<GuidanceLibrary>,
+    report_links: Arc<HashMap<String, HashSet<String>>>,
+    html_reports_dir: Arc<String>,
     sessions: Arc<DashMap<String, Arc<Mutex<AnalysisSession>>>>,
     sequence: Arc<AtomicU64>,
 }
@@ -232,6 +402,8 @@ impl AnalysisRuntime {
         report: ReportForAI,
         stem: String,
         security_level: usize,
+        report_links: HashMap<String, HashSet<String>>,
+        html_reports_dir: String,
     ) -> Self {
         Self {
             collection: Arc::new(collection),
@@ -239,6 +411,8 @@ impl AnalysisRuntime {
             stem: Arc::new(stem),
             security_level,
             guidance: Arc::new(GuidanceLibrary::load()),
+            report_links: Arc::new(report_links),
+            html_reports_dir: Arc::new(html_reports_dir),
             sessions: Arc::new(DashMap::new()),
             sequence: Arc::new(AtomicU64::new(1)),
         }
@@ -683,11 +857,117 @@ impl AnalysisRuntime {
         });
         if matches!(state.config.output_format.as_str(), "markdown" | "both") {
             output["markdown"] = json!(markdown);
+            output["html_export_hint"] = json!(
+                "If HTML was requested, pass this exact markdown value to convert_markdown_to_html."
+            );
         }
         if matches!(state.config.output_format.as_str(), "json" | "both") {
             output["report"] = report_document;
         }
         Ok(output)
+    }
+
+    fn convert_markdown_to_html(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> std::result::Result<Value, Value> {
+        let output_directory = std::env::current_dir().map_err(|error| {
+            tool_error(
+                "WORKING_DIRECTORY_UNAVAILABLE",
+                format!("Cannot resolve the JAS-MIN working directory: {error}"),
+            )
+        })?;
+        self.convert_markdown_to_html_in_directory(arguments, &output_directory)
+    }
+
+    fn convert_markdown_to_html_in_directory(
+        &self,
+        arguments: &Map<String, Value>,
+        output_directory: &Path,
+    ) -> std::result::Result<Value, Value> {
+        let analysis_id = Self::analysis_id(arguments)?.to_string();
+        let _session = self.session(&analysis_id)?;
+        let markdown = arguments
+            .get("markdown")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| tool_error("INVALID_ARGUMENT", "'markdown' is required"))?;
+        if markdown.len() > MAX_MCP_MARKDOWN_BYTES {
+            return Err(tool_error(
+                "MARKDOWN_TOO_LARGE",
+                format!(
+                    "Markdown input is {} bytes; the maximum is {MAX_MCP_MARKDOWN_BYTES}",
+                    markdown.len()
+                ),
+            ));
+        }
+        validate_stable_markdown_report(markdown)?;
+
+        let filename = html_output_filename(
+            arguments.get("output_filename").and_then(Value::as_str),
+            self.stem.as_str(),
+            &analysis_id,
+        )?;
+        let output_path = output_directory.join(&filename);
+        let report_directory_reference = self.html_reports_dir.as_str();
+        let configured_report_directory = PathBuf::from(report_directory_reference);
+        let report_directory = if configured_report_directory.is_absolute() {
+            configured_report_directory
+        } else {
+            output_directory.join(configured_report_directory)
+        };
+        let report_links = self
+            .report_links
+            .iter()
+            .map(|(kind, names)| (kind.as_str(), names.clone()))
+            .collect::<HashMap<_, _>>();
+        let html = render_markdown_html_document(
+            markdown,
+            report_directory_reference,
+            &report_directory.to_string_lossy(),
+            report_links,
+        );
+
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output_path)
+            .map_err(|error| {
+                let code = if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    "OUTPUT_EXISTS"
+                } else {
+                    "HTML_WRITE_FAILED"
+                };
+                tool_error(
+                    code,
+                    format!("Cannot create '{}': {error}", output_path.display()),
+                )
+            })?;
+        if let Err(error) = output
+            .write_all(html.as_bytes())
+            .and_then(|_| output.flush())
+        {
+            drop(output);
+            let _ = std::fs::remove_file(&output_path);
+            return Err(tool_error(
+                "HTML_WRITE_FAILED",
+                format!("Cannot write '{}': {error}", output_path.display()),
+            ));
+        }
+
+        Ok(json!({
+            "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
+            "analysis_id": analysis_id,
+            "output_filename": filename,
+            "output_path": output_path,
+            "html_bytes": html.len(),
+            "markdown_bytes": markdown.len(),
+            "report_structure_validated": true,
+            "renderer": "JAS-MIN classic AI Markdown renderer",
+            "linked_report_directory": report_directory,
+            "linked_report_directory_present": report_directory.is_dir(),
+            "opened_automatically": false
+        }))
     }
 
     fn call_tool(
@@ -705,6 +985,7 @@ impl AnalysisRuntime {
             "set_report_assessment" => self.set_assessment(&arguments),
             "get_report_status" => self.report_status(&arguments),
             "finalize_report" => self.finalize_report(&arguments),
+            "convert_markdown_to_html" => self.convert_markdown_to_html(&arguments),
             other => self.execute_evidence_tool(other, &arguments),
         }
     }
@@ -747,7 +1028,7 @@ impl ServerHandler for JasminMcpServer {
                 ),
         )
         .with_instructions(
-            "Call start_performance_analysis before every investigation and pass its analysis_id to all later tools. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Store findings with evidence_refs, complete all mandatory assessments, check get_report_status, and finish through finalize_report.",
+            "Call start_performance_analysis before every investigation and pass its analysis_id to all later tools. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Store findings with evidence_refs, complete all mandatory assessments, check get_report_status, and finish through finalize_report. When the user requests HTML, configure Markdown output, finalize the stable Markdown report first, then pass that exact Markdown to convert_markdown_to_html.",
         )
     }
 
@@ -768,14 +1049,35 @@ impl ServerHandler for JasminMcpServer {
     fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = std::result::Result<CallToolResponse, McpError>> + Send + '_ {
         async move {
             let name = request.name.to_string();
             let arguments = request.arguments.unwrap_or_default();
+            let analysis_id = arguments
+                .get("analysis_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let request_bytes = serialized_json_size(&arguments);
+            let mut call_log = McpToolCallLog::start(
+                context.id.to_string(),
+                name.clone(),
+                analysis_id,
+                request_bytes,
+            );
             let result = match self.runtime.call_tool(&name, arguments) {
-                Ok(value) => CallToolResult::structured(value),
-                Err(value) => CallToolResult::structured_error(value),
+                Ok(value) => {
+                    call_log.succeed(serialized_json_size(&value));
+                    CallToolResult::structured(value)
+                }
+                Err(value) => {
+                    let error_code = value
+                        .get("error_code")
+                        .and_then(Value::as_str)
+                        .unwrap_or("UNKNOWN_TOOL_ERROR");
+                    call_log.fail(serialized_json_size(&value), error_code);
+                    CallToolResult::structured_error(value)
+                }
             };
             Ok(result.into())
         }
@@ -809,7 +1111,7 @@ impl ServerHandler for JasminMcpServer {
             Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                 Role::User,
                 format!(
-                    "Investigate {focus} using the JAS-MIN MCP server. Begin with start_performance_analysis, then use the returned analysis_id for all evidence calls. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings, complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}."
+                    "Investigate {focus} using the JAS-MIN MCP server. Begin with start_performance_analysis, then use the returned analysis_id for all evidence calls. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings, complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html."
                 ),
             )])
             .with_description("Tool-first Oracle performance investigation workflow")
@@ -853,8 +1155,13 @@ pub async fn run_mcp_server(runtime: AnalysisRuntime, endpoint: McpEndpoint) -> 
     let listener = tokio::net::TcpListener::bind(endpoint.address)
         .await
         .with_context(|| format!("cannot bind MCP endpoint {}", endpoint.url()))?;
-    println!("✅ JAS-MIN MCP ready at {}", endpoint.url());
+    println!(
+        "{} [MCP] status=READY endpoint={}",
+        mcp_log_timestamp(),
+        endpoint.url()
+    );
     println!("   Parsed collection and statistical analysis are retained in memory.");
+    println!("   Tool calls are logged with UTC timestamps, result status, and duration.");
     println!("   Press Ctrl-C to stop the server.");
     axum::serve(listener, router)
         .with_graceful_shutdown({
@@ -1058,6 +1365,25 @@ fn mcp_control_definitions() -> Vec<Value> {
                 "properties": {
                     "allow_incomplete": {"type": "boolean", "default": false}
                 }
+            }),
+        ),
+        function_definition(
+            "convert_markdown_to_html",
+            "Validates a complete 11-section JAS-MIN Markdown report, renders it with the same TOC/template/linking pipeline as classic AI mode, and creates a new HTML file directly in the JAS-MIN working directory. Finalize Markdown first and pass it unchanged. Existing files are never overwritten and the server does not open a browser.",
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "markdown": {
+                        "type": "string",
+                        "description": "Complete Markdown report returned by finalize_report or authored with the exact stable title and 11 section headings. Maximum 4 MiB."
+                    },
+                    "output_filename": {
+                        "type": "string",
+                        "description": "Optional basename created in the JAS-MIN working directory. Path separators are rejected. The .html extension is appended when omitted."
+                    }
+                },
+                "required": ["markdown"]
             }),
         ),
     ]
@@ -1333,7 +1659,12 @@ fn report_contract(config: &ReportConfig) -> Value {
         ],
         "required_finding_categories": REQUIRED_REPORT_CATEGORIES,
         "required_assessments": REQUIRED_ASSESSMENTS,
-        "extension_policy": "Core sections cannot be removed. Detail may be changed per category and evidence/guidance appendices are optional."
+        "extension_policy": "Core sections cannot be removed. Detail may be changed per category and evidence/guidance appendices are optional.",
+        "html_export": {
+            "tool": "convert_markdown_to_html",
+            "workflow": "Finalize Markdown first, then pass the exact Markdown to the conversion tool.",
+            "write_policy": "Creates a new .html file in the JAS-MIN working directory and never overwrites an existing file."
+        }
     })
 }
 
@@ -1604,6 +1935,124 @@ fn validate_references(
     Ok(())
 }
 
+fn validate_stable_markdown_report(markdown: &str) -> std::result::Result<(), Value> {
+    let lines = markdown.lines().map(str::trim).collect::<Vec<_>>();
+    if !lines
+        .iter()
+        .any(|line| *line == "# Oracle Performance Analysis")
+    {
+        return Err(tool_error(
+            "INVALID_REPORT_TITLE",
+            "Markdown must contain the '# Oracle Performance Analysis' title",
+        ));
+    }
+
+    let mut positions = Vec::with_capacity(STABLE_MARKDOWN_HEADINGS.len());
+    let mut missing = Vec::new();
+    for heading in STABLE_MARKDOWN_HEADINGS {
+        if let Some(position) = lines.iter().position(|line| line == heading) {
+            positions.push(position);
+        } else {
+            missing.push(*heading);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(tool_error(
+            "MISSING_REPORT_SECTIONS",
+            format!(
+                "Markdown is missing required headings: {}",
+                missing.join("; ")
+            ),
+        ));
+    }
+    if positions.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(tool_error(
+            "INVALID_REPORT_SECTION_ORDER",
+            "The 11 required report sections must appear in the server-defined order",
+        ));
+    }
+    Ok(())
+}
+
+fn html_output_filename(
+    requested: Option<&str>,
+    dataset_stem: &str,
+    analysis_id: &str,
+) -> std::result::Result<String, Value> {
+    let default_name = || {
+        let dataset_name = Path::new(dataset_stem)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("jas-min");
+        let mut safe_stem = dataset_name
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .take(120)
+            .collect::<String>();
+        while safe_stem.contains("--") {
+            safe_stem = safe_stem.replace("--", "-");
+        }
+        let safe_stem = safe_stem.trim_matches('-');
+        let safe_stem = if safe_stem.is_empty() {
+            "jas-min"
+        } else {
+            safe_stem
+        };
+        format!("{safe_stem}-{}-report.html", analysis_id.to_lowercase())
+    };
+
+    let candidate = requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(default_name);
+    if candidate.len() > MAX_MCP_HTML_FILENAME_BYTES {
+        return Err(tool_error(
+            "INVALID_OUTPUT_FILENAME",
+            format!("output_filename exceeds the {MAX_MCP_HTML_FILENAME_BYTES}-byte limit"),
+        ));
+    }
+    if candidate.starts_with('.')
+        || candidate.contains('/')
+        || candidate.contains('\\')
+        || candidate.chars().any(char::is_control)
+    {
+        return Err(tool_error(
+            "INVALID_OUTPUT_FILENAME",
+            "output_filename must be a visible basename without path separators or control characters",
+        ));
+    }
+
+    let path = Path::new(&candidate);
+    match path.extension().and_then(|value| value.to_str()) {
+        None => Ok(format!("{candidate}.html")),
+        Some(extension) if extension.eq_ignore_ascii_case("html") => {
+            let stem = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if stem.is_empty() {
+                Err(tool_error(
+                    "INVALID_OUTPUT_FILENAME",
+                    "output_filename must contain a name before the .html extension",
+                ))
+            } else {
+                Ok(format!("{stem}.html"))
+            }
+        }
+        Some(_) => Err(tool_error(
+            "INVALID_OUTPUT_FILENAME",
+            "output_filename must have no extension or use the .html extension",
+        )),
+    }
+}
+
 fn parse_recommendations(value: Option<&Value>) -> std::result::Result<Vec<Recommendation>, Value> {
     let Some(items) = value.and_then(Value::as_array) else {
         return Ok(Vec::new());
@@ -1845,6 +2294,8 @@ mod tests {
             stem: Arc::new("nonexistent-test-dataset".to_string()),
             security_level: 0,
             guidance: Arc::new(GuidanceLibrary::default()),
+            report_links: Arc::new(HashMap::new()),
+            html_reports_dir: Arc::new("nonexistent-test-dataset.html_reports".to_string()),
             sessions: Arc::new(DashMap::new()),
             sequence: Arc::new(AtomicU64::new(1)),
         }
@@ -1862,6 +2313,40 @@ mod tests {
     fn endpoint_rejects_non_loopback_binding() {
         let error = "0.0.0.0:4242/mcp".parse::<McpEndpoint>().unwrap_err();
         assert!(error.contains("loopback-only"));
+    }
+
+    #[test]
+    fn tool_log_line_is_single_line_and_omits_payload_content() {
+        let line = format_mcp_tool_log_line(
+            "2026-08-05T12:00:00.123Z",
+            7,
+            "rpc\n42",
+            "set_report_assessment",
+            Some("A-20260805T085728Z-0001"),
+            "ERROR",
+            512,
+            Some(240_001),
+            Some(96),
+            Some("SESSION\nLOCK"),
+        );
+
+        assert_eq!(line.lines().count(), 1);
+        assert!(line.contains("status=ERROR call_id=7"));
+        assert!(line.contains("rpc_id=\"rpc\\n42\""));
+        assert!(line.contains("tool=\"set_report_assessment\""));
+        assert!(line.contains("analysis_id=\"A-20260805T085728Z-0001\""));
+        assert!(line.contains("duration_ms=240001"));
+        assert!(line.contains("error_code=\"SESSION\\nLOCK\""));
+        assert!(!line.contains("conclusion"));
+        assert!(!line.contains("evidence_refs"));
+    }
+
+    #[test]
+    fn tool_log_fields_are_bounded() {
+        let oversized = "x".repeat(MAX_MCP_LOG_FIELD_CHARS + 50);
+        let encoded = bounded_log_field(&oversized);
+        assert_eq!(encoded.matches('x').count(), MAX_MCP_LOG_FIELD_CHARS);
+        assert!(encoded.ends_with("...\""));
     }
 
     #[test]
@@ -1944,6 +2429,18 @@ mod tests {
         assert!(start.input_schema["properties"]
             .get("analysis_id")
             .is_none());
+        let html = tools
+            .iter()
+            .find(|tool| tool.name == "convert_markdown_to_html")
+            .unwrap();
+        assert!(html.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("analysis_id")));
+        assert!(html.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("markdown")));
     }
 
     #[test]
@@ -2049,5 +2546,74 @@ mod tests {
             11
         );
         assert_eq!(final_report["draft"], false);
+
+        let incomplete = runtime
+            .call_tool(
+                "convert_markdown_to_html",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    (
+                        "markdown".to_string(),
+                        json!("# Oracle Performance Analysis\n\n## 1. Executive Summary\n"),
+                    ),
+                ]),
+            )
+            .unwrap_err();
+        assert_eq!(incomplete["error_code"], "MISSING_REPORT_SECTIONS");
+
+        let unsafe_name = runtime
+            .convert_markdown_to_html_in_directory(
+                &Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("markdown".to_string(), json!(markdown)),
+                    ("output_filename".to_string(), json!("../report.html")),
+                ]),
+                &std::env::temp_dir(),
+            )
+            .unwrap_err();
+        assert_eq!(unsafe_name["error_code"], "INVALID_OUTPUT_FILENAME");
+
+        let test_directory = std::env::temp_dir().join(format!(
+            "jas-min-mcp-html-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir(&test_directory).unwrap();
+        let linked_report_directory = test_directory.join("nonexistent-test-dataset.html_reports");
+        std::fs::create_dir(&linked_report_directory).unwrap();
+        let html_result = runtime
+            .convert_markdown_to_html_in_directory(
+                &Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("markdown".to_string(), json!(markdown)),
+                    ("output_filename".to_string(), json!("MCP-report.HTML")),
+                ]),
+                &test_directory,
+            )
+            .unwrap();
+        assert_eq!(html_result["output_filename"], "MCP-report.html");
+        assert_eq!(html_result["report_structure_validated"], true);
+        assert_eq!(html_result["linked_report_directory_present"], true);
+        assert_eq!(html_result["opened_automatically"], false);
+        let output_path = test_directory.join("MCP-report.html");
+        let html = std::fs::read_to_string(&output_path).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Table of Contents"));
+        assert!(html.contains("Overall Performance Profile and DB Time Degradation"));
+
+        let duplicate = runtime
+            .convert_markdown_to_html_in_directory(
+                &Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("markdown".to_string(), json!(markdown)),
+                    ("output_filename".to_string(), json!("MCP-report.html")),
+                ]),
+                &test_directory,
+            )
+            .unwrap_err();
+        assert_eq!(duplicate["error_code"], "OUTPUT_EXISTS");
+        std::fs::remove_file(output_path).unwrap();
+        std::fs::remove_dir(linked_report_directory).unwrap();
+        std::fs::remove_dir(test_directory).unwrap();
     }
 }

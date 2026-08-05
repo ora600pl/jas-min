@@ -292,7 +292,7 @@ pub fn add_links_to_html(
     html_absolute_dir: String,
 ) -> String {
     let mut html_with_links: String = html;
-    let bgevents = events_sqls.get("BG").unwrap().clone();
+    let bgevents = events_sqls.get("BG").cloned().unwrap_or_default();
     for (name_type, names) in events_sqls {
         //first deal with Forground events and SQLIDs
         for name in names {
@@ -355,6 +355,25 @@ pub fn add_links_to_html(
     html_with_links
 }
 
+/// Renders Markdown with the same template and report links used by classic AI mode.
+///
+/// Keeping this function free of file-system and GUI side effects allows the MCP
+/// adapter to enforce its own output-path policy while sharing the exact renderer.
+pub(crate) fn render_markdown_html_document(
+    markdown: &str,
+    html_dir: &str,
+    html_absolute_dir: &str,
+    events_sqls: HashMap<&str, HashSet<String>>,
+) -> String {
+    let html_plain = markdown_to_html_with_toc(markdown, html_dir);
+    add_links_to_html(
+        html_plain,
+        events_sqls,
+        html_dir.to_string(),
+        html_absolute_dir.to_string(),
+    )
+}
+
 /// Reads a Markdown file, converts to HTML with TOC, writes to .html file
 pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, HashSet<String>>) {
     let markdown = fs::read_to_string(input_path)
@@ -368,8 +387,7 @@ pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, Hash
     if input_path.contains("_deep_") {
         html_dir = ".".to_string();
     }
-    let html_plain = markdown_to_html_with_toc(&markdown, &html_dir);
-    let html = add_links_to_html(html_plain, events_sqls, html_dir, html_absolute_dir);
+    let html = render_markdown_html_document(&markdown, &html_dir, &html_absolute_dir, events_sqls);
 
     let output_path = Path::new(input_path).with_extension("html");
 
