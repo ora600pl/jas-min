@@ -106,6 +106,8 @@ flowchart TD
     Existing["Existing JAS-MIN tool dispatcher"]
     Guidance["GuidanceLibrary<br/>reasonings.txt"]
     Report["Report state and renderer"]
+    HtmlRenderer["Classic AI Markdown renderer<br/>TOC, CSS, report links"]
+    WorkingDir["JAS-MIN working directory<br/>new .html file"]
 
     Client -->|"POST initialize"| Endpoint
     Endpoint --> Transport
@@ -138,6 +140,10 @@ flowchart TD
     Handler -->|"Coverage and missing requirements"| Client
     Client -->|"finalize_report"| Handler
     Report -->|"Stable Markdown and/or JSON"| Client
+    Client -->|"If HTML requested:<br/>convert_markdown_to_html"| Handler
+    Handler --> HtmlRenderer
+    HtmlRenderer -->|"Validated 11-section report"| WorkingDir
+    WorkingDir -->|"Output path and byte counts"| Client
 
     Client -->|"HTTP DELETE with Mcp-Session-Id"| Endpoint
     Transport -->|"Close transport session"| Client
@@ -348,12 +354,13 @@ annotations:
 - report mutations and analysis creation are not marked read-only;
 - no tool is marked destructive;
 - tools are marked closed-world because they operate only on the parsed
-  collection, its local attachments, and in-memory report state.
+  collection, its local attachments, in-memory report state, and explicitly
+  named new HTML files in the JAS-MIN working directory.
 
 The core evidence catalog is always available. Attachment tools are registered
 only when matching files are discovered under `<stem>_attachments`.
 
-With no attachments the server exposes 21 core evidence tools and nine MCP
+With no attachments the server exposes 21 core evidence tools and ten MCP
 workflow tools. Every supported attachment class adds its own discovery or
 inspection tools; a dataset containing plans, child-cursor reasons, an alert
 log, and AIX telemetry exposes eight additional evidence tools.
@@ -390,6 +397,7 @@ log, and AIX telemetry exposes eight additional evidence tools.
 | `set_report_assessment` | Stores one mandatory final assessment. |
 | `get_report_status` | Validates report coverage without rendering it. |
 | `finalize_report` | Validates and renders Markdown, JSON, or both. |
+| `convert_markdown_to_html` | Validates finalized Markdown and creates a new HTML file in the working directory using the classic AI renderer. |
 
 ## Evidence registry
 
@@ -397,7 +405,7 @@ Every successful measurement tool call is wrapped in an evidence envelope:
 
 ```json
 {
-  "schema_version": "2026-08-03.1",
+  "schema_version": "2026-08-05.1",
   "analysis_id": "A-20260804T100000Z-0001",
   "evidence_id": "E-0002",
   "tool_name": "get_database_load_summary",
@@ -519,6 +527,8 @@ stateDiagram-v2
     Checked --> Investigating: missing coverage
     Checked --> Finalized: ready_to_finalize = true
     Checked --> Draft: allow_incomplete = true
+    Finalized --> HTML: convert_markdown_to_html
+    Draft --> HTML: convert_markdown_to_html
     Finalized --> Finalized: finalize again creates next revision
     Draft --> Investigating: complete missing work
 ```
@@ -646,6 +656,63 @@ marked as a draft. Each successful finalization increments the report revision;
 it does not freeze the analysis, so a model can collect more evidence and
 render a later revision.
 
+## HTML export
+
+HTML is deliberately a second step rather than another `output_format` value.
+This preserves the auditable report contract: the model first produces and
+validates the canonical Markdown report, then passes that exact document to the
+classic JAS-MIN HTML renderer.
+
+When the user requests HTML, the model should:
+
+1. call `configure_report` with `output_format` set to `markdown` or `both`;
+2. complete the evidence, findings, mandatory assessments, and actions;
+3. call `get_report_status` and resolve missing requirements;
+4. call `finalize_report`;
+5. copy the returned `markdown` value unchanged into
+   `convert_markdown_to_html`;
+6. report the returned `output_path` to the user.
+
+Example tool arguments:
+
+```json
+{
+  "analysis_id": "A-20260805T100000Z-0001",
+  "markdown": "# Oracle Performance Analysis\n\n## 1. Executive Summary\n...",
+  "output_filename": "oracle-performance-report.html"
+}
+```
+
+The conversion tool enforces the following policy:
+
+- `markdown` is required and limited to 4 MiB;
+- the exact `# Oracle Performance Analysis` title must be present;
+- all 11 stable `##` headings must be present in server-defined order;
+- `output_filename` is an optional basename, never a path;
+- `/`, `\\`, hidden names, control characters, and non-HTML extensions are
+  rejected;
+- `.html` is appended if no extension is supplied;
+- the destination is always the current JAS-MIN working directory;
+- the file is created with create-new semantics and an existing file is never
+  overwritten;
+- no browser or desktop application is opened by the server.
+
+When no filename is supplied, the server derives one from the dataset name and
+`analysis_id`, making collisions between independent analyses unlikely.
+
+The renderer is shared with classic AI mode. It generates a complete HTML5
+document with JAS-MIN styling, anchored headings, a table of contents, logo,
+links to the main HTML report, and links to SQL/event pages when the relevant
+classic report assets and link index are available. The response reports
+whether the classic HTML report directory selected while parsing the dataset
+was present. A custom output filename does not change that link target: the new
+HTML document still points to the original JAS-MIN charts and SQL/event pages.
+
+The HTML file is an output artifact, not an evidence record and not part of the
+in-memory report revision. Repeating the call with the same filename returns
+`OUTPUT_EXISTS`; choose another basename rather than silently replacing an
+auditable result.
+
 ## Error model
 
 MCP protocol errors and JAS-MIN tool errors have different roles:
@@ -668,6 +735,14 @@ Common structured error codes include:
 | `UNKNOWN_GUIDANCE_REF` | A finding cited guidance not retrieved in this analysis. | Call `get_diagnostic_guidance` first. |
 | `ASSESSMENT_WITHOUT_EVIDENCE` | A non-unknown assessment cited no measurements. | Add evidence or change the status to `unknown`. |
 | `REPORT_INCOMPLETE` | Finalization was requested before the contract was complete. | Follow the embedded status object or request an explicit draft. |
+| `INVALID_REPORT_TITLE` | HTML conversion received Markdown without the canonical report title. | Pass the exact finalized Markdown. |
+| `MISSING_REPORT_SECTIONS` | One or more stable Markdown headings are missing. | Finalize the report before conversion or restore the missing headings. |
+| `INVALID_REPORT_SECTION_ORDER` | Stable sections are not in server-defined order. | Pass finalized Markdown unchanged. |
+| `MARKDOWN_TOO_LARGE` | HTML conversion input exceeds 4 MiB. | Reduce optional detail or appendices before finalization. |
+| `INVALID_OUTPUT_FILENAME` | The requested HTML name is unsafe or has another extension. | Supply a simple basename ending in `.html`. |
+| `OUTPUT_EXISTS` | Create-new output protection found an existing file. | Select a new filename. |
+| `WORKING_DIRECTORY_UNAVAILABLE` | The server cannot resolve its current directory. | Restore access to the process working directory or restart JAS-MIN there. |
+| `HTML_WRITE_FAILED` | The working directory cannot create or complete the file. | Check permissions, free space, and filename. |
 
 Individual evidence tools can also return tool-specific validation errors such
 as an unknown snapshot, invalid date, unsupported metric, unavailable SQL text,
@@ -705,11 +780,50 @@ The MCP interface is designed to avoid unnecessary context growth:
 - AIX attachment scanning limits recursion depth, files, bytes per file, and
   returned sample records;
 - repeated evidence calls reuse a short reference instead of creating duplicate
-  report evidence.
+  report evidence;
+- Markdown-to-HTML input is capped at 4 MiB and creates only one output file.
 
 Clients should prefer narrow calls and store conclusions through
 `record_finding` rather than copying every raw tool result into the conversation
 history.
+
+## Operational logging
+
+The server writes MCP lifecycle information directly to the terminal. The
+`READY` line confirms that parsing and precomputation completed and that the
+HTTP listener is accepting connections. Every `tools/call` request then emits
+two UTC-timestamped lines: `START` followed by `OK` or `ERROR`.
+
+```text
+2026-08-05T12:00:00.123Z [MCP] status=START call_id=7 rpc_id="42" tool="set_report_assessment" analysis_id="A-20260805T085728Z-0001" request_bytes=512 response_bytes=null duration_ms=null error_code=null
+2026-08-05T12:00:00.124Z [MCP] status=OK call_id=7 rpc_id="42" tool="set_report_assessment" analysis_id="A-20260805T085728Z-0001" request_bytes=512 response_bytes=241 duration_ms=1 error_code=null
+```
+
+The fields have the following meanings:
+
+| Field | Meaning |
+|---|---|
+| `call_id` | Process-local, monotonically increasing tool-call identifier. |
+| `rpc_id` | JSON-RPC request identifier supplied by the client. |
+| `tool` | Requested MCP tool name. |
+| `analysis_id` | Analysis handle when the argument is present; otherwise `null`. |
+| `request_bytes` | Serialized size of the tool argument object, excluding the JSON-RPC envelope. |
+| `response_bytes` | Serialized size of the structured tool result or error. |
+| `duration_ms` | Time spent in JAS-MIN tool dispatch, measured with a monotonic clock. |
+| `error_code` | Stable JAS-MIN tool error code for `ERROR`; otherwise `null`. |
+
+If execution unwinds or the request future is dropped before normal completion,
+the guard emits `ABORTED` with `CALL_DID_NOT_COMPLETE`. A forced process kill
+cannot emit that final line.
+
+Logs deliberately exclude argument and response bodies. They therefore do not
+copy SQL text, object names, AIX samples, findings, or complete Markdown reports
+to the terminal. Client-controlled identifiers are length-bounded and JSON
+escaped so that one call always occupies one physical log line.
+
+Terminal logging is operational diagnostics, not durable audit storage. To
+retain it, redirect both stdout and stderr through an operator-controlled log
+collector or file with suitable access controls and rotation.
 
 ## Security model
 
@@ -720,9 +834,18 @@ The embedded server is designed for a trusted local workstation:
   `localhost`, with and without the selected port;
 - allowed origins are restricted to the corresponding local HTTP origins;
 - absolute AIX attachment paths and path traversal are rejected;
-- the service exposes no TLS, user authentication, authorization, or audit log;
+- the service exposes no TLS, user authentication, authorization, or durable
+  audit log;
 - MCP and analysis session identifiers are routing handles, not security
-  boundaries.
+  boundaries;
+- HTML conversion cannot select a directory or overwrite an existing file, and
+  it does not automatically open model-generated HTML.
+
+The classic renderer preserves raw HTML embedded in Markdown and is not an HTML
+sanitizer. Treat model-generated reports as untrusted local content: review
+unexpected raw markup and open the result only in an appropriate local browser
+context. Disabling automatic browser launch prevents conversion itself from
+executing embedded content.
 
 Security level 1 or 2 may expose object names, SQL text, execution plans, alert
 log excerpts, and operating-system diagnostics. Select the lowest
@@ -738,6 +861,10 @@ who may inspect database and host evidence.
 Pressing Ctrl-C triggers graceful Axum shutdown and cancels the Streamable HTTP
 service. The listener, transport sessions, analysis sessions, evidence records,
 and report state then disappear with the process.
+
+HTML files successfully written by `convert_markdown_to_html` remain on disk in
+the working directory after shutdown. They are ordinary output artifacts and
+must be retained or removed by the operator.
 
 A client should still send HTTP `DELETE` before disconnecting. This releases
 transport state promptly, although it does not currently remove the associated
@@ -779,6 +906,22 @@ Call `get_report_status` and inspect `missing_required_categories`,
 `allow_incomplete: true` only when the requested deliverable is explicitly a
 draft.
 
+### A tool call times out or the client reports `Tool execution failed`
+
+Match the client's JSON-RPC identifier with `rpc_id` in the terminal:
+
+- no `START` line means the request did not reach JAS-MIN tool dispatch;
+- `START` without a terminal status identifies the in-flight tool and its
+  argument size;
+- `ERROR` identifies a completed JAS-MIN rejection through `error_code`;
+- `OK` followed by a client-side failure points to response delivery or MCP
+  transport handling rather than the tool implementation;
+- `ABORTED` means execution left the normal call path before a result was
+  produced.
+
+Keep the server process running while investigating an active `analysis_id`.
+Analysis state is in memory and is lost on restart.
+
 ### AIX CPU statistics disagree with an earlier report
 
 Compare `date_from`, `date_to`, parsed observation count, filtered observation
@@ -808,8 +951,10 @@ only the listening port:
 5. at least one precomputed and one narrow evidence call;
 6. guidance lookup when guidance is available;
 7. report configuration, finding, assessment, status, and finalization calls;
-8. HTTP `DELETE` for the transport session;
-9. Ctrl-C and confirmation that the listening socket has closed.
+8. `convert_markdown_to_html`, verification of the returned path, and a check
+   that an existing output is not overwritten;
+9. HTTP `DELETE` for the transport session;
+10. Ctrl-C and confirmation that the listening socket has closed.
 
 ## Extending the server
 

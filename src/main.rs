@@ -375,6 +375,26 @@ fn main() {
             report_for_ai,
             analysis_stem,
             args.security_level,
+            events_sqls
+                .iter()
+                .map(|(kind, names)| ((*kind).to_string(), names.clone()))
+                .collect(),
+            if !args.directory.is_empty() {
+                PathBuf::from(&args.directory)
+                    .with_extension("html_reports")
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                PathBuf::from(&args.json_file)
+                    .file_stem()
+                    .map(|stem| {
+                        PathBuf::from(stem)
+                            .with_extension("html_reports")
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .unwrap_or_else(|| "jas-min.html_reports".to_string())
+            },
         );
         if let Err(error) = run_mcp_server(runtime, endpoint) {
             eprintln!("ERROR: MCP server failed: {error:#}");
