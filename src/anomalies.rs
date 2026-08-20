@@ -759,7 +759,7 @@ pub fn report_anomalies_summary(
     for table_line in table.to_string().lines() {
         make_notes!(logfile_name, args.quiet, 0, "{}\n", table_line);
     }
-    if let Err(e) = save_anomalies_to_csv(anomalies_summary, &args.directory) {
+    if let Err(e) = save_anomalies_to_csv(anomalies_summary, args.directory()) {
         eprintln!("Failed to save CSV files: {}", e);
     }
 

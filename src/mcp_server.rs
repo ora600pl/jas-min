@@ -14,10 +14,10 @@ use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, GetPromptRequestParams,
-        GetPromptResponse, GetPromptResult, Implementation, ListPromptsResult, ListToolsResult,
-        Prompt, PromptArgument, PromptMessage, Role, ServerCapabilities, ServerInfo, Tool,
-        ToolAnnotations,
+        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult,
+        GetPromptRequestParams, GetPromptResponse, GetPromptResult, Implementation,
+        ListPromptsResult, ListToolsResult, Prompt, PromptArgument, PromptMessage, ProtocolVersion,
+        Role, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
     },
     service::{RequestContext, RoleServer},
     transport::streamable_http_server::{
@@ -43,12 +43,14 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-05.1";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-18.1";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MCP_HTML_FILENAME_BYTES: usize = 200;
 const MAX_MCP_LOG_FIELD_CHARS: usize = 160;
+const MCP_TOOLS_LIST_TTL_MS: u64 = 300_000;
+pub const MAX_MCP_PROJECTS: usize = 32;
 
 static MCP_TOOL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -289,6 +291,8 @@ impl FromStr for McpEndpoint {
 struct EvidenceRecord {
     evidence_id: String,
     tool_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
     arguments: Value,
     result: Value,
 }
@@ -349,6 +353,7 @@ struct ReportAssessment {
 }
 
 struct AnalysisSession {
+    project_ids: Vec<String>,
     config: ReportConfig,
     evidence: BTreeMap<String, EvidenceRecord>,
     evidence_cache: HashMap<String, String>,
@@ -361,14 +366,16 @@ struct AnalysisSession {
 }
 
 impl AnalysisSession {
-    fn new(seed: Value, config: ReportConfig) -> Self {
+    fn new(seed: Value, config: ReportConfig, project_ids: Vec<String>) -> Self {
         let seed_record = EvidenceRecord {
             evidence_id: SEED_EVIDENCE_ID.to_string(),
             tool_name: "initial_case_seed".to_string(),
+            project_id: None,
             arguments: json!({}),
             result: seed,
         };
         Self {
+            project_ids,
             config,
             evidence: BTreeMap::from([(SEED_EVIDENCE_ID.to_string(), seed_record)]),
             evidence_cache: HashMap::new(),
@@ -382,22 +389,21 @@ impl AnalysisSession {
     }
 }
 
-/// Immutable parsed data plus explicitly keyed conversational report sessions.
-#[derive(Clone)]
-pub struct AnalysisRuntime {
-    collection: Arc<AWRSCollection>,
-    report: Arc<ReportForAI>,
-    stem: Arc<String>,
+/// One fully parsed performance project supplied to the MCP runtime.
+pub struct AnalysisProject {
+    project_id: String,
+    collection: AWRSCollection,
+    report: ReportForAI,
+    stem: String,
     security_level: usize,
-    guidance: Arc<GuidanceLibrary>,
-    report_links: Arc<HashMap<String, HashSet<String>>>,
-    html_reports_dir: Arc<String>,
-    sessions: Arc<DashMap<String, Arc<Mutex<AnalysisSession>>>>,
-    sequence: Arc<AtomicU64>,
+    report_links: HashMap<String, HashSet<String>>,
+    html_reports_dir: String,
 }
 
-impl AnalysisRuntime {
+impl AnalysisProject {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        project_id: String,
         collection: AWRSCollection,
         report: ReportForAI,
         stem: String,
@@ -406,63 +412,53 @@ impl AnalysisRuntime {
         html_reports_dir: String,
     ) -> Self {
         Self {
-            collection: Arc::new(collection),
-            report: Arc::new(report),
-            stem: Arc::new(stem),
+            project_id,
+            collection,
+            report,
+            stem,
             security_level,
-            guidance: Arc::new(GuidanceLibrary::load()),
-            report_links: Arc::new(report_links),
-            html_reports_dir: Arc::new(html_reports_dir),
-            sessions: Arc::new(DashMap::new()),
-            sequence: Arc::new(AtomicU64::new(1)),
+            report_links,
+            html_reports_dir,
         }
     }
+}
 
-    fn new_analysis(&self, arguments: &Value) -> Value {
-        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
-        let analysis_id = format!(
-            "A-{}-{sequence:04}",
-            chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
-        );
-        let seed = mcp_bootstrap_seed(&self.report);
-        let mut config = ReportConfig::default();
-        if let Some(language) = arguments.get("language").and_then(Value::as_str) {
-            config.language = bounded_string(language, 16);
-        }
-        if let Some(audience) = arguments.get("audience").and_then(Value::as_str) {
-            if matches!(audience, "technical" | "management" | "mixed") {
-                config.audience = audience.to_string();
-            }
-        }
-        let session = AnalysisSession::new(seed.clone(), config.clone());
-        self.sessions
-            .insert(analysis_id.clone(), Arc::new(Mutex::new(session)));
-        let dataset_manifest = self.dataset_manifest();
-        let attachments = dataset_manifest
-            .get("attachments")
-            .cloned()
-            .unwrap_or(Value::Null);
-        let recommended_calls = recommended_next_calls(
-            &self.collection.db_instance_information.platform,
-            &attachments,
-            dataset_manifest.get("date_from").and_then(Value::as_str),
-            dataset_manifest.get("date_to").and_then(Value::as_str),
-        );
+#[derive(Clone)]
+struct ProjectData {
+    project_id: Arc<String>,
+    collection: Arc<AWRSCollection>,
+    report: Arc<ReportForAI>,
+    stem: Arc<String>,
+    security_level: usize,
+    report_links: Arc<HashMap<String, HashSet<String>>>,
+    html_reports_dir: Arc<String>,
+}
 
+impl From<AnalysisProject> for ProjectData {
+    fn from(project: AnalysisProject) -> Self {
+        Self {
+            project_id: Arc::new(project.project_id),
+            collection: Arc::new(project.collection),
+            report: Arc::new(project.report),
+            stem: Arc::new(project.stem),
+            security_level: project.security_level,
+            report_links: Arc::new(project.report_links),
+            html_reports_dir: Arc::new(project.html_reports_dir),
+        }
+    }
+}
+
+impl ProjectData {
+    fn attachment_inventory(&self) -> Value {
+        let directory = PathBuf::from(format!("{}_attachments", self.stem));
+        let aix_directory = directory.join("AIX");
         json!({
-            "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
-            "analysis_id": analysis_id,
-            "seed_evidence_id": SEED_EVIDENCE_ID,
-            "instruction": "Use this analysis_id in every subsequent JAS-MIN tool call. Build competing hypotheses, obtain narrow evidence, consult guidance only for detected symptoms, and finish through the report tools.",
-            "focus": arguments.get("focus").cloned().unwrap_or(Value::Null),
-            "dataset_manifest": dataset_manifest,
-            "available_calculations": calculation_catalog(),
-            "case_seed": seed,
-            "triage_preview": mcp_triage_preview(&self.report),
-            "diagnostic_guidance": self.guidance.catalog_json(),
-            "quality_gates": quality_gates(&self.collection.db_instance_information.platform),
-            "report_contract": report_contract(&config),
-            "recommended_next_calls": recommended_calls
+            "directory_present": directory.is_dir(),
+            "execution_plans": count_extension(&directory, "xplan"),
+            "child_cursor_reason_files": count_suffix(&directory, ".shared_cursor_reasons"),
+            "alert_logs": count_name_contains(&directory, "alert"),
+            "aix_files": count_regular_files(&aix_directory),
+            "aix_directory_present": aix_directory.is_dir()
         })
     }
 
@@ -472,6 +468,7 @@ impl AnalysisRuntime {
         let date_from = first.and_then(|awr| oracle_snapshot_date(&awr.snap_info.begin_snap_time));
         let date_to = last.and_then(|awr| oracle_snapshot_date(&awr.snap_info.end_snap_time));
         json!({
+            "project_id": self.project_id.as_str(),
             "dataset_stem": self.stem.as_str(),
             "snapshots": self.collection.awrs.len(),
             "begin_snap_id": first.map(|awr| awr.snap_info.begin_snap_id),
@@ -487,17 +484,226 @@ impl AnalysisRuntime {
             "attachments": self.attachment_inventory()
         })
     }
+}
 
-    fn attachment_inventory(&self) -> Value {
-        let directory = PathBuf::from(format!("{}_attachments", self.stem));
-        let aix_directory = directory.join("AIX");
+/// Immutable parsed projects plus explicitly keyed conversational report sessions.
+#[derive(Clone)]
+pub struct AnalysisRuntime {
+    projects: Arc<BTreeMap<String, Arc<ProjectData>>>,
+    guidance: Arc<GuidanceLibrary>,
+    sessions: Arc<DashMap<String, Arc<Mutex<AnalysisSession>>>>,
+    sequence: Arc<AtomicU64>,
+}
+
+impl AnalysisRuntime {
+    pub fn new(
+        collection: AWRSCollection,
+        report: ReportForAI,
+        stem: String,
+        security_level: usize,
+        report_links: HashMap<String, HashSet<String>>,
+        html_reports_dir: String,
+    ) -> Self {
+        let project_id = mcp_project_id_from_stem(&stem);
+        Self::from_projects(vec![AnalysisProject::new(
+            project_id,
+            collection,
+            report,
+            stem,
+            security_level,
+            report_links,
+            html_reports_dir,
+        )])
+        .expect("one in-memory MCP project is valid")
+    }
+
+    pub fn from_projects(projects: Vec<AnalysisProject>) -> Result<Self> {
+        if projects.is_empty() {
+            bail!("at least one MCP project is required");
+        }
+        if projects.len() > MAX_MCP_PROJECTS {
+            bail!(
+                "{} MCP projects were supplied; the maximum is {MAX_MCP_PROJECTS}",
+                projects.len()
+            );
+        }
+        let mut indexed = BTreeMap::new();
+        for mut project in projects {
+            let project_id = project.project_id.trim();
+            if project_id.is_empty() {
+                bail!("MCP project_id cannot be empty");
+            }
+            if project_id.len() > 96 {
+                bail!("MCP project_id '{project_id}' exceeds 96 bytes");
+            }
+            let project_id = project_id.to_string();
+            if indexed.contains_key(&project_id) {
+                bail!("duplicate MCP project_id '{project_id}'");
+            }
+            project.project_id = project_id.clone();
+            indexed.insert(project_id, Arc::new(ProjectData::from(project)));
+        }
+        Ok(Self {
+            projects: Arc::new(indexed),
+            guidance: Arc::new(GuidanceLibrary::load()),
+            sessions: Arc::new(DashMap::new()),
+            sequence: Arc::new(AtomicU64::new(1)),
+        })
+    }
+
+    fn selected_project_ids(&self, arguments: &Value) -> std::result::Result<Vec<String>, Value> {
+        let singular = arguments
+            .get("project_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty());
+        let plural = arguments.get("project_ids").and_then(Value::as_array);
+        if singular.is_some() && plural.is_some() {
+            return Err(tool_error(
+                "INVALID_PROJECT_SELECTION",
+                "Use project_id or project_ids, not both",
+            ));
+        }
+        let requested = if let Some(project_id) = singular {
+            vec![project_id.to_string()]
+        } else if let Some(project_ids) = plural {
+            if project_ids.is_empty() {
+                return Err(tool_error(
+                    "INVALID_PROJECT_SELECTION",
+                    "project_ids cannot be empty",
+                ));
+            }
+            project_ids
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|value| !value.trim().is_empty())
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            tool_error(
+                                "INVALID_PROJECT_SELECTION",
+                                "Every project_ids item must be a non-empty string",
+                            )
+                        })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            self.projects.keys().cloned().collect()
+        };
+        let mut unique = BTreeSet::new();
+        for project_id in &requested {
+            if !unique.insert(project_id.clone()) {
+                return Err(tool_error(
+                    "DUPLICATE_PROJECT_ID",
+                    format!("project_id '{project_id}' was selected more than once"),
+                ));
+            }
+            if !self.projects.contains_key(project_id) {
+                return Err(tool_error(
+                    "UNKNOWN_PROJECT",
+                    format!("Unknown project_id '{project_id}'. Call list_performance_projects."),
+                ));
+            }
+        }
+        Ok(requested)
+    }
+
+    fn project(&self, project_id: &str) -> std::result::Result<Arc<ProjectData>, Value> {
+        self.projects.get(project_id).cloned().ok_or_else(|| {
+            tool_error(
+                "UNKNOWN_PROJECT",
+                format!("Unknown project_id '{project_id}'. Call list_performance_projects."),
+            )
+        })
+    }
+
+    fn new_analysis(&self, arguments: &Value) -> std::result::Result<Value, Value> {
+        let project_ids = self.selected_project_ids(arguments)?;
+        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
+        let analysis_id = format!(
+            "A-{}-{sequence:04}",
+            chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+        );
+        let mut config = ReportConfig::default();
+        if let Some(language) = arguments.get("language").and_then(Value::as_str) {
+            config.language = bounded_string(language, 16);
+        }
+        if let Some(audience) = arguments.get("audience").and_then(Value::as_str) {
+            if matches!(audience, "technical" | "management" | "mixed") {
+                config.audience = audience.to_string();
+            }
+        }
+        let mut project_bootstrap = Vec::with_capacity(project_ids.len());
+        for project_id in &project_ids {
+            let project = self.project(project_id)?;
+            let dataset_manifest = project.dataset_manifest();
+            let attachments = dataset_manifest
+                .get("attachments")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let recommended_calls = recommended_next_calls(
+                &project.collection.db_instance_information.platform,
+                &attachments,
+                dataset_manifest.get("date_from").and_then(Value::as_str),
+                dataset_manifest.get("date_to").and_then(Value::as_str),
+            );
+            project_bootstrap.push(json!({
+                "project_id": project_id,
+                "dataset_manifest": dataset_manifest,
+                "case_seed": mcp_bootstrap_seed(&project.report),
+                "triage_preview": mcp_triage_preview(&project.report),
+                "quality_gates": quality_gates(&project.collection.db_instance_information.platform),
+                "recommended_next_calls": add_project_id_to_calls(recommended_calls, project_id)
+            }));
+        }
+        let seed = json!({
+            "evidence_id": SEED_EVIDENCE_ID,
+            "project_ids": project_ids.clone(),
+            "projects": project_bootstrap.clone()
+        });
+        let session = AnalysisSession::new(seed.clone(), config.clone(), project_ids.clone());
+        self.sessions
+            .insert(analysis_id.clone(), Arc::new(Mutex::new(session)));
+        let mut output = json!({
+            "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
+            "analysis_id": analysis_id,
+            "seed_evidence_id": SEED_EVIDENCE_ID,
+            "project_ids": project_ids.clone(),
+            "comparison_mode": project_bootstrap.len() > 1,
+            "instruction": if project_bootstrap.len() > 1 {
+                "Use this analysis_id for the comparative investigation. Pass project_id to project-specific evidence tools and use the comparison tools for normalized cross-project evidence."
+            } else {
+                "Use this analysis_id in every subsequent JAS-MIN tool call. Build competing hypotheses, obtain narrow evidence, consult guidance only for detected symptoms, and finish through the report tools."
+            },
+            "focus": arguments.get("focus").cloned().unwrap_or(Value::Null),
+            "projects": project_bootstrap.clone(),
+            "available_calculations": calculation_catalog(),
+            "case_seed": seed,
+            "diagnostic_guidance": self.guidance.catalog_json(),
+            "report_contract": report_contract(&config),
+            "recommended_comparison_calls": if project_bootstrap.len() > 1 {
+                json!([
+                    {"tool": "compare_project_metric", "reason": "compare normalized metric distributions between a baseline and candidate project"},
+                    {"tool": "compare_project_sql", "reason": "compare the same SQL_ID across projects using per-execution and workload metrics"}
+                ])
+            } else { Value::Array(Vec::new()) }
+        });
+        if project_bootstrap.len() == 1 {
+            let project = &project_bootstrap[0];
+            output["dataset_manifest"] = project["dataset_manifest"].clone();
+            output["triage_preview"] = project["triage_preview"].clone();
+            output["quality_gates"] = project["quality_gates"].clone();
+            output["recommended_next_calls"] = project["recommended_next_calls"].clone();
+        }
+        Ok(output)
+    }
+
+    fn list_projects(&self) -> Value {
         json!({
-            "directory_present": directory.is_dir(),
-            "execution_plans": count_extension(&directory, "xplan"),
-            "child_cursor_reason_files": count_suffix(&directory, ".shared_cursor_reasons"),
-            "alert_logs": count_name_contains(&directory, "alert"),
-            "aix_files": count_regular_files(&aix_directory),
-            "aix_directory_present": aix_directory.is_dir()
+            "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
+            "project_count": self.projects.len(),
+            "projects": self.projects.values().map(|project| project.dataset_manifest()).collect::<Vec<_>>(),
+            "usage": "Call start_performance_analysis with project_ids for a comparative session, or project_id for a single-project session."
         })
     }
 
@@ -533,14 +739,77 @@ impl AnalysisRuntime {
         let state = session
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
+        let projects = state
+            .project_ids
+            .iter()
+            .filter_map(|project_id| self.projects.get(project_id))
+            .map(|project| project.dataset_manifest())
+            .collect::<Vec<_>>();
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
-            "dataset_manifest": self.dataset_manifest(),
+            "project_ids": state.project_ids,
+            "projects": projects,
             "available_calculations": calculation_catalog(),
             "diagnostic_guidance": self.guidance.catalog_json(),
             "report_contract": report_contract(&state.config)
         }))
+    }
+
+    fn project_for_session(
+        &self,
+        session: &Arc<Mutex<AnalysisSession>>,
+        arguments: &Map<String, Value>,
+    ) -> std::result::Result<Arc<ProjectData>, Value> {
+        let selected = session
+            .lock()
+            .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?
+            .project_ids
+            .clone();
+        let requested = arguments
+            .get("project_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty());
+        let project_id = match requested {
+            Some(project_id) => project_id,
+            None if selected.len() == 1 => &selected[0],
+            None => {
+                return Err(json!({
+                    "error_code": "MISSING_PROJECT_ID",
+                    "message": "project_id is required because this analysis contains multiple projects",
+                    "available_project_ids": selected
+                }))
+            }
+        };
+        if !selected.iter().any(|candidate| candidate == project_id) {
+            return Err(json!({
+                "error_code": "PROJECT_OUTSIDE_ANALYSIS",
+                "message": format!("project_id '{project_id}' is not part of this analysis session"),
+                "available_project_ids": selected
+            }));
+        }
+        self.project(project_id)
+    }
+
+    fn selected_project(
+        &self,
+        analysis_id: &str,
+        project_id: &str,
+    ) -> std::result::Result<(Arc<Mutex<AnalysisSession>>, Arc<ProjectData>), Value> {
+        let session = self.session(analysis_id)?;
+        let selected = session
+            .lock()
+            .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?
+            .project_ids
+            .clone();
+        if !selected.iter().any(|candidate| candidate == project_id) {
+            return Err(json!({
+                "error_code": "PROJECT_OUTSIDE_ANALYSIS",
+                "message": format!("project_id '{project_id}' is not part of this analysis session"),
+                "available_project_ids": selected
+            }));
+        }
+        Ok((session, self.project(project_id)?))
     }
 
     fn execute_evidence_tool(
@@ -550,19 +819,30 @@ impl AnalysisRuntime {
     ) -> std::result::Result<Value, Value> {
         let analysis_id = Self::analysis_id(arguments)?.to_string();
         let session = self.session(&analysis_id)?;
+        let project = self.project_for_session(&session, arguments)?;
         let mut clean_arguments = arguments.clone();
         clean_arguments.remove("analysis_id");
+        clean_arguments.remove("project_id");
         let clean_value = Value::Object(clean_arguments.clone());
         let result = if name == "get_precomputed_analysis" {
-            dispatch_precomputed_analysis(&clean_value, &self.report)
+            dispatch_precomputed_analysis(&clean_value, &project.report)
         } else {
-            dispatch_tool_call_value(name, &clean_value, &self.collection, self.stem.as_str())
+            dispatch_tool_call_value(
+                name,
+                &clean_value,
+                &project.collection,
+                project.stem.as_str(),
+            )
         };
         if result.get("error").is_some() {
             return Err(result);
         }
 
-        let cache_key = format!("{name}:{}", canonical_json(&clean_value));
+        let cache_key = format!(
+            "{}:{name}:{}",
+            project.project_id,
+            canonical_json(&clean_value)
+        );
         let mut state = session
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
@@ -571,6 +851,7 @@ impl AnalysisRuntime {
                 return Ok(json!({
                     "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
                     "analysis_id": analysis_id,
+                    "project_id": project.project_id.as_str(),
                     "evidence_id": existing_id,
                     "tool_name": name,
                     "cached": true,
@@ -587,6 +868,7 @@ impl AnalysisRuntime {
             EvidenceRecord {
                 evidence_id: evidence_id.clone(),
                 tool_name: name.to_string(),
+                project_id: Some(project.project_id.as_str().to_string()),
                 arguments: clean_value,
                 result: result.clone(),
             },
@@ -594,11 +876,253 @@ impl AnalysisRuntime {
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
+            "project_id": project.project_id.as_str(),
             "evidence_id": evidence_id,
             "tool_name": name,
             "cached": false,
             "result": result
         }))
+    }
+
+    fn store_comparison_evidence(
+        &self,
+        analysis_id: &str,
+        session: &Arc<Mutex<AnalysisSession>>,
+        tool_name: &str,
+        arguments: Value,
+        result: Value,
+    ) -> std::result::Result<Value, Value> {
+        let cache_key = format!("{tool_name}:{}", canonical_json(&arguments));
+        let mut state = session
+            .lock()
+            .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
+        if let Some(existing_id) = state.evidence_cache.get(&cache_key).cloned() {
+            if let Some(record) = state.evidence.get(&existing_id) {
+                return Ok(json!({
+                    "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
+                    "analysis_id": analysis_id,
+                    "evidence_id": existing_id,
+                    "tool_name": tool_name,
+                    "cached": true,
+                    "result": record.result
+                }));
+            }
+        }
+        let evidence_id = format!("E-{:04}", state.next_evidence);
+        state.next_evidence += 1;
+        state.evidence_cache.insert(cache_key, evidence_id.clone());
+        state.evidence.insert(
+            evidence_id.clone(),
+            EvidenceRecord {
+                evidence_id: evidence_id.clone(),
+                tool_name: tool_name.to_string(),
+                project_id: None,
+                arguments,
+                result: result.clone(),
+            },
+        );
+        Ok(json!({
+            "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
+            "analysis_id": analysis_id,
+            "evidence_id": evidence_id,
+            "tool_name": tool_name,
+            "cached": false,
+            "result": result
+        }))
+    }
+
+    fn compare_project_metric(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> std::result::Result<Value, Value> {
+        let analysis_id = Self::analysis_id(arguments)?.to_string();
+        let baseline_project_id = required_string(arguments, "baseline_project_id", 96)?;
+        let candidate_project_id = required_string(arguments, "candidate_project_id", 96)?;
+        if baseline_project_id == candidate_project_id {
+            return Err(tool_error(
+                "IDENTICAL_COMPARISON_PROJECTS",
+                "baseline_project_id and candidate_project_id must differ",
+            ));
+        }
+        let (session, baseline) = self.selected_project(&analysis_id, &baseline_project_id)?;
+        let (_, candidate) = self.selected_project(&analysis_id, &candidate_project_id)?;
+        let kind = required_string(arguments, "kind", 64)?;
+        validate_enum(
+            "kind",
+            &kind,
+            &[
+                "load_profile",
+                "instance_stat",
+                "wait_event_fg",
+                "wait_event_bg",
+                "time_model",
+                "host_cpu",
+                "io_stats_byfunc",
+            ],
+        )?;
+        let name = required_string(arguments, "name", 256)?;
+        let field = arguments
+            .get("field")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("value");
+        validate_comparison_metric_field(&kind, field)?;
+        let direction = arguments
+            .get("direction")
+            .and_then(Value::as_str)
+            .unwrap_or("neutral");
+        validate_enum(
+            "direction",
+            direction,
+            &["neutral", "lower_is_better", "higher_is_better"],
+        )?;
+        let materiality_pct = arguments
+            .get("materiality_pct")
+            .and_then(Value::as_f64)
+            .unwrap_or(5.0);
+        if !(0.0..=1000.0).contains(&materiality_pct) {
+            return Err(tool_error(
+                "INVALID_MATERIALITY",
+                "materiality_pct must be between 0 and 1000",
+            ));
+        }
+        let tool_arguments = json!({"kind": kind, "name": name, "field": field});
+        let baseline_series = dispatch_tool_call_value(
+            "get_metric_time_series",
+            &tool_arguments,
+            &baseline.collection,
+            baseline.stem.as_str(),
+        );
+        let candidate_series = dispatch_tool_call_value(
+            "get_metric_time_series",
+            &tool_arguments,
+            &candidate.collection,
+            candidate.stem.as_str(),
+        );
+        let baseline_values = metric_series_values(&baseline_series);
+        let candidate_values = metric_series_values(&candidate_series);
+        if baseline_values.is_empty() || candidate_values.is_empty() {
+            return Err(json!({
+                "error_code": "MISSING_COMPARISON_DATA",
+                "message": "The requested metric must have observed samples in both projects; missing samples are not converted to zero.",
+                "baseline_project_id": baseline_project_id,
+                "baseline_points": baseline_values.len(),
+                "candidate_project_id": candidate_project_id,
+                "candidate_points": candidate_values.len(),
+                "kind": kind,
+                "name": name,
+                "field": field
+            }));
+        }
+        let comparison = compare_numeric_values(
+            &baseline_values,
+            &candidate_values,
+            direction,
+            materiality_pct,
+        );
+        let evidence_arguments = json!({
+            "baseline_project_id": baseline_project_id,
+            "candidate_project_id": candidate_project_id,
+            "kind": kind,
+            "name": name,
+            "field": field,
+            "direction": direction,
+            "materiality_pct": materiality_pct
+        });
+        let result = json!({
+            "baseline_project_id": baseline_project_id,
+            "candidate_project_id": candidate_project_id,
+            "metric": {"kind": kind, "name": name, "field": field},
+            "comparison": comparison,
+            "baseline_period": compact_project_period(&baseline),
+            "candidate_period": compact_project_period(&candidate),
+            "coverage_note": "Only observed metric samples are summarized. Missing samples are not zeros. Verify workload mix, snapshot duration, seasonality, and database identity before attributing causality.",
+            "series_tools": {
+                "baseline": {"tool": "get_metric_time_series", "project_id": baseline_project_id},
+                "candidate": {"tool": "get_metric_time_series", "project_id": candidate_project_id}
+            }
+        });
+        self.store_comparison_evidence(
+            &analysis_id,
+            &session,
+            "compare_project_metric",
+            evidence_arguments,
+            result,
+        )
+    }
+
+    fn compare_project_sql(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> std::result::Result<Value, Value> {
+        let analysis_id = Self::analysis_id(arguments)?.to_string();
+        let baseline_project_id = required_string(arguments, "baseline_project_id", 96)?;
+        let candidate_project_id = required_string(arguments, "candidate_project_id", 96)?;
+        if baseline_project_id == candidate_project_id {
+            return Err(tool_error(
+                "IDENTICAL_COMPARISON_PROJECTS",
+                "baseline_project_id and candidate_project_id must differ",
+            ));
+        }
+        let sql_id = required_string(arguments, "sql_id", 32)?.to_ascii_lowercase();
+        let materiality_pct = arguments
+            .get("materiality_pct")
+            .and_then(Value::as_f64)
+            .unwrap_or(5.0);
+        if !(0.0..=1000.0).contains(&materiality_pct) {
+            return Err(tool_error(
+                "INVALID_MATERIALITY",
+                "materiality_pct must be between 0 and 1000",
+            ));
+        }
+        let (session, baseline) = self.selected_project(&analysis_id, &baseline_project_id)?;
+        let (_, candidate) = self.selected_project(&analysis_id, &candidate_project_id)?;
+        let baseline_summary = sql_comparison_summary(&baseline, &sql_id);
+        let candidate_summary = sql_comparison_summary(&candidate, &sql_id);
+        if baseline_summary["snapshots_with_sql"].as_u64().unwrap_or(0) == 0
+            || candidate_summary["snapshots_with_sql"]
+                .as_u64()
+                .unwrap_or(0)
+                == 0
+        {
+            return Err(json!({
+                "error_code": "MISSING_SQL_COMPARISON_DATA",
+                "message": "The SQL_ID must be observed in both projects; an absent SQL_ID is not treated as zero workload.",
+                "sql_id": sql_id,
+                "baseline_project_id": baseline_project_id,
+                "baseline_snapshots_with_sql": baseline_summary["snapshots_with_sql"],
+                "candidate_project_id": candidate_project_id,
+                "candidate_snapshots_with_sql": candidate_summary["snapshots_with_sql"]
+            }));
+        }
+        let comparisons = sql_metric_comparisons(
+            &baseline.collection,
+            &candidate.collection,
+            &sql_id,
+            materiality_pct,
+        );
+        let evidence_arguments = json!({
+            "baseline_project_id": baseline_project_id,
+            "candidate_project_id": candidate_project_id,
+            "sql_id": sql_id,
+            "materiality_pct": materiality_pct
+        });
+        let result = json!({
+            "sql_id": sql_id,
+            "baseline_project_id": baseline_project_id,
+            "candidate_project_id": candidate_project_id,
+            "baseline": baseline_summary,
+            "candidate": candidate_summary,
+            "comparisons": comparisons,
+            "coverage_note": "Per-execution metrics describe efficiency; totals and executions describe workload volume. Missing SQL samples are excluded rather than converted to zero. Plan hash evidence is limited to snapshots where the SQL appears in top-event data."
+        });
+        self.store_comparison_evidence(
+            &analysis_id,
+            &session,
+            "compare_project_sql",
+            evidence_arguments,
+            result,
+        )
     }
 
     fn diagnostic_guidance(
@@ -835,12 +1359,20 @@ impl AnalysisRuntime {
             }));
         }
         state.report_revision += 1;
+        let datasets = state
+            .project_ids
+            .iter()
+            .filter_map(|project_id| self.projects.get(project_id))
+            .map(|project| project.dataset_manifest())
+            .collect::<Vec<_>>();
         let report_document = json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
             "revision": state.report_revision,
             "generated_at": chrono::Utc::now().to_rfc3339(),
-            "dataset": self.dataset_manifest(),
+            "project_ids": state.project_ids,
+            "dataset": if datasets.len() == 1 { datasets[0].clone() } else { Value::Null },
+            "datasets": datasets,
             "config": state.config,
             "section_index": report_section_index(&state),
             "findings": state.findings.values().collect::<Vec<_>>(),
@@ -886,7 +1418,12 @@ impl AnalysisRuntime {
         output_directory: &Path,
     ) -> std::result::Result<Value, Value> {
         let analysis_id = Self::analysis_id(arguments)?.to_string();
-        let _session = self.session(&analysis_id)?;
+        let session = self.session(&analysis_id)?;
+        let project_ids = session
+            .lock()
+            .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?
+            .project_ids
+            .clone();
         let markdown = arguments
             .get("markdown")
             .and_then(Value::as_str)
@@ -903,24 +1440,41 @@ impl AnalysisRuntime {
         }
         validate_stable_markdown_report(markdown)?;
 
+        let single_project = if project_ids.len() == 1 {
+            Some(self.project(&project_ids[0])?)
+        } else {
+            None
+        };
+        let output_stem = single_project
+            .as_ref()
+            .map(|project| project.stem.as_str())
+            .unwrap_or("jas-min-comparison");
         let filename = html_output_filename(
             arguments.get("output_filename").and_then(Value::as_str),
-            self.stem.as_str(),
+            output_stem,
             &analysis_id,
         )?;
         let output_path = output_directory.join(&filename);
-        let report_directory_reference = self.html_reports_dir.as_str();
+        let report_directory_reference = single_project
+            .as_ref()
+            .map(|project| project.html_reports_dir.as_str())
+            .unwrap_or("jas-min-comparison.html_reports");
         let configured_report_directory = PathBuf::from(report_directory_reference);
         let report_directory = if configured_report_directory.is_absolute() {
             configured_report_directory
         } else {
             output_directory.join(configured_report_directory)
         };
-        let report_links = self
-            .report_links
-            .iter()
-            .map(|(kind, names)| (kind.as_str(), names.clone()))
-            .collect::<HashMap<_, _>>();
+        let report_links = single_project
+            .as_ref()
+            .map(|project| {
+                project
+                    .report_links
+                    .iter()
+                    .map(|(kind, names)| (kind.as_str(), names.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
         let html = render_markdown_html_document(
             markdown,
             report_directory_reference,
@@ -976,9 +1530,12 @@ impl AnalysisRuntime {
         arguments: Map<String, Value>,
     ) -> std::result::Result<Value, Value> {
         match name {
-            "start_performance_analysis" => self.new_analysis(&Value::Object(arguments)).pipe(Ok),
+            "list_performance_projects" => Ok(self.list_projects()),
+            "start_performance_analysis" => self.new_analysis(&Value::Object(arguments)),
             "get_analysis_catalog" => self.catalog_for_session(&arguments),
             "get_precomputed_analysis" => self.execute_evidence_tool(name, &arguments),
+            "compare_project_metric" => self.compare_project_metric(&arguments),
+            "compare_project_sql" => self.compare_project_sql(&arguments),
             "get_diagnostic_guidance" => self.diagnostic_guidance(&arguments),
             "configure_report" => self.configure_report(&arguments),
             "record_finding" => self.record_finding(&arguments),
@@ -991,13 +1548,329 @@ impl AnalysisRuntime {
     }
 }
 
-trait Pipe: Sized {
-    fn pipe<T>(self, function: impl FnOnce(Self) -> T) -> T {
-        function(self)
+fn metric_series_values(result: &Value) -> Vec<f64> {
+    result
+        .get("series")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|point| point.get("value").and_then(Value::as_f64))
+        .filter(|value| value.is_finite())
+        .collect()
+}
+
+fn validate_comparison_metric_field(kind: &str, field: &str) -> std::result::Result<(), Value> {
+    let allowed = match kind {
+        "load_profile" | "instance_stat" => &["value"][..],
+        "wait_event_fg" | "wait_event_bg" => &[
+            "value",
+            "pct_dbtime",
+            "total_wait_time_s",
+            "avg_wait",
+            "waits",
+        ][..],
+        "time_model" => &["value", "time_s", "pct_dbtime"][..],
+        "host_cpu" => &[
+            "value",
+            "pct_user",
+            "pct_system",
+            "pct_wio",
+            "pct_idle",
+            "load_avg_begin",
+            "load_avg_end",
+            "cpus",
+            "cores",
+            "sockets",
+        ][..],
+        "io_stats_byfunc" => &[
+            "value",
+            "reads_data",
+            "reads_req_s",
+            "reads_data_s",
+            "writes_data",
+            "writes_req_s",
+            "writes_data_s",
+            "waits_count",
+            "avg_time",
+        ][..],
+        _ => &[][..],
+    };
+    if allowed.contains(&field) {
+        Ok(())
+    } else {
+        Err(tool_error(
+            "INVALID_COMPARISON_FIELD",
+            format!(
+                "field '{field}' is not valid for kind '{kind}'; allowed fields: {}",
+                allowed.join(", ")
+            ),
+        ))
     }
 }
 
-impl<T> Pipe for T {}
+fn numeric_summary(values: &[f64]) -> Value {
+    if values.is_empty() {
+        return Value::Null;
+    }
+    let mut sorted = values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>();
+    if sorted.is_empty() {
+        return Value::Null;
+    }
+    sorted.sort_by(f64::total_cmp);
+    let count = sorted.len();
+    let mean = sorted.iter().sum::<f64>() / count as f64;
+    let variance = sorted
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / count as f64;
+    json!({
+        "samples": count,
+        "min": sorted[0],
+        "mean": mean,
+        "median": percentile_sorted(&sorted, 0.50),
+        "p95": percentile_sorted(&sorted, 0.95),
+        "max": sorted[count - 1],
+        "stddev": variance.sqrt()
+    })
+}
+
+fn percentile_sorted(sorted: &[f64], percentile: f64) -> f64 {
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let position = percentile.clamp(0.0, 1.0) * (sorted.len() - 1) as f64;
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    if lower == upper {
+        sorted[lower]
+    } else {
+        let fraction = position - lower as f64;
+        sorted[lower] + (sorted[upper] - sorted[lower]) * fraction
+    }
+}
+
+fn compare_numeric_values(
+    baseline_values: &[f64],
+    candidate_values: &[f64],
+    direction: &str,
+    materiality_pct: f64,
+) -> Value {
+    let baseline = numeric_summary(baseline_values);
+    let candidate = numeric_summary(candidate_values);
+    let baseline_mean = baseline.get("mean").and_then(Value::as_f64).unwrap_or(0.0);
+    let candidate_mean = candidate.get("mean").and_then(Value::as_f64).unwrap_or(0.0);
+    let mean_delta = candidate_mean - baseline_mean;
+    let mean_delta_pct = if baseline_mean.abs() > f64::EPSILON {
+        Some(mean_delta / baseline_mean.abs() * 100.0)
+    } else {
+        None
+    };
+    let baseline_median = baseline
+        .get("median")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let candidate_median = candidate
+        .get("median")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let baseline_p95 = baseline.get("p95").and_then(Value::as_f64).unwrap_or(0.0);
+    let candidate_p95 = candidate.get("p95").and_then(Value::as_f64).unwrap_or(0.0);
+    let baseline_stddev = baseline
+        .get("stddev")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let candidate_stddev = candidate
+        .get("stddev")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let pooled_stddev = ((baseline_stddev.powi(2) + candidate_stddev.powi(2)) / 2.0).sqrt();
+    let standardized_mean_difference = if pooled_stddev > f64::EPSILON {
+        Some(mean_delta / pooled_stddev)
+    } else {
+        None
+    };
+    let classification = match (direction, mean_delta_pct) {
+        ("neutral", _) => "not_classified",
+        (_, None) => "not_classified",
+        (_, Some(delta)) if delta.abs() < materiality_pct => "no_material_change",
+        ("lower_is_better", Some(delta)) if delta < 0.0 => "improved",
+        ("lower_is_better", Some(_)) => "degraded",
+        ("higher_is_better", Some(delta)) if delta > 0.0 => "improved",
+        ("higher_is_better", Some(_)) => "degraded",
+        _ => "not_classified",
+    };
+    json!({
+        "direction": direction,
+        "materiality_pct": materiality_pct,
+        "classification": classification,
+        "baseline": baseline,
+        "candidate": candidate,
+        "mean_delta": mean_delta,
+        "mean_delta_pct": mean_delta_pct,
+        "median_delta": candidate_median - baseline_median,
+        "p95_delta": candidate_p95 - baseline_p95,
+        "standardized_mean_difference": standardized_mean_difference,
+        "interpretation_guardrail": if direction == "neutral" {
+            "No improvement/degradation label was assigned because metric direction was neutral."
+        } else {
+            "The label follows the requested direction and materiality threshold; it does not establish causality or equivalent workload mix."
+        }
+    })
+}
+
+fn compact_project_period(project: &ProjectData) -> Value {
+    let manifest = project.dataset_manifest();
+    json!({
+        "project_id": project.project_id.as_str(),
+        "snapshots": manifest["snapshots"],
+        "begin_snap_id": manifest["begin_snap_id"],
+        "end_snap_id": manifest["end_snap_id"],
+        "begin_time": manifest["begin_time"],
+        "end_time": manifest["end_time"],
+        "database": manifest["database"]
+    })
+}
+
+fn sql_metric_values(collection: &AWRSCollection, sql_id: &str, metric: &str) -> Vec<f64> {
+    collection
+        .awrs
+        .iter()
+        .filter_map(|awr| match metric {
+            "elapsed_time_per_exec_s" => awr
+                .sql_elapsed_time
+                .iter()
+                .find(|sql| sql.sql_id == sql_id)
+                .map(|sql| sql.elpased_time_exec_s),
+            "elapsed_time_s" => awr
+                .sql_elapsed_time
+                .iter()
+                .find(|sql| sql.sql_id == sql_id)
+                .map(|sql| sql.elapsed_time_s),
+            "executions" => awr
+                .sql_elapsed_time
+                .iter()
+                .find(|sql| sql.sql_id == sql_id)
+                .map(|sql| sql.executions as f64),
+            "cpu_time_per_exec_s" => awr.sql_cpu_time.get(sql_id).map(|sql| sql.cpu_time_exec_s),
+            "cpu_time_s" => awr.sql_cpu_time.get(sql_id).map(|sql| sql.cpu_time_s),
+            "io_time_per_exec_s" => awr.sql_io_time.get(sql_id).map(|sql| sql.io_time_exec_s),
+            "io_time_s" => awr.sql_io_time.get(sql_id).map(|sql| sql.io_time_s),
+            "buffer_gets_per_exec" => awr.sql_gets.get(sql_id).map(|sql| sql.gets_per_exec),
+            "physical_reads_per_exec" => awr.sql_reads.get(sql_id).map(|sql| sql.reads_per_exec),
+            _ => None,
+        })
+        .filter(|value| value.is_finite())
+        .collect()
+}
+
+fn sql_comparison_summary(project: &ProjectData, sql_id: &str) -> Value {
+    let mut snapshots = BTreeSet::new();
+    let mut modules = BTreeSet::new();
+    let mut plan_hash_values = BTreeSet::new();
+    for awr in &project.collection.awrs {
+        if let Some(sql) = awr.sql_elapsed_time.iter().find(|sql| sql.sql_id == sql_id) {
+            snapshots.insert(awr.snap_info.begin_snap_id);
+            if !sql.sql_module.trim().is_empty() {
+                modules.insert(sql.sql_module.clone());
+            }
+        }
+        if let Some(sql) = awr.sql_cpu_time.get(sql_id) {
+            snapshots.insert(awr.snap_info.begin_snap_id);
+            if !sql.sql_module.trim().is_empty() {
+                modules.insert(sql.sql_module.clone());
+            }
+        }
+        if awr.sql_io_time.contains_key(sql_id)
+            || awr.sql_gets.contains_key(sql_id)
+            || awr.sql_reads.contains_key(sql_id)
+        {
+            snapshots.insert(awr.snap_info.begin_snap_id);
+        }
+        if let Some(top) = awr.top_sql_with_top_events.get(sql_id) {
+            snapshots.insert(awr.snap_info.begin_snap_id);
+            if top.plan_hash_value != 0 {
+                plan_hash_values.insert(top.plan_hash_value);
+            }
+        }
+    }
+    let metric_names = [
+        "elapsed_time_per_exec_s",
+        "elapsed_time_s",
+        "executions",
+        "cpu_time_per_exec_s",
+        "cpu_time_s",
+        "io_time_per_exec_s",
+        "io_time_s",
+        "buffer_gets_per_exec",
+        "physical_reads_per_exec",
+    ];
+    let metrics = metric_names
+        .iter()
+        .map(|metric| {
+            (
+                (*metric).to_string(),
+                numeric_summary(&sql_metric_values(&project.collection, sql_id, metric)),
+            )
+        })
+        .collect::<Map<_, _>>();
+    json!({
+        "project_id": project.project_id.as_str(),
+        "snapshots_total": project.collection.awrs.len(),
+        "snapshots_with_sql": snapshots.len(),
+        "coverage_pct": if project.collection.awrs.is_empty() { 0.0 } else { snapshots.len() as f64 / project.collection.awrs.len() as f64 * 100.0 },
+        "modules": modules,
+        "plan_hash_values_from_top_event_rows": plan_hash_values,
+        "sql_text_available": project.collection.sql_text.contains_key(sql_id),
+        "metrics": metrics
+    })
+}
+
+fn sql_metric_comparisons(
+    baseline: &AWRSCollection,
+    candidate: &AWRSCollection,
+    sql_id: &str,
+    materiality_pct: f64,
+) -> Value {
+    let definitions = [
+        ("elapsed_time_per_exec_s", "lower_is_better"),
+        ("cpu_time_per_exec_s", "lower_is_better"),
+        ("io_time_per_exec_s", "lower_is_better"),
+        ("buffer_gets_per_exec", "lower_is_better"),
+        ("physical_reads_per_exec", "lower_is_better"),
+        ("elapsed_time_s", "neutral"),
+        ("cpu_time_s", "neutral"),
+        ("io_time_s", "neutral"),
+        ("executions", "neutral"),
+    ];
+    Value::Array(
+        definitions
+            .iter()
+            .map(|(metric, direction)| {
+                let baseline_values = sql_metric_values(baseline, sql_id, metric);
+                let candidate_values = sql_metric_values(candidate, sql_id, metric);
+                if baseline_values.is_empty() || candidate_values.is_empty() {
+                    json!({
+                        "metric": metric,
+                        "available_in_both": false,
+                        "baseline_samples": baseline_values.len(),
+                        "candidate_samples": candidate_values.len()
+                    })
+                } else {
+                    json!({
+                        "metric": metric,
+                        "available_in_both": true,
+                        "comparison": compare_numeric_values(&baseline_values, &candidate_values, direction, materiality_pct)
+                    })
+                }
+            })
+            .collect(),
+    )
+}
 
 #[derive(Clone)]
 struct JasminMcpServer {
@@ -1010,6 +1883,25 @@ impl JasminMcpServer {
         let tools = Arc::new(build_mcp_tools(&runtime));
         Self { runtime, tools }
     }
+}
+
+fn tools_list_result(tools: Vec<Tool>, include_cache_hints: bool) -> ListToolsResult {
+    let result = ListToolsResult::with_all_items(tools);
+    if include_cache_hints {
+        // MCP 2026-07-28 requires explicit cache hints on paginated list results.
+        // Keep the scope private so a client cannot reuse this server-specific
+        // catalog across different users or authorization contexts.
+        result
+            .with_ttl_ms(MCP_TOOLS_LIST_TTL_MS)
+            .with_cache_scope(CacheScope::Private)
+    } else {
+        result
+    }
+}
+
+fn supports_tools_list_cache_hints(protocol_version: Option<&ProtocolVersion>) -> bool {
+    protocol_version
+        .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
 }
 
 impl ServerHandler for JasminMcpServer {
@@ -1027,18 +1919,22 @@ impl ServerHandler for JasminMcpServer {
                     "Interactive evidence-backed analysis of parsed Oracle AWR and STATSPACK data",
                 ),
         )
-        .with_instructions(
-            "Call start_performance_analysis before every investigation and pass its analysis_id to all later tools. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Store findings with evidence_refs, complete all mandatory assessments, check get_report_status, and finish through finalize_report. When the user requests HTML, configure Markdown output, finalize the stable Markdown report first, then pass that exact Markdown to convert_markdown_to_html.",
-        )
+        .with_instructions(format!(
+            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Store findings with evidence_refs, complete all mandatory assessments, check get_report_status, and finish through finalize_report. When the user requests HTML, configure Markdown output, finalize the stable Markdown report first, then pass that exact Markdown to convert_markdown_to_html.",
+            self.runtime.projects.len()
+        ))
     }
 
     fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = std::result::Result<ListToolsResult, McpError>> + Send + '_ {
-        std::future::ready(Ok(ListToolsResult::with_all_items(
+        let protocol_version = context.protocol_version();
+        let include_cache_hints = supports_tools_list_cache_hints(protocol_version.as_ref());
+        std::future::ready(Ok(tools_list_result(
             self.tools.as_ref().clone(),
+            include_cache_hints,
         )))
     }
 
@@ -1111,7 +2007,7 @@ impl ServerHandler for JasminMcpServer {
             Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                 Role::User,
                 format!(
-                    "Investigate {focus} using the JAS-MIN MCP server. Begin with start_performance_analysis, then use the returned analysis_id for all evidence calls. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings, complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html."
+                    "Investigate {focus} using the JAS-MIN MCP server. Begin with list_performance_projects when multiple projects may be loaded, then call start_performance_analysis with the intended project_ids and use its analysis_id for all evidence calls. In comparative sessions pass project_id to project-specific tools and use compare_project_metric or compare_project_sql for cross-project evidence. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings, complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html."
                 ),
             )])
             .with_description("Tool-first Oracle performance investigation workflow")
@@ -1160,7 +2056,10 @@ pub async fn run_mcp_server(runtime: AnalysisRuntime, endpoint: McpEndpoint) -> 
         mcp_log_timestamp(),
         endpoint.url()
     );
-    println!("   Parsed collection and statistical analysis are retained in memory.");
+    println!(
+        "   {} parsed performance project(s) and their statistical analyses are retained in memory.",
+        runtime.projects.len()
+    );
     println!("   Tool calls are logged with UTC timestamps, result status, and duration.");
     println!("   Press Ctrl-C to stop the server.");
     axum::serve(listener, router)
@@ -1177,23 +2076,47 @@ pub async fn run_mcp_server(runtime: AnalysisRuntime, endpoint: McpEndpoint) -> 
 }
 
 fn build_mcp_tools(runtime: &AnalysisRuntime) -> Vec<Tool> {
-    let mut tools = tools_schema(runtime.stem.as_str())
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|definition| openai_definition_to_mcp(definition, true, true))
+    let mut evidence_definitions = BTreeMap::new();
+    for project in runtime.projects.values() {
+        for definition in tools_schema(project.stem.as_str())
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let Some(name) = definition.pointer("/function/name").and_then(Value::as_str) {
+                evidence_definitions
+                    .entry(name.to_string())
+                    .or_insert_with(|| definition.clone());
+            }
+        }
+    }
+    let mut tools = evidence_definitions
+        .values()
+        .filter_map(|definition| openai_definition_to_mcp(definition, true, true, true))
         .collect::<Vec<_>>();
     tools.extend(mcp_control_definitions().iter().filter_map(|definition| {
         let name = definition.pointer("/function/name")?.as_str()?;
-        let requires_analysis = name != "start_performance_analysis";
+        let requires_analysis = !matches!(
+            name,
+            "list_performance_projects" | "start_performance_analysis"
+        );
+        let supports_project_id = name == "get_precomputed_analysis";
         let read_only = matches!(
             name,
-            "get_analysis_catalog"
+            "list_performance_projects"
+                | "get_analysis_catalog"
                 | "get_precomputed_analysis"
                 | "get_diagnostic_guidance"
+                | "compare_project_metric"
+                | "compare_project_sql"
                 | "get_report_status"
         );
-        openai_definition_to_mcp(definition, requires_analysis, read_only)
+        openai_definition_to_mcp(
+            definition,
+            requires_analysis,
+            supports_project_id,
+            read_only,
+        )
     }));
     tools.sort_by(|a, b| a.name.cmp(&b.name));
     tools
@@ -1202,6 +2125,7 @@ fn build_mcp_tools(runtime: &AnalysisRuntime) -> Vec<Tool> {
 fn openai_definition_to_mcp(
     definition: &Value,
     requires_analysis_id: bool,
+    supports_project_id: bool,
     read_only: bool,
 ) -> Option<Tool> {
     let function = definition.get("function")?;
@@ -1234,6 +2158,20 @@ fn openai_definition_to_mcp(
             }
         }
     }
+    if supports_project_id {
+        let properties = input_schema
+            .entry("properties".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(properties) = properties.as_object_mut() {
+            properties.insert(
+                "project_id".to_string(),
+                json!({
+                    "type": "string",
+                    "description": "Project handle returned by list_performance_projects. Required when the analysis contains multiple projects."
+                }),
+            );
+        }
+    }
     let output_schema = Arc::new(Map::from_iter([
         ("type".to_string(), json!("object")),
         ("additionalProperties".to_string(), json!(true)),
@@ -1255,12 +2193,19 @@ fn openai_definition_to_mcp(
 fn mcp_control_definitions() -> Vec<Value> {
     vec![
         function_definition(
+            "list_performance_projects",
+            "Mandatory discovery call when the server contains multiple projects. Returns stable project IDs, time ranges, database identity, sample counts and attachment availability without creating an analysis session.",
+            json!({"type": "object", "additionalProperties": false, "properties": {}}),
+        ),
+        function_definition(
             "start_performance_analysis",
-            "Mandatory first call. Creates an explicit analysis session and returns the statistical capability catalog, dataset manifest, compact high-signal seed, diagnostic quality gates and stable report contract.",
+            "Creates an explicit single-project or comparative analysis session and returns project manifests, statistical capabilities, compact seeds, diagnostic quality gates and the stable report contract. With multiple loaded projects, omit selection to analyze all projects or pass project_ids explicitly.",
             json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
+                    "project_id": {"type": "string", "description": "Select one project. Do not combine with project_ids."},
+                    "project_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 32, "uniqueItems": true, "description": "Projects included in one comparative analysis. Omit to select every loaded project."},
                     "focus": {"type": "string", "description": "Optional investigation focus supplied by the user"},
                     "language": {"type": "string", "description": "Preferred report language, default EN"},
                     "audience": {"type": "string", "enum": ["technical", "management", "mixed"], "default": "mixed"}
@@ -1295,6 +2240,39 @@ fn mcp_control_definitions() -> Vec<Value> {
                     "max_sections": {"type": "integer", "minimum": 1, "maximum": 5, "default": 3}
                 },
                 "required": ["topic"]
+            }),
+        ),
+        function_definition(
+            "compare_project_metric",
+            "Compares one observed metric distribution between a baseline project and a candidate project. Returns sample coverage, mean, median, p95, standard deviation, absolute and relative deltas, standardized mean difference and an optional direction-aware improvement/degradation label. Missing samples are never converted to zero.",
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "baseline_project_id": {"type": "string"},
+                    "candidate_project_id": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["load_profile", "instance_stat", "wait_event_fg", "wait_event_bg", "time_model", "host_cpu", "io_stats_byfunc"]},
+                    "name": {"type": "string", "description": "Metric, statistic, event, or I/O function name. For host_cpu use host_cpu."},
+                    "field": {"type": "string", "description": "Optional field accepted by get_metric_time_series."},
+                    "direction": {"type": "string", "enum": ["neutral", "lower_is_better", "higher_is_better"], "default": "neutral", "description": "Controls only the improved/degraded label. Use neutral when workload volume or metric semantics make direction ambiguous."},
+                    "materiality_pct": {"type": "number", "minimum": 0, "maximum": 1000, "default": 5}
+                },
+                "required": ["baseline_project_id", "candidate_project_id", "kind", "name"]
+            }),
+        ),
+        function_definition(
+            "compare_project_sql",
+            "Compares the same SQL_ID between baseline and candidate projects. Separates per-execution efficiency metrics from workload totals, reports coverage and observed plan hashes, and never treats missing SQL samples as zero.",
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "baseline_project_id": {"type": "string"},
+                    "candidate_project_id": {"type": "string"},
+                    "sql_id": {"type": "string"},
+                    "materiality_pct": {"type": "number", "minimum": 0, "maximum": 1000, "default": 5}
+                },
+                "required": ["baseline_project_id", "candidate_project_id", "sql_id"]
             }),
         ),
         function_definition(
@@ -1560,7 +2538,8 @@ fn calculation_catalog() -> Value {
         {"id": "pearson_correlations", "threshold": "absolute rho >= 0.5 for selected summaries", "access": ["get_precomputed_analysis(instance_stat_correlations)", "get_metric_time_series"], "caveat": "Correlation must be temporally aligned and independently verified."},
         {"id": "multi_model_gradients", "models": ["Ridge", "Elastic Net", "Huber", "Quantile 95"], "primary_metrics": ["impact_active", "impact_peak", "impact_share", "cross_model_classification"], "access": ["get_precomputed_analysis(full_gradients)"], "caveat": "Use VIF and collinear-group evidence; near-zero baselines can create unstable percentage sensitivities."},
         {"id": "db_time_degradation", "method": "baseline versus recent window with robust change statistics", "outputs": ["delta", "delta_pct", "robust_z_score", "estimated_db_time_delta_share"], "access": ["get_precomputed_analysis(db_time_degradation)"], "caveat": "A degraded recent window identifies co-moving contributors, not automatic causality."},
-        {"id": "timeline_and_baseline_comparison", "outputs": ["metric series", "SQL timeline", "wait timeline", "snapshot comparison", "wait histogram"], "access": ["get_metric_time_series", "get_sql_timeline", "get_wait_event_timeline", "compare_snapshots", "get_wait_event_histogram"], "caveat": "Always pair SNAP_ID with timestamp and compare a peak with a representative quiet baseline."}
+        {"id": "timeline_and_baseline_comparison", "outputs": ["metric series", "SQL timeline", "wait timeline", "snapshot comparison", "wait histogram"], "access": ["get_metric_time_series", "get_sql_timeline", "get_wait_event_timeline", "compare_snapshots", "get_wait_event_histogram"], "caveat": "Always pair SNAP_ID with timestamp and compare a peak with a representative quiet baseline."},
+        {"id": "cross_project_comparison", "outputs": ["sample coverage", "mean", "median", "p95", "standard deviation", "relative delta", "standardized mean difference", "direction-aware classification"], "access": ["compare_project_metric", "compare_project_sql"], "caveat": "A statistical change does not prove causality or equivalent workload mix. Missing samples are not zero, and improvement/degradation labels require explicit metric direction."}
     ])
 }
 
@@ -1626,6 +2605,55 @@ fn recommended_next_calls(
         calls.push(json!({"tool": "get_alertlog_errors", "reason": "correlate Oracle errors and incidents with snapshot evidence"}));
     }
     Value::Array(calls)
+}
+
+fn add_project_id_to_calls(calls: Value, project_id: &str) -> Value {
+    Value::Array(
+        calls
+            .as_array()
+            .into_iter()
+            .flatten()
+            .cloned()
+            .map(|mut call| {
+                if let Some(object) = call.as_object_mut() {
+                    let arguments = object
+                        .entry("arguments".to_string())
+                        .or_insert_with(|| json!({}));
+                    if let Some(arguments) = arguments.as_object_mut() {
+                        arguments.insert("project_id".to_string(), json!(project_id));
+                    }
+                }
+                call
+            })
+            .collect(),
+    )
+}
+
+fn mcp_project_id_from_stem(stem: &str) -> String {
+    let raw = Path::new(stem)
+        .file_stem()
+        .or_else(|| Path::new(stem).file_name())
+        .and_then(|value| value.to_str())
+        .unwrap_or("project");
+    let mut id = raw
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while id.contains("--") {
+        id = id.replace("--", "-");
+    }
+    let id = id.trim_matches('-');
+    if id.is_empty() {
+        "project".to_string()
+    } else {
+        id.chars().take(80).collect()
+    }
 }
 
 fn oracle_snapshot_date(value: &str) -> Option<String> {
@@ -1696,6 +2724,8 @@ fn report_status_value(analysis_id: &str, state: &AnalysisSession) -> Value {
     json!({
         "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
         "analysis_id": analysis_id,
+        "project_ids": state.project_ids,
+        "comparison_mode": state.project_ids.len() > 1,
         "ready_to_finalize": ready,
         "findings": state.findings.len(),
         "evidence_records": state.evidence.len(),
@@ -1762,6 +2792,20 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
         state.config.language,
         state.config.audience
     ));
+    output.push_str(&format!(
+        "Projects: {}\n\n",
+        state
+            .project_ids
+            .iter()
+            .map(|project_id| format!("`{project_id}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    if state.project_ids.len() > 1 {
+        output.push_str(
+            "Baseline and candidate direction must be stated in each comparative finding and its cited evidence.\n\n",
+        );
+    }
 
     output.push_str("## 1. Executive Summary\n\n");
     let mut leading = state.findings.values().collect::<Vec<_>>();
@@ -2268,7 +3312,7 @@ fn read_files(directory: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::awr::{DBInstance, SnapInfo, AWR};
+    use crate::awr::{DBInstance, LoadProfile, SQLElapsedTime, SnapInfo, AWR};
     use crate::reasonings::{MadAnomaliesEvents, TopForegroundWaitEvents};
 
     fn runtime() -> AnalysisRuntime {
@@ -2288,17 +3332,76 @@ mod tests {
             awrs: vec![awr],
             sql_text: HashMap::new(),
         };
-        AnalysisRuntime {
-            collection: Arc::new(collection),
-            report: Arc::new(ReportForAI::default()),
-            stem: Arc::new("nonexistent-test-dataset".to_string()),
-            security_level: 0,
-            guidance: Arc::new(GuidanceLibrary::default()),
-            report_links: Arc::new(HashMap::new()),
-            html_reports_dir: Arc::new("nonexistent-test-dataset.html_reports".to_string()),
-            sessions: Arc::new(DashMap::new()),
-            sequence: Arc::new(AtomicU64::new(1)),
-        }
+        let mut runtime = AnalysisRuntime::new(
+            collection,
+            ReportForAI::default(),
+            "nonexistent-test-dataset".to_string(),
+            0,
+            HashMap::new(),
+            "nonexistent-test-dataset.html_reports".to_string(),
+        );
+        runtime.guidance = Arc::new(GuidanceLibrary::default());
+        runtime
+    }
+
+    fn comparison_project(
+        project_id: &str,
+        load_values: &[f64],
+        sql_elapsed_per_exec: &[f64],
+    ) -> AnalysisProject {
+        let awrs = load_values
+            .iter()
+            .enumerate()
+            .map(|(index, load_value)| {
+                let mut awr = AWR::default();
+                awr.snap_info = SnapInfo {
+                    begin_snap_id: (index + 1) as u64,
+                    end_snap_id: (index + 2) as u64,
+                    begin_snap_time: format!("2026-08-{:02} 10:00", index + 1),
+                    end_snap_time: format!("2026-08-{:02} 11:00", index + 1),
+                };
+                let mut load_profile = LoadProfile::default();
+                load_profile.stat_name = "User calls".to_string();
+                load_profile.per_second = *load_value;
+                awr.load_profile.push(load_profile);
+                if let Some(per_exec) = sql_elapsed_per_exec.get(index) {
+                    awr.sql_elapsed_time.push(SQLElapsedTime {
+                        sql_id: "abc123".to_string(),
+                        elapsed_time_s: per_exec * 10.0,
+                        executions: 10,
+                        elpased_time_exec_s: *per_exec,
+                        sql_module: "comparison-test".to_string(),
+                        sql_type: "SELECT".to_string(),
+                        ..Default::default()
+                    });
+                }
+                awr
+            })
+            .collect();
+        AnalysisProject::new(
+            project_id.to_string(),
+            AWRSCollection {
+                db_instance_information: DBInstance::default(),
+                initialization_parameters: HashMap::new(),
+                awrs,
+                sql_text: HashMap::new(),
+            },
+            ReportForAI::default(),
+            format!("nonexistent-{project_id}"),
+            0,
+            HashMap::new(),
+            format!("nonexistent-{project_id}.html_reports"),
+        )
+    }
+
+    fn comparison_runtime() -> AnalysisRuntime {
+        let mut runtime = AnalysisRuntime::from_projects(vec![
+            comparison_project("before", &[100.0, 120.0, 110.0], &[2.0, 2.2, 1.8]),
+            comparison_project("after", &[70.0, 80.0, 75.0], &[1.0, 1.1, 0.9]),
+        ])
+        .unwrap();
+        runtime.guidance = Arc::new(GuidanceLibrary::default());
+        runtime
     }
 
     #[test]
@@ -2313,6 +3416,25 @@ mod tests {
     fn endpoint_rejects_non_loopback_binding() {
         let error = "0.0.0.0:4242/mcp".parse::<McpEndpoint>().unwrap_err();
         assert!(error.contains("loopback-only"));
+    }
+
+    #[test]
+    fn tools_list_cache_hints_match_the_modern_protocol_contract() {
+        assert!(!supports_tools_list_cache_hints(Some(
+            &ProtocolVersion::V_2025_11_25
+        )));
+        assert!(supports_tools_list_cache_hints(Some(
+            &ProtocolVersion::V_2026_07_28
+        )));
+
+        let modern = serde_json::to_value(tools_list_result(Vec::new(), true)).unwrap();
+        assert_eq!(modern["ttlMs"], MCP_TOOLS_LIST_TTL_MS);
+        assert_eq!(modern["cacheScope"], "private");
+        assert_eq!(modern["resultType"], "complete");
+
+        let legacy = serde_json::to_value(tools_list_result(Vec::new(), false)).unwrap();
+        assert!(legacy.get("ttlMs").is_none());
+        assert!(legacy.get("cacheScope").is_none());
     }
 
     #[test]
@@ -2347,6 +3469,102 @@ mod tests {
         let encoded = bounded_log_field(&oversized);
         assert_eq!(encoded.matches('x').count(), MAX_MCP_LOG_FIELD_CHARS);
         assert!(encoded.ends_with("...\""));
+    }
+
+    #[test]
+    fn comparative_session_routes_projects_and_records_metric_evidence() {
+        let runtime = comparison_runtime();
+        let projects = runtime
+            .call_tool("list_performance_projects", Map::new())
+            .unwrap();
+        assert_eq!(projects["project_count"], 2);
+
+        let bootstrap = runtime
+            .call_tool("start_performance_analysis", Map::new())
+            .unwrap();
+        assert_eq!(bootstrap["comparison_mode"], true);
+        assert_eq!(bootstrap["project_ids"], json!(["after", "before"]));
+        let analysis_id = bootstrap["analysis_id"].as_str().unwrap();
+
+        let ambiguous = runtime
+            .call_tool(
+                "get_database_load_summary",
+                Map::from_iter([("analysis_id".to_string(), json!(analysis_id))]),
+            )
+            .unwrap_err();
+        assert_eq!(ambiguous["error_code"], "MISSING_PROJECT_ID");
+
+        let evidence = runtime
+            .call_tool(
+                "compare_project_metric",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("baseline_project_id".to_string(), json!("before")),
+                    ("candidate_project_id".to_string(), json!("after")),
+                    ("kind".to_string(), json!("load_profile")),
+                    ("name".to_string(), json!("User calls")),
+                    ("direction".to_string(), json!("lower_is_better")),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(evidence["evidence_id"], "E-0002");
+        assert_eq!(
+            evidence["result"]["comparison"]["classification"],
+            "improved"
+        );
+        assert!(
+            evidence["result"]["comparison"]["mean_delta_pct"]
+                .as_f64()
+                .unwrap()
+                < 0.0
+        );
+
+        let invalid_field = runtime
+            .call_tool(
+                "compare_project_metric",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("baseline_project_id".to_string(), json!("before")),
+                    ("candidate_project_id".to_string(), json!("after")),
+                    ("kind".to_string(), json!("host_cpu")),
+                    ("name".to_string(), json!("host_cpu")),
+                    ("field".to_string(), json!("idle_percent_typo")),
+                ]),
+            )
+            .unwrap_err();
+        assert_eq!(invalid_field["error_code"], "INVALID_COMPARISON_FIELD");
+    }
+
+    #[test]
+    fn sql_comparison_separates_efficiency_from_workload_volume() {
+        let runtime = comparison_runtime();
+        let bootstrap = runtime
+            .call_tool("start_performance_analysis", Map::new())
+            .unwrap();
+        let analysis_id = bootstrap["analysis_id"].as_str().unwrap();
+        let evidence = runtime
+            .call_tool(
+                "compare_project_sql",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("baseline_project_id".to_string(), json!("before")),
+                    ("candidate_project_id".to_string(), json!("after")),
+                    ("sql_id".to_string(), json!("ABC123")),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(evidence["result"]["sql_id"], "abc123");
+        let comparisons = evidence["result"]["comparisons"].as_array().unwrap();
+        let elapsed_per_exec = comparisons
+            .iter()
+            .find(|item| item["metric"] == "elapsed_time_per_exec_s")
+            .unwrap();
+        assert_eq!(elapsed_per_exec["comparison"]["classification"], "improved");
+        let executions = comparisons
+            .iter()
+            .find(|item| item["metric"] == "executions")
+            .unwrap();
+        assert_eq!(executions["comparison"]["classification"], "not_classified");
     }
 
     #[test]
@@ -2422,6 +3640,10 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("analysis_id")));
+        assert_eq!(
+            list_snapshots.input_schema["properties"]["project_id"]["type"],
+            "string"
+        );
         let start = tools
             .iter()
             .find(|tool| tool.name == "start_performance_analysis")
@@ -2429,6 +3651,21 @@ mod tests {
         assert!(start.input_schema["properties"]
             .get("analysis_id")
             .is_none());
+        let projects = tools
+            .iter()
+            .find(|tool| tool.name == "list_performance_projects")
+            .unwrap();
+        assert!(projects.input_schema["properties"]
+            .get("analysis_id")
+            .is_none());
+        let compare = tools
+            .iter()
+            .find(|tool| tool.name == "compare_project_metric")
+            .unwrap();
+        assert!(compare.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("analysis_id")));
         let html = tools
             .iter()
             .find(|tool| tool.name == "convert_markdown_to_html")

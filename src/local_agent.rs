@@ -2213,12 +2213,12 @@ fn find_model_context_tokens(catalog: &Value, model: &str) -> Option<usize> {
 }
 
 fn load_collection(args: &crate::Args) -> Result<AWRSCollection, Box<dyn std::error::Error>> {
-    let path = if !args.json_file.is_empty() {
-        args.json_file.clone()
+    let path = if !args.json_file().is_empty() {
+        args.json_file().to_string()
     } else if !args.outfile.is_empty() {
         args.outfile.clone()
     } else {
-        format!("{}.json", args.directory)
+        format!("{}.json", args.directory())
     };
     let data = fs::read_to_string(&path)
         .map_err(|e| format!("Cannot load AWR collection for local tools from {path}: {e}"))?;

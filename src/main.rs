@@ -9,7 +9,7 @@ use std::env;
 use std::fs;
 use std::io::Read;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str;
 
 mod ai_tools;
@@ -26,7 +26,9 @@ mod staticdata;
 mod tools;
 
 use crate::local_agent::{analyze_report_local_agent, write_local_agent_outputs};
-use crate::mcp_server::{run_mcp_server, AnalysisRuntime, McpEndpoint};
+use crate::mcp_server::{
+    run_mcp_server, AnalysisProject, AnalysisRuntime, McpEndpoint, MAX_MCP_PROJECTS,
+};
 use crate::reasonings::*;
 use crate::reasonings::{
     AnomalyDescription, AnomlyCluster, IOStatsByFunctionSummary, InstanceStatisticCorrelation,
@@ -50,9 +52,9 @@ struct Args {
     #[clap(long, default_value = "")]
     file: String,
 
-    ///Parse whole directory of files
-    #[clap(short, long, default_value = "")]
-    directory: String,
+    ///Parse a directory of report files. Repeat with --mcp to load multiple projects.
+    #[clap(short, long, value_name = "DIRECTORY")]
+    directory: Vec<String>,
 
     ///Write output to nondefault file? Default is directory_name.json
     #[clap(short, long, default_value = "")]
@@ -71,9 +73,9 @@ struct Args {
     #[clap(short, long, default_value = "", verbatim_doc_comment)]
     id_sqls: String,
 
-    ///Analyze provided JSON file
-    #[clap(short, long, default_value = "")]
-    json_file: String,
+    ///Analyze a JSON file. Repeat with --mcp to load multiple projects.
+    #[clap(short, long, value_name = "JSON_FILE")]
+    json_file: Vec<String>,
 
     ///Filter snapshots, based on SNAP IDs in format BEGIN_ID- END_ID
     #[clap(short, long, default_value = "0-666666666")]
@@ -178,6 +180,32 @@ struct Args {
     pub mcp: Option<McpEndpoint>,
 }
 
+impl Args {
+    /// Returns the active directory for code paths that process one project.
+    fn directory(&self) -> &str {
+        self.directory.first().map(String::as_str).unwrap_or("")
+    }
+
+    /// Returns the active JSON file for code paths that process one project.
+    fn json_file(&self) -> &str {
+        self.json_file.first().map(String::as_str).unwrap_or("")
+    }
+
+    fn for_directory(&self, directory: String) -> Self {
+        let mut project_args = self.clone();
+        project_args.directory = vec![directory];
+        project_args.json_file.clear();
+        project_args
+    }
+
+    fn for_json_file(&self, json_file: String) -> Self {
+        let mut project_args = self.clone();
+        project_args.directory.clear();
+        project_args.json_file = vec![json_file];
+        project_args
+    }
+}
+
 fn load_env() {
     // 1.Check existense of $JASMIN_HOME
     let env_loaded = if let Ok(jasmin_home) = env::var("JASMIN_HOME") {
@@ -208,6 +236,202 @@ fn load_env() {
     }
 }
 
+fn project_id_base(path: &str) -> String {
+    let path = Path::new(path);
+    let raw = if path.is_dir() {
+        path.file_name()
+    } else {
+        path.file_stem().or_else(|| path.file_name())
+    }
+    .and_then(|value| value.to_str())
+    .unwrap_or("project");
+    let mut id = raw
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while id.contains("--") {
+        id = id.replace("--", "-");
+    }
+    let id = id.trim_matches('-');
+    if id.is_empty() {
+        "project".to_string()
+    } else {
+        id.chars().take(80).collect()
+    }
+}
+
+fn unique_project_id(path: &str, used: &mut HashSet<String>) -> String {
+    let base = project_id_base(path);
+    let mut candidate = base.clone();
+    let mut suffix = 2;
+    while used.contains(&candidate) {
+        candidate = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    used.insert(candidate.clone());
+    candidate
+}
+
+fn owned_report_links(
+    report_links: &HashMap<&str, HashSet<String>>,
+) -> HashMap<String, HashSet<String>> {
+    report_links
+        .iter()
+        .map(|(kind, names)| ((*kind).to_string(), names.clone()))
+        .collect()
+}
+
+fn mcp_html_output_dir(source: &str, is_directory: bool) -> PathBuf {
+    if is_directory {
+        PathBuf::from(source).with_extension("html_reports")
+    } else {
+        PathBuf::from(source)
+            .file_stem()
+            .map(|value| PathBuf::from(value).with_extension("html_reports"))
+            .unwrap_or_else(|| PathBuf::from("jas-min.html_reports"))
+    }
+}
+
+fn absolute_output_key(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .map_err(|error| format!("Cannot resolve the working directory: {error}"))?
+            .join(path)
+    };
+    let file_name = absolute
+        .file_name()
+        .ok_or_else(|| format!("Invalid MCP output path '{}'", path.display()))?;
+    let parent = absolute.parent().unwrap_or_else(|| Path::new("."));
+    let canonical_parent = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    Ok(canonical_parent.join(file_name))
+}
+
+fn load_mcp_projects(args: &Args) -> Result<Vec<AnalysisProject>, String> {
+    let source_count = args.directory.len() + args.json_file.len();
+    if source_count == 0 {
+        return Err("--mcp requires at least one --directory or --json-file".to_string());
+    }
+    if source_count > MAX_MCP_PROJECTS {
+        return Err(format!(
+            "{source_count} MCP projects were supplied; the maximum is {MAX_MCP_PROJECTS}"
+        ));
+    }
+    if !args.file.is_empty() {
+        return Err(
+            "--mcp cannot be combined with --file; use --directory or --json-file".to_string(),
+        );
+    }
+    if source_count > 1 && !args.outfile.is_empty() {
+        return Err(
+            "--outfile is ambiguous with multiple MCP projects; omit it or load one project"
+                .to_string(),
+        );
+    }
+
+    let mut canonical_sources = HashSet::new();
+    for source in args.directory.iter().chain(args.json_file.iter()) {
+        let canonical = fs::canonicalize(source)
+            .map_err(|error| format!("Cannot access MCP project source '{source}': {error}"))?;
+        if !canonical_sources.insert(canonical) {
+            return Err(format!(
+                "MCP project source '{source}' was provided more than once"
+            ));
+        }
+    }
+
+    // Classic report generation creates charts while each project is loaded. Reject
+    // colliding targets before parsing so one project cannot overwrite another.
+    let mut output_owners = HashMap::<PathBuf, String>::new();
+    for (source, is_directory) in args
+        .directory
+        .iter()
+        .map(|source| (source, true))
+        .chain(args.json_file.iter().map(|source| (source, false)))
+    {
+        let output_dir = mcp_html_output_dir(source, is_directory);
+        let output_key = absolute_output_key(&output_dir)?;
+        if let Some(previous_source) = output_owners.insert(output_key, source.clone()) {
+            return Err(format!(
+                "MCP project sources '{previous_source}' and '{source}' use the same generated HTML directory '{}'; rename one input or start JAS-MIN from another working directory",
+                output_dir.display()
+            ));
+        }
+    }
+
+    let mut used_project_ids = HashSet::new();
+    let mut projects = Vec::with_capacity(source_count);
+
+    for directory in &args.directory {
+        if !Path::new(directory).is_dir() {
+            return Err(format!(
+                "MCP project directory '{directory}' is not a directory"
+            ));
+        }
+        let project_args = args.for_directory(directory.clone());
+        let mut report_links = HashMap::new();
+        let json_output = if args.outfile.is_empty() {
+            PathBuf::from(directory)
+                .with_extension("json")
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            args.outfile.clone()
+        };
+        debug_note!("Starting to parse MCP project directory: {}", directory);
+        let parsed = awr::parse_awr_dir(project_args, &mut report_links, &json_output);
+        projects.push(AnalysisProject::new(
+            unique_project_id(directory, &mut used_project_ids),
+            parsed.collection,
+            parsed.report_for_ai,
+            directory.clone(),
+            args.security_level,
+            owned_report_links(&report_links),
+            PathBuf::from(directory)
+                .with_extension("html_reports")
+                .to_string_lossy()
+                .into_owned(),
+        ));
+    }
+
+    for json_file in &args.json_file {
+        if !Path::new(json_file).is_file() {
+            return Err(format!(
+                "MCP project JSON source '{json_file}' is not a file"
+            ));
+        }
+        let project_args = args.for_json_file(json_file.clone());
+        let mut report_links = HashMap::new();
+        debug_note!("Starting to load MCP project JSON: {}", json_file);
+        let parsed = awr::prarse_json_file(project_args, &mut report_links);
+        let stem = PathBuf::from(json_file)
+            .with_extension("")
+            .to_string_lossy()
+            .into_owned();
+        let html_reports_dir = mcp_html_output_dir(json_file, false)
+            .to_string_lossy()
+            .into_owned();
+        projects.push(AnalysisProject::new(
+            unique_project_id(json_file, &mut used_project_ids),
+            parsed.collection,
+            parsed.report_for_ai,
+            stem,
+            args.security_level,
+            owned_report_links(&report_links),
+            html_reports_dir,
+        ));
+    }
+
+    Ok(projects)
+}
+
 fn main() {
     load_env();
     let mut reportfile: String = "".to_string();
@@ -220,8 +444,6 @@ fn main() {
     );
 
     let mut report_for_ai = ReportForAI::default();
-    let mut collection_for_mcp = None;
-    let mut analysis_stem = String::new();
 
     //This creates a global pool configuration for rayon to limit threads for par_iter
     ThreadPoolBuilder::new()
@@ -229,59 +451,69 @@ fn main() {
         .build_global()
         .expect("Can't create rayon pool");
 
+    if let Some(endpoint) = args.mcp.clone() {
+        let projects = load_mcp_projects(&args).unwrap_or_else(|error| {
+            eprintln!("ERROR: {error}");
+            std::process::exit(2);
+        });
+        let runtime = AnalysisRuntime::from_projects(projects).unwrap_or_else(|error| {
+            eprintln!("ERROR: Cannot initialize MCP projects: {error:#}");
+            std::process::exit(2);
+        });
+        if let Err(error) = run_mcp_server(runtime, endpoint) {
+            eprintln!("ERROR: MCP server failed: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.directory.len() + args.json_file.len() > 1 {
+        eprintln!("ERROR: repeated --directory/--json-file inputs require --mcp");
+        std::process::exit(2);
+    }
+
     //This is map that will be used to generate and insert appropriate links to html AI output
     let mut events_sqls: &mut HashMap<&str, HashSet<String>> = &mut HashMap::new();
 
     if !args.file.is_empty() {
         let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
         println!("{}", awr_doc);
-        if args.mcp.is_some() {
-            eprintln!("ERROR: --mcp requires --directory or --json-file so that the full time series is available");
-            std::process::exit(2);
-        }
-    } else if !args.directory.is_empty() {
-        if PathBuf::from(&args.directory).exists() {
-            let mut fname = PathBuf::from(&args.directory)
+    } else if !args.directory().is_empty() {
+        if PathBuf::from(args.directory()).exists() {
+            let mut fname = PathBuf::from(args.directory())
                 .with_extension("json")
                 .to_string_lossy()
                 .into_owned();
-            reportfile = PathBuf::from(&args.directory)
+            reportfile = PathBuf::from(args.directory())
                 .with_extension("txt")
                 .to_string_lossy()
                 .into_owned();
             if !args.outfile.is_empty() {
                 fname = args.outfile.clone();
             }
-            debug_note!("Starting to parse directory: {}", &args.directory);
+            debug_note!("Starting to parse directory: {}", args.directory());
             let parsed = awr::parse_awr_dir(args.clone(), events_sqls, &fname);
             report_for_ai = parsed.report_for_ai;
-            collection_for_mcp = Some(parsed.collection);
-            analysis_stem = args.directory.clone();
         } else {
-            eprintln!("ERROR: Directory: '{}' does not exists!", args.directory);
+            eprintln!("ERROR: Directory: '{}' does not exists!", args.directory());
         }
-    } else if !args.json_file.is_empty() {
-        if PathBuf::from(&args.json_file).exists() {
+    } else if !args.json_file().is_empty() {
+        if PathBuf::from(args.json_file()).exists() {
             let parsed = awr::prarse_json_file(args.clone(), events_sqls);
             report_for_ai = parsed.report_for_ai;
-            collection_for_mcp = Some(parsed.collection);
-            analysis_stem = PathBuf::from(&args.json_file)
-                .with_extension("")
-                .to_string_lossy()
-                .into_owned();
             //let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
-            reportfile = match PathBuf::from(&args.json_file).file_stem() {
+            reportfile = match PathBuf::from(args.json_file()).file_stem() {
                 Some(stem) => PathBuf::from(stem)
                     .with_extension("txt")
                     .to_string_lossy()
                     .into_owned(),
                 None => {
-                    eprintln!("Invalid filename: {}", args.json_file);
+                    eprintln!("Invalid filename: {}", args.json_file());
                     std::process::exit(10);
                 }
             };
         } else {
-            eprintln!("ERROR: JSON file: '{}' does not exists!", args.json_file);
+            eprintln!("ERROR: JSON file: '{}' does not exists!", args.json_file());
         }
     }
 
@@ -364,41 +596,40 @@ fn main() {
     if !args.convert_md2html.is_empty() {
         convert_md_to_html_file(&args.convert_md2html, events_sqls.clone());
     }
+}
 
-    if let Some(endpoint) = args.mcp.clone() {
-        let Some(collection) = collection_for_mcp else {
-            eprintln!("ERROR: --mcp did not receive a parsed AWR/STATSPACK collection");
-            std::process::exit(2);
-        };
-        let runtime = AnalysisRuntime::new(
-            collection,
-            report_for_ai,
-            analysis_stem,
-            args.security_level,
-            events_sqls
-                .iter()
-                .map(|(kind, names)| ((*kind).to_string(), names.clone()))
-                .collect(),
-            if !args.directory.is_empty() {
-                PathBuf::from(&args.directory)
-                    .with_extension("html_reports")
-                    .to_string_lossy()
-                    .into_owned()
-            } else {
-                PathBuf::from(&args.json_file)
-                    .file_stem()
-                    .map(|stem| {
-                        PathBuf::from(stem)
-                            .with_extension("html_reports")
-                            .to_string_lossy()
-                            .into_owned()
-                    })
-                    .unwrap_or_else(|| "jas-min.html_reports".to_string())
-            },
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn clap_accepts_repeated_mcp_project_sources() {
+        let args = Args::try_parse_from([
+            "jas-min",
+            "--mcp",
+            "127.0.0.1:4242/mcp",
+            "-d",
+            "before",
+            "--directory",
+            "after",
+            "-j",
+            "reference.json",
+        ])
+        .unwrap();
+        assert_eq!(args.directory, vec!["before", "after"]);
+        assert_eq!(args.json_file, vec!["reference.json"]);
+    }
+
+    #[test]
+    fn project_ids_are_stable_and_collision_safe() {
+        let mut used = HashSet::new();
+        assert_eq!(
+            unique_project_id("/tmp/Before AWR.json", &mut used),
+            "before-awr"
         );
-        if let Err(error) = run_mcp_server(runtime, endpoint) {
-            eprintln!("ERROR: MCP server failed: {error:#}");
-            std::process::exit(1);
-        }
+        assert_eq!(
+            unique_project_id("/other/Before AWR.json", &mut used),
+            "before-awr-2"
+        );
     }
 }
