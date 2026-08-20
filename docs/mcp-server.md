@@ -1,6 +1,6 @@
 # JAS-MIN MCP Server
 
-JAS-MIN can expose a parsed Oracle AWR or STATSPACK collection as a stateful
+JAS-MIN can expose one or more parsed Oracle AWR or STATSPACK collections as a stateful
 Model Context Protocol (MCP) server. The server is intended for interactive,
 evidence-backed performance investigations: a model receives a compact map of
 the available statistics, requests focused evidence, records conclusions with
@@ -16,7 +16,8 @@ parallel analysis engine.
 The server is built around the following constraints:
 
 - parsing and statistical analysis finish before the endpoint starts listening;
-- large AWR collections remain in memory and are queried through bounded tools;
+- multiple large AWR collections can remain in memory and are queried through
+  stable project handles and bounded tools;
 - the first analysis call teaches the model what JAS-MIN has already computed;
 - observed data, diagnostic methodology, and model-authored conclusions remain
   separate;
@@ -44,6 +45,32 @@ jas-min --json-file ./awr_reports.json --security-level 2 \
   --mcp 127.0.0.1:4242/mcp
 ```
 
+Load several projects into one comparative server by repeating either input
+option. Directory and JSON inputs may be mixed:
+
+```bash
+jas-min \
+  -j ./before_upgrade.json \
+  -j ./after_upgrade.json \
+  -d ./month_end_awr \
+  --security-level 2 \
+  --mcp 127.0.0.1:4242/mcp
+```
+
+One server accepts at most 32 projects.
+
+Repeated `--directory` or `--json-file` inputs require `--mcp`. JAS-MIN derives
+a stable, lowercase `project_id` from every basename and adds a numeric suffix
+when basenames collide. The IDs are published by
+`list_performance_projects`; clients must not infer them from paths.
+
+With several inputs, `--outfile` is rejected because one global destination is
+ambiguous. JAS-MIN also resolves the classic chart directory generated for
+each input before parsing begins and rejects collisions. This prevents two
+projects with similar filenames from silently overwriting one another's HTML
+assets. Rename one input or start JAS-MIN in a different working directory when
+the validation reports a collision.
+
 The argument has the form `IP:PORT/PATH`. If the path is omitted, `/mcp` is
 used. An `http://` prefix is accepted, but `https://` is rejected because the
 embedded server does not terminate TLS.
@@ -64,30 +91,32 @@ The minimum supported Rust version for this feature is 1.88.
 JAS-MIN performs the following work synchronously before binding the TCP
 listener:
 
-1. Parse the input directory or deserialize the requested JSON collection.
-2. Build the full `AWRSCollection` time series.
-3. Calculate the compact `ReportForAI`, including degradation, correlations,
+1. Validate every input and reject duplicate canonical paths.
+2. Parse every input directory or deserialize every requested JSON collection.
+3. Build one full `AWRSCollection` time series per project.
+4. Calculate a corresponding compact `ReportForAI`, including degradation, correlations,
    gradients, anomalies, waits, SQL, I/O, latch, segment, and parameter
    summaries.
-4. Resolve the dataset stem used to discover sibling attachments.
-5. Load and index diagnostic guidance from `reasonings.txt`.
-6. Construct `AnalysisRuntime` with immutable shared data and an empty analysis
+5. Resolve each dataset stem used to discover sibling attachments.
+6. Load and index diagnostic guidance from `reasonings.txt`.
+7. Construct `AnalysisRuntime` with an immutable project map and an empty analysis
    session map.
-7. Bind the loopback listener and mount the Streamable HTTP service at the
+8. Bind the loopback listener and mount the Streamable HTTP service at the
    configured path.
 
 The runtime retains the following objects until the process exits:
 
 | Object | Storage | Purpose |
 |---|---|---|
-| `AWRSCollection` | shared `Arc` | Complete parsed Oracle time series and SQL/parameter data. |
-| `ReportForAI` | shared `Arc` | Precomputed and bounded statistical summaries. |
-| Dataset stem | shared `Arc` | Locates `<stem>_attachments` and its AIX subdirectory. |
+| Project map | shared ordered map | Stable `project_id` to immutable project data. |
+| `AWRSCollection` | one shared `Arc` per project | Complete parsed Oracle time series and SQL/parameter data. |
+| `ReportForAI` | one shared `Arc` per project | Precomputed and bounded statistical summaries. |
+| Dataset stem | one shared `Arc` per project | Locates `<stem>_attachments` and its AIX subdirectory. |
 | Guidance library | shared `Arc` | Indexed sections loaded from `reasonings.txt`. |
 | Analysis sessions | concurrent `DashMap` | Evidence, guidance references, findings, assessments, and report configuration keyed by `analysis_id`. |
 | Analysis sequence | atomic counter | Generates unique process-local analysis identifiers. |
 
-The parsed collection and precomputed report are immutable after startup.
+Parsed collections and precomputed reports are immutable after startup.
 Conversational state is isolated in per-analysis records protected by a mutex.
 
 ## Request flow
@@ -101,9 +130,11 @@ flowchart TD
     Endpoint["Streamable HTTP endpoint<br/>127.0.0.1:PORT/PATH"]
     Transport["LocalSessionManager<br/>Mcp-Session-Id"]
     Handler["JasminMcpServer<br/>ServerHandler"]
-    Runtime["AnalysisRuntime<br/>shared parsed data"]
-    Session["AnalysisSession<br/>analysis_id"]
+    Runtime["AnalysisRuntime<br/>shared project registry"]
+    Projects["ProjectData map<br/>project_id to collection/report/attachments"]
+    Session["AnalysisSession<br/>analysis_id plus selected project_ids"]
     Existing["Existing JAS-MIN tool dispatcher"]
+    Compare["Cross-project comparison<br/>metric and SQL distributions"]
     Guidance["GuidanceLibrary<br/>reasonings.txt"]
     Report["Report state and renderer"]
     HtmlRenderer["Classic AI Markdown renderer<br/>TOC, CSS, report links"]
@@ -118,16 +149,28 @@ flowchart TD
     Client -->|"POST tools/list or prompts/list"| Endpoint
     Handler -->|"Dynamic evidence tools plus<br/>MCP workflow tools"| Client
 
-    Client -->|"tools/call: start_performance_analysis"| Handler
+    Client -->|"tools/call: list_performance_projects"| Handler
+    Handler --> Runtime
+    Runtime -->|"Project IDs, ranges, database identity,<br/>sample and attachment counts"| Client
+
+    Client -->|"tools/call: start_performance_analysis<br/>with selected project_ids"| Handler
     Handler --> Runtime
     Runtime -->|"Create analysis_id and SEED-E0001"| Session
-    Session -->|"Manifest, calculation catalog,<br/>triage, quality gates, report contract"| Client
+    Runtime --> Projects
+    Session -->|"Per-project manifests and seeds,<br/>calculation catalog, quality gates, report contract"| Client
 
-    Client -->|"tools/call with analysis_id"| Handler
+    Client -->|"Project evidence call<br/>with analysis_id and project_id"| Handler
+    Handler --> Projects
     Handler -->|"Measurement request"| Existing
     Existing -->|"Structured result"| Runtime
     Runtime -->|"Cache result and assign E-nnnn"| Session
     Session -->|"Evidence result"| Client
+
+    Client -->|"compare_project_metric or compare_project_sql<br/>with baseline and candidate project IDs"| Handler
+    Handler --> Compare
+    Projects --> Compare
+    Compare -->|"Normalized distributions, coverage,<br/>deltas, effect size, guarded classification"| Session
+    Session -->|"Comparative E-nnnn evidence"| Client
 
     Handler -->|"Guidance request"| Guidance
     Guidance -->|"GUIDE-section references;<br/>methodology only"| Session
@@ -154,9 +197,11 @@ An evidence tool request is processed in this order:
 1. The Streamable HTTP layer validates and routes the JSON-RPC request.
 2. `JasminMcpServer` resolves the tool and passes its arguments to
    `AnalysisRuntime`.
-3. The runtime requires a non-empty `analysis_id` and locates the corresponding
-   `AnalysisSession`.
-4. The runtime removes `analysis_id` before calling the existing JAS-MIN
+3. The runtime requires a non-empty `analysis_id`, locates the corresponding
+   `AnalysisSession`, and verifies that the requested `project_id` belongs to
+   that analysis. `project_id` may be omitted only when the analysis contains
+   one project.
+4. The runtime removes `analysis_id` and `project_id` before calling the existing JAS-MIN
    dispatcher, so MCP-specific state never changes the legacy tool contract.
 5. A tool-native error is returned immediately and is not registered as
    evidence.
@@ -165,22 +210,58 @@ An evidence tool request is processed in this order:
 7. An identical successful call in the same analysis reuses its existing
    evidence record; otherwise the result receives the next `E-nnnn` identifier.
 8. The result is returned as MCP structured content together with its
-   `analysis_id`, `evidence_id`, tool name, and cache status.
+   `analysis_id`, `project_id`, `evidence_id`, tool name, and cache status.
+
+Comparison tools resolve both project IDs inside the same analysis, calculate
+bounded distribution summaries, and register the complete comparison as one
+evidence record. Missing samples remain missing rather than becoming zeros.
 
 ## Transport lifecycle
 
-The endpoint uses stateful MCP over Streamable HTTP. A client normally performs
-this lifecycle automatically:
+The endpoint uses MCP over Streamable HTTP. Clients negotiating a legacy
+version such as `2025-06-18` use the stateful lifecycle below; modern
+`2026-07-28` clients use self-contained request metadata and standard MCP HTTP
+headers. A client library normally handles either lifecycle automatically.
+
+Legacy stateful lifecycle:
 
 1. Send `initialize` with the client name, version, capabilities, and supported
    protocol version.
 2. Read the negotiated server information and `Mcp-Session-Id` response header.
 3. Send `notifications/initialized` with that session header.
 4. Discover `tools/list` and, if useful, `prompts/list` or `prompts/get`.
-5. Call `start_performance_analysis`.
-6. Use the returned `analysis_id` in every later JAS-MIN tool call.
-7. End the transport session with HTTP `DELETE` and the
+5. Call `list_performance_projects` when the server may contain several inputs.
+6. Call `start_performance_analysis` with one `project_id`, several
+   `project_ids`, or no selection to include every loaded project.
+7. Use the returned `analysis_id` in every later JAS-MIN tool call and include
+   `project_id` in project-specific calls when the analysis is comparative.
+8. End the transport session with HTTP `DELETE` and the
    `Mcp-Session-Id` header.
+
+### MCP 2026-07-28 cache hints
+
+When a client negotiates protocol version `2026-07-28` or newer,
+`tools/list` includes the cache fields required by that protocol revision:
+
+```json
+{
+  "resultType": "complete",
+  "ttlMs": 300000,
+  "cacheScope": "private",
+  "tools": []
+}
+```
+
+The five-minute TTL is a freshness hint, not server-side expiration. The tool
+catalog is immutable for the lifetime of a JAS-MIN process, but `private`
+prevents a client from sharing a cached catalog across users or authorization
+contexts. Sessions negotiated with an older MCP version omit both cache fields
+to retain the legacy response shape.
+
+A manual `2026-07-28` `tools/list` request must carry the negotiated version in
+both `_meta` and `MCP-Protocol-Version`, as well as the routing header
+`Mcp-Method: tools/list`. These requirements come from the modern transport
+contract and are separate from the cache hints returned by JAS-MIN.
 
 Minimal initialization request:
 
@@ -219,11 +300,12 @@ curl -i -X DELETE http://127.0.0.1:4242/mcp \
 
 ### Transport session versus analysis session
 
-`Mcp-Session-Id` and `analysis_id` are deliberately different identifiers.
+`Mcp-Session-Id`, `project_id`, and `analysis_id` are deliberately different identifiers.
 
 | Identifier | Created by | Scope | Lifetime |
 |---|---|---|---|
 | `Mcp-Session-Id` | MCP Streamable HTTP transport | Protocol negotiation and HTTP transport state. | Until HTTP `DELETE`, transport expiry, or process exit. |
+| `project_id` | JAS-MIN startup registry | Routes evidence to one immutable parsed collection. | Until JAS-MIN exits. |
 | `analysis_id` | `start_performance_analysis` | Evidence, guidance references, report configuration, findings, assessments, and revisions. | Until JAS-MIN exits. |
 
 Deleting an MCP transport session does not currently delete its JAS-MIN
@@ -236,14 +318,16 @@ authentication credentials.
 ## Server capabilities and onboarding
 
 The server advertises MCP `tools` and `prompts` capabilities. Model onboarding
-is distributed across three mechanisms:
+is distributed across four mechanisms:
 
 1. **Server instructions** define mandatory evidence discipline and report
    completion rules.
 2. **`oracle_performance_analysis` prompt** provides a reusable tool-first user
    message with optional `language` and `focus` arguments.
-3. **`start_performance_analysis` tool** creates the analysis session and
-   returns a dataset-specific map of available calculations and evidence.
+3. **`list_performance_projects` tool** exposes stable project handles and
+   compact manifests before an analysis is created.
+4. **`start_performance_analysis` tool** creates the analysis session and
+   returns project-specific maps of available calculations and evidence.
 
 This avoids placing the entire `ReportForAI`, raw snapshots, attachments, and
 `reasonings.txt` into an initial prompt. The model learns what can be calculated
@@ -274,7 +358,7 @@ session and does not replace `start_performance_analysis`.
 
 ## Analysis bootstrap
 
-`start_performance_analysis` is the only JAS-MIN tool that does not require an
+`list_performance_projects` and `start_performance_analysis` do not require an
 existing `analysis_id`.
 
 Example call:
@@ -287,6 +371,7 @@ Example call:
   "params": {
     "name": "start_performance_analysis",
     "arguments": {
+      "project_ids": ["before-upgrade", "after-upgrade"],
       "focus": "Investigate DB Time degradation and cursor contention",
       "language": "EN",
       "audience": "mixed"
@@ -301,8 +386,11 @@ The returned structured payload contains:
 |---|---|
 | `schema_version` | Version of the JAS-MIN MCP analysis contract. |
 | `analysis_id` | Required handle for every later tool call. |
+| `project_ids` | Ordered set of projects selected for the analysis. |
+| `comparison_mode` | `true` when the analysis contains more than one project. |
 | `seed_evidence_id` | `SEED-E0001`, representing the bounded initial case seed. |
-| `dataset_manifest` | Snapshot range, dates, instance metadata, security level, SQL/parameter counts, and attachment inventory. |
+| `projects` | Per-project manifest, bounded seed, triage preview, quality gates, and opening calls. |
+| `dataset_manifest` | Backward-compatible single-project manifest; present only for one-project analyses. |
 | `available_calculations` | Statistical methods, access tools, outputs, and interpretation caveats. |
 | `case_seed` | Bounded high-signal summary derived from `ReportForAI`. |
 | `triage_preview` | Small wait, SQL, I/O, latch, anomaly, and parameter indexes. |
@@ -310,6 +398,7 @@ The returned structured payload contains:
 | `quality_gates` | Dataset- and platform-aware proof requirements. |
 | `report_contract` | Stable sections, required finding categories, assessments, and current output configuration. |
 | `recommended_next_calls` | Dataset-aware opening calls, including attachment tools when the relevant files exist. |
+| `recommended_comparison_calls` | Opening cross-project calls when comparison mode is active. |
 
 The bootstrap is intentionally bounded. It is a routing map, not a complete
 performance report.
@@ -344,9 +433,11 @@ particular:
 
 ## Tool catalog construction
 
-At startup, JAS-MIN converts the existing OpenAI/OpenRouter function schemas to
-MCP tools. Each converted evidence schema receives a required `analysis_id`
-property. The adapter also supplies a permissive object output schema and MCP
+At startup, JAS-MIN takes the union of the existing OpenAI/OpenRouter function
+schemas available across all loaded projects and converts it to MCP tools. Each
+converted evidence schema receives a required `analysis_id` and an optional
+`project_id`. The runtime requires `project_id` when the analysis contains more
+than one project. The adapter also supplies a permissive object output schema and MCP
 annotations:
 
 - evidence and catalog reads are marked read-only and idempotent where
@@ -357,10 +448,11 @@ annotations:
   collection, its local attachments, in-memory report state, and explicitly
   named new HTML files in the JAS-MIN working directory.
 
-The core evidence catalog is always available. Attachment tools are registered
-only when matching files are discovered under `<stem>_attachments`.
+The core evidence catalog is always available. An attachment tool is registered
+when matching files are discovered under any project's `<stem>_attachments`.
+Calling it for another project returns that tool's ordinary unavailable result.
 
-With no attachments the server exposes 21 core evidence tools and ten MCP
+With no attachments the server exposes 21 core evidence tools and thirteen MCP
 workflow tools. Every supported attachment class adds its own discovery or
 inspection tools; a dataset containing plans, child-cursor reasons, an alert
 log, and AIX telemetry exposes eight additional evidence tools.
@@ -388,10 +480,13 @@ log, and AIX telemetry exposes eight additional evidence tools.
 
 | Tool | State effect |
 |---|---|
+| `list_performance_projects` | Lists immutable project manifests without creating an analysis. |
 | `start_performance_analysis` | Creates an `AnalysisSession` and its seed evidence. |
-| `get_analysis_catalog` | Repeats the current manifest, calculation catalog, guidance catalog, and report contract. |
+| `get_analysis_catalog` | Repeats selected project manifests, calculation catalog, guidance catalog, and report contract. |
 | `get_precomputed_analysis` | Registers a requested `ReportForAI` section as evidence. |
 | `get_diagnostic_guidance` | Registers methodology references, never evidence IDs. |
+| `compare_project_metric` | Registers a normalized metric-distribution comparison as evidence. |
+| `compare_project_sql` | Registers a same-SQL cross-project comparison as evidence. |
 | `configure_report` | Updates report presentation settings. |
 | `record_finding` | Creates or replaces an evidence-backed finding. |
 | `set_report_assessment` | Stores one mandatory final assessment. |
@@ -405,8 +500,9 @@ Every successful measurement tool call is wrapped in an evidence envelope:
 
 ```json
 {
-  "schema_version": "2026-08-05.1",
+  "schema_version": "2026-08-18.1",
   "analysis_id": "A-20260804T100000Z-0001",
+  "project_id": "before-upgrade",
   "evidence_id": "E-0002",
   "tool_name": "get_database_load_summary",
   "cached": false,
@@ -427,6 +523,31 @@ canonically identical arguments reuses the existing identifier and returns
 The cache is an evidence registry, not a general response cache. The underlying
 tool may still execute before a concurrent duplicate call observes the stored
 record, but only one canonical evidence reference is retained for the session.
+
+### Cross-project comparisons
+
+`compare_project_metric` accepts a baseline project, a candidate project, the
+same `kind`/`name`/`field` selectors as `get_metric_time_series`, a direction,
+and a materiality threshold. It returns observed sample counts, mean, median,
+p95, minimum, maximum, standard deviation, mean/median/p95 deltas, relative
+mean change, and standardized mean difference.
+
+Direction defaults to `neutral`. JAS-MIN assigns `improved`, `degraded`, or
+`no_material_change` only when the caller explicitly selects
+`lower_is_better` or `higher_is_better`. This prevents workload counters from
+being mislabeled as regressions merely because business volume increased.
+
+`compare_project_sql` compares the same SQL ID across two projects. It treats
+elapsed, CPU, I/O, buffer gets, and physical reads per execution as efficiency
+metrics, while totals and execution counts remain neutral workload-volume
+metrics. The response also reports snapshot coverage, modules, SQL-text
+availability, and plan hashes observed in top-event rows.
+
+Neither tool turns missing observations into zero. An absent metric or SQL ID
+therefore produces an explicit coverage error or unavailable submetric. The
+model must still verify database identity, workload mix, snapshot duration,
+seasonality, plans, and relevant host conditions before attributing a change to
+an application, parameter, or infrastructure intervention.
 
 ## Diagnostic guidance
 
@@ -457,24 +578,31 @@ contain a similar character sequence.
 
 A robust investigation normally follows this order:
 
-1. Call `start_performance_analysis` and inspect the dataset manifest,
-   calculation catalog, quality gates, and initial triage.
-2. Establish the whole-window workload envelope with
-   `get_database_load_summary`.
-3. Retrieve `db_time_degradation` and `full_gradients` through
+1. Call `list_performance_projects` and verify project identity, time ranges,
+   sample counts, and attachment coverage.
+2. Call `start_performance_analysis` with the intended `project_ids`; preserve
+   which project is the baseline and which is the candidate in every finding.
+3. Establish each whole-window workload envelope with
+   `get_database_load_summary(project_id=...)`.
+4. In comparative work, use `compare_project_metric` for normalized load,
+   latency, wait, CPU, and I/O distributions. Use a neutral direction until the
+   semantic meaning of higher or lower values is justified.
+5. Retrieve `db_time_degradation` and `full_gradients` for each project through
    `get_precomputed_analysis`.
-4. Use `list_snapshots` to select representative peak, neighboring, and quiet
+6. Use `list_snapshots` to select representative peak, neighboring, and quiet
    baseline snapshots.
-5. Form competing hypotheses instead of committing to the first correlated
+7. For SQL IDs material to either period, call `compare_project_sql`, then
+   inspect each project's SQL timeline, text, and available plan evidence.
+8. Form competing hypotheses instead of committing to the first correlated
    metric.
-6. Verify or falsify them with narrow wait, SQL, timeline, histogram, snapshot,
+9. Verify or falsify them with narrow wait, SQL, timeline, histogram, snapshot,
    plan, child-cursor, alert-log, parameter, segment, latch, and OS calls.
-7. Retrieve only the `reasonings.txt` sections relevant to symptoms already
+10. Retrieve only the `reasonings.txt` sections relevant to symptoms already
    observed.
-8. Store findings with their evidence and optional guidance references.
-9. Complete every mandatory assessment, using `unknown` when required data is
+11. Store findings with their evidence and optional guidance references.
+12. Complete every mandatory assessment, using `unknown` when required data is
    unavailable.
-10. Call `get_report_status`, resolve missing coverage, and then call
+13. Call `get_report_status`, resolve missing coverage, and then call
     `finalize_report`.
 
 ### Platform-aware quality gates
@@ -698,7 +826,9 @@ The conversion tool enforces the following policy:
 - no browser or desktop application is opened by the server.
 
 When no filename is supplied, the server derives one from the dataset name and
-`analysis_id`, making collisions between independent analyses unlikely.
+`analysis_id`, making collisions between independent analyses unlikely. A
+multi-project analysis uses `jas-min-comparison` as the dataset portion of this
+default name.
 
 The renderer is shared with classic AI mode. It generates a complete HTML5
 document with JAS-MIN styling, anchored headings, a table of contents, logo,
@@ -707,6 +837,9 @@ classic report assets and link index are available. The response reports
 whether the classic HTML report directory selected while parsing the dataset
 was present. A custom output filename does not change that link target: the new
 HTML document still points to the original JAS-MIN charts and SQL/event pages.
+Because no single chart tree represents a multi-project analysis, comparative
+HTML exports deliberately omit dataset-specific chart and SQL/event links;
+their evidence appendix retains the project routing information instead.
 
 The HTML file is an output artifact, not an evidence record and not part of the
 in-memory report revision. Repeating the call with the same filename returns
@@ -730,6 +863,12 @@ Common structured error codes include:
 |---|---|---|
 | `MISSING_ANALYSIS_ID` | A non-bootstrap tool was called without `analysis_id`. | Call `start_performance_analysis` and pass its handle. |
 | `UNKNOWN_ANALYSIS` | The handle does not exist in this process. | Start a new analysis or verify the handle. |
+| `UNKNOWN_PROJECT` | A requested project is not loaded. | Call `list_performance_projects` and use a returned ID. |
+| `MISSING_PROJECT_ID` | A project-specific tool was called in a multi-project analysis without routing information. | Pass one selected `project_id`. |
+| `PROJECT_OUTSIDE_ANALYSIS` | The project is loaded but was not selected for this analysis. | Start an analysis containing it or use one of the analysis project IDs. |
+| `MISSING_COMPARISON_DATA` | One side has no observed samples for the requested metric. | Verify the exact metric name/field and do not substitute missing values with zero. |
+| `INVALID_COMPARISON_FIELD` | The field is not defined for the selected metric kind. | Use a field published for that kind; comparison calls do not silently fall back to another field. |
+| `MISSING_SQL_COMPARISON_DATA` | The SQL ID is not observed in both projects. | Compare workload catalogs first or state that the SQL appeared/disappeared without fabricating zero cost. |
 | `SESSION_LOCK` | The per-analysis state lock was poisoned. | Restart the server; in-memory state cannot be trusted. |
 | `UNKNOWN_EVIDENCE_REF` | A finding cited evidence not registered in this analysis. | Use an `evidence_id` returned by a successful call in the same analysis. |
 | `UNKNOWN_GUIDANCE_REF` | A finding cited guidance not retrieved in this analysis. | Call `get_diagnostic_guidance` first. |
@@ -751,19 +890,19 @@ missing attachment, or unsafe attachment path.
 ## Concurrency and memory behavior
 
 All MCP server instances created by the transport share one `AnalysisRuntime`.
-The parsed AWR data and statistical report are immutable and can be read by
+Every parsed project's AWR data and statistical report are immutable and can be read by
 multiple requests concurrently. The analysis registry is a concurrent map, and
 mutations within one analysis are serialized by its mutex.
 
-This design provides session isolation without cloning the large collection for
+This design provides session isolation without cloning large collections for
 every conversation. It also means:
 
-- the memory cost of the parsed collection is paid once;
+- the memory cost of every loaded project is paid once at server startup;
 - evidence results and model-authored report state increase memory usage for the
   lifetime of the process;
 - there is currently no per-analysis expiry or deletion tool;
 - there is no durable persistence or crash recovery for analysis sessions;
-- two analyses over the same dataset have independent evidence identifiers,
+- two analyses over the same project set have independent evidence identifiers,
   findings, assessments, configuration, and revisions.
 
 ## Context and payload controls
@@ -878,6 +1017,8 @@ failure therefore cannot leave a partially initialized MCP listener running.
 ### The endpoint does not start
 
 - Confirm that the input directory or JSON file exists.
+- When several inputs are supplied, confirm that none resolve to the same
+  canonical path and omit the ambiguous global `--outfile` option.
 - Do not combine `--file` with `--mcp`.
 - Confirm that the requested address is loopback and that the port is free.
 - Check whether parsing or precomputed analysis failed before the bind step.
@@ -898,6 +1039,20 @@ failure therefore cannot leave a partially initialized MCP listener running.
 The process may have restarted, the handle may belong to another JAS-MIN
 instance, or the client may be using the MCP transport identifier in place of
 `analysis_id`. Call `start_performance_analysis` again.
+
+### A project-specific tool reports `MISSING_PROJECT_ID`
+
+The analysis contains several projects. Call `get_analysis_catalog` to inspect
+its selected IDs, then repeat the evidence call with exactly one `project_id`.
+Do not use the baseline or candidate project ID as the `analysis_id`.
+
+### A comparison appears to prove improvement or degradation
+
+Treat the label as a direction-aware statistical description, not a causal
+claim. Check sample counts, periods, database identity, workload mix, snapshot
+duration, seasonality, SQL plan evidence, parameter changes, and aligned OS
+telemetry. Use `neutral` direction for business-volume metrics where a higher
+value is neither intrinsically better nor worse.
 
 ### The report cannot be finalized
 
@@ -947,14 +1102,17 @@ only the listening port:
 1. `initialize`;
 2. `notifications/initialized`;
 3. `tools/list` and `prompts/list`;
-4. `start_performance_analysis`;
-5. at least one precomputed and one narrow evidence call;
-6. guidance lookup when guidance is available;
-7. report configuration, finding, assessment, status, and finalization calls;
-8. `convert_markdown_to_html`, verification of the returned path, and a check
+4. `list_performance_projects`;
+5. `start_performance_analysis` with at least two project IDs;
+6. a project-specific call with and without the required `project_id`;
+7. `compare_project_metric` and `compare_project_sql` with coverage checks;
+8. at least one precomputed and one narrow evidence call;
+9. guidance lookup when guidance is available;
+10. report configuration, finding, assessment, status, and finalization calls;
+11. `convert_markdown_to_html`, verification of the returned path, and a check
    that an existing output is not overwritten;
-9. HTTP `DELETE` for the transport session;
-10. Ctrl-C and confirmation that the listening socket has closed.
+12. HTTP `DELETE` for the transport session;
+13. Ctrl-C and confirmation that the listening socket has closed.
 
 ## Extending the server
 
@@ -965,7 +1123,8 @@ To expose a new measurement tool:
 3. Keep output bounded and return structured errors instead of panicking.
 4. Add unit tests for schema validation, dispatch, path handling, and output
    limits.
-5. The MCP adapter will convert the schema, add `analysis_id`, and register
+5. The MCP adapter will convert the schema, add `analysis_id` and optional
+   `project_id`, and register
    successful results as evidence automatically.
 
 To add an MCP-only workflow tool:

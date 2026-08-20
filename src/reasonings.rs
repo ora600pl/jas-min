@@ -38,9 +38,9 @@ fn load_profile_for_stem(stem: &str) -> String {
 }
 
 fn load_tools_collection(args: &crate::Args) -> AWRSCollection {
-    let mut json_file = args.json_file.clone();
+    let mut json_file = args.json_file().to_string();
     if json_file.is_empty() {
-        json_file = format!("{}.json", args.directory);
+        json_file = format!("{}.json", args.directory());
     }
     let s_json = fs::read_to_string(&json_file).expect(&format!("Can't read {}", json_file));
     load_awrs_collection_from_json_str(&s_json).expect("Wrong AWRSCollection JSON")

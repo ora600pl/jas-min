@@ -3296,7 +3296,7 @@ pub fn parse_awr_dir(
     //let mut awr_vec: Vec<AWR> = Vec::new();
     let mut file_collection: Vec<String> = Vec::new();
     let mut is_instance_info: Option<DBInstance> = None; // to grab DBInstance info from the first file
-    for file in fs::read_dir(&args.directory).unwrap() {
+    for file in fs::read_dir(args.directory()).unwrap() {
         let fname: &String = &file.unwrap().path().display().to_string();
         let file_name = fname.split("/").collect::<Vec<&str>>();
         let file_name = file_name.last().unwrap().to_string();
@@ -3460,15 +3460,15 @@ pub fn prarse_json_file(
 ) -> ParsedAnalysis {
     println!("{}", "\n==== PARSING JSON DATA ===".bright_cyan());
     //fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String
-    let json_file = fs::read_to_string(&args.json_file)
-        .expect(&format!("Something wrong with a file {} ", &args.json_file));
+    let json_file = fs::read_to_string(args.json_file())
+        .unwrap_or_else(|_| panic!("Something wrong with a file {} ", args.json_file()));
     let mut collection: AWRSCollection = load_awrs_collection_from_json_str(&json_file).expect("\nJAS-MIN JSON format not known\nConsider running jasmin -d <DIR> before using -j json\n\n");
     collection
         .awrs
         .clone()
         .sort_by_key(|a| a.snap_info.begin_snap_id);
     println!("{} samples found", collection.awrs.len());
-    let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
+    let file_and_ext: Vec<&str> = args.json_file().split('.').collect();
     //let html_fname = format!("{}.html", file_and_ext[0]);
     let fg_events: HashSet<String> = collection
         .awrs

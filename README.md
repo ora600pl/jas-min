@@ -210,16 +210,29 @@ For AIX systems, JAS-MIN instructs the AI model not to classify a database as CP
 
 ### Interactive MCP Server
 
-JAS-MIN can expose the parsed collection and the same evidence tools as a local Streamable HTTP MCP server:
+JAS-MIN can expose one or more parsed collections and the same evidence tools as a local Streamable HTTP MCP server:
 
 ```bash
 jas-min --json-file ./awr_reports.json --security-level 2 \
   --mcp 127.0.0.1:4242/mcp
 ```
 
-The mandatory `start_performance_analysis` call teaches the model which statistical calculations and attachments are available, returns a compact high-signal seed, and creates an explicit analysis session. Subsequent calls retrieve focused evidence or relevant sections from `reasonings.txt`. Report tools maintain a stable eleven-section structure while allowing per-section detail and Markdown/JSON output preferences. If HTML is requested, the model finalizes the Markdown report first and calls `convert_markdown_to_html`; JAS-MIN validates the structure and creates a new HTML file in its working directory with the same renderer used by classic AI mode.
+Repeat `-d` or `-j` to retain several projects in one process:
+
+```bash
+jas-min -j ./before_upgrade.json -j ./after_upgrade.json \
+  --security-level 2 --mcp 127.0.0.1:4242/mcp
+```
+
+`list_performance_projects` publishes stable project IDs, periods, database identity, sample counts, and attachment coverage. `start_performance_analysis` can select one project, several projects, or every loaded project. In comparative sessions, project-specific evidence tools are routed with `project_id`; `compare_project_metric` compares observed distributions and `compare_project_sql` separates per-execution efficiency from workload volume for the same SQL ID. Missing samples are never converted to zero, and improvement/degradation labels require an explicit metric direction.
+
+Multi-project startup rejects `--outfile`, duplicate sources, and generated chart-directory collisions before analysis begins. This avoids ambiguous output ownership and silent overwrites.
+
+The mandatory analysis bootstrap teaches the model which statistical calculations and attachments are available, returns compact high-signal seeds, and creates an explicit analysis session. Subsequent calls retrieve focused evidence or relevant sections from `reasonings.txt`. Report tools maintain a stable eleven-section structure while allowing per-section detail and Markdown/JSON output preferences. If HTML is requested, the model finalizes the Markdown report first and calls `convert_markdown_to_html`; JAS-MIN validates the structure and creates a new HTML file in its working directory with the same renderer used by classic AI mode.
 
 While MCP mode is running, JAS-MIN prints a UTC-timestamped `START` and `OK`, `ERROR`, or `ABORTED` status for every tool call. The lines include the JSON-RPC ID, tool name, analysis ID, payload sizes, duration, and stable error code, but never include SQL, report Markdown, or other argument and response bodies. See the technical documentation for the complete log format and timeout diagnosis workflow.
+
+Clients negotiating MCP `2026-07-28` or newer receive the required `ttlMs` and `cacheScope` fields in `tools/list`; older sessions retain the legacy wire shape.
 
 See [JAS-MIN MCP Server](docs/mcp-server.md) for client lifecycle, tool groups, evidence rules, quality gates, and the report contract.
 
@@ -606,12 +619,12 @@ Usage: jas-min [OPTIONS]
 
 Options:
       --file <FILE>                          Parse a single text or HTML file
-  -d, --directory <DIRECTORY>                Parse a directory of report files
+  -d, --directory <DIRECTORY>                Parse a directory of report files. Repeat with --mcp to load multiple projects
   -o, --outfile <OUTFILE>                    Write parsed JSON to a non-default file
   -t, --time-cpu-ratio <TIME_CPU_RATIO>      DB CPU / DB Time threshold [default: 0.666]
   -f, --filter-db-time <FILTER_DB_TIME>      Ignore peaks below this DB Time [default: 0]
   -i, --id-sqls <ID_SQLS>                    Include comma-separated SQL_IDs in TOP SQL
-  -j, --json-file <JSON_FILE>                Analyze an existing JAS-MIN JSON file
+  -j, --json-file <JSON_FILE>                Analyze a JSON file. Repeat with --mcp to load multiple projects
   -s, --snap-range <SNAP_RANGE>              Snapshot filter BEGIN-END [default: 0-666666666]
   -q, --quiet                                Suppress terminal output, still write log
   -a, --ai <AI>                              AI mode: VENDOR:MODEL:LANG

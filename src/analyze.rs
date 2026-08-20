@@ -2945,12 +2945,12 @@ pub fn main_report_builder(
         parse_snap_range(&args.snap_range).expect("Invalid snap-range argument");
 
     //Filenames and Paths used to save JAS-MIN files
-    let mut logfile_name = PathBuf::from(&args.directory)
+    let mut logfile_name = PathBuf::from(args.directory())
         .with_extension("txt")
         .to_string_lossy()
         .into_owned();
-    if logfile_name.is_empty() && !&args.json_file.is_empty() {
-        if let Some(stem) = PathBuf::from(&args.json_file).file_stem() {
+    if logfile_name.is_empty() && !args.json_file().is_empty() {
+        if let Some(stem) = PathBuf::from(args.json_file()).file_stem() {
             logfile_name = PathBuf::from(stem)
                 .with_extension("txt")
                 .to_string_lossy()
@@ -2964,12 +2964,12 @@ pub fn main_report_builder(
         fs::remove_file(&logfile_path).unwrap();
     }
 
-    let mut html_dir = PathBuf::from(&args.directory)
+    let mut html_dir = PathBuf::from(args.directory())
         .with_extension("html_reports")
         .to_string_lossy()
         .into_owned();
-    if html_dir.is_empty() && !&args.json_file.is_empty() {
-        if let Some(stem) = PathBuf::from(&args.json_file).file_stem() {
+    if html_dir.is_empty() && !args.json_file().is_empty() {
+        if let Some(stem) = PathBuf::from(args.json_file()).file_stem() {
             html_dir = PathBuf::from(stem)
                 .with_extension("html_reports")
                 .to_string_lossy()
