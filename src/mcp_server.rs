@@ -29,9 +29,9 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     future::Future,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
@@ -43,7 +43,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-18.1";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-21.3";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -298,6 +298,18 @@ struct EvidenceRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct GuidanceRecord {
+    title: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GuidanceQuotation {
+    guidance_ref: String,
+    quote: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct ReportConfig {
     output_format: String,
     language: String,
@@ -316,8 +328,10 @@ impl Default for ReportConfig {
             audience: "mixed".to_string(),
             detail_level: "standard".to_string(),
             detail_overrides: BTreeMap::new(),
-            include_evidence_appendix: true,
-            include_guidance_appendix: true,
+            // Machine-oriented provenance remains available in structured JSON.
+            // Human reports opt in to technical appendices explicitly.
+            include_evidence_appendix: false,
+            include_guidance_appendix: false,
         }
     }
 }
@@ -337,9 +351,11 @@ struct ReportFinding {
     severity: String,
     confidence: String,
     conclusion: String,
+    evidence_summary: String,
     details: String,
     evidence_refs: Vec<String>,
     guidance_refs: Vec<String>,
+    guidance_quotes: Vec<GuidanceQuotation>,
     recommendations: Vec<Recommendation>,
 }
 
@@ -348,8 +364,10 @@ struct ReportAssessment {
     assessment: String,
     status: String,
     conclusion: String,
+    evidence_summary: String,
     evidence_refs: Vec<String>,
     guidance_refs: Vec<String>,
+    guidance_quotes: Vec<GuidanceQuotation>,
 }
 
 struct AnalysisSession {
@@ -357,7 +375,7 @@ struct AnalysisSession {
     config: ReportConfig,
     evidence: BTreeMap<String, EvidenceRecord>,
     evidence_cache: HashMap<String, String>,
-    guidance_refs: BTreeSet<String>,
+    guidance: BTreeMap<String, GuidanceRecord>,
     findings: BTreeMap<String, ReportFinding>,
     assessments: BTreeMap<String, ReportAssessment>,
     next_evidence: u64,
@@ -379,7 +397,7 @@ impl AnalysisSession {
             config,
             evidence: BTreeMap::from([(SEED_EVIDENCE_ID.to_string(), seed_record)]),
             evidence_cache: HashMap::new(),
-            guidance_refs: BTreeSet::new(),
+            guidance: BTreeMap::new(),
             findings: BTreeMap::new(),
             assessments: BTreeMap::new(),
             next_evidence: 2,
@@ -449,14 +467,74 @@ impl From<AnalysisProject> for ProjectData {
 }
 
 impl ProjectData {
-    fn attachment_inventory(&self) -> Value {
+    fn attachment_inventory(
+        &self,
+        expected_date_from: Option<&str>,
+        expected_date_to: Option<&str>,
+    ) -> Value {
         let directory = PathBuf::from(format!("{}_attachments", self.stem));
         let aix_directory = directory.join("AIX");
+        let alert_log_paths = files_name_contains(&directory, "alert");
+        let alert_logs_nonempty = alert_log_paths
+            .iter()
+            .filter(|path| std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0))
+            .count();
+        let alert_log_files = alert_log_paths
+            .iter()
+            .map(|path| {
+                let bytes = std::fs::metadata(path)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0);
+                let (first_timestamp, last_timestamp, timestamped_lines) =
+                    alert_timestamp_bounds(path);
+                let observed_date_from = first_timestamp
+                    .as_deref()
+                    .and_then(|timestamp| timestamp.get(..10));
+                let observed_date_to = last_timestamp
+                    .as_deref()
+                    .and_then(|timestamp| timestamp.get(..10));
+                let coverage_status = alert_coverage_status(
+                    bytes,
+                    observed_date_from,
+                    observed_date_to,
+                    expected_date_from,
+                    expected_date_to,
+                );
+                json!({
+                    "file": path.file_name().and_then(|value| value.to_str()),
+                    "path": path,
+                    "bytes": bytes,
+                    "empty": bytes == 0,
+                    "first_timestamp": first_timestamp,
+                    "last_timestamp": last_timestamp,
+                    "timestamped_lines": timestamped_lines,
+                    "expected_dataset_date_from": expected_date_from,
+                    "expected_dataset_date_to": expected_date_to,
+                    "coverage_status": coverage_status
+                })
+            })
+            .collect::<Vec<_>>();
+        let alert_logs_partial = alert_log_files
+            .iter()
+            .filter(|entry| {
+                entry.get("coverage_status").and_then(Value::as_str)
+                    == Some("partial_relative_to_dataset")
+            })
+            .count();
+        let alert_logs_unknown_coverage = alert_log_files
+            .iter()
+            .filter(|entry| entry.get("coverage_status").and_then(Value::as_str) == Some("unknown"))
+            .count();
         json!({
             "directory_present": directory.is_dir(),
             "execution_plans": count_extension(&directory, "xplan"),
             "child_cursor_reason_files": count_suffix(&directory, ".shared_cursor_reasons"),
-            "alert_logs": count_name_contains(&directory, "alert"),
+            "alert_logs": alert_log_paths.len(),
+            "alert_logs_nonempty": alert_logs_nonempty,
+            "alert_logs_empty": alert_log_paths.len().saturating_sub(alert_logs_nonempty),
+            "alert_logs_partial": alert_logs_partial,
+            "alert_logs_unknown_coverage": alert_logs_unknown_coverage,
+            "alert_log_files": alert_log_files,
             "aix_files": count_regular_files(&aix_directory),
             "aix_directory_present": aix_directory.is_dir()
         })
@@ -467,6 +545,45 @@ impl ProjectData {
         let last = self.collection.awrs.last();
         let date_from = first.and_then(|awr| oracle_snapshot_date(&awr.snap_info.begin_snap_time));
         let date_to = last.and_then(|awr| oracle_snapshot_date(&awr.snap_info.end_snap_time));
+        let report_directory = PathBuf::from(self.html_reports_dir.as_str());
+        let main_report = report_directory.join("jasmin_main.html");
+        let load_profile = report_directory.join("stats/jasmin_highlight.html");
+        let load_profile_secondary = report_directory.join("stats/jasmin_highlight2.html");
+        let main_report_present = main_report.is_file();
+        let load_profile_present = load_profile.is_file();
+        let load_profile_secondary_present = load_profile_secondary.is_file();
+        let attachments = self.attachment_inventory(date_from.as_deref(), date_to.as_deref());
+        let mut attachment_quality_warnings = Vec::new();
+        if attachments
+            .get("alert_logs_empty")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        {
+            attachment_quality_warnings.push(
+                "One or more alert-log attachments are zero bytes. Treat them as missing coverage; do not describe them as searched-and-clean or link them as reader-facing evidence."
+            );
+        }
+        if attachments
+            .get("alert_logs_partial")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        {
+            attachment_quality_warnings.push(
+                "One or more alert-log attachments do not cover the full dataset date interval. Report each attachment's observed first/last timestamp and scope every alert count to that interval."
+            );
+        }
+        if attachments
+            .get("alert_logs_unknown_coverage")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+        {
+            attachment_quality_warnings.push(
+                "One or more non-empty alert-log attachments have no recognized ISO timestamp lines. Their temporal coverage is unknown."
+            );
+        }
         json!({
             "project_id": self.project_id.as_str(),
             "dataset_stem": self.stem.as_str(),
@@ -481,7 +598,18 @@ impl ProjectData {
             "initialization_parameters": self.collection.initialization_parameters.len(),
             "sql_texts": self.collection.sql_text.len(),
             "security_level": self.security_level,
-            "attachments": self.attachment_inventory()
+            "attachments": attachments,
+            "attachment_quality_warnings": attachment_quality_warnings,
+            "source_reports": {
+                "directory": self.html_reports_dir.as_str(),
+                "directory_present": report_directory.is_dir(),
+                "main": main_report,
+                "main_present": main_report_present,
+                "load_profile": load_profile,
+                "load_profile_present": load_profile_present,
+                "load_profile_secondary": load_profile_secondary,
+                "load_profile_secondary_present": load_profile_secondary_present
+            }
         })
     }
 }
@@ -1141,13 +1269,25 @@ impl AnalysisRuntime {
             return Err(result);
         }
         let mut references = Vec::new();
+        let mut guidance_records = Vec::new();
         if let Some(matches) = result.get_mut("matches").and_then(Value::as_array_mut) {
             for matched in matches {
                 if let Some(section_id) = matched.get("section_id").and_then(Value::as_str) {
                     let reference = format!("GUIDE-{section_id}");
+                    let title = matched
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Untitled diagnostic guidance")
+                        .to_string();
+                    let text = matched
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
                     if let Some(object) = matched.as_object_mut() {
                         object.insert("guidance_ref".to_string(), json!(reference));
                     }
+                    guidance_records.push((reference.clone(), GuidanceRecord { title, text }));
                     references.push(reference);
                 }
             }
@@ -1155,7 +1295,7 @@ impl AnalysisRuntime {
         let mut state = session
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
-        state.guidance_refs.extend(references.iter().cloned());
+        state.guidance.extend(guidance_records);
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1249,6 +1389,7 @@ impl AnalysisRuntime {
             &["high", "medium", "low", "unknown"],
         )?;
         let conclusion = required_string(arguments, "conclusion", 2_000)?;
+        let evidence_summary = required_string(arguments, "evidence_summary", 4_000)?;
         let details = optional_string(arguments, "details", 16_000);
         let evidence_refs = string_array(arguments, "evidence_refs", 32, 32)?;
         let guidance_refs = string_array(arguments, "guidance_refs", 16, 64)?;
@@ -1258,6 +1399,8 @@ impl AnalysisRuntime {
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
         validate_references(&state, &evidence_refs, &guidance_refs)?;
+        let guidance_quotes =
+            parse_guidance_quotations(arguments.get("guidance_quotes"), &guidance_refs, &state)?;
         let finding_id = arguments
             .get("finding_id")
             .and_then(Value::as_str)
@@ -1277,9 +1420,11 @@ impl AnalysisRuntime {
                 severity,
                 confidence,
                 conclusion,
+                evidence_summary,
                 details,
                 evidence_refs,
                 guidance_refs,
+                guidance_quotes,
                 recommendations,
             },
         );
@@ -1300,12 +1445,15 @@ impl AnalysisRuntime {
         let status = required_string(arguments, "status", 32)?;
         validate_enum("status", &status, &["proven", "not_proven", "unknown"])?;
         let conclusion = required_string(arguments, "conclusion", 2_000)?;
+        let evidence_summary = required_string(arguments, "evidence_summary", 4_000)?;
         let evidence_refs = string_array(arguments, "evidence_refs", 32, 32)?;
         let guidance_refs = string_array(arguments, "guidance_refs", 16, 64)?;
         let mut state = session
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
         validate_references(&state, &evidence_refs, &guidance_refs)?;
+        let guidance_quotes =
+            parse_guidance_quotations(arguments.get("guidance_quotes"), &guidance_refs, &state)?;
         if status != "unknown" && evidence_refs.is_empty() {
             return Err(tool_error(
                 "ASSESSMENT_WITHOUT_EVIDENCE",
@@ -1318,8 +1466,10 @@ impl AnalysisRuntime {
                 assessment: assessment.clone(),
                 status,
                 conclusion,
+                evidence_summary,
                 evidence_refs,
                 guidance_refs,
+                guidance_quotes,
             },
         );
         Ok(json!({
@@ -1458,13 +1608,37 @@ impl AnalysisRuntime {
         let report_directory_reference = single_project
             .as_ref()
             .map(|project| project.html_reports_dir.as_str())
-            .unwrap_or("jas-min-comparison.html_reports");
+            .unwrap_or("");
         let configured_report_directory = PathBuf::from(report_directory_reference);
-        let report_directory = if configured_report_directory.is_absolute() {
+        let report_directory = if report_directory_reference.is_empty() {
+            output_directory.to_path_buf()
+        } else if configured_report_directory.is_absolute() {
             configured_report_directory
         } else {
             output_directory.join(configured_report_directory)
         };
+        let linked_report_directories = project_ids
+            .iter()
+            .filter_map(|project_id| self.projects.get(project_id))
+            .map(|project| {
+                let configured = PathBuf::from(project.html_reports_dir.as_str());
+                let resolved = if configured.is_absolute() {
+                    configured
+                } else {
+                    output_directory.join(configured)
+                };
+                let directory_present = resolved.is_dir();
+                let main_report = resolved.join("jasmin_main.html");
+                let main_report_present = main_report.is_file();
+                json!({
+                    "project_id": project.project_id.as_str(),
+                    "directory": resolved,
+                    "directory_present": directory_present,
+                    "main_report": main_report,
+                    "main_report_present": main_report_present
+                })
+            })
+            .collect::<Vec<_>>();
         let report_links = single_project
             .as_ref()
             .map(|project| {
@@ -1481,6 +1655,7 @@ impl AnalysisRuntime {
             &report_directory.to_string_lossy(),
             report_links,
         );
+        validate_resolved_html_navigation(&html)?;
 
         let mut output = OpenOptions::new()
             .write(true)
@@ -1509,6 +1684,17 @@ impl AnalysisRuntime {
             ));
         }
 
+        let linked_report_directory_present = if single_project.is_some() {
+            report_directory.is_dir()
+        } else {
+            linked_report_directories
+                .iter()
+                .all(|entry| entry["directory_present"] == true)
+        };
+        let linked_report_directory = single_project
+            .as_ref()
+            .map(|_| report_directory.to_string_lossy().to_string());
+
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1518,8 +1704,9 @@ impl AnalysisRuntime {
             "markdown_bytes": markdown.len(),
             "report_structure_validated": true,
             "renderer": "JAS-MIN classic AI Markdown renderer",
-            "linked_report_directory": report_directory,
-            "linked_report_directory_present": report_directory.is_dir(),
+            "linked_report_directory": linked_report_directory,
+            "linked_report_directory_present": linked_report_directory_present,
+            "linked_report_directories": linked_report_directories,
             "opened_automatically": false
         }))
     }
@@ -1920,7 +2107,7 @@ impl ServerHandler for JasminMcpServer {
                 ),
         )
         .with_instructions(format!(
-            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Store findings with evidence_refs, complete all mandatory assessments, check get_report_status, and finish through finalize_report. When the user requests HTML, configure Markdown output, finalize the stable Markdown report first, then pass that exact Markdown to convert_markdown_to_html.",
+            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage, never as a searched-and-clean source or a reader-facing evidence link. Use each alert attachment's observed first/last timestamp instead of assuming it covers the enclosing AWR period. A zero-match literal proves only that exact search/filter; inspect raw context and punctuation/message variants before declaring an event absent. If guidance is applied, include a verbatim guidance quote; the server verifies it against the retrieved text. Complete all mandatory assessments, check get_report_status, and finish through finalize_report. When the user requests HTML, configure Markdown output, finalize the stable Markdown report first, then pass that exact Markdown to convert_markdown_to_html. Comparative HTML must expose active source-report links for every selected project. In reader-facing findings, link each material wait-event name and SQL_ID directly to every existing project-specific detail report, with explicit instance/project labels when more than one target exists; generic labels such as 'instance 1' alone are insufficient.",
             self.runtime.projects.len()
         ))
     }
@@ -2007,7 +2194,7 @@ impl ServerHandler for JasminMcpServer {
             Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                 Role::User,
                 format!(
-                    "Investigate {focus} using the JAS-MIN MCP server. Begin with list_performance_projects when multiple projects may be loaded, then call start_performance_analysis with the intended project_ids and use its analysis_id for all evidence calls. In comparative sessions pass project_id to project-specific tools and use compare_project_metric or compare_project_sql for cross-project evidence. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings, complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html."
+                    "Investigate {focus} using the JAS-MIN MCP server. Begin with list_performance_projects when multiple projects may be loaded, then call start_performance_analysis with the intended project_ids and use its analysis_id for all evidence calls. In comparative sessions pass project_id to project-specific tools and use compare_project_metric or compare_project_sql for cross-project evidence. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings with exact reader-facing evidence summaries instead of exposing raw evidence IDs as prose. Every applied guidance reference requires a verbatim quote from the retrieved section. Complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html; ensure comparative output links every source project report."
                 ),
             )])
             .with_description("Tool-first Oracle performance investigation workflow")
@@ -2294,7 +2481,7 @@ fn mcp_control_definitions() -> Vec<Value> {
         ),
         function_definition(
             "record_finding",
-            "Creates or replaces one evidence-backed report finding. Evidence and guidance references must have been obtained in this analysis session.",
+            "Creates or replaces one evidence-backed report finding. The human-readable evidence_summary must state the exact supporting values. Evidence and guidance references must have been obtained in this analysis session; every applied guidance reference requires a verified verbatim quotation.",
             json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -2305,17 +2492,19 @@ fn mcp_control_definitions() -> Vec<Value> {
                     "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "informational"]},
                     "confidence": {"type": "string", "enum": ["high", "medium", "low", "unknown"]},
                     "conclusion": {"type": "string"},
+                    "evidence_summary": {"type": "string", "description": "Human-readable evidence basis with exact values, time scope, and project/instance context; never just evidence IDs or tool names."},
                     "details": {"type": "string"},
                     "evidence_refs": {"type": "array", "items": {"type": "string"}},
                     "guidance_refs": {"type": "array", "items": {"type": "string"}},
+                    "guidance_quotes": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"guidance_ref": {"type": "string"}, "quote": {"type": "string", "description": "Contiguous verbatim excerpt from the retrieved guidance section."}}, "required": ["guidance_ref", "quote"]}},
                     "recommendations": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"owner": {"type": "string", "enum": ["DBA", "Developer", "Management"]}, "priority": {"type": "string", "enum": ["immediate", "high", "medium", "low"]}, "action": {"type": "string"}}, "required": ["owner", "priority", "action"]}}
                 },
-                "required": ["category", "title", "severity", "confidence", "conclusion", "evidence_refs"]
+                "required": ["category", "title", "severity", "confidence", "conclusion", "evidence_summary", "evidence_refs"]
             }),
         ),
         function_definition(
             "set_report_assessment",
-            "Records one mandatory final assessment. Non-unknown conclusions must cite measurement evidence from this session.",
+            "Records one mandatory final assessment with a human-readable evidence summary. Non-unknown conclusions must cite measurement evidence from this session; every applied guidance reference requires a verified verbatim quotation.",
             json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -2323,10 +2512,12 @@ fn mcp_control_definitions() -> Vec<Value> {
                     "assessment": {"type": "string", "enum": REQUIRED_ASSESSMENTS},
                     "status": {"type": "string", "enum": ["proven", "not_proven", "unknown"]},
                     "conclusion": {"type": "string"},
+                    "evidence_summary": {"type": "string", "description": "Human-readable basis for the assessment, including exact observed values or the precise missing-data boundary."},
                     "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                    "guidance_refs": {"type": "array", "items": {"type": "string"}}
+                    "guidance_refs": {"type": "array", "items": {"type": "string"}},
+                    "guidance_quotes": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"guidance_ref": {"type": "string"}, "quote": {"type": "string", "description": "Contiguous verbatim excerpt from the retrieved guidance section."}}, "required": ["guidance_ref", "quote"]}}
                 },
-                "required": ["assessment", "status", "conclusion", "evidence_refs"]
+                "required": ["assessment", "status", "conclusion", "evidence_summary", "evidence_refs"]
             }),
         ),
         function_definition(
@@ -2550,7 +2741,8 @@ fn quality_gates(platform: &str) -> Value {
         {"gate": "application_and_commit_policy", "required": true, "rule": "Do not infer bad application design or commit policy from high executions or waits alone; verify transaction, redo, latency and direct anti-pattern evidence."},
         {"gate": "sql_tuning", "required": true, "rule": "Inspect SQL text, timeline and available plans before concrete SQL tuning recommendations."},
         {"gate": "cursor_contention", "required": true, "rule": "Use child-cursor reasons and parse/reload/invalidation evidence before explaining cursor proliferation or mutex contention."},
-        {"gate": "parameter_changes", "required": true, "rule": "A parameter recommendation requires its observed current value and a causal performance rationale; missing means unknown."}
+        {"gate": "parameter_changes", "required": true, "rule": "A parameter recommendation requires its observed current value and a causal performance rationale; missing means unknown."},
+        {"gate": "reader_facing_provenance", "required": true, "rule": "Label every comparative value with its project or instance, resolve every report link, link each material wait-event name and SQL_ID directly to every existing project-specific detail report, scope attachment counts to observed first/last timestamps, and treat zero-byte attachments as missing coverage rather than clean evidence."}
     ])
 }
 
@@ -2597,7 +2789,7 @@ fn recommended_next_calls(
         calls.push(json!({"tool": "list_available_child_cursor_reasons", "reason": "discover direct child-cursor evidence"}));
     }
     if attachments
-        .get("alert_logs")
+        .get("alert_logs_nonempty")
         .and_then(Value::as_u64)
         .unwrap_or(0)
         > 0
@@ -2687,11 +2879,24 @@ fn report_contract(config: &ReportConfig) -> Value {
         ],
         "required_finding_categories": REQUIRED_REPORT_CATEGORIES,
         "required_assessments": REQUIRED_ASSESSMENTS,
+        "human_citation_policy": {
+            "evidence_summary_required": true,
+            "raw_evidence_ids_reader_facing": false,
+            "guidance_requires_verbatim_quote": true,
+            "technical_appendices_default": false,
+            "comparative_values_explicitly_labeled": true,
+            "empty_attachment_links_reader_facing": false,
+            "contextual_wait_and_sql_links_required": true,
+            "generic_instance_only_link_labels_accepted": false,
+            "unresolved_template_placeholders_accepted": false
+        },
         "extension_policy": "Core sections cannot be removed. Detail may be changed per category and evidence/guidance appendices are optional.",
         "html_export": {
             "tool": "convert_markdown_to_html",
             "workflow": "Finalize Markdown first, then pass the exact Markdown to the conversion tool.",
-            "write_policy": "Creates a new .html file in the JAS-MIN working directory and never overwrites an existing file."
+            "write_policy": "Creates a new .html file in the JAS-MIN working directory and never overwrites an existing file.",
+            "comparative_navigation": "Links every selected project's main dashboard and load-profile reports; never emits a fake comparison report directory.",
+            "classic_navigation": "Publishes verified active links to existing classic source reports instead of embedding unverified iframe paths."
         }
     })
 }
@@ -2729,7 +2934,7 @@ fn report_status_value(analysis_id: &str, state: &AnalysisSession) -> Value {
         "ready_to_finalize": ready,
         "findings": state.findings.len(),
         "evidence_records": state.evidence.len(),
-        "guidance_refs": state.guidance_refs.len(),
+        "guidance_refs": state.guidance.len(),
         "recommendation_actions": actions,
         "present_categories": present_categories,
         "missing_required_categories": missing_categories,
@@ -2806,6 +3011,7 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
             "Baseline and candidate direction must be stated in each comparative finding and its cited evidence.\n\n",
         );
     }
+    output.push_str(&render_source_report_links(document));
 
     output.push_str("## 1. Executive Summary\n\n");
     let mut leading = state.findings.values().collect::<Vec<_>>();
@@ -2815,12 +3021,8 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
     } else {
         for finding in leading.into_iter().take(5) {
             output.push_str(&format!(
-                "- **{}** [{} / {}]: {} {}\n",
-                finding.title,
-                finding.severity,
-                finding.confidence,
-                finding.conclusion,
-                inline_refs(&finding.evidence_refs, &finding.guidance_refs)
+                "- **{}** [{} / {}]: {}\n",
+                finding.title, finding.severity, finding.confidence, finding.conclusion
             ));
         }
         output.push('\n');
@@ -2860,13 +3062,20 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
             .unwrap_or(&state.config.detail_level);
         for finding in findings {
             output.push_str(&format!(
-                "### {} [{} / {}]\n\n{} {}\n\n",
+                "### {} [{} / {}]\n\n{}\n\n**Evidence basis:** {}\n\n",
                 finding.title,
                 finding.severity,
                 finding.confidence,
                 finding.conclusion,
-                inline_refs(&finding.evidence_refs, &finding.guidance_refs)
+                finding.evidence_summary
             ));
+            output.push_str(&render_guidance_quotes(&finding.guidance_quotes, state));
+            if state.config.include_evidence_appendix && !finding.evidence_refs.is_empty() {
+                output.push_str(&format!(
+                    "**Technical provenance:** {}\n\n",
+                    evidence_links(&finding.evidence_refs)
+                ));
+            }
             if detail != "compact" && !finding.details.is_empty() {
                 output.push_str(&finding.details);
                 output.push_str("\n\n");
@@ -2901,12 +3110,20 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
     for assessment in REQUIRED_ASSESSMENTS {
         if let Some(value) = state.assessments.get(*assessment) {
             output.push_str(&format!(
-                "- **{} — {}**: {} {}\n",
+                "- **{} — {}**: {} **Evidence basis:** {}",
                 assessment.replace('_', " "),
                 value.status,
                 value.conclusion,
-                inline_refs(&value.evidence_refs, &value.guidance_refs)
+                value.evidence_summary
             ));
+            if state.config.include_evidence_appendix && !value.evidence_refs.is_empty() {
+                output.push_str(&format!(
+                    " Technical provenance: {}.",
+                    evidence_links(&value.evidence_refs)
+                ));
+            }
+            output.push('\n');
+            output.push_str(&render_guidance_quotes(&value.guidance_quotes, state));
         } else {
             output.push_str(&format!(
                 "- **{} — UNKNOWN**: assessment not completed.\n",
@@ -2917,23 +3134,32 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
     output.push('\n');
 
     if state.config.include_evidence_appendix {
-        output.push_str("## Appendix A. Evidence Register\n\n");
-        for record in state.evidence.values() {
+        output.push_str("## Appendix A. Technical Evidence Provenance\n\n");
+        output.push_str("This optional machine-to-human index lists only cited measurements. The findings above remain authoritative because they state the exact values and interpretation in plain language.\n\n");
+        let cited = cited_evidence_refs(state);
+        for evidence_id in cited {
+            let Some(record) = state.evidence.get(&evidence_id) else {
+                continue;
+            };
             output.push_str(&format!(
-                "- `{}` — `{}` with arguments `{}`\n",
-                record.evidence_id, record.tool_name, record.arguments
+                "<a id=\"evidence-{}\"></a>- **{} — {}**{}\n",
+                evidence_anchor(&record.evidence_id),
+                record.evidence_id,
+                humanize_identifier(&record.tool_name),
+                evidence_scope(record)
             ));
         }
         output.push('\n');
     }
     if state.config.include_guidance_appendix {
         output.push_str("## Appendix B. Diagnostic Guidance Consulted\n\n");
-        if state.guidance_refs.is_empty() {
+        if state.guidance.is_empty() {
             output.push_str("No external diagnostic guidance was consulted.\n\n");
         } else {
-            for reference in &state.guidance_refs {
+            for (reference, guidance) in &state.guidance {
                 output.push_str(&format!(
-                    "- `{reference}` — methodology only, not measurement evidence\n"
+                    "- **{reference} — {}** — methodology only; quoted verbatim where applied, never used as measurement evidence.\n",
+                    guidance.title
                 ));
             }
             output.push('\n');
@@ -2941,6 +3167,50 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
     }
     output.push_str("Generated by JAS-MIN · https://github.com/ora600pl/jas-min · expert performance tuning at ora-600.pl\n");
     output
+}
+
+fn render_source_report_links(document: &Value) -> String {
+    let Some(datasets) = document.get("datasets").and_then(Value::as_array) else {
+        return String::new();
+    };
+    let mut entries = Vec::new();
+    for dataset in datasets {
+        let project_id = dataset
+            .get("project_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown project");
+        let Some(reports) = dataset.get("source_reports") else {
+            continue;
+        };
+        let mut links = Vec::new();
+        for (field, label, presence_field) in [
+            ("main", "Main JAS-MIN dashboard", "main_present"),
+            ("load_profile", "Load profile", "load_profile_present"),
+            (
+                "load_profile_secondary",
+                "Secondary load profile",
+                "load_profile_secondary_present",
+            ),
+        ] {
+            if reports.get(presence_field).and_then(Value::as_bool) != Some(true) {
+                continue;
+            }
+            if let Some(path) = reports.get(field).and_then(Value::as_str) {
+                links.push(format!("[{label}](<{path}>)"));
+            }
+        }
+        if !links.is_empty() {
+            entries.push(format!("- **{project_id}:** {}", links.join(" · ")));
+        }
+    }
+    if entries.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "**Interactive source reports:**\n\n{}\n\n",
+            entries.join("\n")
+        )
+    }
 }
 
 fn validate_references(
@@ -2964,7 +3234,7 @@ fn validate_references(
     }
     let unknown_guidance = guidance_refs
         .iter()
-        .filter(|reference| !state.guidance_refs.contains(*reference))
+        .filter(|reference| !state.guidance.contains_key(*reference))
         .cloned()
         .collect::<Vec<_>>();
     if !unknown_guidance.is_empty() {
@@ -2980,6 +3250,12 @@ fn validate_references(
 }
 
 fn validate_stable_markdown_report(markdown: &str) -> std::result::Result<(), Value> {
+    if let Some(placeholder) = unresolved_report_placeholder(markdown) {
+        return Err(tool_error(
+            "UNRESOLVED_REPORT_PLACEHOLDER",
+            format!("Markdown contains unresolved report placeholder '{placeholder}'"),
+        ));
+    }
     let lines = markdown.lines().map(str::trim).collect::<Vec<_>>();
     if !lines
         .iter()
@@ -3013,6 +3289,29 @@ fn validate_stable_markdown_report(markdown: &str) -> std::result::Result<(), Va
         return Err(tool_error(
             "INVALID_REPORT_SECTION_ORDER",
             "The 11 required report sections must appear in the server-defined order",
+        ));
+    }
+    Ok(())
+}
+
+fn unresolved_report_placeholder(value: &str) -> Option<&'static str> {
+    [
+        "{load_profile}",
+        "{load_profile2}",
+        "{jasmin_main}",
+        "{lp}",
+        "{lp2}",
+        "{jm}",
+    ]
+    .into_iter()
+    .find(|placeholder| value.contains(placeholder))
+}
+
+fn validate_resolved_html_navigation(html: &str) -> std::result::Result<(), Value> {
+    if let Some(placeholder) = unresolved_report_placeholder(html) {
+        return Err(tool_error(
+            "UNRESOLVED_REPORT_PLACEHOLDER",
+            format!("Rendered HTML contains unresolved report placeholder '{placeholder}'"),
         ));
     }
     Ok(())
@@ -3134,6 +3433,90 @@ fn parse_recommendations(value: Option<&Value>) -> std::result::Result<Vec<Recom
         .collect()
 }
 
+fn parse_guidance_quotations(
+    value: Option<&Value>,
+    guidance_refs: &[String],
+    state: &AnalysisSession,
+) -> std::result::Result<Vec<GuidanceQuotation>, Value> {
+    let items = value.and_then(Value::as_array);
+    if guidance_refs.is_empty() {
+        if items.is_some_and(|items| !items.is_empty()) {
+            return Err(tool_error(
+                "GUIDANCE_QUOTE_WITHOUT_REFERENCE",
+                "guidance_quotes cannot be supplied without matching guidance_refs",
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    let Some(items) = items else {
+        return Err(tool_error(
+            "GUIDANCE_QUOTE_REQUIRED",
+            "Every applied guidance_ref requires a verbatim guidance_quotes entry",
+        ));
+    };
+    if items.len() > 16 {
+        return Err(tool_error(
+            "TOO_MANY_GUIDANCE_QUOTES",
+            "A finding or assessment may contain at most 16 guidance quotations",
+        ));
+    }
+
+    let expected = guidance_refs.iter().cloned().collect::<BTreeSet<_>>();
+    let mut observed = BTreeSet::new();
+    let mut quotations = Vec::new();
+    for item in items {
+        let Some(object) = item.as_object() else {
+            return Err(tool_error(
+                "INVALID_GUIDANCE_QUOTE",
+                "Each guidance_quotes entry must be an object",
+            ));
+        };
+        let guidance_ref = required_string(object, "guidance_ref", 64)?;
+        let quote = required_string(object, "quote", 2_000)?;
+        if !expected.contains(&guidance_ref) {
+            return Err(tool_error(
+                "GUIDANCE_QUOTE_REFERENCE_MISMATCH",
+                format!("Quotation references '{guidance_ref}', which is not in guidance_refs"),
+            ));
+        }
+        if !observed.insert(guidance_ref.clone()) {
+            return Err(tool_error(
+                "DUPLICATE_GUIDANCE_QUOTE",
+                format!("Duplicate quotation for '{guidance_ref}'"),
+            ));
+        }
+        let source = state.guidance.get(&guidance_ref).ok_or_else(|| {
+            tool_error(
+                "UNKNOWN_GUIDANCE_REF",
+                format!("Unknown guidance reference '{guidance_ref}'"),
+            )
+        })?;
+        if !source.text.contains(&quote) {
+            return Err(tool_error(
+                "GUIDANCE_QUOTE_NOT_VERBATIM",
+                format!(
+                    "The quotation for '{guidance_ref}' is not a contiguous verbatim excerpt of the retrieved guidance"
+                ),
+            ));
+        }
+        quotations.push(GuidanceQuotation {
+            guidance_ref,
+            quote,
+        });
+    }
+    if observed != expected {
+        let missing = expected.difference(&observed).cloned().collect::<Vec<_>>();
+        return Err(tool_error(
+            "GUIDANCE_QUOTE_REQUIRED",
+            format!(
+                "Missing verbatim quotation for guidance reference(s): {}",
+                missing.join(", ")
+            ),
+        ));
+    }
+    Ok(quotations)
+}
+
 fn required_string(
     arguments: &Map<String, Value>,
     name: &str,
@@ -3232,16 +3615,114 @@ fn canonical_json(value: &Value) -> String {
     }
 }
 
-fn inline_refs(evidence: &[String], guidance: &[String]) -> String {
-    let mut references = evidence
+fn evidence_anchor(reference: &str) -> String {
+    reference
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn evidence_links(evidence: &[String]) -> String {
+    evidence
         .iter()
-        .map(|reference| format!("`{reference}`"))
+        .map(|reference| format!("[{}](#evidence-{})", reference, evidence_anchor(reference)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_guidance_quotes(quotations: &[GuidanceQuotation], state: &AnalysisSession) -> String {
+    let mut output = String::new();
+    for quotation in quotations {
+        let title = state
+            .guidance
+            .get(&quotation.guidance_ref)
+            .map(|record| record.title.as_str())
+            .unwrap_or("Diagnostic guidance");
+        output.push_str(&format!(
+            "> **JAS-MIN diagnostic rule ({} — {}):**\n>\n",
+            quotation.guidance_ref, title
+        ));
+        for line in quotation.quote.lines() {
+            output.push_str("> “");
+            output.push_str(line);
+            output.push_str("”\n");
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn cited_evidence_refs(state: &AnalysisSession) -> BTreeSet<String> {
+    state
+        .findings
+        .values()
+        .flat_map(|finding| finding.evidence_refs.iter())
+        .chain(
+            state
+                .assessments
+                .values()
+                .flat_map(|assessment| assessment.evidence_refs.iter()),
+        )
+        .cloned()
+        .collect()
+}
+
+fn humanize_identifier(value: &str) -> String {
+    let mut words = value
+        .split('_')
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
         .collect::<Vec<_>>();
-    references.extend(guidance.iter().map(|reference| format!("`{reference}`")));
-    if references.is_empty() {
-        String::new()
+    if let Some(first) = words.first_mut() {
+        if let Some(initial) = first.get_mut(0..1) {
+            initial.make_ascii_uppercase();
+        }
+    }
+    words.join(" ")
+}
+
+fn evidence_scope(record: &EvidenceRecord) -> String {
+    const USEFUL_ARGUMENTS: &[&str] = &[
+        "section",
+        "snap_id",
+        "baseline_snap_id",
+        "candidate_snap_id",
+        "sql_id",
+        "event_name",
+        "name",
+        "kind",
+        "parameter_name",
+        "date_from",
+        "date_to",
+        "limit",
+    ];
+    let mut parts = Vec::new();
+    if let Some(project_id) = record.project_id.as_deref() {
+        parts.push(format!("project `{project_id}`"));
+    }
+    if let Some(arguments) = record.arguments.as_object() {
+        for key in USEFUL_ARGUMENTS {
+            let Some(value) = arguments.get(*key) else {
+                continue;
+            };
+            let displayed = match value {
+                Value::String(value) => value.clone(),
+                Value::Number(_) | Value::Bool(_) => value.to_string(),
+                _ => continue,
+            };
+            parts.push(format!("{} `{}`", humanize_identifier(key), displayed));
+        }
+    }
+    if parts.is_empty() {
+        ".".to_string()
     } else {
-        format!("[{}]", references.join(", "))
+        format!(" — {}.", parts.join("; "))
     }
 }
 
@@ -3282,15 +3763,81 @@ fn count_suffix(directory: &Path, suffix: &str) -> usize {
         .count()
 }
 
-fn count_name_contains(directory: &Path, needle: &str) -> usize {
+fn alert_timestamp_bounds(path: &Path) -> (Option<String>, Option<String>, usize) {
+    let Ok(file) = File::open(path) else {
+        return (None, None, 0);
+    };
+    let mut first = None;
+    let mut last = None;
+    let mut count = 0;
+    for line in BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+    {
+        let Some(timestamp) = iso_timestamp_prefix(&line) else {
+            continue;
+        };
+        count += 1;
+        if first.is_none() {
+            first = Some(timestamp.to_string());
+        }
+        last = Some(timestamp.to_string());
+    }
+    (first, last, count)
+}
+
+fn iso_timestamp_prefix(line: &str) -> Option<&str> {
+    let candidate = line.trim_start().split_ascii_whitespace().next()?;
+    let bytes = candidate.as_bytes();
+    let expected_digits = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
+    if bytes.len() < 19
+        || bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || bytes.get(10) != Some(&b'T')
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+        || expected_digits
+            .iter()
+            .any(|index| !bytes[*index].is_ascii_digit())
+    {
+        return None;
+    }
+    Some(candidate)
+}
+
+fn alert_coverage_status(
+    bytes: u64,
+    observed_date_from: Option<&str>,
+    observed_date_to: Option<&str>,
+    expected_date_from: Option<&str>,
+    expected_date_to: Option<&str>,
+) -> &'static str {
+    if bytes == 0 {
+        "missing"
+    } else if observed_date_from.is_none() || observed_date_to.is_none() {
+        "unknown"
+    } else if expected_date_from
+        .zip(observed_date_from)
+        .is_some_and(|(expected, observed)| observed > expected)
+        || expected_date_to
+            .zip(observed_date_to)
+            .is_some_and(|(expected, observed)| observed < expected)
+    {
+        "partial_relative_to_dataset"
+    } else {
+        "covers_dataset_dates"
+    }
+}
+
+fn files_name_contains(directory: &Path, needle: &str) -> Vec<PathBuf> {
     read_files(directory)
-        .iter()
+        .into_iter()
         .filter(|path| {
             path.file_name()
                 .and_then(|value| value.to_str())
                 .is_some_and(|value| value.to_lowercase().contains(needle))
         })
-        .count()
+        .collect()
 }
 
 fn count_regular_files(directory: &Path) -> usize {
@@ -3618,6 +4165,10 @@ mod tests {
             ("severity".to_string(), json!("low")),
             ("confidence".to_string(), json!("high")),
             ("conclusion".to_string(), json!("Latency is low.")),
+            (
+                "evidence_summary".to_string(),
+                json!("The cited source would need to contain the measured latency."),
+            ),
             ("evidence_refs".to_string(), json!(["E-9999"])),
         ]);
         let error = runtime.call_tool("record_finding", finding).unwrap_err();
@@ -3697,6 +4248,80 @@ mod tests {
     }
 
     #[test]
+    fn source_report_links_are_human_readable_and_clickable() {
+        let document = json!({
+            "datasets": [{
+                "project_id": "node-1",
+                "source_reports": {
+                    "main": "node-1.html_reports/jasmin_main.html",
+                    "main_present": true,
+                    "load_profile": "node-1.html_reports/stats/jasmin_highlight.html",
+                    "load_profile_present": true,
+                    "load_profile_secondary": "node-1.html_reports/stats/jasmin_highlight2.html",
+                    "load_profile_secondary_present": false
+                }
+            }]
+        });
+        let rendered = render_source_report_links(&document);
+        assert!(rendered.contains("Interactive source reports"));
+        assert!(
+            rendered.contains("[Main JAS-MIN dashboard](<node-1.html_reports/jasmin_main.html>)")
+        );
+        assert!(
+            rendered.contains("[Load profile](<node-1.html_reports/stats/jasmin_highlight.html>)")
+        );
+        assert!(!rendered.contains("Secondary load profile"));
+
+        let comparative_html = render_markdown_html_document(
+            "# Oracle Performance Analysis\n\nComparison body.",
+            "",
+            "/tmp",
+            HashMap::new(),
+        );
+        assert!(!comparative_html.contains("<iframe"));
+        assert!(!comparative_html.contains("/jasmin_main.html"));
+    }
+
+    #[test]
+    fn stable_report_rejects_unresolved_navigation_placeholders() {
+        let mut markdown = String::from("# Oracle Performance Analysis\n\n");
+        for heading in STABLE_MARKDOWN_HEADINGS {
+            markdown.push_str(heading);
+            markdown.push_str("\n\nBody.\n\n");
+        }
+        markdown.push_str("{load_profile}\n");
+
+        let error = validate_stable_markdown_report(&markdown).unwrap_err();
+        assert_eq!(error["error_code"], "UNRESOLVED_REPORT_PLACEHOLDER");
+    }
+
+    #[test]
+    fn applied_guidance_requires_a_verbatim_quote() {
+        let mut state = AnalysisSession::new(json!({}), ReportConfig::default(), Vec::new());
+        state.guidance.insert(
+            "GUIDE-§1.2".to_string(),
+            GuidanceRecord {
+                title: "Cursor diagnostics".to_string(),
+                text: "Inspect V$SQL_SHARED_CURSOR before diagnosing child cursor causes."
+                    .to_string(),
+            },
+        );
+        let references = vec!["GUIDE-§1.2".to_string()];
+        let valid = json!([{
+            "guidance_ref": "GUIDE-§1.2",
+            "quote": "Inspect V$SQL_SHARED_CURSOR"
+        }]);
+        assert!(parse_guidance_quotations(Some(&valid), &references, &state).is_ok());
+
+        let invented = json!([{
+            "guidance_ref": "GUIDE-§1.2",
+            "quote": "Increase every hidden cursor parameter"
+        }]);
+        let error = parse_guidance_quotations(Some(&invented), &references, &state).unwrap_err();
+        assert_eq!(error["error_code"], "GUIDANCE_QUOTE_NOT_VERBATIM");
+    }
+
+    #[test]
     fn complete_report_renders_every_stable_section() {
         let runtime = runtime();
         let bootstrap = runtime
@@ -3723,6 +4348,10 @@ mod tests {
                             "conclusion".to_string(),
                             json!("Verified by the initial statistical seed."),
                         ),
+                        (
+                            "evidence_summary".to_string(),
+                            json!("The initial seed contains the exact project scope and statistical values used by this test finding."),
+                        ),
                         ("evidence_refs".to_string(), json!([SEED_EVIDENCE_ID])),
                         ("recommendations".to_string(), recommendations),
                     ]),
@@ -3742,6 +4371,10 @@ mod tests {
                             json!(
                                 "The available evidence is insufficient for a stronger conclusion."
                             ),
+                        ),
+                        (
+                            "evidence_summary".to_string(),
+                            json!("No direct measurement capable of proving this assessment was collected."),
                         ),
                         ("evidence_refs".to_string(), json!([])),
                     ]),
@@ -3775,6 +4408,10 @@ mod tests {
         for section in 1..=11 {
             assert!(markdown.contains(&format!("## {section}.")));
         }
+        assert!(markdown.contains("**Evidence basis:**"));
+        assert!(!markdown.contains("`SEED-E0001`"));
+        assert!(!markdown.contains("## Appendix A."));
+        assert!(!markdown.contains("## Appendix B."));
         assert_eq!(
             final_report["report"]["section_index"]
                 .as_array()
@@ -3835,6 +4472,7 @@ mod tests {
         let output_path = test_directory.join("MCP-report.html");
         let html = std::fs::read_to_string(&output_path).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("<title>JAS-MIN Oracle Performance Analysis</title>"));
         assert!(html.contains("Table of Contents"));
         assert!(html.contains("Overall Performance Profile and DB Time Degradation"));
 
@@ -3851,6 +4489,55 @@ mod tests {
         assert_eq!(duplicate["error_code"], "OUTPUT_EXISTS");
         std::fs::remove_file(output_path).unwrap();
         std::fs::remove_dir(linked_report_directory).unwrap();
+        std::fs::remove_dir(test_directory).unwrap();
+    }
+
+    #[test]
+    fn alert_attachment_inventory_distinguishes_empty_and_partial_coverage() {
+        let test_directory = std::env::temp_dir().join(format!(
+            "jas-min-mcp-alert-inventory-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir(&test_directory).unwrap();
+        let empty = test_directory.join("alert_NODE2.log");
+        let populated = test_directory.join("alert_NODE1.log");
+        std::fs::write(&empty, []).unwrap();
+        std::fs::write(
+            &populated,
+            b"header\n2026-07-29T00:04:51.035659+02:00\nORA-00918\n2026-08-02T22:59:34.346607+02:00\n",
+        )
+        .unwrap();
+
+        let matching = files_name_contains(&test_directory, "alert");
+        assert_eq!(matching.len(), 2);
+        assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0);
+        assert!(std::fs::metadata(&populated).unwrap().len() > 0);
+        let (first, last, count) = alert_timestamp_bounds(&populated);
+        assert_eq!(first.as_deref(), Some("2026-07-29T00:04:51.035659+02:00"));
+        assert_eq!(last.as_deref(), Some("2026-08-02T22:59:34.346607+02:00"));
+        assert_eq!(count, 2);
+        assert_eq!(
+            alert_coverage_status(
+                std::fs::metadata(&populated).unwrap().len(),
+                first.as_deref().and_then(|value| value.get(..10)),
+                last.as_deref().and_then(|value| value.get(..10)),
+                Some("2026-07-20"),
+                Some("2026-08-02"),
+            ),
+            "partial_relative_to_dataset"
+        );
+        assert_eq!(
+            alert_coverage_status(0, None, None, Some("2026-07-20"), Some("2026-08-02")),
+            "missing"
+        );
+        assert_eq!(
+            alert_coverage_status(10, None, None, Some("2026-07-20"), Some("2026-08-02")),
+            "unknown"
+        );
+
+        std::fs::remove_file(empty).unwrap();
+        std::fs::remove_file(populated).unwrap();
         std::fs::remove_dir(test_directory).unwrap();
     }
 }

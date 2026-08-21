@@ -397,7 +397,7 @@ The returned structured payload contains:
 | `diagnostic_guidance` | Catalog of indexed `reasonings.txt` sections, not their full contents. |
 | `quality_gates` | Dataset- and platform-aware proof requirements. |
 | `report_contract` | Stable sections, required finding categories, assessments, and current output configuration. |
-| `recommended_next_calls` | Dataset-aware opening calls, including attachment tools when the relevant files exist. |
+| `recommended_next_calls` | Dataset-aware opening calls, including attachment tools when relevant non-empty files exist. |
 | `recommended_comparison_calls` | Opening cross-project calls when comparison mode is active. |
 
 The bootstrap is intentionally bounded. It is a routing map, not a complete
@@ -579,7 +579,9 @@ contain a similar character sequence.
 A robust investigation normally follows this order:
 
 1. Call `list_performance_projects` and verify project identity, time ranges,
-   sample counts, and attachment coverage.
+   sample counts, and attachment coverage. For alert logs, compare the observed
+   first/last timestamp and `coverage_status` with the dataset dates rather than
+   inferring coverage from the filename or enclosing AWR period.
 2. Call `start_performance_analysis` with the intended `project_ids`; preserve
    which project is the baseline and which is the candidate in every finding.
 3. Establish each whole-window workload envelope with
@@ -687,8 +689,8 @@ The default configuration is:
   "audience": "mixed",
   "detail_level": "standard",
   "detail_overrides": {},
-  "include_evidence_appendix": true,
-  "include_guidance_appendix": true
+  "include_evidence_appendix": false,
+  "include_guidance_appendix": false
 }
 ```
 
@@ -716,8 +718,33 @@ inventing content.
 
 - a report category;
 - title, severity, confidence, and conclusion;
+- a human-readable `evidence_summary` containing the exact supporting values,
+  time scope, and project or instance context;
 - an `evidence_refs` array;
-- optional detail, guidance references, and prioritized recommendations.
+- optional detail, guidance references, verified guidance quotations, and
+  prioritized recommendations.
+
+Evidence identifiers are machine provenance, not reader-facing prose. The
+Markdown renderer presents `evidence_summary` in the finding and keeps raw IDs
+out of the human report unless the optional technical evidence appendix is
+explicitly enabled. That appendix lists only cited records, gives each tool a
+human-readable label and scope, and links provenance references to their
+entries.
+
+For comparative reports, every value in reader-facing prose must name its
+project or instance; an unlabeled `X/Y` pair is not accepted as human-readable
+evidence. Attachment inventory exposes alert-log byte counts, empty/non-empty
+totals, observed first/last ISO timestamps, timestamp-line counts, and coverage
+status relative to the dataset dates. Zero-byte attachments are missing
+collection coverage; partial attachments must be scoped to their observed
+interval and must not be presented as full-period totals. A zero-match literal
+proves only the exact submitted search/filter, so inspect raw context and known
+punctuation/message variants before declaring an event absent.
+
+When `guidance_refs` is non-empty, `guidance_quotes` must contain one contiguous
+verbatim excerpt for every referenced section. JAS-MIN validates each excerpt
+against the guidance text retrieved in the same analysis. A paraphrase,
+invented rule, missing quote, or quote for an unreferenced section is rejected.
 
 The server validates every supplied reference but currently permits an empty
 finding `evidence_refs` array. Clients should use that form only for an explicit
@@ -760,8 +787,9 @@ The final report must explicitly cover:
 
 Assessment status is `proven`, `not_proven`, or `unknown`. A `proven` or
 `not_proven` assessment must cite at least one measurement evidence reference.
-An `unknown` assessment records an honest limitation when the required source
-data is unavailable.
+Every assessment also supplies a human-readable `evidence_summary`. An
+`unknown` assessment records an honest limitation and identifies the precise
+missing source data.
 
 ### Completion rules
 
@@ -816,6 +844,8 @@ The conversion tool enforces the following policy:
 - `markdown` is required and limited to 4 MiB;
 - the exact `# Oracle Performance Analysis` title must be present;
 - all 11 stable `##` headings must be present in server-defined order;
+- unresolved navigation placeholders such as `{load_profile}` or
+  `{jasmin_main}` are rejected;
 - `output_filename` is an optional basename, never a path;
 - `/`, `\\`, hidden names, control characters, and non-HTML extensions are
   rejected;
@@ -833,13 +863,16 @@ default name.
 The renderer is shared with classic AI mode. It generates a complete HTML5
 document with JAS-MIN styling, anchored headings, a table of contents, logo,
 links to the main HTML report, and links to SQL/event pages when the relevant
-classic report assets and link index are available. The response reports
-whether the classic HTML report directory selected while parsing the dataset
-was present. A custom output filename does not change that link target: the new
-HTML document still points to the original JAS-MIN charts and SQL/event pages.
-Because no single chart tree represents a multi-project analysis, comparative
-HTML exports deliberately omit dataset-specific chart and SQL/event links;
-their evidence appendix retains the project routing information instead.
+classic report assets and link index are available. Material wait-event names
+and SQL IDs in reader-facing findings must be direct links to every existing
+project-specific detail report; in comparative output, each target must name
+its instance or project rather than using a generic link label. The response reports every
+linked report directory and whether its main report exists. A custom output
+filename does not change those link targets. Single-project exports retain the
+classic navigation as verified active links to existing dashboard/load-profile
+files. Comparative exports publish explicit active links to each selected
+project's main dashboard and load-profile reports. Neither path emits unresolved
+iframe placeholders.
 
 The HTML file is an output artifact, not an evidence record and not part of the
 in-memory report revision. Repeating the call with the same filename returns
