@@ -1,6 +1,6 @@
 use crate::awr::GetStats;
 use chrono::Local;
-use html_escape::encode_text;
+use html_escape::{encode_double_quoted_attribute, encode_text};
 use ndarray::{iter, Array1, Array2};
 use ndarray_stats::histogram::Grid;
 use ndarray_stats::interpolate::Linear;
@@ -100,7 +100,45 @@ pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> Str
 /// - CSS styling
 /// - Table of Contents (TOC)
 /// - Anchored headings
-fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
+fn classic_source_navigation(html_dir: &str, html_absolute_dir: &str) -> String {
+    if html_dir.trim().is_empty() || html_absolute_dir.trim().is_empty() {
+        return String::new();
+    }
+
+    let relative_root = Path::new(html_dir);
+    let absolute_root = Path::new(html_absolute_dir);
+    let mut links = Vec::new();
+    for (label, suffix) in [
+        ("Main JAS-MIN dashboard", "jasmin_main.html"),
+        ("Load profile", "stats/jasmin_highlight.html"),
+        ("Secondary load profile", "stats/jasmin_highlight2.html"),
+    ] {
+        if !absolute_root.join(suffix).is_file() {
+            continue;
+        }
+        let target = relative_root.join(suffix);
+        links.push(format!(
+            r#"<li><a href="{}" target="_blank" rel="noopener">{}</a></li>"#,
+            encode_double_quoted_attribute(&target.to_string_lossy()),
+            encode_text(label)
+        ));
+    }
+
+    if links.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<nav class=\"source-navigation\" aria-label=\"Interactive JAS-MIN source reports\"><strong>Interactive source reports:</strong><ul>{}</ul></nav>",
+            links.join("")
+        )
+    }
+}
+
+fn markdown_to_html_with_toc(
+    markdown_input: &str,
+    html_dir: &str,
+    html_absolute_dir: &str,
+) -> String {
     // Enable desired Markdown extensions
     let mut options = Options::empty();
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
@@ -196,9 +234,7 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
     // Render HTML from modified parser stream
     html::push_html(&mut html_output, parser_with_ids.into_iter());
 
-    let jasmin_main = format!("{}/jasmin_main.html", &html_dir);
-    let load_profile = format!("{}/stats/jasmin_highlight.html", &html_dir);
-    let load_profile2 = format!("{}/stats/jasmin_highlight2.html", &html_dir);
+    let classic_navigation = classic_source_navigation(html_dir, html_absolute_dir);
 
     // Wrap the result in a complete HTML template
     format!(
@@ -206,7 +242,7 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>JAS-MIN thoughts</title>
+    <title>JAS-MIN Oracle Performance Analysis</title>
     <style>
         body {{
             font-family: Arial, sans-serif;
@@ -231,16 +267,32 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
         .toc li.level-2 {{ margin-left: 1em; }}
         .toc li.level-3 {{ margin-left: 2em; }}
         .toc li.level-4 {{ margin-left: 3em; }}
+        .source-navigation {{
+            background: #eef6ff;
+            border-left: 4px solid #0077cc;
+            margin-bottom: 2em;
+            padding: 1em;
+        }}
+        .source-navigation ul {{
+            margin: 0.75em 0 0;
+        }}
         pre {{
-            background: #c2cc91ff;
-            color: #f8f8f2;
+            background: #1f2937;
+            color: #f8fafc;
             padding: 1em;
             overflow-x: auto;
+            border-radius: 4px;
         }}
         code {{
-            background: #c2cc91ff;
+            background: #eef2f7;
+            color: #1f2937;
             padding: 0.2em 0.4em;
             border-radius: 4px;
+        }}
+        pre code {{
+            background: transparent;
+            color: inherit;
+            padding: 0;
         }}
         a {{
             color: #0077cc;
@@ -256,9 +308,7 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
         <img src="https://raw.githubusercontent.com/ora600pl/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
     </a></p>
 {toc}
-<iframe src="{lp}" width="100%" height="400px" style="border: none;"></iframe>
-<iframe src="{lp2}" width="100%" height="400px" style="border: none;"></iframe>
-<a href="{jm}" target="_blank">JASMIN MAIN</a>
+{navigation}
 {content}
 <p align="center"><a href="https://www.ora-600.pl" target="_blank">
         <img src="https://raw.githubusercontent.com/ora600pl/jas-min/main/img/ora-600.png" width="150" alt="ORA-600" onerror="this.style.display='none';"/>
@@ -266,9 +316,7 @@ fn markdown_to_html_with_toc(markdown_input: &str, html_dir: &str) -> String {
 </body>
 </html>"#,
         toc = toc_html,
-        lp = load_profile,
-        lp2 = load_profile2,
-        jm = jasmin_main,
+        navigation = classic_navigation,
         content = html_output
     )
 }
@@ -365,7 +413,7 @@ pub(crate) fn render_markdown_html_document(
     html_absolute_dir: &str,
     events_sqls: HashMap<&str, HashSet<String>>,
 ) -> String {
-    let html_plain = markdown_to_html_with_toc(markdown, html_dir);
+    let html_plain = markdown_to_html_with_toc(markdown, html_dir, html_absolute_dir);
     add_links_to_html(
         html_plain,
         events_sqls,
@@ -623,6 +671,51 @@ pub fn rounded_json_for_toon(mut value: Value) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn classic_navigation_links_only_existing_reports_without_iframes_or_placeholders() {
+        let root = std::env::temp_dir().join(format!(
+            "jas-min-classic-navigation-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(root.join("stats")).unwrap();
+        std::fs::write(root.join("jasmin_main.html"), b"main").unwrap();
+        std::fs::write(root.join("stats/jasmin_highlight.html"), b"profile").unwrap();
+
+        let html = render_markdown_html_document(
+            "# Oracle Performance Analysis\n\nBody.",
+            "node-1.html_reports",
+            &root.to_string_lossy(),
+            HashMap::new(),
+        );
+
+        assert!(html.contains(
+            "href=\"node-1.html_reports/jasmin_main.html\" target=\"_blank\" rel=\"noopener\""
+        ));
+        assert!(html.contains("node-1.html_reports/stats/jasmin_highlight.html"));
+        assert!(!html.contains("jasmin_highlight2.html"));
+        assert!(!html.contains("<iframe"));
+        assert!(unresolved_report_placeholder_for_test(&html).is_none());
+
+        std::fs::remove_file(root.join("stats/jasmin_highlight.html")).unwrap();
+        std::fs::remove_file(root.join("jasmin_main.html")).unwrap();
+        std::fs::remove_dir(root.join("stats")).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    fn unresolved_report_placeholder_for_test(value: &str) -> Option<&'static str> {
+        [
+            "{load_profile}",
+            "{load_profile2}",
+            "{jasmin_main}",
+            "{lp}",
+            "{lp2}",
+            "{jm}",
+        ]
+        .into_iter()
+        .find(|placeholder| value.contains(placeholder))
+    }
 
     #[test]
     fn round_json_floats_rounds_nested_float_values_only() {
