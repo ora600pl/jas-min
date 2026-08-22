@@ -1,4 +1,5 @@
 use crate::awr::GetStats;
+use base64::{engine::general_purpose, Engine as _};
 use chrono::Local;
 use html_escape::{encode_double_quoted_attribute, encode_text};
 use ndarray::{iter, Array1, Array2};
@@ -17,6 +18,16 @@ use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write as Write2};
 use std::{collections::HashMap, collections::HashSet, env, fs, path::Path};
 use tokio::sync::oneshot;
+
+const JASMIN_AUDIT_LOGO_SVG: &str = include_str!("../img/jasmin_LOGO_ora600_white.svg");
+const ORA600_LOGO_PNG: &[u8] = include_bytes!("../img/ora-600.png");
+
+pub(crate) fn jasmin_brand_banner_html() -> String {
+    format!(
+        r#"<div class="jasmin-brand-banner" style="margin:0 0 16px;padding:12px 18px;border-top:5px solid #c52228;border-radius:12px;background:#111111"><a href="https://github.com/ora600pl/jas-min" target="_blank" rel="noopener" aria-label="JAS-MIN project">{}</a></div>"#,
+        JASMIN_AUDIT_LOGO_SVG
+    )
+}
 
 /// Bonferroni-corrected correlation significance threshold.
 /// Returns the minimum |r| that is significant at family-wise alpha
@@ -178,10 +189,6 @@ fn markdown_to_html_with_toc(
                 in_heading = true;
                 // Add heading to TOC
                 toc.push((current_heading_level, current_heading_id.clone()));
-                // Inject heading with id
-                parser_with_ids.push(Event::Html(
-                    format!(r#"<h{} id="{}">"#, current_heading_level, id).into(),
-                ));
                 // Buffer the heading events, but also collect text
                 heading_events_buffer.clear();
             }
@@ -189,6 +196,34 @@ fn markdown_to_html_with_toc(
                 in_heading = false;
                 // Add the heading text to the map
                 headings_map.insert(current_heading_id.clone(), heading_text.clone());
+                let heading_class = match current_heading_level_for_map {
+                    1 => "report-title",
+                    2 => "section-title",
+                    3 => {
+                        let normalized = heading_text.to_ascii_lowercase();
+                        if normalized.contains("[critical /") {
+                            "finding-title severity-critical"
+                        } else if normalized.contains("[high /") {
+                            "finding-title severity-high"
+                        } else if normalized.contains("[medium /") {
+                            "finding-title severity-medium"
+                        } else if normalized.contains("[low /") {
+                            "finding-title severity-low"
+                        } else if normalized.contains("[informational /") {
+                            "finding-title severity-informational"
+                        } else {
+                            "subsection-title"
+                        }
+                    }
+                    _ => "subsection-title",
+                };
+                parser_with_ids.push(Event::Html(
+                    format!(
+                        r#"<h{} id="{}" class="{}">"#,
+                        current_heading_level_for_map, current_heading_id, heading_class
+                    )
+                    .into(),
+                ));
                 // Push any buffered heading events (if any)
                 for buffered_event in heading_events_buffer.drain(..) {
                     parser_with_ids.push(buffered_event);
@@ -221,7 +256,9 @@ fn markdown_to_html_with_toc(
     }
 
     // Generate HTML Table of Contents
-    let mut toc_html = String::from("<div class=\"toc\"><h2>Table of Contents</h2><ul>");
+    let mut toc_html = String::from(
+        "<nav class=\"toc\" aria-label=\"Report contents\"><h2>Report contents</h2><ul>",
+    );
     for (level, id) in &toc {
         let label = encode_text(&headings_map[id]);
         toc_html.push_str(&format!(
@@ -229,12 +266,13 @@ fn markdown_to_html_with_toc(
             level, id, label
         ));
     }
-    toc_html.push_str("</ul></div>");
+    toc_html.push_str("</ul></nav>");
 
     // Render HTML from modified parser stream
     html::push_html(&mut html_output, parser_with_ids.into_iter());
 
     let classic_navigation = classic_source_navigation(html_dir, html_absolute_dir);
+    let ora600_logo_data = general_purpose::STANDARD.encode(ORA600_LOGO_PNG);
 
     // Wrap the result in a complete HTML template
     format!(
@@ -244,80 +282,363 @@ fn markdown_to_html_with_toc(
     <meta charset="UTF-8">
     <title>JAS-MIN Oracle Performance Analysis</title>
     <style>
+        :root {{
+            color-scheme: light;
+            --navy: #111111;
+            --navy-2: #2a2a2a;
+            --blue: #b3131b;
+            --cyan: #c52228;
+            --ink: #1b1b1b;
+            --muted: #666666;
+            --line: #dddddd;
+            --surface: #ffffff;
+            --surface-soft: #f6f6f6;
+            --critical: #a90f17;
+            --high: #c52228;
+            --medium: #686868;
+            --low: #3f3f3f;
+            --info: #171717;
+        }}
+        * {{ box-sizing: border-box; }}
+        html {{ scroll-behavior: smooth; }}
         body {{
-            font-family: Arial, sans-serif;
-            padding: 2em;
-            background: #fdfdfd;
-            color: #333;
+            margin: 0;
+            padding: 2rem clamp(1rem, 3vw, 3rem) 4rem;
+            display: grid;
+            grid-template-columns: minmax(240px, 300px) minmax(0, 1120px);
+            column-gap: clamp(1.25rem, 3vw, 2.5rem);
+            align-items: start;
+            justify-content: center;
+            background:
+                radial-gradient(circle at top right, rgba(197, 34, 40, 0.08), transparent 28rem),
+                #f1f1f1;
+            color: var(--ink);
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-size: 16px;
+            line-height: 1.65;
         }}
+        body > *:not(.toc) {{ grid-column: 2; min-width: 0; }}
+        .brand-banner {{
+            margin: 0 0 1rem;
+            padding: 1rem 1.5rem;
+            border-top: 5px solid #c52228;
+            border-radius: 14px;
+            background: #111111;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.16);
+        }}
+        .brand-banner a {{ display: block; }}
+        .brand-banner svg {{ display: block; width: min(100%, 520px); height: auto; margin: auto; }}
+        .brand-footer {{
+            margin-top: 3rem;
+            padding: 1.25rem;
+            border: 1px solid var(--line);
+            border-bottom: 5px solid #c52228;
+            border-radius: 14px;
+            background: white;
+            text-align: center;
+        }}
+        .brand-footer img {{ display: block; width: min(100%, 220px); height: auto; margin: auto; }}
+        p {{ margin: 0.72rem 0; max-width: 88ch; }}
+        li {{ margin: 0.48rem 0; }}
         .toc {{
-            background: #f0f0f0;
-            padding: 1em;
-            margin-bottom: 2em;
-            border-left: 4px solid #444;
+            grid-column: 1;
+            grid-row: 1 / span 999;
+            position: sticky;
+            top: 1.5rem;
+            max-height: calc(100vh - 3rem);
+            overflow: auto;
+            align-self: start;
+            padding: 1.1rem;
+            border: 1px solid #d5d5d5;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.94);
+            box-shadow: 0 14px 35px rgba(0, 0, 0, 0.10);
         }}
-        .toc ul {{
+        .toc h2 {{
+            margin: 0 0 0.8rem;
+            padding: 0 0 0.65rem;
+            border-bottom: 2px solid #e4e4e4;
+            background: none;
+            color: var(--navy);
+            font-size: 1rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }}
+        .toc ul {{ list-style: none; margin: 0; padding: 0; }}
+        .toc li {{ margin: 0; }}
+        .toc a {{
+            display: block;
+            padding: 0.42rem 0.5rem;
+            border-radius: 8px;
+            color: #4b4b4b;
+            font-size: 0.82rem;
+            line-height: 1.35;
+        }}
+        .toc a:hover {{ background: #fae9ea; color: var(--blue); text-decoration: none; }}
+        .toc li.level-1 {{ display: none; }}
+        .toc li.level-2 a {{ margin-top: 0.25rem; color: var(--navy); font-weight: 750; }}
+        .toc li.level-3 a {{ padding-left: 1rem; border-left: 2px solid #e1e1e1; }}
+        .toc li.level-4 a {{ padding-left: 1.5rem; }}
+        .report-title {{
+            margin: 0 0 1rem;
+            padding: clamp(1.6rem, 4vw, 3rem);
+            border-radius: 20px;
+            border-top: 5px solid #c52228;
+            background: linear-gradient(135deg, #111111 0%, #292929 100%);
+            box-shadow: 0 18px 40px rgba(0, 0, 0, 0.20);
+            color: white;
+            font-size: clamp(2rem, 4vw, 3.35rem);
+            line-height: 1.08;
+            letter-spacing: -0.035em;
+        }}
+        #section-1 + p {{
+            display: inline-block;
+            margin: -0.35rem 0 1rem;
+            padding: 0.35rem 0.7rem;
+            border-radius: 999px;
+            background: #f5e3e4;
+            color: #8f151b;
+            font-size: 0.84rem;
+            font-weight: 700;
+        }}
+        .section-title {{
+            margin: 3rem 0 1.2rem;
+            padding: 0.85rem 1.1rem;
+            border-radius: 12px;
+            background: linear-gradient(90deg, var(--navy), var(--navy-2));
+            color: white;
+            font-size: clamp(1.25rem, 2vw, 1.65rem);
+            line-height: 1.25;
+            letter-spacing: -0.01em;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+        }}
+        .finding-title, .subsection-title {{
+            margin: 2rem 0 0;
+            padding: 1rem 1.15rem;
+            border: 1px solid var(--line);
+            border-left: 7px solid var(--blue);
+            border-radius: 12px 12px 0 0;
+            background: var(--surface);
+            color: var(--navy);
+            font-size: 1.1rem;
+            line-height: 1.38;
+            box-shadow: 0 8px 22px rgba(0, 0, 0, 0.07);
+        }}
+        .finding-title::before {{
+            display: inline-block;
+            margin: 0 0.55rem 0.25rem 0;
+            padding: 0.16rem 0.5rem;
+            border-radius: 999px;
+            color: white;
+            font-size: 0.67rem;
+            font-weight: 850;
+            letter-spacing: 0.08em;
+            vertical-align: 0.13em;
+        }}
+        .severity-critical {{ border-left-color: var(--critical); }}
+        .severity-critical::before {{ content: "CRITICAL"; background: var(--critical); }}
+        .severity-high {{ border-left-color: var(--high); }}
+        .severity-high::before {{ content: "HIGH"; background: var(--high); }}
+        .severity-medium {{ border-left-color: var(--medium); }}
+        .severity-medium::before {{ content: "MEDIUM"; background: var(--medium); }}
+        .severity-low {{ border-left-color: var(--low); }}
+        .severity-low::before {{ content: "LOW"; background: var(--low); }}
+        .severity-informational {{ border-left-color: var(--info); }}
+        .severity-informational::before {{ content: "INFO"; background: var(--info); }}
+        h3 + p {{
+            margin-top: 0;
+            max-width: none;
+            padding: 1rem 1.2rem;
+            border: 1px solid var(--line);
+            border-top: 0;
+            border-radius: 0 0 12px 12px;
+            background: var(--surface);
+            box-shadow: 0 8px 22px rgba(0, 0, 0, 0.06);
+            font-size: 1.02rem;
+        }}
+        p:has(> strong:first-child) {{
+            max-width: none;
+            padding: 0.8rem 1rem;
+            border-left: 4px solid var(--cyan);
+            border-radius: 0 10px 10px 0;
+            background: #fbf1f2;
+        }}
+        #section-2 + table {{ margin-top: 0; }}
+        #section-2 ~ ul:first-of-type {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.9rem;
+            margin: 1rem 0 0;
+            padding: 0;
             list-style: none;
-            padding-left: 0;
         }}
-        .toc li {{
-            margin: 0.5em 0;
+        #section-2 ~ ul:first-of-type > li {{
+            margin: 0;
+            padding: 1rem 1.1rem;
+            border: 1px solid var(--line);
+            border-top: 4px solid var(--high);
+            border-radius: 12px;
+            background: var(--surface);
+            box-shadow: 0 7px 18px rgba(0, 0, 0, 0.06);
         }}
-        .toc li.level-1 {{ margin-left: 0em; }}
-        .toc li.level-2 {{ margin-left: 1em; }}
-        .toc li.level-3 {{ margin-left: 2em; }}
-        .toc li.level-4 {{ margin-left: 3em; }}
+        #section-2 ~ ul:first-of-type > li > strong:first-child {{ display: block; margin-bottom: 0.35rem; color: var(--navy); }}
+        #section-26 + ul, #section-27 + ul {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.8rem;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            counter-reset: audit-item;
+        }}
+        #section-26 + ul > li, #section-27 + ul > li {{
+            position: relative;
+            margin: 0;
+            padding: 1rem 1rem 1rem 3.25rem;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: var(--surface);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.05);
+            counter-increment: audit-item;
+        }}
+        #section-26 + ul > li::before, #section-27 + ul > li::before {{
+            content: counter(audit-item, decimal-leading-zero);
+            position: absolute;
+            top: 1rem;
+            left: 0.9rem;
+            width: 1.8rem;
+            height: 1.8rem;
+            border-radius: 50%;
+            background: var(--navy);
+            color: white;
+            font-size: 0.68rem;
+            font-weight: 800;
+            line-height: 1.8rem;
+            text-align: center;
+        }}
+        table {{
+            display: table;
+            width: 100%;
+            margin: 1rem 0 1.5rem;
+            border: 1px solid #d5d5d5;
+            border-collapse: separate;
+            border-spacing: 0;
+            border-radius: 12px;
+            overflow: hidden;
+            background: var(--surface);
+            box-shadow: 0 8px 22px rgba(0, 0, 0, 0.07);
+            font-size: 0.92rem;
+        }}
+        th {{
+            padding: 0.72rem 0.8rem;
+            background: var(--navy);
+            color: white;
+            font-size: 0.79rem;
+            letter-spacing: 0.035em;
+            text-align: left;
+            text-transform: uppercase;
+        }}
+        td {{ padding: 0.68rem 0.8rem; border-top: 1px solid #e4e4e4; vertical-align: top; }}
+        tbody tr:nth-child(even) {{ background: #f7f7f7; }}
+        tbody tr:hover {{ background: #fae9ea; }}
+        table a {{ font-weight: 720; }}
         .source-navigation {{
-            background: #eef6ff;
-            border-left: 4px solid #0077cc;
-            margin-bottom: 2em;
-            padding: 1em;
+            margin: 0 0 1.25rem;
+            padding: 1rem 1.1rem;
+            border: 1px solid #d6d6d6;
+            border-left: 5px solid var(--blue);
+            border-radius: 12px;
+            background: #fafafa;
         }}
-        .source-navigation ul {{
-            margin: 0.75em 0 0;
-        }}
+        .source-navigation ul {{ margin: 0.65rem 0 0; }}
         pre {{
-            background: #1f2937;
-            color: #f8fafc;
-            padding: 1em;
+            margin: 1rem 0 1.5rem;
+            padding: 1.1rem;
+            border: 1px solid #3b3b3b;
+            border-radius: 12px;
             overflow-x: auto;
-            border-radius: 4px;
+            background: #111111;
+            color: #f1f1f1;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.025), 0 8px 22px rgba(0,0,0,0.12);
+            font-size: 0.78rem;
+            line-height: 1.5;
         }}
         code {{
-            background: #eef2f7;
-            color: #1f2937;
-            padding: 0.2em 0.4em;
-            border-radius: 4px;
+            padding: 0.12em 0.34em;
+            border: 1px solid #dddddd;
+            border-radius: 5px;
+            background: #f3f3f3;
+            color: #8f151b;
+            font-size: 0.9em;
         }}
         pre code {{
             background: transparent;
             color: inherit;
+            border: 0;
             padding: 0;
         }}
         a {{
-            color: #0077cc;
+            color: var(--blue);
             text-decoration: none;
+            text-decoration-thickness: 1px;
+            text-underline-offset: 0.16em;
         }}
-        a:hover {{
-            text-decoration: underline;
+        a:hover {{ text-decoration: underline; }}
+        a:focus-visible {{ outline: 3px solid rgba(197,34,40,0.35); outline-offset: 3px; border-radius: 4px; }}
+        blockquote {{
+            margin: 1rem 0;
+            padding: 0.85rem 1rem;
+            border-left: 5px solid var(--medium);
+            border-radius: 0 10px 10px 0;
+            background: #f7f7f7;
+        }}
+        .severity-legend {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+            margin: 1rem 0 1.5rem;
+            padding: 0.85rem 1rem;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: var(--surface);
+            color: var(--muted);
+            font-size: 0.82rem;
+        }}
+        .severity-legend strong {{ color: var(--navy); margin-right: 0.25rem; }}
+        .legend-chip {{ padding: 0.18rem 0.5rem; border-radius: 999px; color: white; font-weight: 800; letter-spacing: 0.04em; }}
+        .legend-critical {{ background: var(--critical); }}
+        .legend-high {{ background: var(--high); }}
+        .legend-medium {{ background: var(--medium); }}
+        .legend-info {{ background: var(--info); }}
+        @media (max-width: 980px) {{
+            body {{ display: block; padding: 1rem; }}
+            .toc {{ position: relative; top: 0; max-height: none; margin-bottom: 1rem; }}
+            #section-2 ~ ul:first-of-type, #section-26 + ul, #section-27 + ul {{ grid-template-columns: 1fr; }}
+            table {{ display: block; overflow-x: auto; white-space: nowrap; }}
+            td {{ white-space: normal; min-width: 9rem; }}
+        }}
+        @media print {{
+            body {{ display: block; padding: 0; background: white; font-size: 10pt; }}
+            .toc {{ position: static; max-height: none; box-shadow: none; page-break-after: always; }}
+            .section-title {{ break-before: page; box-shadow: none; }}
+            .finding-title, .subsection-title, table, pre {{ break-inside: avoid; box-shadow: none; }}
+            a {{ color: inherit; text-decoration: underline; }}
         }}
     </style>
 </head>
 <body>
-<p align="center"><a href="https://github.com/ora600pl/jas-min" target="_blank">
-        <img src="https://raw.githubusercontent.com/ora600pl/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
-    </a></p>
+<header class="brand-banner"><a href="https://github.com/ora600pl/jas-min" target="_blank" rel="noopener" aria-label="JAS-MIN project">{brand_logo}</a></header>
 {toc}
 {navigation}
 {content}
-<p align="center"><a href="https://www.ora-600.pl" target="_blank">
-        <img src="https://raw.githubusercontent.com/ora600pl/jas-min/main/img/ora-600.png" width="150" alt="ORA-600" onerror="this.style.display='none';"/>
-    </a></p>
+<footer class="brand-footer"><a href="https://www.ora-600.pl" target="_blank" rel="noopener"><img src="data:image/png;base64,{ora600_logo}" width="220" alt="ORA-600 Database Whisperers"/></a></footer>
 </body>
 </html>"#,
+        brand_logo = JASMIN_AUDIT_LOGO_SVG,
         toc = toc_html,
         navigation = classic_navigation,
-        content = html_output
+        content = html_output,
+        ora600_logo = ora600_logo_data
     )
 }
 
@@ -702,6 +1023,30 @@ mod tests {
         std::fs::remove_file(root.join("jasmin_main.html")).unwrap();
         std::fs::remove_dir(root.join("stats")).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn report_renderer_applies_readable_audit_layout_and_severity_classes() {
+        let html = render_markdown_html_document(
+            "# Oracle Performance Analysis\n\n## Wait Events\n\n### Cursor contention [critical / high]\n\nEvidence.\n\n### Storage is healthy [informational / high]\n\nEvidence.",
+            "",
+            "",
+            HashMap::new(),
+        );
+
+        assert!(html.contains("<nav class=\"toc\" aria-label=\"Report contents\">"));
+        assert!(html.contains("class=\"report-title\""));
+        assert!(html.contains("class=\"section-title\""));
+        assert!(html.contains("class=\"finding-title severity-critical\""));
+        assert!(html.contains("class=\"finding-title severity-informational\""));
+        assert!(html.contains("grid-template-columns: minmax(240px, 300px)"));
+        assert!(html.contains("@media print"));
+        assert!(html.contains("#section-26 + ul"));
+        assert!(html.contains("<header class=\"brand-banner\">"));
+        assert!(html.contains("ORACLE PERFORMANCE EVIDENCE"));
+        assert!(html.contains("data:image/png;base64,"));
+        assert!(html.contains("--high: #c52228"));
+        assert!(!html.contains("jasmin_LOGO_white.png"));
     }
 
     fn unresolved_report_placeholder_for_test(value: &str) -> Option<&'static str> {

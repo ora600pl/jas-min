@@ -861,8 +861,13 @@ multi-project analysis uses `jas-min-comparison` as the dataset portion of this
 default name.
 
 The renderer is shared with classic AI mode. It generates a complete HTML5
-document with JAS-MIN styling, anchored headings, a table of contents, logo,
-links to the main HTML report, and links to SQL/event pages when the relevant
+document with a mandatory responsive ORA-600-aligned audit layout: a
+self-contained vector JAS-MIN wordmark, white/black/red palette, sticky report
+navigation, severity-marked findings derived from `[severity / confidence]`,
+card layouts for executive findings and prioritized actions, styled evidence
+tables and execution plans, keyboard-visible focus, mobile reflow, and a print
+stylesheet. It also provides anchored headings, an embedded ORA-600 logo, links to the main HTML
+report, and links to SQL/event pages when the relevant
 classic report assets and link index are available. Material wait-event names
 and SQL IDs in reader-facing findings must be direct links to every existing
 project-specific detail report; in comparative output, each target must name

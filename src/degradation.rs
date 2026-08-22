@@ -2,7 +2,7 @@ use crate::awr::{AWRSCollection, AWR};
 use crate::reasonings::{
     DbTimeDegradationDomainSummary, DbTimeDegradationFinding, DbTimeDegradationReport,
 };
-use crate::tools::{get_safe_filename, mad, median};
+use crate::tools::{get_safe_filename, jasmin_brand_banner_html, mad, median};
 use crate::Args;
 use html_escape::{encode_double_quoted_attribute, encode_text};
 use std::cmp::Ordering;
@@ -231,6 +231,7 @@ pub fn find_degraded_sqls_for_analysis(
 }
 
 pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> String {
+    let brand = jasmin_brand_banner_html();
     let mut domain_rows = String::new();
     let mut domain_options = String::from(r#"<option value="">All domains</option>"#);
     for d in &report.dominant_domains {
@@ -277,11 +278,11 @@ pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> Strin
     <style>
         body {{ font-family: Arial, sans-serif; color: #222; }}
         .content {{ font-size: 14px; max-width: 1500px; margin: 0 auto; }}
-        .summary {{ border-left: 5px solid #632e4f; background: #f7f4f6; padding: 14px 18px; margin: 18px 0; }}
+        .summary {{ border-left: 5px solid #c52228; background: #fbf1f2; padding: 14px 18px; margin: 18px 0; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
         th, td {{ border: 1px solid black; padding: 8px; text-align: center; overflow-wrap: anywhere; font-size: 12px; }}
-        th {{ background-color: #632e4f; color: white; cursor: pointer; user-select: none; }}
-        th:hover {{ background-color: #7a3a62; }}
+        th {{ background-color: #111111; color: white; cursor: pointer; user-select: none; }}
+        th:hover {{ background-color: #c52228; }}
         tr:nth-child(even) {{ background-color: #f2f2f2; }}
         td:nth-child(2), td:nth-child(11) {{ text-align: left; }}
         .verdict {{ font-size: 18px; font-weight: bold; }}
@@ -327,9 +328,7 @@ pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> Strin
 </head>
 <body>
 <div class="content">
-    <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
-        <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
-    </a></p>
+    {brand}
     <h2>DB Time Degradation Report</h2>
     <div class="summary">
         <div class="verdict">{}</div>
