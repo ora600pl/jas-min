@@ -176,7 +176,7 @@ flowchart TD
     Guidance -->|"GUIDE-section references;<br/>methodology only"| Session
     Session -->|"Guidance result"| Client
 
-    Client -->|"configure_report, record_finding,<br/>set_report_assessment"| Handler
+    Client -->|"configure_report, record_finding,<br/>record_report_table, set_report_assessment"| Handler
     Handler --> Report
     Report --> Session
     Client -->|"get_report_status"| Handler
@@ -396,7 +396,7 @@ The returned structured payload contains:
 | `triage_preview` | Small wait, SQL, I/O, latch, anomaly, and parameter indexes. |
 | `diagnostic_guidance` | Catalog of indexed `reasonings.txt` sections, not their full contents. |
 | `quality_gates` | Dataset- and platform-aware proof requirements. |
-| `report_contract` | Stable sections, required finding categories, assessments, and current output configuration. |
+| `report_contract` | Stable sections, required finding categories, structured-table schemas, artifact coverage, parameter checklist, assessments, and current output configuration. |
 | `recommended_next_calls` | Dataset-aware opening calls, including attachment tools when relevant non-empty files exist. |
 | `recommended_comparison_calls` | Opening cross-project calls when comparison mode is active. |
 
@@ -452,7 +452,7 @@ The core evidence catalog is always available. An attachment tool is registered
 when matching files are discovered under any project's `<stem>_attachments`.
 Calling it for another project returns that tool's ordinary unavailable result.
 
-With no attachments the server exposes 21 core evidence tools and thirteen MCP
+With no attachments the server exposes 21 core evidence tools and fourteen MCP
 workflow tools. Every supported attachment class adds its own discovery or
 inspection tools; a dataset containing plans, child-cursor reasons, an alert
 log, and AIX telemetry exposes eight additional evidence tools.
@@ -476,6 +476,12 @@ log, and AIX telemetry exposes eight additional evidence tools.
 | Oracle alert log | At least one alert-log candidate | `get_alertlog_errors` |
 | AIX telemetry | At least one supported file under `AIX/` | `list_aix_os_attachments`, `get_aix_os_attachment`, `get_aix_cpu_entitlement_summary` |
 
+`list_available_sql_plans` reads the complete attachment and returns plan
+instance counts, unique plan hashes, and per-hash counts. Supplying one of those
+hashes to `get_sql_execution_plan` returns a representative complete block for
+that variant, avoiding the whole-file byte truncation that can hide later child
+plans in large attachments.
+
 ### MCP workflow tools
 
 | Tool | State effect |
@@ -489,6 +495,7 @@ log, and AIX telemetry exposes eight additional evidence tools.
 | `compare_project_sql` | Registers a same-SQL cross-project comparison as evidence. |
 | `configure_report` | Updates report presentation settings. |
 | `record_finding` | Creates or replaces an evidence-backed finding. |
+| `record_report_table` | Creates or replaces a provenance-validated structured analysis table. |
 | `set_report_assessment` | Stores one mandatory final assessment. |
 | `get_report_status` | Validates report coverage without rendering it. |
 | `finalize_report` | Validates and renders Markdown, JSON, or both. |
@@ -500,7 +507,7 @@ Every successful measurement tool call is wrapped in an evidence envelope:
 
 ```json
 {
-  "schema_version": "2026-08-18.1",
+  "schema_version": "2026-08-22.6",
   "analysis_id": "A-20260804T100000Z-0001",
   "project_id": "before-upgrade",
   "evidence_id": "E-0002",
@@ -589,19 +596,21 @@ A robust investigation normally follows this order:
 4. In comparative work, use `compare_project_metric` for normalized load,
    latency, wait, CPU, and I/O distributions. Use a neutral direction until the
    semantic meaning of higher or lower values is justified.
-5. Retrieve `db_time_degradation` and `full_gradients` for each project through
-   `get_precomputed_analysis`.
+5. Retrieve every section listed in `required_precomputed_sections` for each
+   project through `get_precomputed_analysis`.
 6. Use `list_snapshots` to select representative peak, neighboring, and quiet
    baseline snapshots.
 7. For SQL IDs material to either period, call `compare_project_sql`, then
-   inspect each project's SQL timeline, text, and available plan evidence.
+   inspect each project's SQL timeline and text. Inventory and inspect every
+   supplied execution plan and child-cursor attachment.
 8. Form competing hypotheses instead of committing to the first correlated
    metric.
 9. Verify or falsify them with narrow wait, SQL, timeline, histogram, snapshot,
    plan, child-cursor, alert-log, parameter, segment, latch, and OS calls.
 10. Retrieve only the `reasonings.txt` sections relevant to symptoms already
    observed.
-11. Store findings with their evidence and optional guidance references.
+11. Store findings with their evidence and optional guidance references, then
+    record all required structured tables and rows.
 12. Complete every mandatory assessment, using `unknown` when required data is
    unavailable.
 13. Call `get_report_status`, resolve missing coverage, and then call
@@ -651,7 +660,9 @@ stateDiagram-v2
     Configured --> Investigating: further evidence
     Investigating --> Findings: record_finding
     Findings --> Findings: create or replace findings
-    Findings --> Assessed: set_report_assessment
+    Findings --> Tables: record_report_table
+    Tables --> Tables: create or replace structured tables
+    Tables --> Assessed: set_report_assessment
     Assessed --> Assessed: complete or revise assessments
     Assessed --> Checked: get_report_status
     Checked --> Investigating: missing coverage
@@ -664,7 +675,8 @@ stateDiagram-v2
 ```
 
 The states are conceptual; the implementation stores independent collections
-of evidence, findings, and assessments rather than a single enum. Evidence can
+of evidence, findings, structured tables, and assessments rather than a single
+enum. Evidence can
 be gathered and report configuration can be changed at any point after the
 analysis starts.
 
@@ -708,9 +720,52 @@ The server owns the stable section order:
 10. Relevant Initialization Parameters
 11. Prioritized Actions and Mandatory Assessments
 
-Core sections cannot be removed. Sections without findings are rendered with an
-explicit no-finding statement, which preserves structural stability without
-inventing content.
+Core sections cannot be removed. A non-draft report requires an evidence-backed
+finding in every analytical section, so `finalize_report` can no longer publish
+an empty gradient, segment, latch, UNDO/redo, or parameter section. The explicit
+no-finding text is retained only for a deliberately incomplete draft created
+with `allow_incomplete=true`.
+
+### Deterministic completeness gate
+
+`get_report_status` is the authoritative completion checklist. In addition to
+all nine analytical finding categories and the five mandatory assessments, it
+requires, for every selected project:
+
+- the database load summary and the mandatory precomputed sections for DB Time
+  degradation, foreground/background waits, top SQL, segments, latches, I/O,
+  gradients, load-profile anomalies, and anomaly clusters;
+- inventory plus inspection of every unique plan hash in every supplied
+  `*.xplan` file through its representative complete plan block;
+- inventory plus inspection of every supplied
+  `*.shared_cursor_reasons` file;
+- one structured row for every project/SQL ID/plan-hash variant (or explicit
+  unusable plan attachment) and every child-cursor diagnostic;
+- one structured row for every object in every non-empty precomputed segment
+  category;
+- gradient, anomaly, and anomaly-cluster synthesis rows whenever those signal
+  families contain data;
+- an exact observed-value or explicit unknown row for every parameter in the
+  server-owned performance checklist.
+
+The response exposes `missing_required_evidence`,
+`missing_structured_table_kinds`, and `missing_structured_table_rows`.
+`ready_to_finalize` remains false until all three collections are empty.
+
+### Structured analysis tables
+
+`record_report_table` creates or replaces a table of kind
+`gradients_anomalies`, `execution_plans`, `child_cursors`, `segments`, or
+`parameters`. `get_analysis_catalog` returns the exact required columns and
+enumerated status/rating values. Every row has `evidence_refs`; the server
+verifies project and entity identity against the cited tool result. Plan and
+child-cursor rows must cite the matching project/SQL ID, while parameter rows
+must reproduce the exact value returned by `get_init_parameter`.
+
+The renderer places these tables in their fixed report sections. This makes
+plan findings, per-SQL child-cursor causes, cross-category segment coverage,
+gradient/anomaly synthesis, and parameter quality ratings visible and
+consistently formatted rather than leaving them in an optional prose detail.
 
 ### Findings
 
@@ -746,11 +801,10 @@ verbatim excerpt for every referenced section. JAS-MIN validates each excerpt
 against the guidance text retrieved in the same analysis. A paraphrase,
 invented rule, missing quote, or quote for an unreferenced section is rejected.
 
-The server validates every supplied reference but currently permits an empty
-finding `evidence_refs` array. Clients should use that form only for an explicit
-limitation or unknown conclusion; factual findings should always cite observed
-evidence. Non-unknown mandatory assessments are stricter and are rejected when
-their evidence array is empty.
+The server validates every supplied reference. Analytical findings are rejected
+when `evidence_refs` is empty; only an explicit `limitations` finding may use an
+empty array. Non-unknown mandatory assessments are also rejected when their
+evidence array is empty.
 
 Severity is one of `critical`, `high`, `medium`, `low`, or `informational`.
 Confidence is one of `high`, `medium`, `low`, or `unknown`.
@@ -797,20 +851,23 @@ missing source data.
 true:
 
 - at least one finding exists;
-- findings cover `performance_profile`, `wait_events`, `sql`, `io`, and
-  `parameters`;
+- findings cover all nine analytical categories: `performance_profile`,
+  `wait_events`, `sql`, `segments`, `latches`, `io`, `undo_redo`,
+  `gradients_anomalies`, and `parameters`;
 - all five mandatory assessments exist;
+- every required evidence call, structured table kind, and artifact/entity row
+  reported by the deterministic completeness gate is present;
 - at least one structured recommendation action exists.
 
 The status response lists present and missing categories, completed and missing
-assessments, evidence and guidance counts, action count, and the recommended
-next step.
+assessments, missing evidence, missing table kinds and rows, evidence and
+guidance counts, action count, and the recommended next step.
 
 `finalize_report` rejects an incomplete report with `REPORT_INCOMPLETE` unless
 `allow_incomplete: true` is explicitly supplied. An incomplete rendering is
-marked as a draft. Each successful finalization increments the report revision;
-it does not freeze the analysis, so a model can collect more evidence and
-render a later revision.
+marked as a draft. Each successful finalization increments the report revision.
+Any later evidence, guidance, configuration, finding, table, or assessment
+change invalidates the stored Markdown until the model finalizes a new revision.
 
 ## HTML export
 
@@ -842,6 +899,8 @@ Example tool arguments:
 The conversion tool enforces the following policy:
 
 - `markdown` is required and limited to 4 MiB;
+- `markdown` must exactly equal the latest `finalize_report` output for the same
+  analysis session; edited or never-finalized Markdown is rejected;
 - the exact `# Oracle Performance Analysis` title must be present;
 - all 11 stable `##` headings must be present in server-defined order;
 - unresolved navigation placeholders such as `{load_profile}` or
@@ -911,7 +970,11 @@ Common structured error codes include:
 | `UNKNOWN_EVIDENCE_REF` | A finding cited evidence not registered in this analysis. | Use an `evidence_id` returned by a successful call in the same analysis. |
 | `UNKNOWN_GUIDANCE_REF` | A finding cited guidance not retrieved in this analysis. | Call `get_diagnostic_guidance` first. |
 | `ASSESSMENT_WITHOUT_EVIDENCE` | A non-unknown assessment cited no measurements. | Add evidence or change the status to `unknown`. |
+| `FINDING_WITHOUT_EVIDENCE` | An analytical finding cited no measurements. | Add session evidence; only a `limitations` finding may omit it. |
+| `REPORT_TABLE_EVIDENCE_MISMATCH` | A table row does not cite evidence for its exact project/entity. | Use the matching project, SQL ID, plan hash, segment, or parameter evidence. |
 | `REPORT_INCOMPLETE` | Finalization was requested before the contract was complete. | Follow the embedded status object or request an explicit draft. |
+| `REPORT_NOT_FINALIZED` | HTML conversion was requested before finalization. | Call `finalize_report` first. |
+| `MARKDOWN_NOT_FINALIZED` | HTML conversion received edited or stale Markdown. | Pass the exact latest `finalize_report` Markdown. |
 | `INVALID_REPORT_TITLE` | HTML conversion received Markdown without the canonical report title. | Pass the exact finalized Markdown. |
 | `MISSING_REPORT_SECTIONS` | One or more stable Markdown headings are missing. | Finalize the report before conversion or restore the missing headings. |
 | `INVALID_REPORT_SECTION_ORDER` | Stable sections are not in server-defined order. | Pass finalized Markdown unchanged. |
@@ -1095,9 +1158,10 @@ value is neither intrinsically better nor worse.
 ### The report cannot be finalized
 
 Call `get_report_status` and inspect `missing_required_categories`,
-`missing_assessments`, and `recommendation_actions`. Use
-`allow_incomplete: true` only when the requested deliverable is explicitly a
-draft.
+`missing_assessments`, `missing_required_evidence`,
+`missing_structured_table_kinds`, `missing_structured_table_rows`, and
+`recommendation_actions`. Use `allow_incomplete: true` only when the requested
+deliverable is explicitly a draft.
 
 ### A tool call times out or the client reports `Tool execution failed`
 
