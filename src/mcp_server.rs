@@ -43,7 +43,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-22.5";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-22.6";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -217,8 +217,66 @@ const REQUIRED_REPORT_CATEGORIES: &[&str] = &[
     "performance_profile",
     "wait_events",
     "sql",
+    "segments",
+    "latches",
     "io",
+    "undo_redo",
+    "gradients_anomalies",
     "parameters",
+];
+
+const REQUIRED_STRUCTURED_TABLE_KINDS: &[&str] = &["gradients_anomalies", "segments", "parameters"];
+
+const REQUIRED_PRECOMPUTED_SECTIONS: &[&str] = &[
+    "db_time_degradation",
+    "foreground_waits",
+    "background_waits",
+    "top_sqls",
+    "segment_hotspots",
+    "latches",
+    "io_summary",
+    "full_gradients",
+    "load_profile_anomalies",
+    "anomaly_clusters",
+];
+
+const PERFORMANCE_PARAMETER_CHECKLIST: &[&str] = &[
+    "cpu_count",
+    "resource_manager_plan",
+    "cluster_database",
+    "cluster_interconnects",
+    "instance_number",
+    "remote_listener",
+    "sga_target",
+    "sga_max_size",
+    "shared_pool_size",
+    "db_cache_size",
+    "pga_aggregate_target",
+    "pga_aggregate_limit",
+    "memory_target",
+    "memory_max_target",
+    "processes",
+    "sessions",
+    "open_cursors",
+    "session_cached_cursors",
+    "cursor_sharing",
+    "optimizer_mode",
+    "optimizer_features_enable",
+    "optimizer_dynamic_sampling",
+    "optimizer_adaptive_plans",
+    "optimizer_adaptive_statistics",
+    "parallel_degree_policy",
+    "parallel_servers_target",
+    "parallel_max_servers",
+    "parallel_min_servers",
+    "workarea_size_policy",
+    "undo_retention",
+    "filesystemio_options",
+    "db_writer_processes",
+    "log_buffer",
+    "result_cache_max_size",
+    "statistics_level",
+    "use_large_pages",
 ];
 
 const REQUIRED_ASSESSMENTS: &[&str] = &[
@@ -370,6 +428,94 @@ struct ReportAssessment {
     guidance_quotes: Vec<GuidanceQuotation>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ReportTableRow {
+    cells: BTreeMap<String, String>,
+    evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ReportTable {
+    table_id: String,
+    kind: String,
+    category: String,
+    title: String,
+    rows: Vec<ReportTableRow>,
+}
+
+const GRADIENT_TABLE_COLUMNS: &[(&str, &str)] = &[
+    ("project_id", "Project"),
+    ("signal_type", "Signal"),
+    ("target_metric", "Target metric"),
+    ("contributor", "Contributor / anomaly"),
+    ("method", "Model / method"),
+    ("typical_impact", "Typical impact"),
+    ("peak_impact", "Peak impact"),
+    ("classification", "Classification"),
+    ("corroboration", "Corroboration"),
+    ("interpretation", "Interpretation"),
+];
+
+const EXECUTION_PLAN_TABLE_COLUMNS: &[(&str, &str)] = &[
+    ("project_id", "Project"),
+    ("sql_id", "SQL ID"),
+    ("plan_hash", "Plan hash"),
+    ("plan_status", "Plan status"),
+    ("key_operations", "Key operations"),
+    ("access_and_joins", "Access paths / joins"),
+    ("cardinality", "Cardinality / row-source evidence"),
+    ("partition_parallelism", "Partitioning / PX"),
+    ("risk", "Finding / risk"),
+    ("action", "Action"),
+];
+
+const CHILD_CURSOR_TABLE_COLUMNS: &[(&str, &str)] = &[
+    ("project_id", "Project"),
+    ("sql_id", "SQL ID"),
+    ("child_cursors", "Child cursors"),
+    ("direct_reasons", "Direct sharing reasons"),
+    ("optimizer_bind_context", "Optimizer / bind / NLS context"),
+    ("performance_impact", "Performance impact"),
+    ("action", "Action"),
+];
+
+const SEGMENT_TABLE_COLUMNS: &[(&str, &str)] = &[
+    ("project_id", "Project"),
+    ("statistic", "Segment statistic"),
+    ("segment_name", "Segment / object"),
+    ("segment_type", "Type"),
+    ("object_id", "Object ID"),
+    ("data_object_id", "Data object ID"),
+    ("occurrence_pct", "Occurrence %"),
+    ("average", "Average"),
+    ("stddev", "Stddev"),
+    ("interpretation", "Interpretation"),
+    ("action", "Action"),
+];
+
+const PARAMETER_TABLE_COLUMNS: &[(&str, &str)] = &[
+    ("project_id", "Project"),
+    ("parameter", "Parameter"),
+    ("observed_value", "Observed value"),
+    ("rating", "Rating"),
+    ("performance_relevance", "Performance relevance"),
+    ("finding", "Assessment"),
+    ("action", "Action"),
+];
+
+fn report_table_definition(
+    kind: &str,
+) -> Option<(&'static str, &'static [(&'static str, &'static str)])> {
+    match kind {
+        "gradients_anomalies" => Some(("gradients_anomalies", GRADIENT_TABLE_COLUMNS)),
+        "execution_plans" => Some(("sql", EXECUTION_PLAN_TABLE_COLUMNS)),
+        "child_cursors" => Some(("sql", CHILD_CURSOR_TABLE_COLUMNS)),
+        "segments" => Some(("segments", SEGMENT_TABLE_COLUMNS)),
+        "parameters" => Some(("parameters", PARAMETER_TABLE_COLUMNS)),
+        _ => None,
+    }
+}
+
 struct AnalysisSession {
     project_ids: Vec<String>,
     config: ReportConfig,
@@ -378,9 +524,12 @@ struct AnalysisSession {
     guidance: BTreeMap<String, GuidanceRecord>,
     findings: BTreeMap<String, ReportFinding>,
     assessments: BTreeMap<String, ReportAssessment>,
+    report_tables: BTreeMap<String, ReportTable>,
     next_evidence: u64,
     next_finding: u64,
+    next_table: u64,
     report_revision: u64,
+    finalized_markdown: Option<String>,
 }
 
 impl AnalysisSession {
@@ -400,9 +549,12 @@ impl AnalysisSession {
             guidance: BTreeMap::new(),
             findings: BTreeMap::new(),
             assessments: BTreeMap::new(),
+            report_tables: BTreeMap::new(),
             next_evidence: 2,
             next_finding: 1,
+            next_table: 1,
             report_revision: 0,
+            finalized_markdown: None,
         }
     }
 }
@@ -1001,6 +1153,7 @@ impl AnalysisRuntime {
                 result: result.clone(),
             },
         );
+        state.finalized_markdown = None;
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1049,6 +1202,7 @@ impl AnalysisRuntime {
                 result: result.clone(),
             },
         );
+        state.finalized_markdown = None;
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1296,6 +1450,7 @@ impl AnalysisRuntime {
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
         state.guidance.extend(guidance_records);
+        state.finalized_markdown = None;
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1362,6 +1517,7 @@ impl AnalysisRuntime {
         {
             state.config.include_guidance_appendix = value;
         }
+        state.finalized_markdown = None;
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1394,6 +1550,12 @@ impl AnalysisRuntime {
         let evidence_refs = string_array(arguments, "evidence_refs", 32, 32)?;
         let guidance_refs = string_array(arguments, "guidance_refs", 16, 64)?;
         let recommendations = parse_recommendations(arguments.get("recommendations"))?;
+        if category != "limitations" && evidence_refs.is_empty() {
+            return Err(tool_error(
+                "FINDING_WITHOUT_EVIDENCE",
+                "Every analytical finding must cite at least one evidence_ref; only an explicit limitations finding may use an empty array",
+            ));
+        }
 
         let mut state = session
             .lock()
@@ -1428,12 +1590,69 @@ impl AnalysisRuntime {
                 recommendations,
             },
         );
+        state.finalized_markdown = None;
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
             "finding_id": finding_id,
             "findings_total": state.findings.len(),
             "message": "Evidence-backed finding stored. Reuse finding_id to replace it after deeper investigation."
+        }))
+    }
+
+    fn record_report_table(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> std::result::Result<Value, Value> {
+        let analysis_id = Self::analysis_id(arguments)?.to_string();
+        let session = self.session(&analysis_id)?;
+        let kind = required_string(arguments, "kind", 64)?;
+        let Some((category, _)) = report_table_definition(&kind) else {
+            return Err(tool_error(
+                "INVALID_REPORT_TABLE_KIND",
+                format!("Unknown report table kind '{kind}'"),
+            ));
+        };
+        let title = required_string(arguments, "title", 240)?;
+        let rows_value = arguments.get("rows").ok_or_else(|| {
+            tool_error(
+                "MISSING_REPORT_TABLE_ROWS",
+                "rows is required and must contain structured analysis rows",
+            )
+        })?;
+        let mut state = session
+            .lock()
+            .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
+        let rows = parse_report_table_rows(&kind, rows_value, &state)?;
+        let table_id = arguments
+            .get("table_id")
+            .and_then(Value::as_str)
+            .filter(|id| state.report_tables.contains_key(*id))
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                let id = format!("T-{:04}", state.next_table);
+                state.next_table += 1;
+                id
+            });
+        state.report_tables.insert(
+            table_id.clone(),
+            ReportTable {
+                table_id: table_id.clone(),
+                kind: kind.clone(),
+                category: category.to_string(),
+                title,
+                rows,
+            },
+        );
+        state.finalized_markdown = None;
+        Ok(json!({
+            "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
+            "analysis_id": analysis_id,
+            "table_id": table_id,
+            "kind": kind,
+            "category": category,
+            "tables_total": state.report_tables.len(),
+            "message": "Structured analysis table stored. Reuse table_id to replace it after deeper investigation."
         }))
     }
 
@@ -1472,6 +1691,7 @@ impl AnalysisRuntime {
                 guidance_quotes,
             },
         );
+        state.finalized_markdown = None;
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1487,7 +1707,7 @@ impl AnalysisRuntime {
         let state = session
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
-        Ok(report_status_value(&analysis_id, &state))
+        Ok(report_status_value(&analysis_id, &state, &self.projects))
     }
 
     fn finalize_report(&self, arguments: &Map<String, Value>) -> std::result::Result<Value, Value> {
@@ -1500,11 +1720,11 @@ impl AnalysisRuntime {
         let mut state = session
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
-        let status = report_status_value(&analysis_id, &state);
+        let status = report_status_value(&analysis_id, &state, &self.projects);
         if !allow_incomplete && status.get("ready_to_finalize") != Some(&Value::Bool(true)) {
             return Err(json!({
                 "error_code": "REPORT_INCOMPLETE",
-                "message": "The report contract is incomplete. Add the missing categories/assessments or explicitly request allow_incomplete=true for a draft.",
+                "message": "The report contract is incomplete. Satisfy every missing category, assessment, evidence item, structured table kind and structured row, or explicitly request allow_incomplete=true for a draft.",
                 "status": status
             }));
         }
@@ -1526,10 +1746,12 @@ impl AnalysisRuntime {
             "config": state.config,
             "section_index": report_section_index(&state),
             "findings": state.findings.values().collect::<Vec<_>>(),
+            "structured_tables": state.report_tables.values().collect::<Vec<_>>(),
             "mandatory_assessments": state.assessments,
             "coverage": status
         });
         let markdown = render_markdown(&report_document, &state);
+        state.finalized_markdown = Some(markdown.clone());
         let mut output = json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1569,11 +1791,12 @@ impl AnalysisRuntime {
     ) -> std::result::Result<Value, Value> {
         let analysis_id = Self::analysis_id(arguments)?.to_string();
         let session = self.session(&analysis_id)?;
-        let project_ids = session
-            .lock()
-            .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?
-            .project_ids
-            .clone();
+        let (project_ids, finalized_markdown) = {
+            let state = session
+                .lock()
+                .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
+            (state.project_ids.clone(), state.finalized_markdown.clone())
+        };
         let markdown = arguments
             .get("markdown")
             .and_then(Value::as_str)
@@ -1589,6 +1812,18 @@ impl AnalysisRuntime {
             ));
         }
         validate_stable_markdown_report(markdown)?;
+        let Some(finalized_markdown) = finalized_markdown else {
+            return Err(tool_error(
+                "REPORT_NOT_FINALIZED",
+                "Call finalize_report before converting Markdown to HTML",
+            ));
+        };
+        if markdown != finalized_markdown {
+            return Err(tool_error(
+                "MARKDOWN_NOT_FINALIZED",
+                "The Markdown must exactly match the latest finalize_report output for this analysis session",
+            ));
+        }
 
         let single_project = if project_ids.len() == 1 {
             Some(self.project(&project_ids[0])?)
@@ -1726,6 +1961,7 @@ impl AnalysisRuntime {
             "get_diagnostic_guidance" => self.diagnostic_guidance(&arguments),
             "configure_report" => self.configure_report(&arguments),
             "record_finding" => self.record_finding(&arguments),
+            "record_report_table" => self.record_report_table(&arguments),
             "set_report_assessment" => self.set_assessment(&arguments),
             "get_report_status" => self.report_status(&arguments),
             "finalize_report" => self.finalize_report(&arguments),
@@ -2107,7 +2343,7 @@ impl ServerHandler for JasminMcpServer {
                 ),
         )
         .with_instructions(format!(
-            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage, never as a searched-and-clean source or a reader-facing evidence link. Use each alert attachment's observed first/last timestamp instead of assuming it covers the enclosing AWR period. A zero-match literal proves only that exact search/filter; inspect raw context and punctuation/message variants before declaring an event absent. If guidance is applied, include a verbatim guidance quote; the server verifies it against the retrieved text. Complete all mandatory assessments, check get_report_status, and finish through finalize_report. When the user requests HTML, configure Markdown output, finalize the stable Markdown report first, then pass that exact Markdown to convert_markdown_to_html. Comparative HTML must expose active source-report links for every selected project. In reader-facing findings, link each material wait-event name and SQL_ID directly to every existing project-specific detail report, with explicit instance/project labels when more than one target exists; generic labels such as 'instance 1' alone are insufficient.",
+            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Complete every category in the stable report and use record_report_table for gradients/anomalies, every supplied execution plan, every supplied child-cursor diagnostic, every segment from every non-empty hotspot category, and the complete performance-parameter checklist. get_report_status lists every missing evidence item and structured row; finalization is blocked until those lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage, never as a searched-and-clean source or a reader-facing evidence link. Use each alert attachment's observed first/last timestamp instead of assuming it covers the enclosing AWR period. A zero-match literal proves only that exact search/filter; inspect raw context and punctuation/message variants before declaring an event absent. If guidance is applied, include a verbatim guidance quote; the server verifies it against the retrieved text. Complete all mandatory assessments, check get_report_status, and finish through finalize_report. When the user requests HTML, configure Markdown output, finalize the stable Markdown report first, then pass that exact Markdown to convert_markdown_to_html; the server rejects edited or non-finalized Markdown. Comparative HTML must expose active source-report links for every selected project. In reader-facing findings, link each material wait-event name and SQL_ID directly to every existing project-specific detail report, with explicit instance/project labels when more than one target exists; generic labels such as 'instance 1' alone are insufficient.",
             self.runtime.projects.len()
         ))
     }
@@ -2503,6 +2739,27 @@ fn mcp_control_definitions() -> Vec<Value> {
             }),
         ),
         function_definition(
+            "record_report_table",
+            "Creates or replaces one mandatory structured analysis table. Runtime validation enforces the exact columns, project scope, enumerated ratings/status values, evidence provenance, and project/entity matching. Use the schemas returned by get_analysis_catalog/report_contract. Execution-plan and child-cursor rows must cite the matching project/SQL_ID attachment evidence; parameter rows must reproduce the exact observed value.",
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "table_id": {"type": "string", "description": "Reuse a returned table_id to replace the complete table"},
+                    "kind": {"type": "string", "enum": ["gradients_anomalies", "execution_plans", "child_cursors", "segments", "parameters"]},
+                    "title": {"type": "string"},
+                    "rows": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 500,
+                        "items": {"type": "object", "description": "Exact row fields depend on kind; include every required string field plus a non-empty evidence_refs string array. See report_contract."
+                        }
+                    }
+                },
+                "required": ["kind", "title", "rows"]
+            }),
+        ),
+        function_definition(
             "set_report_assessment",
             "Records one mandatory final assessment with a human-readable evidence summary. Non-unknown conclusions must cite measurement evidence from this session; every applied guidance reference requires a verified verbatim quotation.",
             json!({
@@ -2522,7 +2779,7 @@ fn mcp_control_definitions() -> Vec<Value> {
         ),
         function_definition(
             "get_report_status",
-            "Checks stable-section coverage, mandatory assessments, actions, evidence and guidance before final report generation.",
+            "Checks every stable category, mandatory assessment, required evidence call, supplied plan and child-cursor attachment, segment-hotspot row, gradient/anomaly signal family, parameter-checklist row, and structured table before final report generation. The returned missing lists are the deterministic completion checklist.",
             json!({"type": "object", "properties": {}}),
         ),
         function_definition(
@@ -2754,10 +3011,20 @@ fn recommended_next_calls(
 ) -> Value {
     let mut calls = vec![
         json!({"tool": "get_database_load_summary", "reason": "establish the whole-window workload envelope"}),
-        json!({"tool": "get_precomputed_analysis", "arguments": {"section": "db_time_degradation"}, "reason": "establish whether the recent window degraded"}),
-        json!({"tool": "get_precomputed_analysis", "arguments": {"section": "full_gradients"}, "reason": "rank competing contributors and inspect collinearity"}),
         json!({"tool": "list_snapshots", "reason": "select peaks and quiet baselines"}),
     ];
+    for &section in REQUIRED_PRECOMPUTED_SECTIONS {
+        calls.push(json!({
+            "tool": "get_precomputed_analysis",
+            "arguments": {"section": section, "limit": 100},
+            "reason": format!("mandatory report coverage for {section}")
+        }));
+    }
+    calls.push(json!({
+        "tool": "get_init_parameter",
+        "arguments": {"names": PERFORMANCE_PARAMETER_CHECKLIST},
+        "reason": "mandatory exact-value review of the performance parameter checklist"
+    }));
     if platform.to_lowercase().contains("aix") {
         let mut arguments = Map::new();
         if let Some(date_from) = date_from {
@@ -2878,6 +3145,42 @@ fn report_contract(config: &ReportConfig) -> Value {
             {"number": 11, "id": "recommendations", "title": "Prioritized Actions and Mandatory Assessments"}
         ],
         "required_finding_categories": REQUIRED_REPORT_CATEGORIES,
+        "required_precomputed_sections": REQUIRED_PRECOMPUTED_SECTIONS,
+        "required_structured_table_kinds": REQUIRED_STRUCTURED_TABLE_KINDS,
+        "performance_parameter_checklist": PERFORMANCE_PARAMETER_CHECKLIST,
+        "artifact_coverage_policy": {
+            "execution_plans": "Every unique plan hash in every supplied .xplan attachment must be inspected through a representative complete plan block and represented by a project/SQL_ID/plan-hash row. An attachment with no plan hash requires one explicit unusable_attachment row.",
+            "child_cursors": "Every supplied .shared_cursor_reasons attachment must be inspected and represented by a project/SQL_ID row in the child-cursor analysis table.",
+            "segments": "Every object in every non-empty precomputed segment-hotspot category must be represented in the segment analysis table.",
+            "gradients_anomalies": "Each project must inspect full gradients, load-profile anomalies and anomaly clusters; every non-empty signal family must be synthesized in the gradient/anomaly table.",
+            "parameters": "Every project must report the exact observed or explicitly unknown value and a quality rating for every parameter in the performance checklist."
+        },
+        "structured_table_schemas": {
+            "gradients_anomalies": {
+                "category": "gradients_anomalies",
+                "required_string_fields": GRADIENT_TABLE_COLUMNS.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+                "signal_type_enum": ["gradient", "anomaly", "anomaly_cluster"]
+            },
+            "execution_plans": {
+                "category": "sql",
+                "required_string_fields": EXECUTION_PLAN_TABLE_COLUMNS.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+                "plan_status_enum": ["analyzed", "analyzed_truncated", "unusable_attachment"]
+            },
+            "child_cursors": {
+                "category": "sql",
+                "required_string_fields": CHILD_CURSOR_TABLE_COLUMNS.iter().map(|(key, _)| *key).collect::<Vec<_>>()
+            },
+            "segments": {
+                "category": "segments",
+                "required_string_fields": SEGMENT_TABLE_COLUMNS.iter().map(|(key, _)| *key).collect::<Vec<_>>()
+            },
+            "parameters": {
+                "category": "parameters",
+                "required_string_fields": PARAMETER_TABLE_COLUMNS.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+                "rating_enum": ["good", "acceptable", "concern", "critical", "unknown", "not_applicable"]
+            },
+            "all_rows": {"required_field": "evidence_refs", "evidence_refs_min_items": 1}
+        },
         "required_assessments": REQUIRED_ASSESSMENTS,
         "human_citation_policy": {
             "evidence_summary_required": true,
@@ -2902,7 +3205,52 @@ fn report_contract(config: &ReportConfig) -> Value {
     })
 }
 
-fn report_status_value(analysis_id: &str, state: &AnalysisSession) -> Value {
+fn state_has_project_evidence(
+    state: &AnalysisSession,
+    project_id: &str,
+    tool_name: &str,
+    argument_name: Option<&str>,
+    argument_value: Option<&str>,
+) -> bool {
+    state.evidence.values().any(|record| {
+        if record.tool_name != tool_name || record.project_id.as_deref() != Some(project_id) {
+            return false;
+        }
+        match (argument_name, argument_value) {
+            (Some(name), Some(value)) => record
+                .arguments
+                .get(name)
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(value)),
+            _ => true,
+        }
+    })
+}
+
+fn state_has_table_row(
+    state: &AnalysisSession,
+    kind: &str,
+    required_cells: &[(&str, &str)],
+) -> bool {
+    state
+        .report_tables
+        .values()
+        .filter(|table| table.kind == kind)
+        .flat_map(|table| &table.rows)
+        .any(|row| {
+            required_cells.iter().all(|(key, expected)| {
+                row.cells
+                    .get(*key)
+                    .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+            })
+        })
+}
+
+fn report_status_value(
+    analysis_id: &str,
+    state: &AnalysisSession,
+    projects: &BTreeMap<String, Arc<ProjectData>>,
+) -> Value {
     let present_categories = state
         .findings
         .values()
@@ -2923,8 +3271,266 @@ fn report_status_value(analysis_id: &str, state: &AnalysisSession) -> Value {
         .values()
         .map(|finding| finding.recommendations.len())
         .sum::<usize>();
+    let mut required_table_kinds = REQUIRED_STRUCTURED_TABLE_KINDS
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<BTreeSet<_>>();
+    let present_table_kinds = state
+        .report_tables
+        .values()
+        .map(|table| table.kind.clone())
+        .collect::<BTreeSet<_>>();
+    let mut missing_evidence = BTreeSet::new();
+    let mut missing_table_rows = BTreeSet::new();
+
+    for project_id in &state.project_ids {
+        let Some(project) = projects.get(project_id) else {
+            missing_evidence.insert(format!("project:{project_id}:unavailable"));
+            continue;
+        };
+
+        if !state_has_project_evidence(state, project_id, "get_database_load_summary", None, None) {
+            missing_evidence.insert(format!("get_database_load_summary:{project_id}"));
+        }
+        for &section in REQUIRED_PRECOMPUTED_SECTIONS {
+            if !state_has_project_evidence(
+                state,
+                project_id,
+                "get_precomputed_analysis",
+                Some("section"),
+                Some(section),
+            ) {
+                missing_evidence.insert(format!("get_precomputed_analysis:{project_id}:{section}"));
+            }
+        }
+
+        let gradient_available = project.report.db_time_gradient_fg_wait_events.is_some()
+            || project
+                .report
+                .db_time_gradient_instance_stats_counters
+                .is_some()
+            || project
+                .report
+                .db_time_gradient_instance_stats_volumes
+                .is_some()
+            || project
+                .report
+                .db_time_gradient_instance_stats_time
+                .is_some()
+            || project.report.db_time_gradient_sql_elapsed_time.is_some()
+            || project.report.db_cpu_gradient_instance_stats.is_some()
+            || project.report.db_cpu_gradient_sql_cpu_time.is_some()
+            || project.report.custom_gradient_wait_events.is_some()
+            || project.report.custom_gradient_instance_stats.is_some();
+        for (signal_type, available) in [
+            ("gradient", gradient_available),
+            ("anomaly", !project.report.load_profile_anomalies.is_empty()),
+            (
+                "anomaly_cluster",
+                !project.report.anomaly_clusters.is_empty(),
+            ),
+        ] {
+            if available
+                && !state_has_table_row(
+                    state,
+                    "gradients_anomalies",
+                    &[("project_id", project_id), ("signal_type", signal_type)],
+                )
+            {
+                missing_table_rows
+                    .insert(format!("gradients_anomalies:{project_id}:{signal_type}"));
+            }
+        }
+
+        let segment_data = dispatch_precomputed_analysis(
+            &json!({"section": "segment_hotspots", "limit": 100}),
+            &project.report,
+        );
+        if let Some(categories) = segment_data.get("data").and_then(Value::as_object) {
+            for (statistic, entries) in categories {
+                for entry in entries.as_array().into_iter().flatten() {
+                    let object_id = entry
+                        .get("object_id")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        .to_string();
+                    let data_object_id = entry
+                        .get("data_object_id")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        .to_string();
+                    if !state_has_table_row(
+                        state,
+                        "segments",
+                        &[
+                            ("project_id", project_id),
+                            ("statistic", statistic),
+                            ("object_id", &object_id),
+                            ("data_object_id", &data_object_id),
+                        ],
+                    ) {
+                        missing_table_rows.insert(format!(
+                            "segments:{project_id}:{statistic}:{object_id}:{data_object_id}"
+                        ));
+                    }
+                }
+            }
+        }
+
+        for parameter in PERFORMANCE_PARAMETER_CHECKLIST {
+            let evidence_present = state.evidence.values().any(|record| {
+                record.tool_name == "get_init_parameter"
+                    && record.project_id.as_deref() == Some(project_id)
+                    && record
+                        .result
+                        .get("parameters")
+                        .and_then(|parameters| parameters.get(*parameter))
+                        .is_some()
+            });
+            if !evidence_present {
+                missing_evidence.insert(format!("get_init_parameter:{project_id}:{parameter}"));
+            }
+            if !state_has_table_row(
+                state,
+                "parameters",
+                &[("project_id", project_id), ("parameter", parameter)],
+            ) {
+                missing_table_rows.insert(format!("parameters:{project_id}:{parameter}"));
+            }
+        }
+
+        let plan_inventory = dispatch_tool_call_value(
+            "list_available_sql_plans",
+            &json!({"limit": 500}),
+            &project.collection,
+            project.stem.as_str(),
+        );
+        let plans = plan_inventory
+            .get("sql_ids_xplan")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if !plans.is_empty() {
+            required_table_kinds.insert("execution_plans".to_string());
+            if !state_has_project_evidence(
+                state,
+                project_id,
+                "list_available_sql_plans",
+                None,
+                None,
+            ) {
+                missing_evidence.insert(format!("list_available_sql_plans:{project_id}"));
+            }
+        }
+        for plan in plans {
+            let Some(sql_id) = plan.get("sql_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let plan_hashes = plan
+                .get("unique_plan_hashes")
+                .and_then(Value::as_array)
+                .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let expected_hashes = if plan_hashes.is_empty() {
+                vec!["not_available"]
+            } else {
+                plan_hashes
+            };
+            for plan_hash in expected_hashes {
+                let evidence_present = state.evidence.values().any(|record| {
+                    if record.tool_name != "get_sql_execution_plan"
+                        || record.project_id.as_deref() != Some(project_id)
+                        || !record
+                            .arguments
+                            .get("sql_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(sql_id))
+                    {
+                        return false;
+                    }
+                    let requested = record.arguments.get("plan_hash").and_then(Value::as_str);
+                    if plan_hash == "not_available" {
+                        requested.is_none()
+                    } else {
+                        requested.is_some_and(|value| value == plan_hash)
+                    }
+                });
+                if !evidence_present {
+                    missing_evidence.insert(format!(
+                        "get_sql_execution_plan:{project_id}:{sql_id}:{plan_hash}"
+                    ));
+                }
+                if !state_has_table_row(
+                    state,
+                    "execution_plans",
+                    &[
+                        ("project_id", project_id),
+                        ("sql_id", sql_id),
+                        ("plan_hash", plan_hash),
+                    ],
+                ) {
+                    missing_table_rows
+                        .insert(format!("execution_plans:{project_id}:{sql_id}:{plan_hash}"));
+                }
+            }
+        }
+
+        let cursor_inventory = dispatch_tool_call_value(
+            "list_available_child_cursor_reasons",
+            &json!({"limit": 500}),
+            &project.collection,
+            project.stem.as_str(),
+        );
+        let cursor_reports = cursor_inventory
+            .get("sql_ids_with_child_cursor_reasons")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if !cursor_reports.is_empty() {
+            required_table_kinds.insert("child_cursors".to_string());
+            if !state_has_project_evidence(
+                state,
+                project_id,
+                "list_available_child_cursor_reasons",
+                None,
+                None,
+            ) {
+                missing_evidence
+                    .insert(format!("list_available_child_cursor_reasons:{project_id}"));
+            }
+        }
+        for cursor_report in cursor_reports {
+            let Some(sql_id) = cursor_report.get("sql_id").and_then(Value::as_str) else {
+                continue;
+            };
+            if !state_has_project_evidence(
+                state,
+                project_id,
+                "get_child_cursor_reasons",
+                Some("sql_id"),
+                Some(sql_id),
+            ) {
+                missing_evidence.insert(format!("get_child_cursor_reasons:{project_id}:{sql_id}"));
+            }
+            if !state_has_table_row(
+                state,
+                "child_cursors",
+                &[("project_id", project_id), ("sql_id", sql_id)],
+            ) {
+                missing_table_rows.insert(format!("child_cursors:{project_id}:{sql_id}"));
+            }
+        }
+    }
+
+    let missing_table_kinds = required_table_kinds
+        .difference(&present_table_kinds)
+        .cloned()
+        .collect::<Vec<_>>();
     let ready = missing_categories.is_empty()
         && missing_assessments.is_empty()
+        && missing_evidence.is_empty()
+        && missing_table_kinds.is_empty()
+        && missing_table_rows.is_empty()
         && !state.findings.is_empty()
         && actions > 0;
     json!({
@@ -2935,13 +3541,19 @@ fn report_status_value(analysis_id: &str, state: &AnalysisSession) -> Value {
         "ready_to_finalize": ready,
         "findings": state.findings.len(),
         "evidence_records": state.evidence.len(),
+        "structured_tables": state.report_tables.len(),
         "guidance_refs": state.guidance.len(),
         "recommendation_actions": actions,
         "present_categories": present_categories,
         "missing_required_categories": missing_categories,
+        "required_structured_table_kinds": required_table_kinds,
+        "present_structured_table_kinds": present_table_kinds,
+        "missing_structured_table_kinds": missing_table_kinds,
+        "missing_required_evidence": missing_evidence,
+        "missing_structured_table_rows": missing_table_rows,
         "completed_assessments": state.assessments.keys().collect::<Vec<_>>(),
         "missing_assessments": missing_assessments,
-        "next_step": if ready { "Call finalize_report." } else { "Collect missing evidence, store findings and complete mandatory assessments." }
+        "next_step": if ready { "Call finalize_report." } else { "Collect every listed evidence item, record every structured table row, store all required category findings, and complete mandatory assessments." }
     })
 }
 
@@ -2977,6 +3589,12 @@ fn report_section_index(state: &AnalysisSession) -> Value {
                     "number": number,
                     "section_id": section_id,
                     "finding_ids": finding_ids,
+                    "table_ids": category.map(|category| {
+                        state.report_tables.values()
+                            .filter(|table| table.category == category)
+                            .map(|table| table.table_id.as_str())
+                            .collect::<Vec<_>>()
+                    }).unwrap_or_default(),
                     "assessment_ids": if *number == 11 {
                         state.assessments.keys().map(String::as_str).collect::<Vec<_>>()
                     } else {
@@ -3060,6 +3678,13 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
     ];
     for (number, category, title) in sections {
         output.push_str(&format!("## {number}. {title}\n\n"));
+        for table in state
+            .report_tables
+            .values()
+            .filter(|table| table.category == category)
+        {
+            output.push_str(&render_report_table(table, state));
+        }
         let findings = state
             .findings
             .values()
@@ -3181,6 +3806,57 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
         }
     }
     output.push_str("Generated by JAS-MIN · https://github.com/ora600pl/jas-min · expert performance tuning at ora-600.pl\n");
+    output
+}
+
+fn markdown_table_cell(value: &str) -> String {
+    value
+        .replace('|', "\\|")
+        .replace(['\r', '\n'], "<br>")
+        .trim()
+        .to_string()
+}
+
+fn render_report_table(table: &ReportTable, state: &AnalysisSession) -> String {
+    let Some((_, columns)) = report_table_definition(&table.kind) else {
+        return String::new();
+    };
+    let mut output = format!("### {}\n\n", table.title);
+    output.push('|');
+    for (_, label) in columns {
+        output.push(' ');
+        output.push_str(label);
+        output.push_str(" |");
+    }
+    if state.config.include_evidence_appendix {
+        output.push_str(" Technical provenance |");
+    }
+    output.push('\n');
+    output.push('|');
+    for _ in columns {
+        output.push_str("---|");
+    }
+    if state.config.include_evidence_appendix {
+        output.push_str("---|");
+    }
+    output.push('\n');
+    for row in &table.rows {
+        output.push('|');
+        for (key, _) in columns {
+            output.push(' ');
+            output.push_str(&markdown_table_cell(
+                row.cells.get(*key).map(String::as_str).unwrap_or(""),
+            ));
+            output.push_str(" |");
+        }
+        if state.config.include_evidence_appendix {
+            output.push(' ');
+            output.push_str(&evidence_links(&row.evidence_refs));
+            output.push_str(" |");
+        }
+        output.push('\n');
+    }
+    output.push('\n');
     output
 }
 
@@ -3448,6 +4124,406 @@ fn parse_recommendations(value: Option<&Value>) -> std::result::Result<Vec<Recom
         .collect()
 }
 
+fn evidence_record_matches(
+    state: &AnalysisSession,
+    evidence_refs: &[String],
+    tool_name: &str,
+    project_id: &str,
+    argument_name: Option<&str>,
+    argument_value: Option<&str>,
+) -> bool {
+    evidence_refs.iter().any(|reference| {
+        let Some(record) = state.evidence.get(reference) else {
+            return false;
+        };
+        if record.tool_name != tool_name || record.project_id.as_deref() != Some(project_id) {
+            return false;
+        }
+        match (argument_name, argument_value) {
+            (Some(name), Some(value)) => record
+                .arguments
+                .get(name)
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(value)),
+            _ => true,
+        }
+    })
+}
+
+fn report_table_numeric_cell_matches(cell: &str, expected: f64) -> bool {
+    cell.trim()
+        .trim_end_matches('%')
+        .parse::<f64>()
+        .is_ok_and(|actual| {
+            let tolerance = (expected.abs() * 0.0001).max(0.005);
+            (actual - expected).abs() <= tolerance
+        })
+}
+
+fn parse_report_table_rows(
+    kind: &str,
+    value: &Value,
+    state: &AnalysisSession,
+) -> std::result::Result<Vec<ReportTableRow>, Value> {
+    let Some((_, columns)) = report_table_definition(kind) else {
+        return Err(tool_error(
+            "INVALID_REPORT_TABLE_KIND",
+            format!("Unknown report table kind '{kind}'"),
+        ));
+    };
+    let Some(input_rows) = value.as_array() else {
+        return Err(tool_error(
+            "INVALID_REPORT_TABLE_ROWS",
+            "rows must be an array",
+        ));
+    };
+    if input_rows.is_empty() || input_rows.len() > 500 {
+        return Err(tool_error(
+            "INVALID_REPORT_TABLE_ROWS",
+            "rows must contain between 1 and 500 entries",
+        ));
+    }
+    let allowed = columns
+        .iter()
+        .map(|(key, _)| *key)
+        .chain(std::iter::once("evidence_refs"))
+        .collect::<HashSet<_>>();
+    let mut parsed = Vec::with_capacity(input_rows.len());
+    let mut unique_keys = HashSet::new();
+
+    for (index, value) in input_rows.iter().enumerate() {
+        let Some(object) = value.as_object() else {
+            return Err(tool_error(
+                "INVALID_REPORT_TABLE_ROW",
+                format!("rows[{index}] must be an object"),
+            ));
+        };
+        if let Some(unexpected) = object.keys().find(|key| !allowed.contains(key.as_str())) {
+            return Err(tool_error(
+                "INVALID_REPORT_TABLE_COLUMN",
+                format!(
+                    "rows[{index}] contains unsupported field '{unexpected}' for kind '{kind}'"
+                ),
+            ));
+        }
+        let mut cells = BTreeMap::new();
+        for (key, _) in columns {
+            let cell = required_string(object, key, 4_000).map_err(|_| {
+                tool_error(
+                    "INVALID_REPORT_TABLE_CELL",
+                    format!("rows[{index}].{key} must be a non-empty string"),
+                )
+            })?;
+            cells.insert((*key).to_string(), cell);
+        }
+        let evidence_refs = string_array(object, "evidence_refs", 16, 32)?;
+        if evidence_refs.is_empty() {
+            return Err(tool_error(
+                "REPORT_TABLE_ROW_WITHOUT_EVIDENCE",
+                format!("rows[{index}] must cite at least one evidence_ref"),
+            ));
+        }
+        validate_references(state, &evidence_refs, &[])?;
+        let project_id = cells.get("project_id").map(String::as_str).unwrap_or("");
+        if !state
+            .project_ids
+            .iter()
+            .any(|candidate| candidate == project_id)
+        {
+            return Err(tool_error(
+                "PROJECT_OUTSIDE_ANALYSIS",
+                format!("rows[{index}].project_id '{project_id}' is not part of this analysis"),
+            ));
+        }
+
+        let unique_key = match kind {
+            "execution_plans" => format!(
+                "{project_id}:{}:{}",
+                cells.get("sql_id").map(String::as_str).unwrap_or(""),
+                cells.get("plan_hash").map(String::as_str).unwrap_or("")
+            ),
+            "child_cursors" => format!(
+                "{project_id}:{}",
+                cells.get("sql_id").map(String::as_str).unwrap_or("")
+            ),
+            "segments" => format!(
+                "{project_id}:{}:{}:{}",
+                cells.get("statistic").map(String::as_str).unwrap_or(""),
+                cells.get("object_id").map(String::as_str).unwrap_or(""),
+                cells
+                    .get("data_object_id")
+                    .map(String::as_str)
+                    .unwrap_or("")
+            ),
+            "parameters" => format!(
+                "{project_id}:{}",
+                cells.get("parameter").map(String::as_str).unwrap_or("")
+            ),
+            _ => format!(
+                "{project_id}:{}:{}:{}",
+                cells.get("signal_type").map(String::as_str).unwrap_or(""),
+                cells.get("target_metric").map(String::as_str).unwrap_or(""),
+                cells.get("contributor").map(String::as_str).unwrap_or("")
+            ),
+        }
+        .to_ascii_lowercase();
+        if !unique_keys.insert(unique_key) {
+            return Err(tool_error(
+                "DUPLICATE_REPORT_TABLE_ROW",
+                format!("rows[{index}] duplicates an earlier table row"),
+            ));
+        }
+
+        match kind {
+            "execution_plans" => {
+                let sql_id = cells["sql_id"].as_str();
+                validate_enum(
+                    "plan_status",
+                    &cells["plan_status"],
+                    &["analyzed", "analyzed_truncated", "unusable_attachment"],
+                )?;
+                let plan_hash = cells["plan_hash"].as_str();
+                let matching = evidence_refs.iter().find_map(|reference| {
+                    let record = state.evidence.get(reference)?;
+                    if record.tool_name != "get_sql_execution_plan"
+                        || record.project_id.as_deref() != Some(project_id)
+                        || !record
+                            .arguments
+                            .get("sql_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(sql_id))
+                    {
+                        return None;
+                    }
+                    let requested = record.arguments.get("plan_hash").and_then(Value::as_str);
+                    let hash_matches = if plan_hash == "not_available" {
+                        requested.is_none()
+                            && record
+                                .result
+                                .pointer("/full_file_summary/unique_plan_hashes")
+                                .and_then(Value::as_array)
+                                .is_some_and(Vec::is_empty)
+                    } else {
+                        requested.is_some_and(|value| value == plan_hash)
+                    };
+                    hash_matches.then_some(record)
+                });
+                let Some(record) = matching else {
+                    return Err(tool_error(
+                        "REPORT_TABLE_EVIDENCE_MISMATCH",
+                        format!("rows[{index}] must cite get_sql_execution_plan evidence for project '{project_id}', SQL_ID '{sql_id}', plan hash '{plan_hash}'"),
+                    ));
+                };
+                let expected_status = if plan_hash == "not_available" {
+                    "unusable_attachment"
+                } else if record
+                    .result
+                    .get("truncated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    "analyzed_truncated"
+                } else {
+                    "analyzed"
+                };
+                if cells["plan_status"] != expected_status {
+                    return Err(tool_error(
+                        "REPORT_TABLE_PLAN_STATUS_MISMATCH",
+                        format!("rows[{index}].plan_status must be '{expected_status}' for the cited plan evidence"),
+                    ));
+                }
+            }
+            "child_cursors" => {
+                let sql_id = cells["sql_id"].as_str();
+                if !evidence_record_matches(
+                    state,
+                    &evidence_refs,
+                    "get_child_cursor_reasons",
+                    project_id,
+                    Some("sql_id"),
+                    Some(sql_id),
+                ) {
+                    return Err(tool_error(
+                        "REPORT_TABLE_EVIDENCE_MISMATCH",
+                        format!("rows[{index}] must cite get_child_cursor_reasons evidence for project '{project_id}', SQL_ID '{sql_id}'"),
+                    ));
+                }
+            }
+            "segments" => {
+                let statistic = cells["statistic"].as_str();
+                let object_id = cells["object_id"].parse::<u64>().ok();
+                let data_object_id = cells["data_object_id"].parse::<u64>().ok();
+                let segment_record = evidence_refs.iter().find_map(|reference| {
+                    let record = state.evidence.get(reference)?;
+                    if record.tool_name != "get_precomputed_analysis"
+                        || record.project_id.as_deref() != Some(project_id)
+                        || record.arguments.get("section").and_then(Value::as_str)
+                            != Some("segment_hotspots")
+                    {
+                        return None;
+                    }
+                    Some(record)
+                });
+                let Some(segment_record) = segment_record else {
+                    return Err(tool_error(
+                        "REPORT_TABLE_EVIDENCE_MISMATCH",
+                        format!("rows[{index}] must cite segment_hotspots evidence for project '{project_id}'"),
+                    ));
+                };
+                let data = segment_record
+                    .result
+                    .get("data")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| {
+                        tool_error(
+                            "REPORT_TABLE_EVIDENCE_MISMATCH",
+                            format!("rows[{index}] cites malformed segment_hotspots evidence"),
+                        )
+                    })?;
+                let no_segment_statistics = data
+                    .values()
+                    .all(|value| value.as_array().map_or(true, Vec::is_empty));
+                if no_segment_statistics {
+                    let valid_sentinel = statistic == "no_segment_statistics"
+                        && cells["segment_name"] == "not available"
+                        && cells["segment_type"] == "unknown"
+                        && cells["object_id"] == "0"
+                        && cells["data_object_id"] == "0"
+                        && cells["occurrence_pct"] == "not available"
+                        && cells["average"] == "not available"
+                        && cells["stddev"] == "not available";
+                    if !valid_sentinel {
+                        return Err(tool_error(
+                            "REPORT_TABLE_SEGMENT_VALUE_MISMATCH",
+                            format!("rows[{index}] must use the deterministic no-segment-data sentinel values"),
+                        ));
+                    }
+                    continue;
+                }
+                let source = data
+                    .get(statistic)
+                    .and_then(Value::as_array)
+                    .and_then(|entries| {
+                        entries.iter().find(|entry| {
+                            entry.get("object_id").and_then(Value::as_u64) == object_id
+                                && entry.get("data_object_id").and_then(Value::as_u64)
+                                    == data_object_id
+                        })
+                    });
+                let Some(source) = source else {
+                    return Err(tool_error(
+                        "REPORT_TABLE_EVIDENCE_MISMATCH",
+                        format!("rows[{index}] must cite the exact segment_hotspots row for project '{project_id}', statistic '{statistic}', object/data object '{}/{}'", cells["object_id"], cells["data_object_id"]),
+                    ));
+                };
+                let source_name = source
+                    .get("segment_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let expected_name = if source_name.is_empty() {
+                    "<redacted>"
+                } else {
+                    source_name
+                };
+                let exact_strings_match = cells["segment_name"] == expected_name
+                    && source
+                        .get("segment_type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| value == cells["segment_type"]);
+                let numerics_match = [
+                    ("occurrence_pct", "pct_of_occuriance"),
+                    ("average", "avg"),
+                    ("stddev", "stddev"),
+                ]
+                .iter()
+                .all(|(cell_key, source_key)| {
+                    source
+                        .get(*source_key)
+                        .and_then(Value::as_f64)
+                        .is_some_and(|value| {
+                            report_table_numeric_cell_matches(&cells[*cell_key], value)
+                        })
+                });
+                if !exact_strings_match || !numerics_match {
+                    return Err(tool_error(
+                        "REPORT_TABLE_SEGMENT_VALUE_MISMATCH",
+                        format!("rows[{index}] must reproduce the cited segment name, type, occurrence, average and standard deviation"),
+                    ));
+                }
+            }
+            "gradients_anomalies" => {
+                let section = match cells["signal_type"].as_str() {
+                    "gradient" => "full_gradients",
+                    "anomaly" => "load_profile_anomalies",
+                    "anomaly_cluster" => "anomaly_clusters",
+                    value => {
+                        return Err(tool_error(
+                            "INVALID_GRADIENT_SIGNAL_TYPE",
+                            format!("rows[{index}].signal_type '{value}' is invalid"),
+                        ))
+                    }
+                };
+                if !evidence_record_matches(
+                    state,
+                    &evidence_refs,
+                    "get_precomputed_analysis",
+                    project_id,
+                    Some("section"),
+                    Some(section),
+                ) {
+                    return Err(tool_error(
+                        "REPORT_TABLE_EVIDENCE_MISMATCH",
+                        format!(
+                            "rows[{index}] must cite {section} evidence for project '{project_id}'"
+                        ),
+                    ));
+                }
+            }
+            "parameters" => {
+                validate_enum(
+                    "rating",
+                    &cells["rating"],
+                    &[
+                        "good",
+                        "acceptable",
+                        "concern",
+                        "critical",
+                        "unknown",
+                        "not_applicable",
+                    ],
+                )?;
+                let parameter = cells["parameter"].as_str();
+                let matching = evidence_refs.iter().any(|reference| {
+                    let Some(record) = state.evidence.get(reference) else {
+                        return false;
+                    };
+                    record.tool_name == "get_init_parameter"
+                        && record.project_id.as_deref() == Some(project_id)
+                        && record
+                            .result
+                            .get("parameters")
+                            .and_then(|parameters| parameters.get(parameter))
+                            .and_then(Value::as_str)
+                            .is_some_and(|value| value == cells["observed_value"])
+                });
+                if !matching {
+                    return Err(tool_error(
+                        "REPORT_TABLE_EVIDENCE_MISMATCH",
+                        format!("rows[{index}] must cite get_init_parameter evidence with the exact observed value for project '{project_id}', parameter '{parameter}'"),
+                    ));
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        parsed.push(ReportTableRow {
+            cells,
+            evidence_refs,
+        });
+    }
+    Ok(parsed)
+}
+
 fn parse_guidance_quotations(
     value: Option<&Value>,
     guidance_refs: &[String],
@@ -3683,6 +4759,13 @@ fn cited_evidence_refs(state: &AnalysisSession) -> BTreeSet<String> {
                 .assessments
                 .values()
                 .flat_map(|assessment| assessment.evidence_refs.iter()),
+        )
+        .chain(
+            state
+                .report_tables
+                .values()
+                .flat_map(|table| table.rows.iter())
+                .flat_map(|row| row.evidence_refs.iter()),
         )
         .cloned()
         .collect()
@@ -4191,6 +5274,158 @@ mod tests {
     }
 
     #[test]
+    fn report_gate_requires_every_supplied_plan_and_child_cursor_analysis_row() {
+        let test_directory = std::env::temp_dir().join(format!(
+            "jas-min-mcp-report-coverage-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let stem = test_directory.join("coverage-project");
+        let attachments = PathBuf::from(format!("{}_attachments", stem.display()));
+        std::fs::create_dir_all(&attachments).unwrap();
+        std::fs::write(
+            attachments.join("abc123.xplan"),
+            b"Plan hash value: 123\n| Id | Operation | Name |\n",
+        )
+        .unwrap();
+        std::fs::write(
+            attachments.join("abc123.shared_cursor_reasons"),
+            b"ChildNode<0> NLS Settings mismatch\n",
+        )
+        .unwrap();
+
+        let runtime = AnalysisRuntime::new(
+            AWRSCollection {
+                db_instance_information: DBInstance::default(),
+                initialization_parameters: HashMap::new(),
+                awrs: Vec::new(),
+                sql_text: HashMap::new(),
+            },
+            ReportForAI::default(),
+            stem.to_string_lossy().to_string(),
+            2,
+            HashMap::new(),
+            test_directory
+                .join("coverage-project.html_reports")
+                .to_string_lossy()
+                .to_string(),
+        );
+        let bootstrap = runtime
+            .call_tool("start_performance_analysis", Map::new())
+            .unwrap();
+        let analysis_id = bootstrap["analysis_id"].as_str().unwrap();
+        let project_id = bootstrap["project_ids"][0].as_str().unwrap();
+        let status = runtime
+            .call_tool(
+                "get_report_status",
+                Map::from_iter([("analysis_id".to_string(), json!(analysis_id))]),
+            )
+            .unwrap();
+        let missing_evidence = status["missing_required_evidence"].as_array().unwrap();
+        assert!(missing_evidence.contains(&json!(format!(
+            "get_sql_execution_plan:{project_id}:abc123:123"
+        ))));
+        assert!(missing_evidence.contains(&json!(format!(
+            "get_child_cursor_reasons:{project_id}:abc123"
+        ))));
+        assert!(status["missing_structured_table_kinds"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("execution_plans")));
+        assert!(status["missing_structured_table_kinds"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("child_cursors")));
+
+        let plan_evidence = runtime
+            .call_tool(
+                "get_sql_execution_plan",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("sql_id".to_string(), json!("abc123")),
+                    ("plan_hash".to_string(), json!("123")),
+                ]),
+            )
+            .unwrap();
+        let cursor_evidence = runtime
+            .call_tool(
+                "get_child_cursor_reasons",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("sql_id".to_string(), json!("abc123")),
+                ]),
+            )
+            .unwrap();
+
+        runtime
+            .call_tool(
+                "record_report_table",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("kind".to_string(), json!("execution_plans")),
+                    ("title".to_string(), json!("Execution plan analysis")),
+                    (
+                        "rows".to_string(),
+                        json!([{
+                            "project_id": project_id,
+                            "sql_id": "abc123",
+                            "plan_hash": "123",
+                            "plan_status": "analyzed",
+                            "key_operations": "TABLE ACCESS FULL",
+                            "access_and_joins": "Full scan; no join in fixture.",
+                            "cardinality": "No A-Rows in fixture.",
+                            "partition_parallelism": "No partition or PX evidence.",
+                            "risk": "Fixture-only scan.",
+                            "action": "Validate with runtime row-source statistics.",
+                            "evidence_refs": [plan_evidence["evidence_id"]]
+                        }]),
+                    ),
+                ]),
+            )
+            .unwrap();
+        runtime
+            .call_tool(
+                "record_report_table",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("kind".to_string(), json!("child_cursors")),
+                    ("title".to_string(), json!("Child cursor analysis")),
+                    (
+                        "rows".to_string(),
+                        json!([{
+                            "project_id": project_id,
+                            "sql_id": "abc123",
+                            "child_cursors": "1 fixture node",
+                            "direct_reasons": "NLS Settings mismatch",
+                            "optimizer_bind_context": "NLS context differs.",
+                            "performance_impact": "Requires workload correlation.",
+                            "action": "Normalize client NLS settings.",
+                            "evidence_refs": [cursor_evidence["evidence_id"]]
+                        }]),
+                    ),
+                ]),
+            )
+            .unwrap();
+
+        let updated = runtime
+            .call_tool(
+                "get_report_status",
+                Map::from_iter([("analysis_id".to_string(), json!(analysis_id))]),
+            )
+            .unwrap();
+        assert!(!updated["missing_structured_table_rows"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(format!("execution_plans:{project_id}:abc123:123"))));
+        assert!(!updated["missing_structured_table_rows"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(format!("child_cursors:{project_id}:abc123"))));
+
+        std::fs::remove_dir_all(test_directory).unwrap();
+    }
+
+    #[test]
     fn mcp_catalog_adds_analysis_id_to_every_evidence_tool() {
         let runtime = runtime();
         let tools = build_mcp_tools(&runtime);
@@ -4344,6 +5579,119 @@ mod tests {
             .unwrap();
         let analysis_id = bootstrap["analysis_id"].as_str().unwrap().to_string();
 
+        let mut precomputed_refs = HashMap::new();
+        runtime
+            .call_tool(
+                "get_database_load_summary",
+                Map::from_iter([("analysis_id".to_string(), json!(analysis_id))]),
+            )
+            .unwrap();
+        for &section in REQUIRED_PRECOMPUTED_SECTIONS {
+            let evidence = runtime
+                .call_tool(
+                    "get_precomputed_analysis",
+                    Map::from_iter([
+                        ("analysis_id".to_string(), json!(analysis_id)),
+                        ("section".to_string(), json!(section)),
+                    ]),
+                )
+                .unwrap();
+            precomputed_refs.insert(
+                section,
+                evidence["evidence_id"].as_str().unwrap().to_string(),
+            );
+        }
+        let parameter_evidence = runtime
+            .call_tool(
+                "get_init_parameter",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("names".to_string(), json!(PERFORMANCE_PARAMETER_CHECKLIST)),
+                ]),
+            )
+            .unwrap();
+        let parameter_ref = parameter_evidence["evidence_id"].as_str().unwrap();
+
+        runtime
+            .call_tool(
+                "record_report_table",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("kind".to_string(), json!("gradients_anomalies")),
+                    ("title".to_string(), json!("Gradient synthesis")),
+                    (
+                        "rows".to_string(),
+                        json!([{
+                            "project_id": "nonexistent-test-dataset",
+                            "signal_type": "gradient",
+                            "target_metric": "DB Time",
+                            "contributor": "No modeled contributor in synthetic data",
+                            "method": "multi-model gradient",
+                            "typical_impact": "not available",
+                            "peak_impact": "not available",
+                            "classification": "unknown",
+                            "corroboration": "synthetic test dataset",
+                            "interpretation": "No production conclusion.",
+                            "evidence_refs": [precomputed_refs["full_gradients"]]
+                        }]),
+                    ),
+                ]),
+            )
+            .unwrap();
+        runtime
+            .call_tool(
+                "record_report_table",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("kind".to_string(), json!("segments")),
+                    ("title".to_string(), json!("Segment coverage")),
+                    (
+                        "rows".to_string(),
+                        json!([{
+                            "project_id": "nonexistent-test-dataset",
+                            "statistic": "no_segment_statistics",
+                            "segment_name": "not available",
+                            "segment_type": "unknown",
+                            "object_id": "0",
+                            "data_object_id": "0",
+                            "occurrence_pct": "not available",
+                            "average": "not available",
+                            "stddev": "not available",
+                            "interpretation": "Synthetic input has no segment rows.",
+                            "action": "Collect segment statistics.",
+                            "evidence_refs": [precomputed_refs["segment_hotspots"]]
+                        }]),
+                    ),
+                ]),
+            )
+            .unwrap();
+        let parameter_rows = PERFORMANCE_PARAMETER_CHECKLIST
+            .iter()
+            .map(|parameter| {
+                json!({
+                    "project_id": "nonexistent-test-dataset",
+                    "parameter": parameter,
+                    "observed_value": "<not present in collected data>",
+                    "rating": "unknown",
+                    "performance_relevance": "Required performance checklist item.",
+                    "finding": "Value was not collected.",
+                    "action": "Collect the current value before recommending a change.",
+                    "evidence_refs": [parameter_ref]
+                })
+            })
+            .collect::<Vec<_>>();
+        runtime
+            .call_tool(
+                "record_report_table",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("kind".to_string(), json!("parameters")),
+                    ("title".to_string(), json!("Parameter quality assessment")),
+                    ("rows".to_string(), json!(parameter_rows)),
+                ]),
+            )
+            .unwrap();
+
         for (index, category) in REQUIRED_REPORT_CATEGORIES.iter().enumerate() {
             let recommendations = if index == 0 {
                 json!([{"owner": "DBA", "priority": "high", "action": "Validate the change in a controlled window."}])
@@ -4424,6 +5772,10 @@ mod tests {
             assert!(markdown.contains(&format!("## {section}.")));
         }
         assert!(markdown.contains("**Evidence basis:**"));
+        assert!(markdown.contains("### Gradient synthesis"));
+        assert!(markdown.contains("### Segment coverage"));
+        assert!(markdown.contains("### Parameter quality assessment"));
+        assert!(!markdown.contains("No evidence-backed findings were recorded for this section."));
         assert!(!markdown.contains("`SEED-E0001`"));
         assert!(!markdown.contains("## Appendix A."));
         assert!(!markdown.contains("## Appendix B."));
@@ -4449,6 +5801,22 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(incomplete["error_code"], "MISSING_REPORT_SECTIONS");
+
+        let edited_markdown = markdown.replacen(
+            "Verified by the initial statistical seed.",
+            "Edited after finalization.",
+            1,
+        );
+        let edited = runtime
+            .call_tool(
+                "convert_markdown_to_html",
+                Map::from_iter([
+                    ("analysis_id".to_string(), json!(analysis_id)),
+                    ("markdown".to_string(), json!(edited_markdown)),
+                ]),
+            )
+            .unwrap_err();
+        assert_eq!(edited["error_code"], "MARKDOWN_NOT_FINALIZED");
 
         let unsafe_name = runtime
             .convert_markdown_to_html_in_directory(

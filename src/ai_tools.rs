@@ -18,7 +18,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -460,7 +460,7 @@ pub fn tools_schema(stem: &str) -> Value {
             "type": "function",
             "function": {
                 "name": "list_available_sql_plans",
-                "description": "Lists SQL_IDs for which execution plan attachments (*.xplan) are available. Use this early when analyzing top SQL, SQL elapsed time, SQL CPU, SQL I/O, suspicious waits, plan instability, performance regressions, or when deciding which SQL execution plans need deeper analysis.",
+                "description": "Lists SQL_IDs for which execution plan attachments (*.xplan) are available. Use this early when analyzing top SQL, SQL elapsed time, SQL CPU, SQL I/O, suspicious waits, plan instability, or regressions. A complete MCP report must inspect and tabulate every supplied plan, including unusable/truncated attachments with an explicit status.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -488,6 +488,10 @@ pub fn tools_schema(stem: &str) -> Value {
                         "sql_id": {
                             "type": "string",
                             "description": "SQL_ID whose execution plan should be read. If filename is 7ud94ccmpaz8u.xplan, pass 7ud94ccmpaz8u."
+                        },
+                        "plan_hash": {
+                            "type": "string",
+                            "description": "Optional plan hash returned by list_available_sql_plans. When supplied, returns a representative complete plan block for that variant instead of a byte-truncated prefix of the whole attachment."
                         }
                     },
                     "required": ["sql_id"]
@@ -502,7 +506,7 @@ pub fn tools_schema(stem: &str) -> Value {
             "type": "function",
             "function": {
                 "name": "list_available_child_cursor_reasons",
-                "description": "Lists TOP SQL_IDs for which decoded V$SQL_SHARED_CURSOR.REASON attachments are available. These files are collected only when the SQL_ID had multiple current child cursors. Use this when investigating hard parsing, version_count growth, library cache or cursor mutex contention, bind sensitivity, optimizer/NLS differences, authorization mismatches, or plan instability.",
+                "description": "Lists TOP SQL_IDs for which decoded V$SQL_SHARED_CURSOR.REASON attachments are available. These files are collected only when the SQL_ID had multiple current child cursors. Use this when investigating hard parsing, version_count growth, library cache or cursor mutex contention, bind sensitivity, optimizer/NLS differences, authorization mismatches, or plan instability. A complete MCP report must inspect and tabulate every supplied diagnostic.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -2161,6 +2165,37 @@ fn tool_get_init_parameter(args: &Value, c: &AWRSCollection) -> Value {
     })
 }
 
+fn xplan_hash_counts(text: &str) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for line in text.lines() {
+        let Some(value) = line.trim().strip_prefix("Plan hash value:") else {
+            continue;
+        };
+        let value = value.trim();
+        if !value.is_empty() && value.chars().all(|character| character.is_ascii_digit()) {
+            *counts.entry(value.to_string()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn xplan_representative_block(text: &str, plan_hash: &str) -> Option<String> {
+    let lines = text.lines().collect::<Vec<_>>();
+    let hash_index = lines.iter().position(|line| {
+        line.trim()
+            .strip_prefix("Plan hash value:")
+            .is_some_and(|value| value.trim() == plan_hash)
+    })?;
+    let start = (0..=hash_index)
+        .rev()
+        .find(|index| lines[*index].trim_start().starts_with("SQL_ID"))
+        .unwrap_or(hash_index);
+    let end = ((hash_index + 1)..lines.len())
+        .find(|index| lines[*index].trim_start().starts_with("SQL_ID"))
+        .unwrap_or(lines.len());
+    Some(lines[start..end].join("\n"))
+}
+
 fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
     let sql_id = match arg_str(args, "sql_id") {
         Some(v) if is_safe_sql_id(v) => v.trim(),
@@ -2190,7 +2225,7 @@ fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
     let metadata = fs::metadata(&path).ok();
     let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
-    let mut text = match fs::read_to_string(&path) {
+    let full_text = match fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
             return json!({
@@ -2201,6 +2236,36 @@ fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
             });
         }
     };
+
+    let plan_hash_counts = xplan_hash_counts(&full_text);
+    let requested_plan_hash = arg_str(args, "plan_hash").map(str::trim);
+    if let Some(plan_hash) = requested_plan_hash {
+        if plan_hash.is_empty()
+            || !plan_hash
+                .chars()
+                .all(|character| character.is_ascii_digit())
+        {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": "Invalid plan_hash. Use a numeric value returned by list_available_sql_plans.",
+                "sql_id": sql_id,
+                "plan_hash": plan_hash
+            });
+        }
+        if !plan_hash_counts.contains_key(plan_hash) {
+            return json!({
+                "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+                "error": "Requested plan_hash was not found in the attachment.",
+                "sql_id": sql_id,
+                "plan_hash": plan_hash,
+                "available_plan_hashes": plan_hash_counts.keys().collect::<Vec<_>>()
+            });
+        }
+    }
+
+    let mut text = requested_plan_hash
+        .and_then(|plan_hash| xplan_representative_block(&full_text, plan_hash))
+        .unwrap_or_else(|| full_text.clone());
 
     let truncated = text.len() > MAX_XPLAN_BYTES;
     if truncated {
@@ -2213,6 +2278,13 @@ fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
         "sql_id": sql_id,
         "filename": path.file_name().and_then(|f| f.to_str()).unwrap_or("").to_string(),
         "size_bytes": size_bytes,
+        "requested_plan_hash": requested_plan_hash,
+        "matching_plan_count": requested_plan_hash.and_then(|plan_hash| plan_hash_counts.get(plan_hash)).copied(),
+        "full_file_summary": {
+            "plan_instances": plan_hash_counts.values().sum::<usize>(),
+            "unique_plan_hashes": plan_hash_counts.keys().collect::<Vec<_>>(),
+            "plan_hash_counts": plan_hash_counts
+        },
         "truncated": truncated,
         "max_bytes": MAX_XPLAN_BYTES,
         "analysis_guidance": [
@@ -2246,11 +2318,17 @@ fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
 
             let sql_id = sql_id_from_xplan_path(&path)?;
             let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let plan_hash_counts = fs::read_to_string(&path)
+                .map(|text| xplan_hash_counts(&text))
+                .unwrap_or_default();
 
             Some(json!({
                 "sql_id": sql_id,
                 "filename": filename,
-                "size_bytes": size_bytes
+                "size_bytes": size_bytes,
+                "plan_instances": plan_hash_counts.values().sum::<usize>(),
+                "unique_plan_hashes": plan_hash_counts.keys().collect::<Vec<_>>(),
+                "plan_hash_counts": plan_hash_counts
             }))
         })
         .collect();
@@ -2274,7 +2352,7 @@ fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
         "returned": plans.len(),
         "limit": limit,
         "sql_ids_xplan": plans,
-        "usage_hint": "For SQL_IDs that are material to DB Time, DB CPU, elapsed time, I/O, buffer gets, physical reads, or regressions, call get_sql_execution_plan and include a dedicated plan analysis with recommendations."
+        "usage_hint": "For a complete MCP report, call get_sql_execution_plan for every listed project/SQL_ID and every returned unique plan_hash, then record one structured analysis row per variant. When unique_plan_hashes is empty, inspect the attachment once without plan_hash and record it as unusable."
     })
 }
 
@@ -2387,7 +2465,7 @@ fn tool_list_available_child_cursor_reasons(args: &Value, stem: &str) -> Value {
         "returned": reports.len(),
         "limit": limit,
         "sql_ids_with_child_cursor_reasons": reports,
-        "usage_hint": "For each material SQL_ID listed here, call get_child_cursor_reasons before explaining child cursor proliferation, version_count growth, parsing pressure, library cache contention, or plan instability."
+        "usage_hint": "For a complete MCP report, call get_child_cursor_reasons for every listed project/SQL_ID and record one structured child-cursor analysis row before explaining cursor proliferation, parsing pressure, library-cache contention, or plan instability."
     })
 }
 
@@ -4331,6 +4409,47 @@ LPAR,T0001,9.115,10,40,28,10.00,172,0.00,18.99,32.55,1,0,52.48,4.56,1.19,32.93,5
         assert!(is_likely_aix_cpu_telemetry_path("host/topas.out"));
         assert!(!is_likely_aix_cpu_telemetry_path("host/oratop.out"));
         assert!(!is_likely_aix_cpu_telemetry_path("host/trace.bin"));
+    }
+
+    #[test]
+    fn execution_plan_inventory_and_fetch_cover_each_unique_plan_hash() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "jasmin_xplan_variant_test_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        let stem = root.join("sample_report");
+        let attachments = PathBuf::from(format!("{}_attachments", stem.display()));
+        std::fs::create_dir_all(&attachments).unwrap();
+        std::fs::write(
+            attachments.join("abc123.xplan"),
+            b"SQL_ID abc123, child number 0\nPlan hash value: 111\n| 0 | SELECT STATEMENT |\nSQL_ID abc123, child number 1\nPlan hash value: 222\n| 0 | SELECT STATEMENT |\nSQL_ID abc123, child number 2\nPlan hash value: 111\n| 0 | SELECT STATEMENT |\n",
+        )
+        .unwrap();
+
+        let listed = tool_list_available_sql_plans(&json!({"limit": 100}), &stem.to_string_lossy());
+        let item = &listed["sql_ids_xplan"][0];
+        assert_eq!(item["plan_instances"], 3);
+        assert_eq!(item["unique_plan_hashes"], json!(["111", "222"]));
+        assert_eq!(item["plan_hash_counts"]["111"], 2);
+
+        let fetched = tool_get_sql_execution_plan(
+            &json!({"sql_id": "abc123", "plan_hash": "222"}),
+            &stem.to_string_lossy(),
+        );
+        assert_eq!(fetched["requested_plan_hash"], "222");
+        assert_eq!(fetched["matching_plan_count"], 1);
+        assert_eq!(fetched["truncated"], false);
+        let plan_text = fetched["plan_text"].as_str().unwrap();
+        assert!(plan_text.contains("child number 1"));
+        assert!(!plan_text.contains("child number 0"));
+        assert!(!plan_text.contains("child number 2"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
