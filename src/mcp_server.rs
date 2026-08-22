@@ -43,7 +43,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-21.3";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-22.5";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -2538,7 +2538,7 @@ fn mcp_control_definitions() -> Vec<Value> {
         ),
         function_definition(
             "convert_markdown_to_html",
-            "Validates a complete 11-section JAS-MIN Markdown report, renders it with the same TOC/template/linking pipeline as classic AI mode, and creates a new HTML file directly in the JAS-MIN working directory. Finalize Markdown first and pass it unchanged. Existing files are never overwritten and the server does not open a browser.",
+            "Validates a complete 11-section JAS-MIN Markdown report, applies the mandatory responsive audit presentation shared with classic AI mode, and creates a new HTML file directly in the JAS-MIN working directory. The presentation includes sticky navigation, severity markers, finding/action cards, styled tables and plans, mobile reflow, and print CSS. Finalize Markdown first and pass it unchanged. Existing files are never overwritten and the server does not open a browser.",
             json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -2896,7 +2896,8 @@ fn report_contract(config: &ReportConfig) -> Value {
             "workflow": "Finalize Markdown first, then pass the exact Markdown to the conversion tool.",
             "write_policy": "Creates a new .html file in the JAS-MIN working directory and never overwrites an existing file.",
             "comparative_navigation": "Links every selected project's main dashboard and load-profile reports; never emits a fake comparison report directory.",
-            "classic_navigation": "Publishes verified active links to existing classic source reports instead of embedding unverified iframe paths."
+            "classic_navigation": "Publishes verified active links to existing classic source reports instead of embedding unverified iframe paths.",
+            "presentation": "The shared renderer always applies the responsive ORA-600-aligned audit layout: a self-contained vector JAS-MIN wordmark, white/black/red palette, sticky report navigation, severity-marked findings derived from [severity / confidence], card treatment for executive findings and actions, styled evidence tables and plans, accessible focus states, and a print layout."
         }
     })
 }
@@ -3012,6 +3013,7 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
         );
     }
     output.push_str(&render_source_report_links(document));
+    output.push_str("<div class=\"severity-legend\" role=\"note\" aria-label=\"Finding severity legend\"><strong>Finding severity</strong><span class=\"legend-chip legend-critical\">CRITICAL</span><span class=\"legend-chip legend-high\">HIGH</span><span class=\"legend-chip legend-medium\">MEDIUM</span><span class=\"legend-chip legend-info\">INFORMATIONAL</span><span>Confidence remains stated in every finding title.</span></div>\n\n");
 
     output.push_str("## 1. Executive Summary\n\n");
     let mut leading = state.findings.values().collect::<Vec<_>>();
@@ -3019,7 +3021,20 @@ fn render_markdown(document: &Value, state: &AnalysisSession) -> String {
     if leading.is_empty() {
         output.push_str("No evidence-backed findings have been recorded.\n\n");
     } else {
-        for finding in leading.into_iter().take(5) {
+        let leading = leading.into_iter().take(5).collect::<Vec<_>>();
+        output.push_str("**At-a-glance finding register:**\n\n");
+        output.push_str("| Priority finding | Severity | Confidence |\n");
+        output.push_str("|---|---|---|\n");
+        for finding in &leading {
+            output.push_str(&format!(
+                "| {} | {} | {} |\n",
+                finding.title.replace('|', "\\|").replace('\n', " "),
+                finding.severity,
+                finding.confidence
+            ));
+        }
+        output.push('\n');
+        for finding in leading {
             output.push_str(&format!(
                 "- **{}** [{} / {}]: {}\n",
                 finding.title, finding.severity, finding.confidence, finding.conclusion
@@ -4473,7 +4488,9 @@ mod tests {
         let html = std::fs::read_to_string(&output_path).unwrap();
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("<title>JAS-MIN Oracle Performance Analysis</title>"));
-        assert!(html.contains("Table of Contents"));
+        assert!(html.contains("Report contents"));
+        assert!(html.contains("class=\"report-title\""));
+        assert!(html.contains("class=\"section-title\""));
         assert!(html.contains("Overall Performance Profile and DB Time Degradation"));
 
         let duplicate = runtime

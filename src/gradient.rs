@@ -1884,6 +1884,7 @@ pub fn build_gradient_html(
     main_heading: &str,
     sections: Vec<GradientHtmlSection>,
 ) -> String {
+    let brand = jasmin_brand_banner_html();
     // Combine all non-empty sections into a single HTML block
     let sections_html: String = sections
         .into_iter()
@@ -1920,14 +1921,14 @@ pub fn build_gradient_html(
             text-align: center;
         }}
         th {{
-            background-color: #632e4f;
+            background-color: #111111;
             color: white;
             cursor: pointer;
             user-select: none;
             position: relative;
         }}
         th:hover {{
-            background-color: #7a3a62;
+            background-color: #c52228;
         }}
         th.sort-asc::after {{
             content: " \25B2";
@@ -2069,10 +2070,7 @@ pub fn build_gradient_html(
 </head>
 <body>
     <div class="content">
-        <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
-            <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png"
-                 width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
-        </a></p>
+        {brand}
         <p><span style="font-size:20px;font-weight:bold;">{main_heading}</span></p>
 {sections_html}
     </div>

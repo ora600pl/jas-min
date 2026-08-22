@@ -5149,6 +5149,7 @@ pub fn main_report_builder(
             key, value
         ));
     }
+    let brand = jasmin_brand_banner_html();
     table_stat_corr = format!(
         r#"<!DOCTYPE html>
         <html lang="en">
@@ -5170,7 +5171,7 @@ pub fn main_report_builder(
                     text-align: center;
                 }}
                 th {{
-                    background-color: #632e4f;
+                    background-color: #111111;
                     color: white;
                 }}
                 tr:nth-child(even) {{
@@ -5206,9 +5207,7 @@ pub fn main_report_builder(
         </head>
         <body>
             <div class="content">
-                <p><a href="https://github.com/ora600pl/jas-min" target="_blank">
-                <img src="https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png" width="150" alt="JAS-MIN" onerror="this.style.display='none';"/>
-                </a></p>
+                {brand}
                 <p><span style="font-size:20px;font-weight:bold;">Correlation of Instance Statistics with DB Time for Values >= {} and <= -{}</span></p>
                 <table id="stats_corr_table" >
                     <thead>
@@ -6217,9 +6216,7 @@ pub fn main_report_builder(
         "<head>",
         &format!("<head>\n<title>JAS-MIN</title>\n{}", STYLE_CSS),
     );
-    let jasmin_logo = format!("<p align=\"center\" style=\"margin-bottom: 0px; margin-top: 5px;\"><a href=\"https://github.com/ora600pl/jas-min\" target=\"_blank\">
-        <img src=\"https://raw.githubusercontent.com/rakustow/jas-min/main/img/jasmin_LOGO_white.png\" width=\"150\" alt=\"JAS-MIN\" onerror=\"this.style.display='none';\"/>
-    </a></p>");
+    let jasmin_logo = jasmin_brand_banner_html();
     // Inject Buttons and Tables into Main HTML
     plotly_html = plotly_html.replace(
         "<body>",
