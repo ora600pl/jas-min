@@ -508,7 +508,7 @@ Every successful measurement tool call is wrapped in an evidence envelope:
 
 ```json
 {
-  "schema_version": "2026-08-23.3",
+  "schema_version": "2026-08-23.4",
   "analysis_id": "A-20260804T100000Z-0001",
   "project_id": "before-upgrade",
   "evidence_id": "E-0002",
@@ -780,7 +780,12 @@ The response exposes `missing_required_evidence`,
 `segment_synthesis`, or `parameters`. `get_analysis_catalog` returns the exact
 columns and enumerated values. Every row has `evidence_refs`; the server
 verifies project/entity identity against the cited result. Analytic synthesis
-must cite at least two signal families. Plan rows must select one of the
+must cite every available analytic family and provide target metrics, at least
+three exact top-five gradient contributors from two target families, concrete
+model agreement and classification, exact anomaly/cluster localization,
+counterevidence, a mechanism-level conclusion, and a runtime validation. The
+gate rejects generic prose that merely says independent detectors converge on
+CPU, DB-time, I/O, RAC, or other activity. Plan rows must select one of the
 contract recommendation types; generic “validate actual rows” text and an
 actionable plan recommendation supported only by xplan evidence are rejected.
 Alert rows reproduce exact aggregate counts and time bounds. Parameter rows
@@ -969,7 +974,10 @@ document with a mandatory responsive ORA-600-aligned audit layout: a
 self-contained vector JAS-MIN wordmark, white/black/red palette, sticky report
 navigation, severity-marked findings, action cards, and a print stylesheet.
 Every table is wrapped in an always-active horizontal overflow region with a
-visible scrollbar, sticky headers, and keyboard focus. Actionable execution
+visible scrollbar, sticky headers, and keyboard focus. Column headers are
+keyboard-accessible sort buttons with stable numeric, percentage, unit, Oracle
+timestamp, and text ordering. Gradient families initially sort by descending
+peak impact, while the reader may re-sort any rendered table. Actionable execution
 plans use an interactive dependency view with flagged-path filtering,
 expand/collapse controls, zoom, and horizontal panning. It also provides
 anchored headings, an embedded ORA-600 logo, links to the main HTML

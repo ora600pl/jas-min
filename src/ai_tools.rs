@@ -27,7 +27,7 @@ use toon::encode;
 use crate::awr::{AWRSCollection, AWR};
 use crate::debug_note;
 
-const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-08-23.3";
+const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-08-23.4";
 const DEFAULT_LIMIT: usize = 50;
 const DEFAULT_TOP_N: usize = 10;
 const MAX_LIMIT: usize = 500;

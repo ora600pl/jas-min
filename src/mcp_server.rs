@@ -46,7 +46,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-23.3";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-08-23.4";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -505,11 +505,15 @@ const ANOMALY_CLUSTER_TABLE_COLUMNS: &[(&str, &str)] = &[
 
 const ANALYTIC_SYNTHESIS_TABLE_COLUMNS: &[(&str, &str)] = &[
     ("project_id", "Project"),
-    ("entity", "Repeated entity"),
+    ("entity", "Analytical focus"),
     ("signal_families", "Independent signal families"),
-    ("shared_evidence", "Cross-signal evidence"),
-    ("hypothesis", "Evidence-backed hypothesis"),
+    ("target_metrics", "Target metrics"),
+    ("dominant_gradient_signals", "Dominant gradient signals"),
+    ("model_agreement", "Model agreement / classification"),
+    ("temporal_evidence", "Anomaly and cluster localization"),
+    ("hypothesis", "Evidence-backed conclusion"),
     ("confidence", "Confidence"),
+    ("counterevidence", "Counterevidence / causal boundary"),
     ("recommended_validation", "Next validation"),
 ];
 
@@ -1780,6 +1784,18 @@ impl AnalysisRuntime {
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
         validate_references(&state, &evidence_refs, &guidance_refs)?;
+        if category == "gradients_anomalies" {
+            validate_gradient_anomaly_finding_synthesis(
+                &state,
+                &evidence_refs,
+                &conclusion,
+                &mechanism,
+                &temporal_pattern,
+                &affected_workload,
+                &evidence_summary,
+                &evidence_limitations,
+            )?;
+        }
         let guidance_quotes =
             parse_guidance_quotations(arguments.get("guidance_quotes"), &guidance_refs, &state)?;
         let finding_id = arguments
@@ -2649,7 +2665,7 @@ impl ServerHandler for JasminMcpServer {
                 ),
         )
         .with_instructions(format!(
-            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Every finding must synthesize the measured symptom into a mechanism, temporal pattern, named affected workload and explicit evidence limitation; a conclusion plus a table dump is incomplete. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Every recommendation must name an owner and priority, explain why it follows from the finding, and define a measurable success criterion. Complete every stable category. Record gradients, anomalies and anomaly clusters as separate table kinds and add analytic_signal_synthesis when multiple families are available. For every foreground wait reaching 10% DB Time, call get_wait_event_sql_contributors and record the wait-to-SQL relationships; follow the strongest material contributor through SQL text, timeline and plan applicability. Correlation or ASH attribution is association evidence, not blocker/waiter proof. Inspect every supplied execution artifact. Review every unique SQL plan hash, but classify PL/SQL entry points as not_applicable_plsql because a top-level row-source plan is not expected; profile their inner SQL instead of requesting DBMS_XPLAN recapture. Choose an explicit recommendation type with artifact-specific rationale and action; generic 'validate actual rows' prose is rejected. Inspect every child-cursor diagnostic. Parse every non-empty alert attachment with include_parse_error_details=true, reproduce every error_summary code, and cite parse-error evidence in an SQL finding. Record every segment hotspot and a cross-statistic segment_synthesis. Review every collected performance parameter value; missing parameters require no row and only concern/critical ratings are reader-facing. get_report_status lists every missing item and blocks finalization until the deterministic lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage. Use each alert attachment's observed first/last timestamp rather than assuming AWR-period coverage. A zero-match literal proves only that exact filter. If guidance is applied, include a verified verbatim quotation. Complete mandatory assessments and finish through finalize_report. For HTML, finalize Markdown first and pass it unchanged to convert_markdown_to_html. Reader-facing material waits and SQL_IDs must link to every existing project-specific detail report with meaningful instance labels.",
+            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Every finding must synthesize the measured symptom into a mechanism, temporal pattern, named affected workload and explicit evidence limitation; a conclusion plus a table dump is incomplete. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Every recommendation must name an owner and priority, explain why it follows from the finding, and define a measurable success criterion. Complete every stable category. Record gradients, anomalies and anomaly clusters as separate table kinds. When multiple analytic families are available, analytic_signal_synthesis and its gradients_anomalies finding must name at least three exact top-five contributors from at least two target families, distinguish typical from peak influence, reproduce at least two concrete model names plus an exact classification, and localize exact anomaly and cluster windows; generic statements that detectors merely converge on activity are rejected. For every foreground wait reaching 10% DB Time, call get_wait_event_sql_contributors and record the wait-to-SQL relationships; follow the strongest material contributor through SQL text, timeline and plan applicability. Correlation or ASH attribution is association evidence, not blocker/waiter proof. Inspect every supplied execution artifact. Review every unique SQL plan hash, but classify PL/SQL entry points as not_applicable_plsql because a top-level row-source plan is not expected; profile their inner SQL instead of requesting DBMS_XPLAN recapture. Choose an explicit recommendation type with artifact-specific rationale and action; generic 'validate actual rows' prose is rejected. Inspect every child-cursor diagnostic. Parse every non-empty alert attachment with include_parse_error_details=true, reproduce every error_summary code, and cite parse-error evidence in an SQL finding. Record every segment hotspot and a cross-statistic segment_synthesis. Review every collected performance parameter value; missing parameters require no row and only concern/critical ratings are reader-facing. get_report_status lists every missing item and blocks finalization until the deterministic lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage. Use each alert attachment's observed first/last timestamp rather than assuming AWR-period coverage. A zero-match literal proves only that exact filter. If guidance is applied, include a verified verbatim quotation. Complete mandatory assessments and finish through finalize_report. For HTML, finalize Markdown first and pass it unchanged to convert_markdown_to_html. Reader-facing material waits and SQL_IDs must link to every existing project-specific detail report with meaningful instance labels.",
             self.runtime.projects.len()
         ))
     }
@@ -2745,7 +2761,7 @@ impl ServerHandler for JasminMcpServer {
             Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                 Role::User,
                 format!(
-                    "Investigate {focus} using the JAS-MIN MCP server. Begin with list_performance_projects when multiple projects may be loaded, then call start_performance_analysis with the intended project_ids and use its analysis_id for all evidence calls. In comparative sessions pass project_id to project-specific tools and use compare_project_metric or compare_project_sql for cross-project evidence. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings with exact reader-facing evidence summaries instead of exposing raw evidence IDs as prose. Every applied guidance reference requires a verbatim quote from the retrieved section. Complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html; ensure comparative output links every source project report."
+                    "Investigate {focus} using the JAS-MIN MCP server. Begin with list_performance_projects when multiple projects may be loaded, then call start_performance_analysis with the intended project_ids and use its analysis_id for all evidence calls. In comparative sessions pass project_id to project-specific tools and use compare_project_metric or compare_project_sql for cross-project evidence. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. For gradient/anomaly synthesis, name the dominant exact contributors across target families, distinguish typical from peak influence, state which Ridge, Elastic Net, Huber or Quantile-95 models agree, reproduce the server classification, and anchor the conclusion to exact anomaly and cluster windows; a generic statement that independent detectors converge on activity is not analysis. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings with exact reader-facing evidence summaries instead of exposing raw evidence IDs as prose. Every applied guidance reference requires a verbatim quote from the retrieved section. Complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html; ensure comparative output links every source project report."
                 ),
             )])
             .with_description("Tool-first Oracle performance investigation workflow")
@@ -3147,7 +3163,7 @@ fn mcp_control_definitions() -> Vec<Value> {
         ),
         function_definition(
             "convert_markdown_to_html",
-            "Validates a complete 11-section JAS-MIN Markdown report and creates a new HTML file with the shared responsive audit presentation. Every table is placed in a keyboard-focusable horizontal overflow region with a visible scrollbar; execution-plan recommendations render as self-contained interactive row-source graphs. Finalize Markdown first and pass it unchanged. Existing files are never overwritten and the server does not open a browser.",
+            "Validates a complete 11-section JAS-MIN Markdown report and creates a new HTML file with the shared responsive audit presentation. Every ordinary table is keyboard-sortable and placed in a focusable horizontal overflow region with a visible scrollbar; gradient families initially use descending peak impact. Execution-plan recommendations render as self-contained interactive row-source graphs. Finalize Markdown first and pass it unchanged. Existing files are never overwritten and the server does not open a browser.",
             json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -3501,7 +3517,8 @@ fn report_contract(config: &ReportConfig) -> Value {
             "required_fields": ["mechanism", "temporal_pattern", "affected_workload", "evidence_limitations"],
             "narrative_order": "Lead with the diagnosis. Connect symptom to mechanism, named workload and time pattern before the exhaustive structured evidence tables.",
             "causality_boundary": "Correlation, gradient selection and ASH attribution are association evidence. evidence_limitations must state the missing runtime proof and relevant counterevidence.",
-            "executive_summary": "The five leading findings include mechanism, workload scope, timing and evidence boundary; a one-sentence register alone is insufficient."
+            "executive_summary": "The five leading findings include mechanism, workload scope, timing and evidence boundary; a one-sentence register alone is insufficient.",
+            "gradient_anomaly_finding": "A cross-family finding must name at least three exact top-five gradient contributors from at least two target families, at least two concrete models, an exact cross-model classification, and exact anomaly/cluster windows. Generic convergence or activity prose is rejected."
         },
         "recommendation_policy": {
             "required_fields": ["owner", "priority", "action", "rationale", "success_criterion"],
@@ -3516,7 +3533,7 @@ fn report_contract(config: &ReportConfig) -> Value {
             "child_cursors": "Every supplied .shared_cursor_reasons attachment must be inspected and represented by a project/SQL_ID row in the child-cursor analysis table.",
             "alert_log_errors": "Every non-empty alert attachment must be parsed with include_parse_error_details=true. Every deterministic error_summary code requires a structured row, and parse-error evidence must be cited by an SQL-level finding before finalization.",
             "segments": "Every object in every non-empty precomputed segment-hotspot category must be represented. Detail is rendered as a separate table per statistic, followed by a required cross-statistic synthesis.",
-            "gradients_anomalies": "Full gradients, load-profile anomalies and anomaly clusters are separate table kinds. The five highest-impact cross-model rows per gradient family are mandatory. Every foreground wait reaching 10% DB Time must be represented as triangulated or explicitly material_not_selected. When two or more analytic families exist, cross-signal synthesis is mandatory.",
+            "gradients_anomalies": "Full gradients, load-profile anomalies and anomaly clusters are separate table kinds. The five highest-impact cross-model rows per gradient family are mandatory. Every foreground wait reaching 10% DB Time must be represented as triangulated or explicitly material_not_selected. When two or more analytic families exist, cross-signal synthesis is mandatory and must reproduce dominant contributors, model agreement, exact temporal localization, counterevidence and a mechanism-level conclusion.",
             "parameters": "Every collected checklist value is reviewed internally. Missing values are not turned into report rows, and the human report renders only concern/critical ratings."
         },
         "structured_table_schemas": {
@@ -3537,7 +3554,7 @@ fn report_contract(config: &ReportConfig) -> Value {
             "analytic_signal_synthesis": {
                 "category": "gradients_anomalies",
                 "required_string_fields": ANALYTIC_SYNTHESIS_TABLE_COLUMNS.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
-                "evidence_policy": "Every row must cite at least two distinct analytic signal families."
+                "evidence_policy": "Every row must cite every available analytic family for its project, name at least three exact top-five gradient contributors spanning at least two target families, reproduce at least two model names and an exact classification, and localize exact anomaly and cluster evidence."
             },
             "execution_plans": {
                 "category": "sql",
@@ -3595,7 +3612,7 @@ fn report_contract(config: &ReportConfig) -> Value {
             "write_policy": "Creates a new .html file in the JAS-MIN working directory and never overwrites an existing file.",
             "comparative_navigation": "Links every selected project's main dashboard and load-profile reports; never emits a fake comparison report directory.",
             "classic_navigation": "Publishes verified active links to existing classic source reports instead of embedding unverified iframe paths.",
-            "presentation": "The shared renderer always applies the responsive ORA-600-aligned audit layout: self-contained branding, sticky navigation, severity markers, keyboard-focusable horizontal table regions with visible scrollbars, project/instance grouping instead of a repeated Project column, interactive execution-plan graphs, and a print layout."
+            "presentation": "The shared renderer always applies the responsive ORA-600-aligned audit layout: self-contained branding, sticky navigation, severity markers, keyboard-focusable sortable tables with visible horizontal scrollbars, project/instance grouping instead of a repeated Project column, interactive execution-plan graphs, and a print layout. Gradient families default to descending peak impact before the reader applies another sort."
         }
     })
 }
@@ -5162,6 +5179,36 @@ fn render_plain_report_table(
     output
 }
 
+fn report_table_numeric_value(row: &ReportTableRow, key: &str) -> Option<f64> {
+    row.cells
+        .get(key)
+        .map(|value| value.replace(',', ""))
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+}
+
+fn sort_gradient_rows_by_peak_impact(rows: &mut [&ReportTableRow]) {
+    rows.sort_by(|left, right| {
+        let left_peak = report_table_numeric_value(left, "peak_impact");
+        let right_peak = report_table_numeric_value(right, "peak_impact");
+        right_peak
+            .partial_cmp(&left_peak)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                let left_typical = report_table_numeric_value(left, "typical_impact");
+                let right_typical = report_table_numeric_value(right, "typical_impact");
+                right_typical
+                    .partial_cmp(&left_typical)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                left.cells
+                    .get("contributor")
+                    .cmp(&right.cells.get("contributor"))
+            })
+    });
+}
+
 fn plan_graph_evidence<'a>(row: &ReportTableRow, state: &'a AnalysisSession) -> Option<&'a Value> {
     row.evidence_refs.iter().find_map(|reference| {
         let record = state.evidence.get(reference)?;
@@ -5470,7 +5517,8 @@ fn render_report_table(
                     groups
                 },
             );
-            for (family, family_rows) in family_groups {
+            for (family, mut family_rows) in family_groups {
+                sort_gradient_rows_by_peak_impact(&mut family_rows);
                 output.push_str(&format!("##### {}\n\n", humanize_identifier(family)));
                 output.push_str(&render_plain_report_table(
                     &table.kind,
@@ -5876,6 +5924,294 @@ fn report_table_numeric_cell_matches(cell: &str, expected: f64) -> bool {
             let tolerance = (expected.abs() * 0.0001).max(0.005);
             (actual - expected).abs() <= tolerance
         })
+}
+
+fn cited_precomputed_record<'a>(
+    state: &'a AnalysisSession,
+    evidence_refs: &[String],
+    project_id: &str,
+    section: &str,
+) -> Option<&'a EvidenceRecord> {
+    evidence_refs.iter().find_map(|reference| {
+        let record = state.evidence.get(reference)?;
+        (record.tool_name == "get_precomputed_analysis"
+            && record.project_id.as_deref() == Some(project_id)
+            && record.arguments.get("section").and_then(Value::as_str) == Some(section))
+        .then_some(record)
+    })
+}
+
+fn cited_analytic_sections(
+    state: &AnalysisSession,
+    evidence_refs: &[String],
+    project_id: &str,
+) -> BTreeSet<String> {
+    evidence_refs
+        .iter()
+        .filter_map(|reference| state.evidence.get(reference))
+        .filter(|record| {
+            record.tool_name == "get_precomputed_analysis"
+                && record.project_id.as_deref() == Some(project_id)
+        })
+        .filter_map(|record| record.arguments.get("section").and_then(Value::as_str))
+        .filter(|section| {
+            matches!(
+                *section,
+                "full_gradients" | "load_profile_anomalies" | "anomaly_clusters"
+            )
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn available_analytic_sections(project: &ProjectData) -> BTreeSet<&'static str> {
+    let mut sections = BTreeSet::new();
+    if !gradient_families(&project.report).is_empty() {
+        sections.insert("full_gradients");
+    }
+    if !project.report.load_profile_anomalies.is_empty() {
+        sections.insert("load_profile_anomalies");
+    }
+    if !project.report.anomaly_clusters.is_empty() {
+        sections.insert("anomaly_clusters");
+    }
+    sections
+}
+
+fn matched_top_gradient_signals(record: &EvidenceRecord, text: &str) -> Vec<(String, String)> {
+    let normalized = text.to_ascii_lowercase();
+    let mut matches = Vec::<(String, String)>::new();
+    let Some(families) = record.result.get("data").and_then(Value::as_object) else {
+        return matches;
+    };
+    for (family, value) in families {
+        let Some(rows) = value
+            .get("cross_model_classifications")
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for row in rows.iter().take(REQUIRED_GRADIENT_ROWS_PER_FAMILY) {
+            let Some(name) = row.get("event_name").and_then(Value::as_str) else {
+                continue;
+            };
+            if normalized.contains(&name.to_ascii_lowercase()) {
+                matches.push((name.to_string(), family.to_string()));
+            }
+        }
+    }
+    matches.sort_by(|left, right| right.0.len().cmp(&left.0.len()));
+    let snapshot = matches.clone();
+    matches.retain(|(name, family)| {
+        !snapshot.iter().any(|(other_name, other_family)| {
+            family == other_family
+                && other_name.len() > name.len()
+                && other_name
+                    .to_ascii_lowercase()
+                    .contains(&name.to_ascii_lowercase())
+        })
+    });
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn named_gradient_models(text: &str) -> BTreeSet<&'static str> {
+    let normalized = text.to_ascii_lowercase();
+    let mut models = BTreeSet::new();
+    if normalized.contains("ridge") {
+        models.insert("Ridge");
+    }
+    if normalized.contains("elastic net") || normalized.contains("elastic_net") {
+        models.insert("Elastic Net");
+    }
+    if normalized.contains("huber") {
+        models.insert("Huber");
+    }
+    if normalized.contains("quantile-95")
+        || normalized.contains("quantile 95")
+        || normalized.contains("quantile95")
+    {
+        models.insert("Quantile-95");
+    }
+    models
+}
+
+fn text_reproduces_load_profile_anomaly(record: &EvidenceRecord, text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    record
+        .result
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|row| {
+            let date = row
+                .get("anomaly_date")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let metric = row
+                .get("load_profile_stat_name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            !date.is_empty()
+                && !metric.is_empty()
+                && normalized.contains(&date.to_ascii_lowercase())
+                && normalized.contains(&metric.to_ascii_lowercase())
+        })
+}
+
+fn text_reproduces_anomaly_cluster(record: &EvidenceRecord, text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    record
+        .result
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|row| {
+            let date = row
+                .get("begin_snap_date")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let snap_id = row
+                .get("begin_snap_id")
+                .and_then(Value::as_u64)
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+            let localized = (!date.is_empty() && normalized.contains(&date.to_ascii_lowercase()))
+                || (!snap_id.is_empty() && normalized.contains(&snap_id));
+            let names_signal = row
+                .get("anomalies_detected")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item.get("statistic_name").and_then(Value::as_str))
+                .any(|name| normalized.contains(&name.to_ascii_lowercase()));
+            localized && names_signal
+        })
+}
+
+fn validate_cross_family_analytic_text(
+    state: &AnalysisSession,
+    evidence_refs: &[String],
+    project_id: &str,
+    dominant_signals: &str,
+    model_agreement: &str,
+    temporal_evidence: &str,
+) -> std::result::Result<(), Value> {
+    let Some(gradient_record) =
+        cited_precomputed_record(state, evidence_refs, project_id, "full_gradients")
+    else {
+        return Err(tool_error(
+            "ANALYTIC_SYNTHESIS_WITHOUT_GRADIENTS",
+            format!("Analytic synthesis for project '{project_id}' must cite full_gradients"),
+        ));
+    };
+    let matched = matched_top_gradient_signals(gradient_record, dominant_signals);
+    let matched_families = matched
+        .iter()
+        .map(|(_, family)| family.as_str())
+        .collect::<BTreeSet<_>>();
+    if matched.len() < 3 || matched_families.len() < 2 {
+        return Err(tool_error(
+            "ANALYTIC_SYNTHESIS_MISSING_DOMINANT_SIGNALS",
+            format!("Analytic synthesis for project '{project_id}' must name at least three exact top-five gradient contributors spanning at least two target families"),
+        ));
+    }
+    let normalized_signals = dominant_signals.to_ascii_lowercase();
+    if !normalized_signals.contains("typical") || !normalized_signals.contains("peak") {
+        return Err(tool_error(
+            "ANALYTIC_SYNTHESIS_MISSING_TYPICAL_PEAK_CONTRAST",
+            format!("Analytic synthesis for project '{project_id}' must distinguish typical from peak influence for the named contributors"),
+        ));
+    }
+    if named_gradient_models(model_agreement).len() < 2 {
+        return Err(tool_error(
+            "ANALYTIC_SYNTHESIS_MISSING_MODEL_AGREEMENT",
+            format!("Analytic synthesis for project '{project_id}' must name at least two concrete models such as Huber, Quantile-95, Ridge or Elastic Net"),
+        ));
+    }
+    let normalized_agreement = model_agreement.to_ascii_lowercase();
+    let names_classification = gradient_record
+        .result
+        .get("data")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|families| families.values())
+        .filter_map(|family| family.get("cross_model_classifications"))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|row| row.get("classification").and_then(Value::as_str))
+        .any(|classification| normalized_agreement.contains(&classification.to_ascii_lowercase()));
+    if !names_classification {
+        return Err(tool_error(
+            "ANALYTIC_SYNTHESIS_MISSING_CLASSIFICATION",
+            format!("Analytic synthesis for project '{project_id}' must reproduce at least one exact cross-model classification"),
+        ));
+    }
+    if let Some(record) =
+        cited_precomputed_record(state, evidence_refs, project_id, "load_profile_anomalies")
+    {
+        if !text_reproduces_load_profile_anomaly(record, temporal_evidence) {
+            return Err(tool_error(
+                "ANALYTIC_SYNTHESIS_MISSING_ANOMALY_WINDOW",
+                format!("Analytic synthesis for project '{project_id}' must reproduce an exact load-profile anomaly timestamp and metric"),
+            ));
+        }
+    }
+    if let Some(record) =
+        cited_precomputed_record(state, evidence_refs, project_id, "anomaly_clusters")
+    {
+        if !text_reproduces_anomaly_cluster(record, temporal_evidence) {
+            return Err(tool_error(
+                "ANALYTIC_SYNTHESIS_MISSING_CLUSTER_WINDOW",
+                format!("Analytic synthesis for project '{project_id}' must reproduce an exact anomaly-cluster SNAP_ID or timestamp and one named cluster signal"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_gradient_anomaly_finding_synthesis(
+    state: &AnalysisSession,
+    evidence_refs: &[String],
+    conclusion: &str,
+    mechanism: &str,
+    temporal_pattern: &str,
+    affected_workload: &str,
+    evidence_summary: &str,
+    evidence_limitations: &str,
+) -> std::result::Result<(), Value> {
+    let combined = [
+        conclusion,
+        mechanism,
+        temporal_pattern,
+        affected_workload,
+        evidence_summary,
+        evidence_limitations,
+    ]
+    .join(" ");
+    let project_ids = evidence_refs
+        .iter()
+        .filter_map(|reference| state.evidence.get(reference))
+        .filter_map(|record| record.project_id.as_deref())
+        .collect::<BTreeSet<_>>();
+    for project_id in project_ids {
+        let sections = cited_analytic_sections(state, evidence_refs, project_id);
+        if sections.len() < 2 || !sections.contains("full_gradients") {
+            continue;
+        }
+        validate_cross_family_analytic_text(
+            state,
+            evidence_refs,
+            project_id,
+            &combined,
+            &combined,
+            &combined,
+        )?;
+    }
+    Ok(())
 }
 
 fn evidence_supports_sql_priority(
@@ -6565,27 +6901,73 @@ fn parse_report_table_rows(
                     &cells["confidence"],
                     &["high", "medium", "low", "unknown"],
                 )?;
-                let signal_sections = evidence_refs
+                let project = projects.get(project_id).ok_or_else(|| {
+                    tool_error(
+                        "UNKNOWN_PROJECT",
+                        format!("Unknown project_id '{project_id}' in analytic synthesis"),
+                    )
+                })?;
+                let required_sections = available_analytic_sections(project);
+                let cited_sections = cited_analytic_sections(state, &evidence_refs, project_id);
+                let missing_sections = required_sections
                     .iter()
-                    .filter_map(|reference| state.evidence.get(reference))
-                    .filter(|record| {
-                        record.tool_name == "get_precomputed_analysis"
-                            && record.project_id.as_deref() == Some(project_id)
-                    })
-                    .filter_map(|record| record.arguments.get("section").and_then(Value::as_str))
-                    .filter(|section| {
-                        matches!(
-                            *section,
-                            "full_gradients" | "load_profile_anomalies" | "anomaly_clusters"
-                        )
-                    })
-                    .collect::<BTreeSet<_>>();
-                if signal_sections.len() < 2 {
+                    .filter(|section| !cited_sections.contains::<str>(**section))
+                    .copied()
+                    .collect::<Vec<_>>();
+                if !missing_sections.is_empty() {
                     return Err(tool_error(
                         "INSUFFICIENT_ANALYTIC_SYNTHESIS_EVIDENCE",
-                        format!("rows[{index}] must cite at least two distinct analytic signal families"),
+                        format!(
+                            "rows[{index}] must cite every available analytic family; missing {}",
+                            missing_sections.join(", ")
+                        ),
                     ));
                 }
+                let family_labels = cells["signal_families"].to_ascii_lowercase();
+                if required_sections
+                    .iter()
+                    .any(|section| !family_labels.contains(section))
+                {
+                    return Err(tool_error(
+                        "ANALYTIC_SYNTHESIS_FAMILY_LABEL_MISMATCH",
+                        format!("rows[{index}].signal_families must explicitly name every cited precomputed section"),
+                    ));
+                }
+                for (field, minimum) in [
+                    ("target_metrics", 12),
+                    ("dominant_gradient_signals", 32),
+                    ("model_agreement", 40),
+                    ("temporal_evidence", 48),
+                    ("hypothesis", 80),
+                    ("counterevidence", 48),
+                    ("recommended_validation", 48),
+                ] {
+                    if cells[field].chars().count() < minimum {
+                        return Err(tool_error(
+                            "ANALYTIC_SYNTHESIS_TOO_VAGUE",
+                            format!("rows[{index}].{field} must contain at least {minimum} characters of reader-facing analysis"),
+                        ));
+                    }
+                }
+                validate_distinct_diagnostic_statements(&[
+                    (
+                        "dominant_gradient_signals",
+                        &cells["dominant_gradient_signals"],
+                    ),
+                    ("model_agreement", &cells["model_agreement"]),
+                    ("temporal_evidence", &cells["temporal_evidence"]),
+                    ("hypothesis", &cells["hypothesis"]),
+                    ("counterevidence", &cells["counterevidence"]),
+                    ("recommended_validation", &cells["recommended_validation"]),
+                ])?;
+                validate_cross_family_analytic_text(
+                    state,
+                    &evidence_refs,
+                    project_id,
+                    &cells["dominant_gradient_signals"],
+                    &cells["model_agreement"],
+                    &cells["temporal_evidence"],
+                )?;
             }
             "alert_log_errors" => {
                 let error_code = cells["error_code"].as_str();
@@ -7926,6 +8308,143 @@ mod tests {
         assert!(rows.contains(&json!(format!(
             "analytic_signal_synthesis:{project_id}:at_least_one"
         ))));
+    }
+
+    #[test]
+    fn gradient_rows_default_to_descending_peak_impact() {
+        let row = |contributor: &str, typical: &str, peak: &str| ReportTableRow {
+            cells: BTreeMap::from([
+                ("contributor".to_string(), contributor.to_string()),
+                ("typical_impact".to_string(), typical.to_string()),
+                ("peak_impact".to_string(), peak.to_string()),
+            ]),
+            evidence_refs: Vec::new(),
+        };
+        let low = row("low tail", "900", "1,200");
+        let high = row("high tail", "100", "9,800");
+        let medium = row("medium tail", "400", "3,500");
+        let mut rows = vec![&low, &high, &medium];
+
+        sort_gradient_rows_by_peak_impact(&mut rows);
+
+        assert_eq!(rows[0].cells["contributor"], "high tail");
+        assert_eq!(rows[1].cells["contributor"], "medium tail");
+        assert_eq!(rows[2].cells["contributor"], "low tail");
+    }
+
+    #[test]
+    fn analytic_synthesis_rejects_activity_prose_and_accepts_reproduced_signals() {
+        let project_id = "dnv-instance-1";
+        let mut state = AnalysisSession::new(
+            json!({"source": "unit-test"}),
+            ReportConfig::default(),
+            vec![project_id.to_string()],
+        );
+        state.evidence.insert(
+            "E-GRAD".to_string(),
+            EvidenceRecord {
+                evidence_id: "E-GRAD".to_string(),
+                tool_name: "get_precomputed_analysis".to_string(),
+                project_id: Some(project_id.to_string()),
+                arguments: json!({"section": "full_gradients"}),
+                result: json!({
+                    "data": {
+                        "db_cpu_instance_stats": {
+                            "cross_model_classifications": [{
+                                "event_name": "session logical reads",
+                                "classification": "CONFIRMED_BOTTLENECK_EN_COLLINEAR"
+                            }]
+                        },
+                        "db_cpu_sql_cpu_time": {
+                            "cross_model_classifications": [{
+                                "event_name": "7ud94ccmpaz8u",
+                                "classification": "CONFIRMED_BOTTLENECK_EN_COLLINEAR"
+                            }]
+                        },
+                        "db_time_foreground_wait_events": {
+                            "cross_model_classifications": [{
+                                "event_name": "cursor: pin S wait on X",
+                                "classification": "CONFIRMED_BOTTLENECK"
+                            }]
+                        }
+                    }
+                }),
+            },
+        );
+        state.evidence.insert(
+            "E-ANOM".to_string(),
+            EvidenceRecord {
+                evidence_id: "E-ANOM".to_string(),
+                tool_name: "get_precomputed_analysis".to_string(),
+                project_id: Some(project_id.to_string()),
+                arguments: json!({"section": "load_profile_anomalies"}),
+                result: json!({
+                    "data": [{
+                        "anomaly_date": "24-Jul-26 15:30:17",
+                        "load_profile_stat_name": "Physical write (blocks)"
+                    }]
+                }),
+            },
+        );
+        state.evidence.insert(
+            "E-CLUSTER".to_string(),
+            EvidenceRecord {
+                evidence_id: "E-CLUSTER".to_string(),
+                tool_name: "get_precomputed_analysis".to_string(),
+                project_id: Some(project_id.to_string()),
+                arguments: json!({"section": "anomaly_clusters"}),
+                result: json!({
+                    "data": [{
+                        "begin_snap_id": 156679,
+                        "begin_snap_date": "20-Jul-26 00:00:28",
+                        "anomalies_detected": [{"statistic_name": "flashback log file write"}]
+                    }]
+                }),
+            },
+        );
+        let refs = vec![
+            "E-GRAD".to_string(),
+            "E-ANOM".to_string(),
+            "E-CLUSTER".to_string(),
+        ];
+
+        let error = validate_cross_family_analytic_text(
+            &state,
+            &refs,
+            project_id,
+            "Independent detectors converge on episodic CPU, DB-time, I/O and RAC activity.",
+            "Multiple statistical models agree that database activity occurred.",
+            "Several windows contain co-occurring signals.",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error["error_code"],
+            "ANALYTIC_SYNTHESIS_MISSING_DOMINANT_SIGNALS"
+        );
+
+        let error = validate_cross_family_analytic_text(
+            &state,
+            &refs,
+            project_id,
+            "session logical reads dominate DB CPU; 7ud94ccmpaz8u is persistent CPU work; cursor: pin S wait on X dominates the DB Time wait tail",
+            "Huber and Ridge retain the contributors as CONFIRMED_BOTTLENECK_EN_COLLINEAR",
+            "Physical write (blocks) deviated at 24-Jul-26 15:30:17; cluster SNAP_ID 156679 also contains flashback log file write",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error["error_code"],
+            "ANALYTIC_SYNTHESIS_MISSING_TYPICAL_PEAK_CONTRAST"
+        );
+
+        validate_cross_family_analytic_text(
+            &state,
+            &refs,
+            project_id,
+            "session logical reads dominate typical DB CPU; 7ud94ccmpaz8u is persistent typical CPU work; cursor: pin S wait on X dominates the peak DB Time wait tail",
+            "Huber, Quantile-95 and Ridge retain the workload signals as CONFIRMED_BOTTLENECK_EN_COLLINEAR, while Elastic Net also retains cursor: pin S wait on X as CONFIRMED_BOTTLENECK",
+            "Physical write (blocks) deviated at 24-Jul-26 15:30:17; cluster SNAP_ID 156679 at 20-Jul-26 00:00:28 also contains flashback log file write",
+        )
+        .unwrap();
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{env, fs};
 
-const LOCAL_AGENT_SCHEMA_VERSION: &str = "2026-08-23.3";
+const LOCAL_AGENT_SCHEMA_VERSION: &str = "2026-08-23.4";
 const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 16 * 1024;
 const DEFAULT_CONTEXT_HIGH_WATER_PCT: usize = 72;
 const DEFAULT_TOOL_OUTPUT_TOKENS: usize = 3_072;
