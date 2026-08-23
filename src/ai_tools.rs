@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use toon::encode;
 
 use crate::awr::{AWRSCollection, AWR};
+use crate::debug_note;
 
 const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-08-23.3";
 const DEFAULT_LIMIT: usize = 50;
@@ -52,6 +53,7 @@ const MAX_AIX_RECURSION_DEPTH: usize = 4;
 /// Keep descriptions explicit: the model uses them as its routing table. Yes,
 /// apparently we now write documentation for probabilistic parrots. Here we are.
 pub fn tools_schema(stem: &str) -> Value {
+    debug_note!("Building AI tool schema for stem '{}'", stem);
     let mut tools = json!([
         // ====================================================================
         // 0. GLOBAL OVERVIEW / TRIAGE
@@ -665,6 +667,12 @@ pub fn tools_schema(stem: &str) -> Value {
 
         println!("✅ Found AIX OS attachments in {}", aix_dir.display());
     }
+    debug_note!(
+        "AI tool schema ready: stem='{}', tool_count={}, aix_attachments={}",
+        stem,
+        tools.as_array().map_or(0, Vec::len),
+        aix_dir.is_dir()
+    );
     tools
 }
 
@@ -683,7 +691,14 @@ pub fn dispatch_tool_call_value(
     collection: &AWRSCollection,
     stem: &str,
 ) -> Value {
-    match name {
+    debug_note!(
+        "Dispatching diagnostic tool: name='{}', argument_count={}, snapshots={}, stem='{}'",
+        name,
+        args.as_object().map_or(0, serde_json::Map::len),
+        collection.awrs.len(),
+        stem
+    );
+    let result = match name {
         // Global overview
         "get_database_load_summary" => tool_get_database_load_summary(args, collection),
 
@@ -735,7 +750,14 @@ pub fn dispatch_tool_call_value(
             "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
             "error": format!("Unknown tool: {}", other)
         }),
-    }
+    };
+    debug_note!(
+        "Diagnostic tool completed: name='{}', error={}, result_bytes={}",
+        name,
+        result.get("error").is_some(),
+        result.to_string().len()
+    );
+    result
 }
 
 /// Returns a JSON-encoded tool result for OpenAI-compatible chat messages.
@@ -747,6 +769,11 @@ pub fn dispatch_tool_call(
 ) -> String {
     serde_json::to_string(&dispatch_tool_call_value(name, args, collection, stem)).unwrap_or_else(
         |e| {
+            debug_note!(
+                "Diagnostic tool result serialization failed: name='{}', error={}",
+                name,
+                e
+            );
             json!({
                 "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
                 "error": format!("Serialization failed: {}", e)

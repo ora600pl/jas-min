@@ -1,6 +1,7 @@
 use crate::awr::{
     AWRSCollection, HostCPU, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime, SQLReads, WaitEvents, AWR,
 };
+use crate::debug_note;
 use crate::make_notes;
 use crate::reasonings::{
     AnomalyDescription, AnomlyCluster, IOStatsByFunctionSummary, InstanceStatisticCorrelation,
@@ -337,12 +338,24 @@ fn detect_anomalies_mad_sliding(
     stats_vector: &HashMap<String, Vec<f64>>,
     args: &Args,
 ) -> HashMap<String, Vec<(String, f64)>> {
+    debug_note!(
+        "Starting MAD anomaly detection: snapshots={}, series={}, window_pct={}, top_n={}",
+        awrs.len(),
+        stats_vector.len(),
+        args.mad_window_size,
+        args.mad_top
+    );
     let mut anomalies: HashMap<String, Vec<(String, f64)>> = HashMap::new();
     //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
 
     //if window is 100% don't use sliding window alghorithm - use normal detection for better performance
     if args.mad_window_size == 100 {
         anomalies = detect_anomalies_mad(awrs, stats_vector, args);
+        debug_note!(
+            "Completed full-window MAD anomaly detection: anomalous_series={}, anomaly_points={}",
+            anomalies.len(),
+            anomalies.values().map(Vec::len).sum::<usize>()
+        );
         return anomalies;
     }
 
@@ -405,6 +418,12 @@ fn detect_anomalies_mad_sliding(
         .filter(|(_, v)| !v.is_empty()) //filter out statistics with empty vectors - it means that no anomalie was detected for this stat
         .collect();
 
+    debug_note!(
+        "Completed sliding-window MAD anomaly detection: window_samples={}, anomalous_series={}, anomaly_points={}",
+        full_window_size,
+        anomalies.len(),
+        anomalies.values().map(Vec::len).sum::<usize>()
+    );
     anomalies
 }
 
@@ -585,6 +604,11 @@ pub fn save_anomalies_to_csv(
     */
 
     let output_dir = output_dir.as_ref();
+    debug_note!(
+        "Writing anomaly CSV artifacts: clusters={}, output_dir='{}'",
+        anomalies_summary.len(),
+        output_dir.display()
+    );
 
     // Path to subdirectory for anomalies CSV files
     let dirpath = output_dir
@@ -602,6 +626,11 @@ pub fn save_anomalies_to_csv(
     println!(
         "Detailed CSV files for {} anomalies saved successfully",
         anomalies_summary.len()
+    );
+    debug_note!(
+        "Anomaly CSV artifacts written: clusters={}, directory='{}'",
+        anomalies_summary.len(),
+        dirpath.display()
     );
 
     Ok(())
@@ -770,6 +799,12 @@ pub fn trim_anomalies_summary(
     anomalies_summary: &mut BTreeMap<(u64, String), BTreeMap<String, Vec<AnomalySummaryItem>>>,
     args: &Args,
 ) {
+    let clusters_before = anomalies_summary.len();
+    let anomalies_before = anomalies_summary
+        .values()
+        .flat_map(|categories| categories.values())
+        .map(Vec::len)
+        .sum::<usize>();
     /*
         Step 1:
         For each snapshot/date and each anomaly category, keep only top N anomalies
@@ -779,6 +814,11 @@ pub fn trim_anomalies_summary(
     let top_n = args.mad_top;
 
     if top_n == 0 {
+        debug_note!(
+            "Anomaly trimming disabled: clusters={}, anomaly_points={}",
+            clusters_before,
+            anomalies_before
+        );
         return;
     }
 
@@ -800,6 +840,17 @@ pub fn trim_anomalies_summary(
     anomalies_summary.retain(|_snap_key, anomalies_by_category| !anomalies_by_category.is_empty());
 
     if args.top_cluster_anomalies == 0 {
+        debug_note!(
+            "Anomaly trimming completed without cluster cap: clusters={}->{}, anomaly_points={}->{}",
+            clusters_before,
+            anomalies_summary.len(),
+            anomalies_before,
+            anomalies_summary
+                .values()
+                .flat_map(|categories| categories.values())
+                .map(Vec::len)
+                .sum::<usize>()
+        );
         return;
     }
 
@@ -838,4 +889,15 @@ pub fn trim_anomalies_summary(
         .collect();
 
     anomalies_summary.retain(|snap_key, _anomalies_by_category| keep_snap_keys.contains(snap_key));
+    debug_note!(
+        "Anomaly trimming completed: clusters={}->{}, anomaly_points={}->{}",
+        clusters_before,
+        anomalies_summary.len(),
+        anomalies_before,
+        anomalies_summary
+            .values()
+            .flat_map(|categories| categories.values())
+            .map(Vec::len)
+            .sum::<usize>()
+    );
 }

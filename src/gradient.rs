@@ -1,3 +1,4 @@
+use crate::debug_note;
 use crate::make_notes;
 use crate::reasonings::{
     AnomalyDescription, AnomlyCluster, CollinearGroupImpact, CrossModelClassification,
@@ -112,6 +113,16 @@ pub fn compute_db_time_gradient(
     elastic_net_max_iter: usize,
     elastic_net_tol: f64,
 ) -> Result<DbTimeGradientResult, String> {
+    debug_note!(
+        "Starting DB Time gradient computation: samples={}, predictors={}, ridge_lambda={}, en_lambda={}, en_alpha={}, max_iter={}, tolerance={}",
+        db_time_series.len(),
+        event_series.len(),
+        ridge_lambda,
+        elastic_net_lambda,
+        elastic_net_alpha,
+        elastic_net_max_iter,
+        elastic_net_tol
+    );
     if db_time_series.len() < 3 {
         return Err("DB Time series must have at least 3 samples.".into());
     }
@@ -268,6 +279,18 @@ pub fn compute_db_time_gradient(
         &vif_by_event,
         10.0, // VIF threshold
         0.8,  // correlation threshold for grouping
+    );
+
+    debug_note!(
+        "DB Time gradient computation completed: predictors={}, ridge_ranked={}, en_ranked={}, huber_ranked={}, q95_ranked={}, vif_entries={}, collinear_groups={}, elapsed_ms={}",
+        event_series.len(),
+        ridge_ranking.len(),
+        elastic_net_ranking.len(),
+        huber_ranking.len(),
+        quantile95_ranking.len(),
+        vif_by_event.len(),
+        collinear_groups.len(),
+        duration.as_millis()
     );
 
     Ok(DbTimeGradientResult {
@@ -1426,6 +1449,13 @@ pub fn build_db_time_gradient_section(
     units_desc: &str,
     top_n: usize,
 ) -> Result<DbTimeGradientSection, String> {
+    debug_note!(
+        "Building gradient section: label='{}', samples={}, predictors={}, top_n={}",
+        units_desc,
+        db_time_series.len(),
+        event_series.len(),
+        top_n
+    );
     println!(
         "\n\nBuilding gradient for {units_desc} - {} stats",
         event_series.len()
@@ -1541,6 +1571,14 @@ pub fn build_db_time_gradient_section(
             combined_coef: *coef,
         })
         .collect();
+
+    debug_note!(
+        "Gradient section ready: label='{}', cross_model={}, vif={}, collinear_groups={}",
+        units_desc,
+        section.cross_model_classifications.len(),
+        section.vif_diagnostics.len(),
+        section.collinear_group_impacts.len()
+    );
 
     Ok(section)
 }
@@ -1855,6 +1893,12 @@ pub fn run_gradient_section(
         args.top_gradient,
     ) {
         Ok(section) => {
+            debug_note!(
+                "Gradient section succeeded: name='{}', predictors={}, target_samples={}",
+                spec.display_name,
+                spec.features.len(),
+                spec.target.len()
+            );
             make_notes!(
                 logfile_name,
                 false,
@@ -1868,6 +1912,13 @@ pub fn run_gradient_section(
             (Some(section), html)
         }
         Err(err) => {
+            debug_note!(
+                "Gradient section skipped: name='{}', predictors={}, target_samples={}, reason={}",
+                spec.display_name,
+                spec.features.len(),
+                spec.target.len(),
+                err
+            );
             make_notes!(
                 logfile_name,
                 false,

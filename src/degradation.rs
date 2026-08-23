@@ -1,4 +1,5 @@
 use crate::awr::{AWRSCollection, AWR};
+use crate::debug_note;
 use crate::reasonings::{
     DbTimeDegradationDomainSummary, DbTimeDegradationFinding, DbTimeDegradationReport,
 };
@@ -35,16 +36,42 @@ pub fn build_db_time_degradation_report(
     instance_stats: &HashMap<String, Vec<f64>>,
     args: &Args,
 ) -> Option<DbTimeDegradationReport> {
+    debug_note!(
+        "Building DB Time degradation report: snap_range={}-{}, db_time_samples={}, db_cpu_samples={}, waits={}, sqls={}, stats={}",
+        snap_range.0,
+        snap_range.1,
+        db_time.len(),
+        db_cpu.len(),
+        wait_events.len(),
+        sql_elapsed.len(),
+        instance_stats.len()
+    );
     if db_time.len() < MIN_BASELINE_SAMPLES + MIN_RECENT_SAMPLES || x_vals.len() != db_time.len() {
+        debug_note!(
+            "Skipping DB Time degradation report: insufficient or unaligned samples (labels={}, db_time={})",
+            x_vals.len(),
+            db_time.len()
+        );
         return None;
     }
 
     let (baseline, degraded) = split_windows(db_time.len());
     if baseline.len() < MIN_BASELINE_SAMPLES || degraded.len() < MIN_RECENT_SAMPLES {
+        debug_note!(
+            "Skipping DB Time degradation report: baseline_samples={}, recent_samples={}",
+            baseline.len(),
+            degraded.len()
+        );
         return None;
     }
 
-    let db_time_stats = compare_windows(db_time, &baseline, &degraded)?;
+    let db_time_stats = match compare_windows(db_time, &baseline, &degraded) {
+        Some(stats) => stats,
+        None => {
+            debug_note!("Skipping DB Time degradation report: window comparison unavailable");
+            return None;
+        }
+    };
     let db_cpu_stats = compare_windows(db_cpu, &baseline, &degraded).unwrap_or_default();
     // Positive DB Time delta is used as the denominator for the "share" score. If DB Time
     // did not rise, contributors can still be listed by z-score/correlation, but their
@@ -150,6 +177,14 @@ pub fn build_db_time_degradation_report(
         )
     };
 
+    debug_note!(
+        "DB Time degradation report ready: detected={}, delta_pct={:.2}, findings={}, domains={}",
+        is_degradation_detected,
+        db_time_stats.delta_pct,
+        findings.len(),
+        dominant_domains.len()
+    );
+
     Some(DbTimeDegradationReport {
         is_degradation_detected,
         verdict,
@@ -182,16 +217,29 @@ pub fn find_degraded_sqls_for_analysis(
     // It reuses the same baseline-vs-recent math as the full degradation report, then returns
     // SQL_IDs that should be promoted into the normal TOP SQL analysis pipeline.
     let db_time = db_time_series(collection, snap_range);
+    debug_note!(
+        "Scanning degraded SQLs: snap_range={}-{}, db_time_samples={}",
+        snap_range.0,
+        snap_range.1,
+        db_time.len()
+    );
     if db_time.len() < MIN_BASELINE_SAMPLES + MIN_RECENT_SAMPLES {
+        debug_note!("Skipping degraded SQL scan: insufficient DB Time samples");
         return Vec::new();
     }
 
     let (baseline, degraded) = split_windows(db_time.len());
     if baseline.len() < MIN_BASELINE_SAMPLES || degraded.len() < MIN_RECENT_SAMPLES {
+        debug_note!(
+            "Skipping degraded SQL scan: baseline_samples={}, recent_samples={}",
+            baseline.len(),
+            degraded.len()
+        );
         return Vec::new();
     }
 
     let Some(db_time_stats) = compare_windows(&db_time, &baseline, &degraded) else {
+        debug_note!("Skipping degraded SQL scan: window comparison unavailable");
         return Vec::new();
     };
 
@@ -221,13 +269,18 @@ pub fn find_degraded_sqls_for_analysis(
             })
     });
 
-    sql_findings
+    let degraded_sqls = sql_findings
         .into_iter()
         .map(|f| {
             let module = sql_modules.get(&f.name).cloned().unwrap_or_default();
             (f.name, module)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    debug_note!(
+        "Degraded SQL scan completed: sql_count={}",
+        degraded_sqls.len()
+    );
+    degraded_sqls
 }
 
 pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> String {

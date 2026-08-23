@@ -1,4 +1,5 @@
 use crate::awr::GetStats;
+use crate::debug_note;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::Local;
 use html_escape::{encode_double_quoted_attribute, encode_text};
@@ -923,17 +924,31 @@ pub(crate) fn render_markdown_html_document(
     html_absolute_dir: &str,
     events_sqls: HashMap<&str, HashSet<String>>,
 ) -> String {
+    debug_note!(
+        "Rendering Markdown HTML document: markdown_bytes={}, html_dir='{}', absolute_dir='{}', link_groups={}",
+        markdown.len(),
+        html_dir,
+        html_absolute_dir,
+        events_sqls.len()
+    );
     let html_plain = markdown_to_html_with_toc(markdown, html_dir, html_absolute_dir);
-    add_links_to_html(
+    let html = add_links_to_html(
         html_plain,
         events_sqls,
         html_dir.to_string(),
         html_absolute_dir.to_string(),
-    )
+    );
+    debug_note!("Markdown HTML document rendered: html_bytes={}", html.len());
+    html
 }
 
 /// Reads a Markdown file, converts to HTML with TOC, writes to .html file
 pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, HashSet<String>>) {
+    debug_note!(
+        "Starting Markdown file conversion: input='{}', link_groups={}",
+        input_path,
+        events_sqls.len()
+    );
     let markdown = fs::read_to_string(input_path)
         .unwrap_or_else(|_| panic!("Could not read file '{}'", input_path));
 
@@ -951,6 +966,11 @@ pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, Hash
 
     fs::write(&output_path, html)
         .unwrap_or_else(|_| panic!("Could not write to file '{:?}'", output_path));
+
+    debug_note!(
+        "Markdown file conversion completed: output='{}'",
+        output_path.display()
+    );
 
     println!("✅ HTML file generated at: {:?}", output_path);
     open::that(output_path);

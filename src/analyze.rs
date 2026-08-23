@@ -2943,6 +2943,14 @@ pub fn main_report_builder(
     let filter_db_time: f64 = args.filter_db_time;
     let snap_range: (u64, u64) =
         parse_snap_range(&args.snap_range).expect("Invalid snap-range argument");
+    debug_note!(
+        "Starting main report build: snapshots={}, snap_range={}-{}, directory='{}', json_file='{}'",
+        collection.awrs.len(),
+        snap_range.0,
+        snap_range.1,
+        args.directory(),
+        args.json_file()
+    );
 
     //Filenames and Paths used to save JAS-MIN files
     let mut logfile_name = PathBuf::from(args.directory())
@@ -3048,6 +3056,14 @@ pub fn main_report_builder(
             top_stats.sqls.entry(sql_id).or_insert(module);
         }
     }
+    debug_note!(
+        "Top-stat selection completed: fg_waits={}, bg_waits={}, sql_elapsed={}, sql_cpu={}, instance_stats={}",
+        top_stats.events.len(),
+        top_stats.bgevents.len(),
+        top_stats.sqls.len(),
+        top_stats.sqls_cpu.len(),
+        top_stats.stat_names.len()
+    );
 
     println!("{}", "\n==== CREATING PLOTS ===".bold().bright_cyan());
     generate_events_plotfiles(
@@ -3269,6 +3285,18 @@ pub fn main_report_builder(
             }
         }
     }
+
+    debug_note!(
+        "Aligned analysis series built: snapshots={}, db_time={}, db_cpu={}, fg_wait_series={}, bg_wait_series={}, sql_series={}, sql_cpu_series={}, instance_stat_series={}",
+        x_vals.len(),
+        y_vals_dbtime.len(),
+        y_vals_dbcpu.len(),
+        y_vals_events.len(),
+        y_vals_bgevents.len(),
+        y_vals_sqls.len(),
+        y_vals_sqls_cpu.len(),
+        instance_stats.len()
+    );
 
     //I want to sort wait events by most heavy ones across the whole period
     let mut y_vals_events_sorted = BTreeMap::new();
@@ -6686,5 +6714,10 @@ pub fn main_report_builder(
     /* ***************************************************** */
 
     report_for_ai.initialization_parameters = collection.initialization_parameters.clone();
+    debug_note!(
+        "Main report build completed: snapshots={}, serialized_report_bytes={}",
+        collection.awrs.len(),
+        serde_json::to_vec(&report_for_ai).map_or(0, |value| value.len())
+    );
     report_for_ai
 }
