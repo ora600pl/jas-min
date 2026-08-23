@@ -25,26 +25,45 @@ pub type EventSeriesMap = BTreeMap<String, Vec<f64>>;
 /// Named vector: event_name/stat_name/sqlid -> scalar_value (coef, impact, mean, std, MAD, etc.)
 pub type EventScalarMap = BTreeMap<String, f64>;
 
+const ELASTIC_NET_CV_FOLDS: usize = 5;
+const ELASTIC_NET_LAMBDA_GRID_SIZE: usize = 40;
+const ELASTIC_NET_MIN_LAMBDA_RATIO: f64 = 1e-3;
+const ELASTIC_NET_FALLBACK_LAMBDA_RATIO: f64 = 0.05;
+const ELASTIC_NET_MIN_CV_SAMPLES: usize = 12;
+
+#[derive(Debug, Clone)]
+pub struct ElasticNetSelection {
+    pub selected_lambda: f64,
+    pub lambda_mode: String,
+    pub lambda_max: f64,
+    pub lambda_ratio: f64,
+    pub cv_folds: usize,
+    pub cv_rule: String,
+    pub cv_mean_loss: Option<f64>,
+    pub nonzero_coefficients: usize,
+    pub target_standardized: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct EventImpact {
     pub event_name: String,
     /// Regression coefficient on standardized Δ
     pub gradient_coef: f64,
 
-    /// Legacy/typical impact = |coef| * MAD(Δx)
+    /// Legacy/typical impact = |raw-scale coef| * MAD(raw Δx)
     /// Measures contribution during *typical* variability.
     pub impact: f64,
     /// Signed version of `impact` (preserves direction).
     pub signed_impact: f64,
 
-    /// Active impact = |coef| * P90(|Δx|)
+    /// Active impact = |raw-scale coef| * P90(|raw Δx|)
     /// Measures contribution when the predictor is *actively moving*.
     /// **Primary metric for DB tuning prioritization.**
     pub impact_active: f64,
     /// Signed active impact (positive = true bottleneck contributor).
     pub signed_impact_active: f64,
 
-    /// Peak impact = |coef| * P99(|Δx|)
+    /// Peak impact = |raw-scale coef| * P99(|raw Δx|)
     /// Measures worst-case single-snapshot contribution.
     pub impact_peak: f64,
 
@@ -60,6 +79,7 @@ pub struct DbTimeGradientResult {
     pub ridge_gradient_by_event: EventScalarMap,
     /// Elastic Net coefficients: event -> coef
     pub elastic_net_gradient_by_event: EventScalarMap,
+    pub elastic_net_selection: ElasticNetSelection,
     //Huber robust regression coefficients
     pub huber_gradient_by_event: EventScalarMap,
     //Quantile regression (tau=0.95) coefficients
@@ -92,7 +112,7 @@ pub struct DbTimeGradientResult {
 #[derive(Debug)]
 enum RegressionResult {
     Ridge(Result<EventScalarMap, String>),
-    ElasticNet(EventScalarMap),
+    ElasticNet(Result<(EventScalarMap, ElasticNetSelection), String>),
     Huber(EventScalarMap),
     Quantile95(EventScalarMap),
 }
@@ -108,13 +128,13 @@ pub fn compute_db_time_gradient(
     db_time_series: &[f64],
     event_series: &EventSeriesMap,
     ridge_lambda: f64,
-    elastic_net_lambda: f64,
+    elastic_net_lambda: Option<f64>,
     elastic_net_alpha: f64,
     elastic_net_max_iter: usize,
     elastic_net_tol: f64,
 ) -> Result<DbTimeGradientResult, String> {
     debug_note!(
-        "Starting DB Time gradient computation: samples={}, predictors={}, ridge_lambda={}, en_lambda={}, en_alpha={}, max_iter={}, tolerance={}",
+        "Starting DB Time gradient computation: samples={}, predictors={}, ridge_lambda={}, en_lambda={:?}, en_alpha={}, max_iter={}, tolerance={}",
         db_time_series.len(),
         event_series.len(),
         ridge_lambda,
@@ -129,11 +149,26 @@ pub fn compute_db_time_gradient(
     if event_series.is_empty() {
         return Err("event_series is empty.".into());
     }
-    if ridge_lambda < 0.0 || elastic_net_lambda < 0.0 {
-        return Err("Regularization lambdas must be >= 0.".into());
+    if !ridge_lambda.is_finite()
+        || ridge_lambda < 0.0
+        || elastic_net_lambda.is_some_and(|lambda| !lambda.is_finite() || lambda < 0.0)
+    {
+        return Err("Regularization lambdas must be finite values >= 0.".into());
     }
-    if !(0.0..=1.0).contains(&elastic_net_alpha) {
-        return Err("Elastic Net alpha must be in [0, 1].".into());
+    if !elastic_net_alpha.is_finite() || !(0.0..=1.0).contains(&elastic_net_alpha) {
+        return Err("Elastic Net alpha must be a finite value in [0, 1].".into());
+    }
+    if elastic_net_lambda.is_none() && elastic_net_alpha <= 0.0 {
+        return Err(
+            "Automatic Elastic Net lambda selection requires alpha > 0; provide a fixed lambda for alpha=0."
+                .into(),
+        );
+    }
+    if elastic_net_max_iter == 0 {
+        return Err("Elastic Net max_iter must be greater than 0.".into());
+    }
+    if !elastic_net_tol.is_finite() || elastic_net_tol <= 0.0 {
+        return Err("Elastic Net tolerance must be a finite value > 0.".into());
     }
 
     let time_len = db_time_series.len();
@@ -183,9 +218,10 @@ pub fn compute_db_time_gradient(
                 &db_time_delta,
                 ridge_lambda,
             )),
-            1 => RegressionResult::ElasticNet(elastic_net_coordinate_descent_map(
+            1 => RegressionResult::ElasticNet(fit_elastic_net(
+                &event_delta_by_event,
                 &event_delta_standardized_by_event,
-                &db_time_delta,
+                &db_time_delta_raw,
                 elastic_net_lambda,
                 elastic_net_alpha,
                 elastic_net_max_iter,
@@ -214,13 +250,18 @@ pub fn compute_db_time_gradient(
     //Unpacking results
     let mut ridge_gradient_by_event = None;
     let mut elastic_net_gradient_by_event = None;
+    let mut elastic_net_selection = None;
     let mut huber_gradient_by_event = None;
     let mut quantile95_gradient_by_event = None;
 
     for result in results {
         match result {
             RegressionResult::Ridge(r) => ridge_gradient_by_event = Some(r?),
-            RegressionResult::ElasticNet(m) => elastic_net_gradient_by_event = Some(m),
+            RegressionResult::ElasticNet(result) => {
+                let (coefficients, selection) = result?;
+                elastic_net_gradient_by_event = Some(coefficients);
+                elastic_net_selection = Some(selection);
+            }
             RegressionResult::Huber(m) => huber_gradient_by_event = Some(m),
             RegressionResult::Quantile95(m) => quantile95_gradient_by_event = Some(m),
         }
@@ -228,29 +269,34 @@ pub fn compute_db_time_gradient(
 
     let ridge_gradient_by_event = ridge_gradient_by_event.unwrap();
     let elastic_net_gradient_by_event = elastic_net_gradient_by_event.unwrap();
+    let elastic_net_selection = elastic_net_selection.unwrap();
     let huber_gradient_by_event = huber_gradient_by_event.unwrap();
     let quantile95_gradient_by_event = quantile95_gradient_by_event.unwrap();
 
     let ridge_ranking = build_ranking(
         &ridge_gradient_by_event,
+        &event_delta_std_by_event,
         &event_delta_mad_by_event,
         &event_delta_p90_by_event,
         &event_delta_p99_by_event,
     );
     let elastic_net_ranking = build_ranking(
         &elastic_net_gradient_by_event,
+        &event_delta_std_by_event,
         &event_delta_mad_by_event,
         &event_delta_p90_by_event,
         &event_delta_p99_by_event,
     );
     let huber_ranking = build_ranking(
         &huber_gradient_by_event,
+        &event_delta_std_by_event,
         &event_delta_mad_by_event,
         &event_delta_p90_by_event,
         &event_delta_p99_by_event,
     );
     let quantile95_ranking = build_ranking(
         &quantile95_gradient_by_event,
+        &event_delta_std_by_event,
         &event_delta_mad_by_event,
         &event_delta_p90_by_event,
         &event_delta_p99_by_event,
@@ -296,6 +342,7 @@ pub fn compute_db_time_gradient(
     Ok(DbTimeGradientResult {
         ridge_gradient_by_event,
         elastic_net_gradient_by_event,
+        elastic_net_selection,
         huber_gradient_by_event,
         quantile95_gradient_by_event,
         ridge_ranking,
@@ -449,8 +496,14 @@ fn ridge_regression_map(
         }
     }
 
-    // Ridge penalty on diagonal
+    // Use the mean-loss convention, matching Elastic Net. This keeps lambda
+    // independent of the number of observations in an otherwise identical dataset.
+    let inverse_sample_count = 1.0 / n as f64;
     for j in 0..p {
+        xty[j] *= inverse_sample_count;
+        for k in 0..p {
+            xtx[j][k] *= inverse_sample_count;
+        }
         xtx[j][j] += lambda;
     }
 
@@ -463,6 +516,352 @@ fn ridge_regression_map(
 Elastic Net coordinate descent (map-based)
 ========================================================================================= */
 
+fn mean_and_sample_std(values: &[f64]) -> (f64, f64) {
+    if values.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    if values.len() < 2 {
+        return (mean, 0.0);
+    }
+    let variance = values
+        .iter()
+        .map(|value| {
+            let delta = *value - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / (values.len() - 1) as f64;
+    let std = variance.sqrt();
+    if std.is_finite() {
+        (mean, std)
+    } else {
+        (mean, 0.0)
+    }
+}
+
+fn elastic_net_lambda_max(
+    standardized_event_deltas: &EventSeriesMap,
+    standardized_target: &[f64],
+    alpha: f64,
+) -> f64 {
+    if alpha <= f64::EPSILON || standardized_target.is_empty() {
+        return 0.0;
+    }
+    let inverse_sample_count = 1.0 / standardized_target.len() as f64;
+    standardized_event_deltas
+        .values()
+        .map(|series| {
+            series
+                .iter()
+                .zip(standardized_target)
+                .map(|(x, y)| x * y)
+                .sum::<f64>()
+                .abs()
+                * inverse_sample_count
+                / alpha
+        })
+        .filter(|value| value.is_finite())
+        .fold(0.0, f64::max)
+}
+
+fn elastic_net_lambda_ratios() -> Vec<f64> {
+    let log_min = ELASTIC_NET_MIN_LAMBDA_RATIO.ln();
+    (0..ELASTIC_NET_LAMBDA_GRID_SIZE)
+        .map(|index| {
+            let fraction = index as f64 / (ELASTIC_NET_LAMBDA_GRID_SIZE - 1) as f64;
+            (log_min * fraction).exp()
+        })
+        .collect()
+}
+
+fn forward_chaining_folds(sample_count: usize) -> Vec<(usize, usize)> {
+    if sample_count < ELASTIC_NET_MIN_CV_SAMPLES {
+        return Vec::new();
+    }
+    let initial_training_size = (sample_count / 3).max(4);
+    let remaining = sample_count.saturating_sub(initial_training_size);
+    let fold_count = ELASTIC_NET_CV_FOLDS.min(remaining);
+    if fold_count < 2 {
+        return Vec::new();
+    }
+
+    (0..fold_count)
+        .filter_map(|fold| {
+            let validation_start =
+                initial_training_size + remaining.saturating_mul(fold) / fold_count;
+            let validation_end =
+                initial_training_size + remaining.saturating_mul(fold + 1) / fold_count;
+            (validation_end > validation_start).then_some((validation_start, validation_end))
+        })
+        .collect()
+}
+
+fn standardize_elastic_net_fold(
+    raw_event_deltas: &EventSeriesMap,
+    raw_target: &[f64],
+    training_end: usize,
+    validation_end: usize,
+) -> Option<(EventSeriesMap, EventSeriesMap, Vec<f64>, Vec<f64>)> {
+    let (target_mean, target_std) = mean_and_sample_std(&raw_target[..training_end]);
+    if target_std <= f64::EPSILON {
+        return None;
+    }
+    let training_target = raw_target[..training_end]
+        .iter()
+        .map(|value| (*value - target_mean) / target_std)
+        .collect();
+    let validation_target = raw_target[training_end..validation_end]
+        .iter()
+        .map(|value| (*value - target_mean) / target_std)
+        .collect();
+
+    let mut training_events = EventSeriesMap::new();
+    let mut validation_events = EventSeriesMap::new();
+    for (event_name, series) in raw_event_deltas {
+        let (mean, std) = mean_and_sample_std(&series[..training_end]);
+        if std <= f64::EPSILON {
+            training_events.insert(event_name.clone(), vec![0.0; training_end]);
+            validation_events.insert(event_name.clone(), vec![0.0; validation_end - training_end]);
+            continue;
+        }
+        training_events.insert(
+            event_name.clone(),
+            series[..training_end]
+                .iter()
+                .map(|value| (*value - mean) / std)
+                .collect(),
+        );
+        validation_events.insert(
+            event_name.clone(),
+            series[training_end..validation_end]
+                .iter()
+                .map(|value| (*value - mean) / std)
+                .collect(),
+        );
+    }
+
+    Some((
+        training_events,
+        validation_events,
+        training_target,
+        validation_target,
+    ))
+}
+
+fn elastic_net_validation_loss(
+    coefficients: &EventScalarMap,
+    validation_events: &EventSeriesMap,
+    validation_target: &[f64],
+) -> f64 {
+    if validation_target.is_empty() {
+        return f64::INFINITY;
+    }
+    let squared_error = validation_target
+        .iter()
+        .enumerate()
+        .map(|(sample_index, target)| {
+            let prediction = coefficients
+                .iter()
+                .map(|(event_name, coefficient)| {
+                    coefficient * validation_events[event_name][sample_index]
+                })
+                .sum::<f64>();
+            let residual = *target - prediction;
+            residual * residual
+        })
+        .sum::<f64>();
+    squared_error / validation_target.len() as f64
+}
+
+#[derive(Debug)]
+struct AutomaticLambdaChoice {
+    ratio: f64,
+    folds: usize,
+    mean_loss: f64,
+}
+
+fn select_elastic_net_lambda_ratio(
+    raw_event_deltas: &EventSeriesMap,
+    raw_target: &[f64],
+    alpha: f64,
+    max_iter: usize,
+    tol: f64,
+) -> Option<AutomaticLambdaChoice> {
+    let folds = forward_chaining_folds(raw_target.len());
+    if folds.is_empty() {
+        return None;
+    }
+    let lambda_ratios = elastic_net_lambda_ratios();
+    let mut losses_by_ratio = vec![Vec::<f64>::new(); lambda_ratios.len()];
+
+    for (training_end, validation_end) in folds {
+        let Some((training_events, validation_events, training_target, validation_target)) =
+            standardize_elastic_net_fold(
+                raw_event_deltas,
+                raw_target,
+                training_end,
+                validation_end,
+            )
+        else {
+            continue;
+        };
+        let fold_lambda_max = elastic_net_lambda_max(&training_events, &training_target, alpha);
+        let mut warm_start: Option<EventScalarMap> = None;
+
+        for (index, ratio) in lambda_ratios.iter().enumerate() {
+            let lambda = fold_lambda_max * ratio;
+            let coefficients = elastic_net_coordinate_descent_map_with_initial(
+                &training_events,
+                &training_target,
+                lambda,
+                alpha,
+                max_iter,
+                tol,
+                warm_start.as_ref(),
+            );
+            let loss =
+                elastic_net_validation_loss(&coefficients, &validation_events, &validation_target);
+            losses_by_ratio[index].push(loss);
+            warm_start = Some(coefficients);
+        }
+    }
+
+    let actual_folds = losses_by_ratio.first()?.len();
+    if actual_folds < 2 {
+        return None;
+    }
+    let summaries: Vec<(f64, f64)> = losses_by_ratio
+        .iter()
+        .map(|losses| {
+            let mean = losses.iter().sum::<f64>() / losses.len() as f64;
+            let variance = losses
+                .iter()
+                .map(|loss| {
+                    let delta = *loss - mean;
+                    delta * delta
+                })
+                .sum::<f64>()
+                / (losses.len() - 1) as f64;
+            let standard_error = variance.sqrt() / (losses.len() as f64).sqrt();
+            (mean, standard_error)
+        })
+        .collect();
+    let best_index = summaries
+        .iter()
+        .enumerate()
+        .filter(|(_, (mean, _))| mean.is_finite())
+        .min_by(|(_, left), (_, right)| left.0.total_cmp(&right.0))?
+        .0;
+    let one_standard_error_limit = summaries[best_index].0 + summaries[best_index].1;
+    let selected_index = summaries
+        .iter()
+        .position(|(mean, _)| mean.is_finite() && *mean <= one_standard_error_limit)
+        .unwrap_or(best_index);
+
+    Some(AutomaticLambdaChoice {
+        ratio: lambda_ratios[selected_index],
+        folds: actual_folds,
+        mean_loss: summaries[selected_index].0,
+    })
+}
+
+fn fit_elastic_net(
+    raw_event_deltas: &EventSeriesMap,
+    standardized_event_deltas: &EventSeriesMap,
+    raw_target: &[f64],
+    fixed_lambda: Option<f64>,
+    alpha: f64,
+    max_iter: usize,
+    tol: f64,
+) -> Result<(EventScalarMap, ElasticNetSelection), String> {
+    let (target_mean, target_std) = mean_and_sample_std(raw_target);
+    let standardized_target = if target_std > f64::EPSILON {
+        raw_target
+            .iter()
+            .map(|value| (*value - target_mean) / target_std)
+            .collect::<Vec<_>>()
+    } else {
+        vec![0.0; raw_target.len()]
+    };
+    let lambda_max = elastic_net_lambda_max(standardized_event_deltas, &standardized_target, alpha);
+
+    let (selected_lambda, lambda_mode, cv_folds, cv_rule, cv_mean_loss) =
+        if let Some(lambda) = fixed_lambda {
+            (
+                lambda,
+                "fixed".to_string(),
+                0,
+                "fixed_override".to_string(),
+                None,
+            )
+        } else if target_std <= f64::EPSILON || lambda_max <= f64::EPSILON {
+            (
+                0.0,
+                "auto".to_string(),
+                0,
+                "constant_or_unrelated_target".to_string(),
+                None,
+            )
+        } else if let Some(choice) =
+            select_elastic_net_lambda_ratio(raw_event_deltas, raw_target, alpha, max_iter, tol)
+        {
+            (
+                lambda_max * choice.ratio,
+                "auto".to_string(),
+                choice.folds,
+                "one_standard_error_forward_chaining".to_string(),
+                Some(choice.mean_loss),
+            )
+        } else {
+            (
+                lambda_max * ELASTIC_NET_FALLBACK_LAMBDA_RATIO,
+                "auto".to_string(),
+                0,
+                "lambda_ratio_fallback_insufficient_samples".to_string(),
+                None,
+            )
+        };
+
+    let mut coefficients = elastic_net_coordinate_descent_map(
+        standardized_event_deltas,
+        &standardized_target,
+        selected_lambda,
+        alpha,
+        max_iter,
+        tol,
+    );
+    // Convert coefficients from standardized target units back to the original
+    // DB Time/DB CPU target units. Predictor unscaling happens in build_ranking.
+    for coefficient in coefficients.values_mut() {
+        *coefficient *= target_std;
+    }
+    let nonzero_coefficients = coefficients
+        .values()
+        .filter(|coefficient| **coefficient != 0.0)
+        .count();
+    let lambda_ratio = if lambda_max > f64::EPSILON {
+        selected_lambda / lambda_max
+    } else {
+        0.0
+    };
+
+    Ok((
+        coefficients,
+        ElasticNetSelection {
+            selected_lambda,
+            lambda_mode,
+            lambda_max,
+            lambda_ratio,
+            cv_folds,
+            cv_rule,
+            cv_mean_loss,
+            nonzero_coefficients,
+            target_standardized: true,
+        },
+    ))
+}
+
 fn elastic_net_coordinate_descent_map(
     standardized_event_deltas: &EventSeriesMap,
     db_time_delta: &[f64],
@@ -473,12 +872,46 @@ fn elastic_net_coordinate_descent_map(
 ) -> EventScalarMap {
     println!("  -> Building Elastic Net regression");
 
+    elastic_net_coordinate_descent_map_with_initial(
+        standardized_event_deltas,
+        db_time_delta,
+        lambda,
+        alpha,
+        max_iter,
+        tol,
+        None,
+    )
+}
+
+fn elastic_net_coordinate_descent_map_with_initial(
+    standardized_event_deltas: &EventSeriesMap,
+    db_time_delta: &[f64],
+    lambda: f64,
+    alpha: f64,
+    max_iter: usize,
+    tol: f64,
+    initial_coefficients: Option<&EventScalarMap>,
+) -> EventScalarMap {
     let sample_count = db_time_delta.len();
     let mut coef_by_event: EventScalarMap = standardized_event_deltas
         .keys()
-        .map(|k| (k.clone(), 0.0))
+        .map(|event_name| {
+            let initial = initial_coefficients
+                .and_then(|coefficients| coefficients.get(event_name))
+                .copied()
+                .unwrap_or(0.0);
+            (event_name.clone(), initial)
+        })
         .collect();
     let mut residual = db_time_delta.to_vec();
+    for (event_name, coefficient) in &coef_by_event {
+        if *coefficient == 0.0 {
+            continue;
+        }
+        for (sample_index, x) in standardized_event_deltas[event_name].iter().enumerate() {
+            residual[sample_index] -= x * coefficient;
+        }
+    }
     let mut feature_norm_by_event: EventScalarMap = BTreeMap::new();
     for (event_name, series) in standardized_event_deltas.iter() {
         let mut s = 0.0;
@@ -600,6 +1033,13 @@ fn huber_regression_map(
             }
         }
 
+        let inverse_sample_count = 1.0 / n as f64;
+        for value in &mut xtwx {
+            *value *= inverse_sample_count;
+        }
+        for value in &mut xtwy {
+            *value *= inverse_sample_count;
+        }
         for j in 0..p {
             for k in (j + 1)..p {
                 xtwx[k * p + j] = xtwx[j * p + k];
@@ -693,6 +1133,16 @@ fn quantile_regression_irls_map(
                     xtwx[j * p + k] += wxj * columns[k][t];
                 }
             }
+        }
+
+        // Normalize the weighted loss before adding regularization so lambda does
+        // not change meaning when the same observations are duplicated.
+        let inverse_sample_count = 1.0 / n as f64;
+        for value in &mut xtwx {
+            *value *= inverse_sample_count;
+        }
+        for value in &mut xtwy {
+            *value *= inverse_sample_count;
         }
 
         // Mirror upper triangle to lower + add ridge
@@ -1065,6 +1515,7 @@ pub fn compute_grouped_impacts(
 
 fn build_ranking(
     coef_by_event: &EventScalarMap,
+    std_by_event: &EventScalarMap,
     mad_by_event: &EventScalarMap,
     p90_by_event: &EventScalarMap,
     p99_by_event: &EventScalarMap,
@@ -1075,17 +1526,22 @@ fn build_ranking(
             let mad_val = *mad_by_event.get(event_name).unwrap_or(&0.0);
             let p90_val = *p90_by_event.get(event_name).unwrap_or(&0.0);
             let p99_val = *p99_by_event.get(event_name).unwrap_or(&0.0);
-
-            let abs_coef = coef.abs();
+            let std_val = *std_by_event.get(event_name).unwrap_or(&0.0);
+            let raw_scale_coef = if std_val > f64::EPSILON {
+                *coef / std_val
+            } else {
+                0.0
+            };
+            let abs_raw_scale_coef = raw_scale_coef.abs();
 
             EventImpact {
                 event_name: event_name.clone(),
                 gradient_coef: *coef,
-                impact: abs_coef * mad_val,
-                signed_impact: *coef * mad_val,
-                impact_active: abs_coef * p90_val,
-                signed_impact_active: *coef * p90_val,
-                impact_peak: abs_coef * p99_val,
+                impact: abs_raw_scale_coef * mad_val,
+                signed_impact: raw_scale_coef * mad_val,
+                impact_active: abs_raw_scale_coef * p90_val,
+                signed_impact_active: raw_scale_coef * p90_val,
+                impact_peak: abs_raw_scale_coef * p99_val,
                 impact_share: 0.0, // fill below
             }
         })
@@ -1442,7 +1898,7 @@ pub fn build_db_time_gradient_section(
     db_time_series: &[f64],
     event_series: &BTreeMap<String, Vec<f64>>,
     ridge_lambda: f64,
-    elastic_net_lambda: f64,
+    elastic_net_lambda: Option<f64>,
     elastic_net_alpha: f64,
     elastic_net_max_iter: usize,
     elastic_net_tol: f64,
@@ -1512,7 +1968,19 @@ pub fn build_db_time_gradient_section(
     let mut section = DbTimeGradientSection {
         settings: GradientSettings {
             ridge_lambda,
-            elastic_net_lambda,
+            elastic_net_lambda: gradient_result.elastic_net_selection.selected_lambda,
+            elastic_net_lambda_mode: gradient_result.elastic_net_selection.lambda_mode.clone(),
+            elastic_net_lambda_max: gradient_result.elastic_net_selection.lambda_max,
+            elastic_net_lambda_ratio: gradient_result.elastic_net_selection.lambda_ratio,
+            elastic_net_cv_folds: gradient_result.elastic_net_selection.cv_folds,
+            elastic_net_cv_rule: gradient_result.elastic_net_selection.cv_rule.clone(),
+            elastic_net_cv_mean_loss: gradient_result.elastic_net_selection.cv_mean_loss,
+            elastic_net_nonzero_coefficients: gradient_result
+                .elastic_net_selection
+                .nonzero_coefficients,
+            elastic_net_target_standardized: gradient_result
+                .elastic_net_selection
+                .target_standardized,
             elastic_net_alpha,
             elastic_net_max_iter,
             elastic_net_tol,
@@ -1617,6 +2085,47 @@ pub fn print_db_time_gradient_tables(
         settings_table.add_row(Row::new(vec![
             Cell::new("elastic_net_lambda"),
             Cell::new(&format!("{:.6}", section.settings.elastic_net_lambda)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_lambda_mode"),
+            Cell::new(&section.settings.elastic_net_lambda_mode),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_lambda_max"),
+            Cell::new(&format!("{:.6}", section.settings.elastic_net_lambda_max)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_lambda_ratio"),
+            Cell::new(&format!("{:.6}", section.settings.elastic_net_lambda_ratio)),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_cv_rule"),
+            Cell::new(&section.settings.elastic_net_cv_rule),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_cv_folds"),
+            Cell::new(&format!("{}", section.settings.elastic_net_cv_folds)),
+        ]));
+        if let Some(mean_loss) = section.settings.elastic_net_cv_mean_loss {
+            settings_table.add_row(Row::new(vec![
+                Cell::new("elastic_net_cv_mean_loss"),
+                Cell::new(&format!("{mean_loss:.6}")),
+            ]));
+        }
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_nonzero_coefficients"),
+            Cell::new(&format!(
+                "{}",
+                section.settings.elastic_net_nonzero_coefficients
+            )),
+        ]));
+        settings_table.add_row(Row::new(vec![
+            Cell::new("elastic_net_target_standardized"),
+            Cell::new(if section.settings.elastic_net_target_standardized {
+                "true"
+            } else {
+                "false"
+            }),
         ]));
         settings_table.add_row(Row::new(vec![
             Cell::new("elastic_net_alpha"),
@@ -1874,7 +2383,7 @@ pub struct GradientSectionSpec<'a> {
 pub fn run_gradient_section(
     spec: &GradientSectionSpec,
     ridge_lambda: f64,
-    elastic_net_lambda: f64,
+    elastic_net_lambda: Option<f64>,
     elastic_net_alpha: f64,
     elastic_net_max_iter: usize,
     elastic_net_tol: f64,
@@ -2148,4 +2657,232 @@ pub fn build_gradient_html(
 </html>
 "#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_close(left: f64, right: f64) {
+        let tolerance = 1e-8 * left.abs().max(right.abs()).max(1.0);
+        assert!(
+            (left - right).abs() <= tolerance,
+            "expected {left} and {right} to differ by at most {tolerance}"
+        );
+    }
+
+    fn duplicated(values: &[f64]) -> Vec<f64> {
+        values.iter().chain(values.iter()).copied().collect()
+    }
+
+    #[test]
+    fn impact_is_invariant_to_raw_predictor_scale() {
+        let db_time = vec![0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0, 45.0];
+        let driver = vec![0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0, 45.0];
+        let noise = vec![0.0, 2.0, 1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0];
+        let base_series = EventSeriesMap::from([
+            ("driver".to_string(), driver.clone()),
+            ("noise".to_string(), noise.clone()),
+        ]);
+        let scaled_series = EventSeriesMap::from([
+            (
+                "driver".to_string(),
+                driver.iter().map(|value| value * 1000.0).collect(),
+            ),
+            ("noise".to_string(), noise),
+        ]);
+
+        let base =
+            compute_db_time_gradient(&db_time, &base_series, 0.5, Some(0.1), 0.3, 2000, 1e-9)
+                .unwrap();
+        let scaled =
+            compute_db_time_gradient(&db_time, &scaled_series, 0.5, Some(0.1), 0.3, 2000, 1e-9)
+                .unwrap();
+
+        for (base_ranking, scaled_ranking) in [
+            (&base.ridge_ranking, &scaled.ridge_ranking),
+            (&base.elastic_net_ranking, &scaled.elastic_net_ranking),
+            (&base.huber_ranking, &scaled.huber_ranking),
+            (&base.quantile95_ranking, &scaled.quantile95_ranking),
+        ] {
+            let base_driver = base_ranking
+                .iter()
+                .find(|item| item.event_name == "driver")
+                .unwrap();
+            let scaled_driver = scaled_ranking
+                .iter()
+                .find(|item| item.event_name == "driver")
+                .unwrap();
+            assert_close(base_driver.gradient_coef, scaled_driver.gradient_coef);
+            assert_close(base_driver.impact, scaled_driver.impact);
+            assert_close(base_driver.impact_active, scaled_driver.impact_active);
+            assert_close(base_driver.impact_peak, scaled_driver.impact_peak);
+        }
+    }
+
+    #[test]
+    fn regularization_is_invariant_to_duplicate_observations() {
+        let x = EventSeriesMap::from([("driver".to_string(), vec![-1.5, -0.5, 0.5, 1.5])]);
+        let y = vec![-3.0, -1.0, 1.0, 3.0];
+        let duplicated_x =
+            EventSeriesMap::from([("driver".to_string(), duplicated(x.get("driver").unwrap()))]);
+        let duplicated_y = duplicated(&y);
+
+        let ridge = ridge_regression_map(&x, &y, 0.5).unwrap();
+        let ridge_duplicated = ridge_regression_map(&duplicated_x, &duplicated_y, 0.5).unwrap();
+        assert_close(ridge["driver"], ridge_duplicated["driver"]);
+
+        let elastic = elastic_net_coordinate_descent_map(&x, &y, 0.5, 0.3, 2000, 1e-10);
+        let elastic_duplicated =
+            elastic_net_coordinate_descent_map(&duplicated_x, &duplicated_y, 0.5, 0.3, 2000, 1e-10);
+        assert_close(elastic["driver"], elastic_duplicated["driver"]);
+
+        let huber = huber_regression_map(&x, &y, 1.0, 100, 1e-10, 0.5);
+        let huber_duplicated =
+            huber_regression_map(&duplicated_x, &duplicated_y, 1.0, 100, 1e-10, 0.5);
+        assert_close(huber["driver"], huber_duplicated["driver"]);
+
+        let quantile = quantile_regression_irls_map(&x, &y, 0.95, 200, 1e-10, 0.5);
+        let quantile_duplicated =
+            quantile_regression_irls_map(&duplicated_x, &duplicated_y, 0.95, 200, 1e-10, 0.5);
+        assert_close(quantile["driver"], quantile_duplicated["driver"]);
+    }
+
+    fn cumulative_series(deltas: &[f64]) -> Vec<f64> {
+        let mut total = 0.0;
+        let mut values = Vec::with_capacity(deltas.len() + 1);
+        values.push(total);
+        for delta in deltas {
+            total += delta;
+            values.push(total);
+        }
+        values
+    }
+
+    fn automatic_selection_fixture() -> (Vec<f64>, EventSeriesMap) {
+        let driver_deltas: Vec<f64> = (0..90)
+            .map(|index| ((index * 7 % 19) as f64 - 9.0) / 3.0)
+            .collect();
+        let noise_deltas: Vec<f64> = (0..90)
+            .map(|index| ((index * 11 % 23) as f64 - 11.0) / 5.0)
+            .collect();
+        let target_deltas: Vec<f64> = driver_deltas
+            .iter()
+            .zip(&noise_deltas)
+            .map(|(driver, noise)| 4.0 * driver + 0.05 * noise)
+            .collect();
+        (
+            cumulative_series(&target_deltas),
+            EventSeriesMap::from([
+                ("driver".to_string(), cumulative_series(&driver_deltas)),
+                ("noise".to_string(), cumulative_series(&noise_deltas)),
+            ]),
+        )
+    }
+
+    #[test]
+    fn automatic_elastic_net_lambda_uses_forward_chaining_and_keeps_signal() {
+        let (target, events) = automatic_selection_fixture();
+        let result =
+            compute_db_time_gradient(&target, &events, 0.05, None, 0.2, 2000, 1e-9).unwrap();
+
+        assert_eq!(result.elastic_net_selection.lambda_mode, "auto");
+        assert_eq!(result.elastic_net_selection.cv_folds, 5);
+        assert_eq!(
+            result.elastic_net_selection.cv_rule,
+            "one_standard_error_forward_chaining"
+        );
+        assert!(result.elastic_net_selection.selected_lambda > 0.0);
+        assert!(
+            result.elastic_net_selection.selected_lambda <= result.elastic_net_selection.lambda_max
+        );
+        assert!(result.elastic_net_selection.nonzero_coefficients > 0);
+        assert!(result.elastic_net_gradient_by_event["driver"].abs() > 1.0);
+        assert!(
+            result.elastic_net_gradient_by_event["driver"].abs()
+                > result.elastic_net_gradient_by_event["noise"].abs()
+        );
+    }
+
+    #[test]
+    fn elastic_net_target_standardization_preserves_output_units() {
+        let (target, events) = automatic_selection_fixture();
+        let scaled_target: Vec<f64> = target.iter().map(|value| value * 100.0).collect();
+        let base = compute_db_time_gradient(&target, &events, 0.05, None, 0.2, 2000, 1e-9).unwrap();
+        let scaled =
+            compute_db_time_gradient(&scaled_target, &events, 0.05, None, 0.2, 2000, 1e-9).unwrap();
+
+        assert_close(
+            base.elastic_net_selection.selected_lambda,
+            scaled.elastic_net_selection.selected_lambda,
+        );
+        assert_close(
+            base.elastic_net_selection.lambda_max,
+            scaled.elastic_net_selection.lambda_max,
+        );
+        assert_close(
+            base.elastic_net_gradient_by_event["driver"] * 100.0,
+            scaled.elastic_net_gradient_by_event["driver"],
+        );
+        let base_driver = base
+            .elastic_net_ranking
+            .iter()
+            .find(|item| item.event_name == "driver")
+            .unwrap();
+        let scaled_driver = scaled
+            .elastic_net_ranking
+            .iter()
+            .find(|item| item.event_name == "driver")
+            .unwrap();
+        assert_close(
+            base_driver.impact_active * 100.0,
+            scaled_driver.impact_active,
+        );
+    }
+
+    #[test]
+    fn fixed_elastic_net_lambda_bypasses_automatic_selection() {
+        let (target, events) = automatic_selection_fixture();
+        let result =
+            compute_db_time_gradient(&target, &events, 0.05, Some(0.125), 0.2, 2000, 1e-9).unwrap();
+
+        assert_eq!(result.elastic_net_selection.lambda_mode, "fixed");
+        assert_eq!(result.elastic_net_selection.selected_lambda, 0.125);
+        assert_eq!(result.elastic_net_selection.cv_folds, 0);
+        assert_eq!(result.elastic_net_selection.cv_rule, "fixed_override");
+        assert_eq!(result.elastic_net_selection.cv_mean_loss, None);
+    }
+
+    #[test]
+    fn automatic_lambda_rejects_pure_l2_but_fixed_lambda_allows_it() {
+        let (target, events) = automatic_selection_fixture();
+        let error =
+            compute_db_time_gradient(&target, &events, 0.05, None, 0.0, 2000, 1e-9).unwrap_err();
+        assert!(error.contains("requires alpha > 0"));
+
+        let fixed =
+            compute_db_time_gradient(&target, &events, 0.05, Some(0.05), 0.0, 2000, 1e-9).unwrap();
+        assert_eq!(fixed.elastic_net_selection.lambda_mode, "fixed");
+    }
+
+    #[test]
+    fn short_series_uses_documented_lambda_ratio_fallback() {
+        let target = cumulative_series(&[1.0, -1.0, 2.0, -2.0, 3.0, -3.0]);
+        let events = EventSeriesMap::from([(
+            "driver".to_string(),
+            cumulative_series(&[0.5, -0.5, 1.0, -1.0, 1.5, -1.5]),
+        )]);
+        let result =
+            compute_db_time_gradient(&target, &events, 0.05, None, 0.2, 2000, 1e-9).unwrap();
+
+        assert_eq!(result.elastic_net_selection.cv_folds, 0);
+        assert_eq!(
+            result.elastic_net_selection.cv_rule,
+            "lambda_ratio_fallback_insufficient_samples"
+        );
+        assert_close(
+            result.elastic_net_selection.lambda_ratio,
+            ELASTIC_NET_FALLBACK_LAMBDA_RATIO,
+        );
+    }
 }

@@ -131,17 +131,18 @@ struct Args {
     tokens_budget: usize,
 
     ///For calculating gradient - ridge_lambda: L2 regularization strength (>= 0)
-    #[clap(short = 'R', long, default_value_t = 50.0)]
+    #[clap(short = 'R', long, default_value_t = 0.05)]
     ridge_lambda: f64,
 
-    ///For calculating gradient - overall regularization strength for Elastic Net (>= 0)
-    #[clap(short = 'E', long, default_value_t = 30.0)]
-    en_lambda: f64,
+    ///For calculating gradient - fixed Elastic Net regularization strength (>= 0).
+    ///When omitted, lambda is selected automatically using forward-chaining validation.
+    #[clap(short = 'E', long, verbatim_doc_comment)]
+    en_lambda: Option<f64>,
 
     ///For calculating gradient - mixing between L1 and L2 in Elastic Net:
     ///     alpha = 1.0 -> Lasso (pure L1)
     ///     alpha = 0.0 -> Ridge-like (pure L2)
-    #[clap(short = 'A', long, default_value_t = 0.333, verbatim_doc_comment)]
+    #[clap(short = 'A', long, default_value_t = 0.2, verbatim_doc_comment)]
     en_alpha: f64,
 
     ///Max iterations for coordinate descent in Elastic Net
@@ -206,7 +207,7 @@ impl Args {
     }
 }
 
-fn load_env() {
+fn load_env() -> Result<(), String> {
     // 1.Check existense of $JASMIN_HOME
     let env_loaded = if let Ok(jasmin_home) = env::var("JASMIN_HOME") {
         let mut path = PathBuf::from(jasmin_home);
@@ -214,8 +215,9 @@ fn load_env() {
 
         // 2. Check if .env exists in the directory
         if path.exists() {
-            from_path(&path).expect("Can't load .env z JASMIN_HOME");
-            println!("✅ Loaded .env from JASMIN_HOME: {:?}", path);
+            from_path(&path).map_err(|error| {
+                format!("Cannot load the environment file configured by JASMIN_HOME: {error}")
+            })?;
             debug_note!("Environment file loaded from JASMIN_HOME");
             true
         } else {
@@ -229,14 +231,90 @@ fn load_env() {
     if !env_loaded {
         let local_path = PathBuf::from(".env");
         if local_path.exists() {
-            from_path(&local_path).expect("Can't load .env from local dir");
-            println!("✅ Loaded local .env");
+            from_path(&local_path)
+                .map_err(|error| format!("Cannot load the local environment file: {error}"))?;
             debug_note!("Environment file loaded from current directory");
         } else {
-            println!("⚠️  No .env found");
             debug_note!("No environment file found; using process environment only");
         }
     }
+
+    Ok(())
+}
+
+fn validate_cli_inputs(args: &Args) -> Result<(), String> {
+    let project_source_count = args.directory.len() + args.json_file.len();
+
+    if args.mcp.is_some() {
+        if project_source_count == 0 {
+            return Err("--mcp requires at least one --directory or --json-file".to_string());
+        }
+        if !args.file.is_empty() {
+            return Err(
+                "--mcp cannot be combined with --file; use --directory or --json-file".to_string(),
+            );
+        }
+        if !args.convert_md2html.is_empty() {
+            return Err("--mcp cannot be combined with --convert-md2html".to_string());
+        }
+    } else {
+        if project_source_count > 1 {
+            return Err("repeated --directory/--json-file inputs require --mcp".to_string());
+        }
+        if !args.file.is_empty() && project_source_count > 0 {
+            return Err("--file cannot be combined with --directory or --json-file".to_string());
+        }
+        if args.file.is_empty() && project_source_count == 0 && args.convert_md2html.is_empty() {
+            return Err(
+                "no input supplied; use --file, --directory, --json-file, or --convert-md2html"
+                    .to_string(),
+            );
+        }
+    }
+
+    if !args.file.is_empty() && !Path::new(&args.file).is_file() {
+        return Err(format!("input report '{}' is not a file", args.file));
+    }
+    for directory in &args.directory {
+        if !Path::new(directory).is_dir() {
+            return Err(format!(
+                "project directory '{directory}' is not a directory"
+            ));
+        }
+    }
+    for json_file in &args.json_file {
+        if !Path::new(json_file).is_file() {
+            return Err(format!("project JSON source '{json_file}' is not a file"));
+        }
+    }
+    if !args.convert_md2html.is_empty() && !Path::new(&args.convert_md2html).is_file() {
+        return Err(format!(
+            "Markdown source '{}' is not a file",
+            args.convert_md2html
+        ));
+    }
+
+    if !args.ridge_lambda.is_finite() || args.ridge_lambda < 0.0 {
+        return Err("--ridge-lambda must be a finite value >= 0".to_string());
+    }
+    if let Some(lambda) = args.en_lambda {
+        if !lambda.is_finite() || lambda < 0.0 {
+            return Err("--en-lambda must be a finite value >= 0".to_string());
+        }
+    } else if args.en_alpha <= 0.0 {
+        return Err("automatic Elastic Net lambda selection requires --en-alpha > 0; provide --en-lambda for alpha=0".to_string());
+    }
+    if !args.en_alpha.is_finite() || !(0.0..=1.0).contains(&args.en_alpha) {
+        return Err("--en-alpha must be a finite value in [0, 1]".to_string());
+    }
+    if args.en_max_iter == 0 {
+        return Err("--en-max-iter must be greater than 0".to_string());
+    }
+    if !args.en_tol.is_finite() || args.en_tol <= 0.0 {
+        return Err("--en-tol must be a finite value > 0".to_string());
+    }
+
+    Ok(())
 }
 
 fn project_id_base(path: &str) -> String {
@@ -455,9 +533,16 @@ fn load_mcp_projects(args: &Args) -> Result<Vec<AnalysisProject>, String> {
 }
 
 fn main() {
-    load_env();
-    let mut reportfile: String = "".to_string();
     let args = Args::parse();
+    validate_cli_inputs(&args).unwrap_or_else(|error| {
+        eprintln!("ERROR: {error}");
+        std::process::exit(2);
+    });
+    load_env().unwrap_or_else(|error| {
+        eprintln!("ERROR: {error}");
+        std::process::exit(2);
+    });
+    let mut reportfile: String = "".to_string();
     debug_note!(
         "JAS-MIN invocation parsed: mcp={}, directories={}, json_files={}, single_file={}, ai={}, markdown_conversion={}, parallel={}",
         args.mcp.is_some(),
@@ -468,12 +553,14 @@ fn main() {
         !args.convert_md2html.is_empty(),
         args.parallel
     );
-    println!(
-        "{}{} (Running with parallel degree: {})",
-        "JAS-MIN v".bright_yellow(),
-        env!("CARGO_PKG_VERSION").bright_yellow(),
-        args.parallel
-    );
+    if !args.quiet {
+        println!(
+            "{}{} (Running with parallel degree: {})",
+            "JAS-MIN v".bright_yellow(),
+            env!("CARGO_PKG_VERSION").bright_yellow(),
+            args.parallel
+        );
+    }
 
     let mut report_for_ai = ReportForAI::default();
 
@@ -505,18 +592,18 @@ fn main() {
         return;
     }
 
-    if args.directory.len() + args.json_file.len() > 1 {
-        eprintln!("ERROR: repeated --directory/--json-file inputs require --mcp");
-        std::process::exit(2);
-    }
-
     //This is map that will be used to generate and insert appropriate links to html AI output
     let mut events_sqls: &mut HashMap<&str, HashSet<String>> = &mut HashMap::new();
 
     if !args.file.is_empty() {
         debug_note!("Entering single-report parse mode: file='{}'", args.file);
-        let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
-        println!("{}", awr_doc);
+        let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap_or_else(|error| {
+            eprintln!("ERROR: Cannot parse report '{}': {error}", args.file);
+            std::process::exit(1);
+        });
+        if !args.quiet {
+            println!("{}", awr_doc);
+        }
     } else if !args.directory().is_empty() {
         debug_note!(
             "Entering directory analysis mode: directory='{}'",
@@ -539,6 +626,7 @@ fn main() {
             report_for_ai = parsed.report_for_ai;
         } else {
             eprintln!("ERROR: Directory: '{}' does not exists!", args.directory());
+            std::process::exit(2);
         }
     } else if !args.json_file().is_empty() {
         debug_note!("Entering JSON analysis mode: file='{}'", args.json_file());
@@ -558,6 +646,7 @@ fn main() {
             };
         } else {
             eprintln!("ERROR: JSON file: '{}' does not exists!", args.json_file());
+            std::process::exit(2);
         }
     }
 
@@ -566,7 +655,9 @@ fn main() {
     if toon_str.len() > 128 {
         let mut f = fs::File::create("report_for_ai.toon").unwrap();
         f.write_all(toon_str.as_bytes()).unwrap();
-        println!("\n🎲 The TOON file alone will consume around {} tokens. Take it under consideration if you want to use AI processing.", estimate_tokens_from_str(&toon_str));
+        if !args.quiet {
+            println!("\n🎲 The TOON file alone will consume around {} tokens. Take it under consideration if you want to use AI processing.", estimate_tokens_from_str(&toon_str));
+        }
     }
 
     if !args.ai.is_empty() {
@@ -640,7 +731,8 @@ fn main() {
                 }
             }
         } else {
-            println!("Unrecognized vendor. Supported vendors: openai, google, openrouter, local");
+            eprintln!("Unrecognized vendor. Supported vendors: openai, google, openrouter, local");
+            std::process::exit(2);
         }
     }
 
@@ -670,6 +762,36 @@ mod cli_tests {
         .unwrap();
         assert_eq!(args.directory, vec!["before", "after"]);
         assert_eq!(args.json_file, vec!["reference.json"]);
+    }
+
+    #[test]
+    fn quiet_remains_an_opt_in_flag() {
+        let default_args = Args::try_parse_from(["jas-min", "--file", "report.html"]).unwrap();
+        assert!(!default_args.quiet);
+        assert_eq!(default_args.ridge_lambda, 0.05);
+        assert_eq!(default_args.en_lambda, None);
+        assert_eq!(default_args.en_alpha, 0.2);
+
+        let quiet_args =
+            Args::try_parse_from(["jas-min", "--file", "report.html", "--quiet"]).unwrap();
+        assert!(quiet_args.quiet);
+    }
+
+    #[test]
+    fn elastic_net_lambda_is_an_optional_fixed_override() {
+        let args =
+            Args::try_parse_from(["jas-min", "--file", "report.html", "--en-lambda", "0.125"])
+                .unwrap();
+        assert_eq!(args.en_lambda, Some(0.125));
+    }
+
+    #[test]
+    fn classic_mode_requires_an_input() {
+        let args = Args::try_parse_from(["jas-min"]).unwrap();
+        assert_eq!(
+            validate_cli_inputs(&args).unwrap_err(),
+            "no input supplied; use --file, --directory, --json-file, or --convert-md2html"
+        );
     }
 
     #[test]

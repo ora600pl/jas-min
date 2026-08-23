@@ -753,7 +753,25 @@ pub struct AnomlyCluster {
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct GradientSettings {
     pub ridge_lambda: f64,
+    /// Selected Elastic Net lambda. In automatic mode this is the value chosen
+    /// by forward-chaining validation and used for the final full-data fit.
     pub elastic_net_lambda: f64,
+    #[serde(default)]
+    pub elastic_net_lambda_mode: String,
+    #[serde(default)]
+    pub elastic_net_lambda_max: f64,
+    #[serde(default)]
+    pub elastic_net_lambda_ratio: f64,
+    #[serde(default)]
+    pub elastic_net_cv_folds: usize,
+    #[serde(default)]
+    pub elastic_net_cv_rule: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elastic_net_cv_mean_loss: Option<f64>,
+    #[serde(default)]
+    pub elastic_net_nonzero_coefficients: usize,
+    #[serde(default)]
+    pub elastic_net_target_standardized: bool,
     pub elastic_net_alpha: f64,
     pub elastic_net_max_iter: usize,
     pub elastic_net_tol: f64,
@@ -989,6 +1007,14 @@ Each gradient section contains results from four regression models:
 - **Huber** (`huber_top`) — outlier-resistant ranking (downweights extreme snapshots)
 - **Quantile 95** (`quantile95_top`) — models the worst 5% of snapshots (tail risk)
 
+Elastic Net standardizes both predictor and target deltas. Unless a fixed lambda override was
+requested, it selects a per-section lambda from a lambda/lambda_max path using expanding-window,
+forward-chaining validation and the one-standard-error rule. Inspect `settings.elastic_net_lambda_mode`,
+`elastic_net_lambda`, `elastic_net_lambda_max`, `elastic_net_lambda_ratio`, `elastic_net_cv_rule`,
+`elastic_net_cv_folds`, and `elastic_net_nonzero_coefficients` before interpreting an empty or unusually
+dense sparse-model result. The reported coefficient has already been converted back to DB Time or DB CPU
+target units; do not apply target standard deviation a second time.
+
 ### Gradient Impact Metrics (GradientTopItem fields)
 
 Each entry in `ridge_top` / `elastic_net_top` / `huber_top` / `quantile95_top` contains:
@@ -998,15 +1024,15 @@ Each entry in `ridge_top` / `elastic_net_top` / `huber_top` / `quantile95_top` c
   Sign matters: positive = contributes to DB Time, negative = suppressor/confounder.
   Use for understanding mechanics.
 
-- `impact_active` = abs(coef) * P90(abs(delta_x)) — **PRIMARY TUNING METRIC**.
+- `impact_active` = abs(coef / stddev(delta_x)) * P90(abs(delta_x)) — **PRIMARY TUNING METRIC**.
   Contribution to DB Time when the predictor is actively moving (not during idle periods).
   Expressed in DB Time units. **Use this first when ranking bottlenecks.**
 
-- `impact_peak` = abs(coef) * P99(abs(delta_x)) — worst-case single-snapshot contribution.
+- `impact_peak` = abs(coef / stddev(delta_x)) * P99(abs(delta_x)) — worst-case single-snapshot contribution.
   How much DB Time this predictor can add during its most aggressive moments.
   Use for capacity planning and identifying spike causes.
 
-- `impact` = abs(coef) * MAD(delta_x) — legacy/typical impact.
+- `impact` = abs(coef / stddev(delta_x)) * MAD(delta_x) — legacy/typical impact.
   Contribution during *median* variability. Often near zero for bursty events.
   Use only as comparison baseline (see diagnostic rule below).
 
