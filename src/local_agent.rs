@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{env, fs};
 
-const LOCAL_AGENT_SCHEMA_VERSION: &str = "2026-07-22.1";
+const LOCAL_AGENT_SCHEMA_VERSION: &str = "2026-08-23.3";
 const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 16 * 1024;
 const DEFAULT_CONTEXT_HIGH_WATER_PCT: usize = 72;
 const DEFAULT_TOOL_OUTPUT_TOKENS: usize = 3_072;
@@ -1632,6 +1632,59 @@ fn compact_gradient(section: Option<&DbTimeGradientSection>) -> Value {
     })
 }
 
+/// Return the requested analytical detail rather than the deliberately tiny
+/// bootstrap preview. `full_gradients` previously reused `compact_gradient`,
+/// which silently capped model rankings at three rows and triangulation at four
+/// rows regardless of the caller's `limit` argument.
+fn detailed_gradient(section: Option<&DbTimeGradientSection>, limit: usize) -> Value {
+    let Some(section) = section else {
+        return Value::Null;
+    };
+    let limited = |count: usize| count.min(limit);
+    json!({
+        "settings": section.settings,
+        "counts": {
+            "cross_model_classifications": section.cross_model_classifications.len(),
+            "vif_diagnostics": section.vif_diagnostics.len(),
+            "collinear_group_impacts": section.collinear_group_impacts.len(),
+            "ridge": section.ridge_top.len(),
+            "elastic_net": section.elastic_net_top.len(),
+            "huber": section.huber_top.len(),
+            "quantile95": section.quantile95_top.len()
+        },
+        "returned": {
+            "cross_model_classifications": limited(section.cross_model_classifications.len()),
+            "vif_diagnostics": limited(section.vif_diagnostics.len()),
+            "collinear_group_impacts": limited(section.collinear_group_impacts.len()),
+            "ridge": limited(section.ridge_top.len()),
+            "elastic_net": limited(section.elastic_net_top.len()),
+            "huber": limited(section.huber_top.len()),
+            "quantile95": limited(section.quantile95_top.len())
+        },
+        "cross_model_classifications": section.cross_model_classifications.iter().take(limit).collect::<Vec<_>>(),
+        "vif_diagnostics": section.vif_diagnostics.iter().take(limit).collect::<Vec<_>>(),
+        "collinear_group_impacts": section.collinear_group_impacts.iter().take(limit).collect::<Vec<_>>(),
+        "ridge_top": section.ridge_top.iter().take(limit).collect::<Vec<_>>(),
+        "elastic_net_top": section.elastic_net_top.iter().take(limit).collect::<Vec<_>>(),
+        "huber_top": section.huber_top.iter().take(limit).collect::<Vec<_>>(),
+        "quantile95_top": section.quantile95_top.iter().take(limit).collect::<Vec<_>>()
+    })
+}
+
+fn detailed_gradients(report: &ReportForAI, limit: usize) -> Value {
+    json!({
+        "db_time_foreground_wait_events": detailed_gradient(report.db_time_gradient_fg_wait_events.as_ref(), limit),
+        "db_time_instance_stats_counters": detailed_gradient(report.db_time_gradient_instance_stats_counters.as_ref(), limit),
+        "db_time_instance_stats_volumes": detailed_gradient(report.db_time_gradient_instance_stats_volumes.as_ref(), limit),
+        "db_time_instance_stats_time": detailed_gradient(report.db_time_gradient_instance_stats_time.as_ref(), limit),
+        "db_time_sql_elapsed_time": detailed_gradient(report.db_time_gradient_sql_elapsed_time.as_ref(), limit),
+        "db_cpu_instance_stats": detailed_gradient(report.db_cpu_gradient_instance_stats.as_ref(), limit),
+        "db_cpu_sql_cpu_time": detailed_gradient(report.db_cpu_gradient_sql_cpu_time.as_ref(), limit),
+        "custom_wait_events": detailed_gradient(report.custom_gradient_wait_events.as_ref(), limit),
+        "custom_instance_stats": detailed_gradient(report.custom_gradient_instance_stats.as_ref(), limit)
+    })
+}
+
 fn compact_degradation(report: &ReportForAI) -> Value {
     let Some(degradation) = report.db_time_degradation_report.as_ref() else {
         return Value::Null;
@@ -1852,7 +1905,7 @@ pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) 
                 .take(limit)
                 .collect::<HashMap<_, _>>())
         }
-        "full_gradients" => build_case_seed(report)["gradients"].clone(),
+        "full_gradients" => detailed_gradients(report, limit),
         "db_time_degradation" => compact_degradation(report),
         "performance_peaks" => json!(report
             .top_spikes_marked
@@ -1887,8 +1940,8 @@ Your job in this session is evidence collection, not report writing:
 1. Form several competing hypotheses from the seed.
 2. Use tools proactively to confirm or falsify them.
 3. Prefer narrow calls and compare bad snapshots with a quiet baseline.
-4. Trace wait -> SQL -> execution plan/object -> workload or infrastructure when evidence permits.
-5. Inspect SQL text and available plans before SQL tuning recommendations.
+4. Trace wait -> SQL -> execution plan/object -> workload or infrastructure when evidence permits; preserve correlation and direct ASH attribution as association evidence rather than causality.
+5. Inspect SQL text, timeline and plan applicability before SQL tuning recommendations. BEGIN/DECLARE/CALL entry points are PL/SQL and have no expected top-level row-source plan; profile the PL/SQL unit and inspect its inner SQL instead of requesting DBMS_XPLAN recapture.
 6. Check I/O evidence before deciding disks are slow.
 7. Check redo/commit evidence before judging commit policy.
 8. Inspect relevant initialization parameters; do not scan or recommend parameters without a performance rationale.
@@ -2734,5 +2787,42 @@ TRIGGER: user logons and connection creation spike.
         assert_eq!(checkpoint["claims"][0]["guidance_refs"][0], "S1-G0001");
         assert_eq!(checkpoint["consulted_guidance_refs"][0], "S1-G0001");
         assert_eq!(checkpoint["raw_model_checkpoint_prefix"], "{\"claims\":[");
+    }
+
+    #[test]
+    fn full_gradients_honors_requested_limit_instead_of_bootstrap_caps() {
+        let classifications = (0..8)
+            .map(|index| crate::reasonings::CrossModelClassification {
+                event_name: format!("event-{index}"),
+                classification: "CONFIRMED_BOTTLENECK_EN_COLLINEAR".to_string(),
+                priority: 1,
+                combined_impact: (100 - index) as f64,
+                combined_peak_impact: (1000 - index) as f64,
+                ..Default::default()
+            })
+            .collect();
+        let report = ReportForAI {
+            db_time_gradient_fg_wait_events: Some(crate::reasonings::DbTimeGradientSection {
+                cross_model_classifications: classifications,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = dispatch_precomputed_analysis(
+            &json!({"section": "full_gradients", "limit": 7}),
+            &report,
+        );
+        assert_eq!(
+            result["data"]["db_time_foreground_wait_events"]["returned"]
+                ["cross_model_classifications"],
+            7
+        );
+        assert_eq!(
+            result["data"]["db_time_foreground_wait_events"]["cross_model_classifications"]
+                .as_array()
+                .unwrap()
+                .len(),
+            7
+        );
     }
 }

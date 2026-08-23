@@ -5968,10 +5968,10 @@ pub fn main_report_builder(
                     const data = await response.json();
                     removeLoadingIndicator();
                     messages.innerHTML += `<div class="message ai-msg">${{marked.parse(data.reply)}}</div>`;
-                    messages.scrollTop = messages.scrollHeight;
+  &DF*:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::&&&                  messages.scrollTop = messages.scrollHeight;
                 }} catch (error) {{
                     removeLoadingIndicator();
-                    messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
+    }}}}}} messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
                     messages.scrollTop = messages.scrollHeight;
                 }} finally {{
                     input.disabled = false;
