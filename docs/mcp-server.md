@@ -452,7 +452,7 @@ The core evidence catalog is always available. An attachment tool is registered
 when matching files are discovered under any project's `<stem>_attachments`.
 Calling it for another project returns that tool's ordinary unavailable result.
 
-With no attachments the server exposes 21 core evidence tools and fourteen MCP
+With no attachments the server exposes 21 core evidence tools and fifteen MCP
 workflow tools. Every supported attachment class adds its own discovery or
 inspection tools; a dataset containing plans, child-cursor reasons, an alert
 log, and AIX telemetry exposes eight additional evidence tools.
@@ -490,6 +490,7 @@ plans in large attachments.
 | `start_performance_analysis` | Creates an `AnalysisSession` and its seed evidence. |
 | `get_analysis_catalog` | Repeats selected project manifests, calculation catalog, guidance catalog, and report contract. |
 | `get_precomputed_analysis` | Registers a requested `ReportForAI` section as evidence. |
+| `get_wait_event_sql_contributors` | Registers correlation and direct-ASH SQL relationships for one material foreground wait, including plan applicability and attachment coverage. |
 | `get_diagnostic_guidance` | Registers methodology references, never evidence IDs. |
 | `compare_project_metric` | Registers a normalized metric-distribution comparison as evidence. |
 | `compare_project_sql` | Registers a same-SQL cross-project comparison as evidence. |
@@ -507,7 +508,7 @@ Every successful measurement tool call is wrapped in an evidence envelope:
 
 ```json
 {
-  "schema_version": "2026-08-22.6",
+  "schema_version": "2026-08-23.3",
   "analysis_id": "A-20260804T100000Z-0001",
   "project_id": "before-upgrade",
   "evidence_id": "E-0002",
@@ -735,18 +736,37 @@ requires, for every selected project:
 - the database load summary and the mandatory precomputed sections for DB Time
   degradation, foreground/background waits, top SQL, segments, latches, I/O,
   gradients, load-profile anomalies, and anomaly clusters;
-- inventory plus inspection of every unique plan hash in every supplied
-  `*.xplan` file through its representative complete plan block;
+- inventory plus classification of every supplied `*.xplan` artifact. SQL
+  statements require inspection of every unique plan hash through its
+  representative complete plan block; PL/SQL `BEGIN`/`DECLARE`/`CALL` entry
+  points are recorded as `not_applicable_plsql` and require profiling plus
+  inner-SQL analysis instead of top-level plan recapture;
 - inventory plus inspection of every supplied
   `*.shared_cursor_reasons` file;
 - one structured row for every project/SQL ID/plan-hash variant (or explicit
-  unusable plan attachment) and every child-cursor diagnostic;
+  unusable plan attachment). A plan-change recommendation also cites observed
+  SQL timeline, top-SQL, or project-comparison evidence and states why the SQL
+  was selected, measured impact, time coverage, comparison context, evidence
+  limitations, concrete action, and a measurable success criterion;
+- one `get_wait_event_sql_contributors` call and structured wait-to-SQL table
+  for every foreground wait reaching 10% DB Time. The five strongest returned
+  associations preserve aligned Pearson correlation and direct ASH attribution
+  separately. The strongest material contributor requires SQL text, timeline,
+  and explicit plan coverage; missing plan evidence is reported as
+  `missing_attachment`, not silently omitted;
+- a full `get_alertlog_errors` call with `include_parse_error_details=true`, one
+  row for every deterministic `error_summary` code, and an SQL-level finding
+  citing the alert evidence whenever parse errors exist;
 - one structured row for every object in every non-empty precomputed segment
   category;
-- gradient, anomaly, and anomaly-cluster synthesis rows whenever those signal
-  families contain data;
-- an exact observed-value or explicit unknown row for every parameter in the
-  server-owned performance checklist.
+- separate gradient, anomaly, and anomaly-cluster rows whenever those families
+  contain data. The gate requires the five highest-impact cross-model rows in
+  each gradient family and every foreground wait reaching 10% DB Time; a
+  material wait omitted by the models must be recorded explicitly as
+  `material_not_selected`. Cross-signal synthesis is required when at least two
+  analytic families exist;
+- an exact review row for every collected parameter value. Uncollected values
+  do not become report rows.
 
 The response exposes `missing_required_evidence`,
 `missing_structured_table_kinds`, and `missing_structured_table_rows`.
@@ -754,18 +774,29 @@ The response exposes `missing_required_evidence`,
 
 ### Structured analysis tables
 
-`record_report_table` creates or replaces a table of kind
-`gradients_anomalies`, `execution_plans`, `child_cursors`, `segments`, or
-`parameters`. `get_analysis_catalog` returns the exact required columns and
-enumerated status/rating values. Every row has `evidence_refs`; the server
-verifies project and entity identity against the cited tool result. Plan and
-child-cursor rows must cite the matching project/SQL ID, while parameter rows
-must reproduce the exact value returned by `get_init_parameter`.
+`record_report_table` creates or replaces a block of kind `gradients`,
+`anomalies`, `anomaly_clusters`, `analytic_signal_synthesis`,
+`execution_plans`, `child_cursors`, `alert_log_errors`, `segments`,
+`segment_synthesis`, or `parameters`. `get_analysis_catalog` returns the exact
+columns and enumerated values. Every row has `evidence_refs`; the server
+verifies project/entity identity against the cited result. Analytic synthesis
+must cite at least two signal families. Plan rows must select one of the
+contract recommendation types; generic “validate actual rows” text and an
+actionable plan recommendation supported only by xplan evidence are rejected.
+Alert rows reproduce exact aggregate counts and time bounds. Parameter rows
+reproduce collected values.
 
-The renderer places these tables in their fixed report sections. This makes
-plan findings, per-SQL child-cursor causes, cross-category segment coverage,
-gradient/anomaly synthesis, and parameter quality ratings visible and
-consistently formatted rather than leaving them in an optional prose detail.
+The renderer uses deterministic, DBA-oriented projections rather than exposing
+the storage schema verbatim. It removes the repeated `Project` column and groups
+rows under readable instance labels, merges tables of the same kind so the TOC
+contains one semantic entry rather than repeated generic headings, splits
+segment details into one table per statistic, renders gradient families under
+named subheadings, and shows only `concern`/`critical` parameter rows. Plan rows
+begin with workload relevance and limitations before the interactive row-source
+graph; plans longer than 30 operations open on flagged paths. `no_change`
+variants remain in a compact coverage disclosure. SQL IDs and wait events link
+directly to each project-specific JAS-MIN detail page, and HTML export rejects
+missing local link targets.
 
 ### Findings
 
@@ -773,6 +804,15 @@ consistently formatted rather than leaving them in an optional prose detail.
 
 - a report category;
 - title, severity, confidence, and conclusion;
+- a diagnostic `mechanism` connecting the measured symptom to the working
+  explanation without presenting correlation as causality;
+- a `temporal_pattern` with peak windows, recurrence, baseline direction, and
+  episodic-versus-sustained behavior;
+- an `affected_workload` naming the supported SQL IDs, PL/SQL units, modules,
+  services, objects, or business paths, or stating explicitly that attribution
+  is unavailable;
+- `evidence_limitations` containing counterevidence, the precise causal
+  boundary, and the runtime proof still required;
 - a human-readable `evidence_summary` containing the exact supporting values,
   time scope, and project or instance context;
 - an `evidence_refs` array;
@@ -814,8 +854,10 @@ analysis. If the supplied identifier does not refer to an existing finding, the
 server creates a new identifier instead of overwriting arbitrary state.
 
 Recommendations are structured as an owner (`DBA`, `Developer`, or
-`Management`), a priority (`immediate`, `high`, `medium`, or `low`), and an
-action.
+`Management`), a priority (`immediate`, `high`, `medium`, or `low`), an action,
+the evidence-backed `rationale` for that action and priority, and a measurable
+`success_criterion` including a regression guard. The renderer groups actions
+by accountable owner rather than emitting one flat list.
 
 Accepted finding categories are `performance_profile`, `wait_events`, `sql`,
 `segments`, `latches`, `io`, `undo_redo`, `gradients_anomalies`, `parameters`,
@@ -824,10 +866,13 @@ Markdown body maps the first nine analytical categories to sections 2 through
 10; a high-severity `limitations` finding can appear in the executive summary
 but currently has no dedicated numbered section.
 
-In the deterministic Markdown renderer, `compact` omits a finding's `details`
-field, while `standard` and `deep` include it. The distinction between
-`standard` and `deep` is primarily an instruction to the model about how much
-detail to store; both are rendered using the same Markdown layout.
+The deterministic Markdown renderer leads every section with diagnostic
+findings and follows them with the exhaustive structured evidence tables. The
+executive summary repeats the mechanism, affected workload, temporal pattern,
+and evidence boundary for the five leading findings; a one-sentence register
+alone is not considered a sufficient summary. `compact` omits a finding's
+`details` field, `standard` keeps it in a disclosure below the diagnostic
+synthesis, and `deep` renders it inline.
 
 ### Mandatory assessments
 
@@ -922,10 +967,12 @@ default name.
 The renderer is shared with classic AI mode. It generates a complete HTML5
 document with a mandatory responsive ORA-600-aligned audit layout: a
 self-contained vector JAS-MIN wordmark, white/black/red palette, sticky report
-navigation, severity-marked findings derived from `[severity / confidence]`,
-card layouts for executive findings and prioritized actions, styled evidence
-tables and execution plans, keyboard-visible focus, mobile reflow, and a print
-stylesheet. It also provides anchored headings, an embedded ORA-600 logo, links to the main HTML
+navigation, severity-marked findings, action cards, and a print stylesheet.
+Every table is wrapped in an always-active horizontal overflow region with a
+visible scrollbar, sticky headers, and keyboard focus. Actionable execution
+plans use an interactive dependency view with flagged-path filtering,
+expand/collapse controls, zoom, and horizontal panning. It also provides
+anchored headings, an embedded ORA-600 logo, links to the main HTML
 report, and links to SQL/event pages when the relevant
 classic report assets and link index are available. Material wait-event names
 and SQL IDs in reader-facing findings must be direct links to every existing

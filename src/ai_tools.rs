@@ -18,7 +18,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ use toon::encode;
 
 use crate::awr::{AWRSCollection, AWR};
 
-const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-08-03.1";
+const JASMIN_TOOLS_SCHEMA_VERSION: &str = "2026-08-23.3";
 const DEFAULT_LIMIT: usize = 50;
 const DEFAULT_TOP_N: usize = 10;
 const MAX_LIMIT: usize = 500;
@@ -460,7 +460,7 @@ pub fn tools_schema(stem: &str) -> Value {
             "type": "function",
             "function": {
                 "name": "list_available_sql_plans",
-                "description": "Lists SQL_IDs for which execution plan attachments (*.xplan) are available. Use this early when analyzing top SQL, SQL elapsed time, SQL CPU, SQL I/O, suspicious waits, plan instability, or regressions. A complete MCP report must inspect and tabulate every supplied plan, including unusable/truncated attachments with an explicit status.",
+                "description": "Lists SQL_IDs for which execution-plan capture attachments (*.xplan) are available. The inventory classifies PL/SQL entry points separately because they are not expected to have a top-level row-source plan. Use this early when analyzing top SQL, SQL elapsed time, SQL CPU, SQL I/O, suspicious waits, plan instability, or regressions. A complete MCP report must inspect every supplied artifact with an explicit applicability/status.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -481,7 +481,7 @@ pub fn tools_schema(stem: &str) -> Value {
             "type": "function",
             "function": {
                 "name": "get_sql_execution_plan",
-                "description": "Returns the text execution plan from an attachment file, typically <SQL_ID>.xplan. Use this for every SQL_ID that materially contributes to DB Time, DB CPU, elapsed time, I/O time, buffer gets, physical reads, regressions, or suspicious wait events. Strongly prefer this tool before making claims about access paths, join methods, cardinality estimates, partition pruning, index usage, full scans, adaptive plans, bind sensitivity, or SQL tuning recommendations.",
+                "description": "Returns and classifies an execution-plan capture attachment, typically <SQL_ID>.xplan. SQL statements may contain a row-source plan; PL/SQL entry points are explicitly marked plan_applicability=not_applicable and must be investigated through their inner SQL/call tree instead of a fictitious top-level plan. Use this for SQL_IDs that materially contribute to workload or suspicious waits before making plan claims.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1720,6 +1720,111 @@ struct AlertlogPayload {
     parse_error_details: Vec<AlertlogParseDetail>,
 }
 
+#[derive(Debug, Default)]
+struct AlertlogSummaryAccumulator {
+    description: String,
+    event_records: u64,
+    parse_detail_records: u64,
+    max_reported_count: u64,
+    first_seen: String,
+    last_seen: String,
+    sql_ids: BTreeSet<String>,
+    usernames: BTreeSet<String>,
+    applications: BTreeSet<String>,
+    actions: BTreeSet<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AlertlogSummaryRow {
+    code: String,
+    description: String,
+    event_records: u64,
+    parse_detail_records: u64,
+    max_reported_count: u64,
+    first_seen: String,
+    last_seen: String,
+    sql_ids: Vec<String>,
+    usernames: Vec<String>,
+    applications: Vec<String>,
+    actions: Vec<String>,
+}
+
+fn observe_alert_timestamp(summary: &mut AlertlogSummaryAccumulator, timestamp: &str) {
+    if summary.first_seen.is_empty() || timestamp < summary.first_seen.as_str() {
+        summary.first_seen = timestamp.to_string();
+    }
+    if summary.last_seen.is_empty() || timestamp > summary.last_seen.as_str() {
+        summary.last_seen = timestamp.to_string();
+    }
+}
+
+fn observe_alert_event(
+    summaries: &mut BTreeMap<String, AlertlogSummaryAccumulator>,
+    code: &str,
+    description: &str,
+    timestamp: &str,
+    reported_count: u64,
+) {
+    let summary = summaries.entry(code.to_string()).or_default();
+    summary.event_records += 1;
+    summary.max_reported_count = summary.max_reported_count.max(reported_count);
+    if summary.description.is_empty() && !description.trim().is_empty() {
+        summary.description = description.trim().to_string();
+    }
+    observe_alert_timestamp(summary, timestamp);
+}
+
+fn observe_alert_parse_detail(
+    summaries: &mut BTreeMap<String, AlertlogSummaryAccumulator>,
+    detail: &AlertlogParseDetail,
+) {
+    let code = if detail.code == "UNKNOWN" {
+        "PARSE_ERROR_UNKNOWN".to_string()
+    } else {
+        format!("PARSE_ERROR_{}", detail.code)
+    };
+    let summary = summaries.entry(code).or_default();
+    summary.parse_detail_records += 1;
+    summary.max_reported_count = summary.max_reported_count.max(detail.count);
+    if summary.description.is_empty() && !detail.description.trim().is_empty() {
+        summary.description = detail.description.trim().to_string();
+    }
+    observe_alert_timestamp(summary, &detail.timestamp);
+    if !detail.sqlid.is_empty() && detail.sqlid != "UNKNOWN" {
+        summary.sql_ids.insert(detail.sqlid.clone());
+    }
+    if !detail.username.is_empty() && detail.username != "UNKNOWN" {
+        summary.usernames.insert(detail.username.clone());
+    }
+    if !detail.application.is_empty() && detail.application != "UNKNOWN" {
+        summary.applications.insert(detail.application.clone());
+    }
+    if !detail.action.is_empty() && detail.action != "UNKNOWN" {
+        summary.actions.insert(detail.action.clone());
+    }
+}
+
+fn finalized_alert_summaries(
+    summaries: BTreeMap<String, AlertlogSummaryAccumulator>,
+) -> Vec<AlertlogSummaryRow> {
+    summaries
+        .into_iter()
+        .map(|(code, summary)| AlertlogSummaryRow {
+            code,
+            description: summary.description,
+            event_records: summary.event_records,
+            parse_detail_records: summary.parse_detail_records,
+            max_reported_count: summary.max_reported_count,
+            first_seen: summary.first_seen,
+            last_seen: summary.last_seen,
+            sql_ids: summary.sql_ids.into_iter().collect(),
+            usernames: summary.usernames.into_iter().collect(),
+            applications: summary.applications.into_iter().collect(),
+            actions: summary.actions.into_iter().collect(),
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 struct PendingAlertlogParseDetail {
     timestamp: NaiveDateTime,
@@ -2179,6 +2284,78 @@ fn xplan_hash_counts(text: &str) -> BTreeMap<String, usize> {
     counts
 }
 
+fn xplan_statement_text(text: &str) -> Option<String> {
+    let mut after_header = false;
+    let mut statement = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !after_header {
+            if trimmed.starts_with("SQL_ID") {
+                after_header = true;
+            }
+            continue;
+        }
+        if trimmed.is_empty() && statement.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("Plan hash value:")
+            || trimmed.starts_with("NOTE:")
+            || trimmed.starts_with("-")
+        {
+            break;
+        }
+        if !trimmed.is_empty() {
+            statement.push(trimmed);
+        }
+    }
+    (!statement.is_empty()).then(|| statement.join(" "))
+}
+
+fn xplan_statement_profile(text: &str, plan_hash_counts: &BTreeMap<String, usize>) -> Value {
+    let statement_text = xplan_statement_text(text);
+    let normalized = statement_text
+        .as_deref()
+        .unwrap_or("")
+        .trim_start()
+        .to_ascii_uppercase();
+    let statement_type = if normalized.starts_with("BEGIN")
+        || normalized.starts_with("DECLARE")
+        || normalized.starts_with("CALL ")
+    {
+        "PL/SQL"
+    } else if normalized.starts_with("SELECT") {
+        "SELECT"
+    } else if normalized.starts_with("INSERT") {
+        "INSERT"
+    } else if normalized.starts_with("UPDATE") {
+        "UPDATE"
+    } else if normalized.starts_with("DELETE") {
+        "DELETE"
+    } else if normalized.starts_with("MERGE") {
+        "MERGE"
+    } else {
+        "unknown"
+    };
+    let plan_applicability = if statement_type == "PL/SQL" {
+        "not_applicable"
+    } else if plan_hash_counts.is_empty() {
+        "unavailable"
+    } else {
+        "available"
+    };
+    let interpretation = match plan_applicability {
+        "not_applicable" => "The captured cursor is a PL/SQL entry point. A top-level DBMS_XPLAN row-source plan is not expected; investigate the PL/SQL call tree and the SQL statements executed inside it.",
+        "unavailable" => "The attachment describes a SQL statement but contains no plan hash or parsed row-source plan. Plan evidence is unavailable for this capture.",
+        _ => "The attachment contains one or more SQL execution-plan variants.",
+    };
+    json!({
+        "statement_type": statement_type,
+        "statement_text": statement_text,
+        "plan_applicability": plan_applicability,
+        "interpretation": interpretation
+    })
+}
+
 fn xplan_representative_block(text: &str, plan_hash: &str) -> Option<String> {
     let lines = text.lines().collect::<Vec<_>>();
     let hash_index = lines.iter().position(|line| {
@@ -2194,6 +2371,292 @@ fn xplan_representative_block(text: &str, plan_hash: &str) -> Option<String> {
         .find(|index| lines[*index].trim_start().starts_with("SQL_ID"))
         .unwrap_or(lines.len());
     Some(lines[start..end].join("\n"))
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct XplanOperation {
+    id: u64,
+    parent_id: Option<u64>,
+    depth: usize,
+    operation: String,
+    object_name: String,
+    estimated_rows: String,
+    actual_rows: String,
+    starts: String,
+    cost: String,
+    elapsed_time: String,
+    temp_space: String,
+    partition_start: String,
+    partition_stop: String,
+    severity: String,
+    flags: Vec<String>,
+    on_flagged_path: bool,
+}
+
+fn normalized_xplan_heading(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn xplan_table_cells(line: &str) -> Vec<String> {
+    line.trim_matches('|')
+        .split('|')
+        .map(str::to_string)
+        .collect()
+}
+
+fn xplan_operation_flags(operation: &str, temp_space: &str) -> (String, Vec<String>) {
+    let upper = operation.to_ascii_uppercase();
+    let mut flags = Vec::new();
+    let mut severity = "informational";
+    if upper.contains("MERGE JOIN CARTESIAN") || upper.contains("CARTESIAN") {
+        severity = "high";
+        flags.push("cartesian join".to_string());
+    }
+    if upper.contains("TABLE ACCESS FULL") || upper.contains("TABLE ACCESS STORAGE FULL") {
+        if severity != "high" {
+            severity = "medium";
+        }
+        flags.push("full table scan".to_string());
+    }
+    if upper.contains("FIXED TABLE FULL") {
+        if severity != "high" {
+            severity = "medium";
+        }
+        flags.push("fixed-table full scan".to_string());
+    }
+    if upper.contains("INDEX SKIP SCAN") {
+        if severity != "high" {
+            severity = "medium";
+        }
+        flags.push("index skip scan".to_string());
+    }
+    if upper.contains("BUFFER SORT") {
+        if severity != "high" {
+            severity = "medium";
+        }
+        flags.push("buffer sort".to_string());
+    }
+    if upper.contains("WINDOW SORT") || upper.contains("SORT ORDER BY") {
+        if severity != "high" {
+            severity = "medium";
+        }
+        flags.push("potentially expensive sort".to_string());
+    }
+    if upper.contains("REMOTE") {
+        flags.push("remote operation".to_string());
+    }
+    if upper.contains("PX SEND") || upper.contains("PX RECEIVE") {
+        flags.push("parallel data redistribution".to_string());
+    }
+    if !temp_space.trim().is_empty() && temp_space.trim() != "0" {
+        if severity != "high" {
+            severity = "medium";
+        }
+        flags.push("temporary-space estimate".to_string());
+    }
+    (severity.to_string(), flags)
+}
+
+fn xplan_plan_graph(text: &str) -> Value {
+    let lines = text.lines().collect::<Vec<_>>();
+    let Some((header_index, header_cells)) = lines.iter().enumerate().find_map(|(index, line)| {
+        if !line.contains('|') {
+            return None;
+        }
+        let cells = xplan_table_cells(line);
+        let headings = cells
+            .iter()
+            .map(|cell| normalized_xplan_heading(cell))
+            .collect::<Vec<_>>();
+        (headings.iter().any(|heading| heading == "id")
+            && headings.iter().any(|heading| heading == "operation"))
+        .then_some((index, cells))
+    }) else {
+        return json!({
+            "available": false,
+            "reason": "No DBMS_XPLAN row-source table with Id and Operation columns was found."
+        });
+    };
+
+    let headings = header_cells
+        .iter()
+        .map(|cell| normalized_xplan_heading(cell))
+        .collect::<Vec<_>>();
+    let column = |candidates: &[&str]| {
+        headings
+            .iter()
+            .position(|heading| candidates.iter().any(|candidate| heading == candidate))
+    };
+    let id_column = column(&["id"]).expect("Id header was checked");
+    let operation_column = column(&["operation"]).expect("Operation header was checked");
+    let name_column = column(&["name"]);
+    let estimated_rows_column = column(&["rows", "erows"]);
+    let actual_rows_column = column(&["arows"]);
+    let starts_column = column(&["starts"]);
+    let cost_column = column(&["costcpu", "cost"]);
+    let time_column = column(&["time", "atime"]);
+    let temp_column = column(&["tempspc", "tempspace"]);
+    let partition_start_column = column(&["pstart", "partitionstart"]);
+    let partition_stop_column = column(&["pstop", "partitionstop"]);
+
+    #[derive(Debug)]
+    struct RawOperation {
+        id: u64,
+        leading_spaces: usize,
+        operation: String,
+        object_name: String,
+        estimated_rows: String,
+        actual_rows: String,
+        starts: String,
+        cost: String,
+        elapsed_time: String,
+        temp_space: String,
+        partition_start: String,
+        partition_stop: String,
+    }
+
+    let cell = |cells: &[String], index: Option<usize>| {
+        index
+            .and_then(|index| cells.get(index))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default()
+    };
+    let mut raw_operations = Vec::new();
+    for line in lines.iter().skip(header_index + 1) {
+        if !line.contains('|') {
+            if !raw_operations.is_empty() && !line.trim().is_empty() {
+                break;
+            }
+            continue;
+        }
+        let cells = xplan_table_cells(line);
+        let Some(id_cell) = cells.get(id_column) else {
+            continue;
+        };
+        let Some(id) = id_cell
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<u64>()
+            .ok()
+        else {
+            continue;
+        };
+        let Some(operation_cell) = cells.get(operation_column) else {
+            continue;
+        };
+        let leading_spaces = operation_cell
+            .chars()
+            .take_while(|character| character.is_whitespace())
+            .count();
+        let operation = operation_cell.trim().to_string();
+        if operation.is_empty() {
+            continue;
+        }
+        raw_operations.push(RawOperation {
+            id,
+            leading_spaces,
+            operation,
+            object_name: cell(&cells, name_column),
+            estimated_rows: cell(&cells, estimated_rows_column),
+            actual_rows: cell(&cells, actual_rows_column),
+            starts: cell(&cells, starts_column),
+            cost: cell(&cells, cost_column),
+            elapsed_time: cell(&cells, time_column),
+            temp_space: cell(&cells, temp_column),
+            partition_start: cell(&cells, partition_start_column),
+            partition_stop: cell(&cells, partition_stop_column),
+        });
+        if raw_operations.len() >= 500 {
+            break;
+        }
+    }
+    if raw_operations.is_empty() {
+        return json!({
+            "available": false,
+            "reason": "The DBMS_XPLAN table header was found, but no row-source operations were parsed."
+        });
+    }
+
+    let base_indent = raw_operations
+        .iter()
+        .map(|operation| operation.leading_spaces)
+        .min()
+        .unwrap_or(0);
+    let mut operations = Vec::with_capacity(raw_operations.len());
+    let mut ancestors: Vec<(usize, u64)> = Vec::new();
+    for raw in raw_operations {
+        // DBMS_XPLAN uses one leading space per tree level in the Operation
+        // column (in addition to the table cell's base padding).
+        let depth = raw.leading_spaces.saturating_sub(base_indent);
+        while ancestors
+            .last()
+            .is_some_and(|(ancestor_depth, _)| *ancestor_depth >= depth)
+        {
+            ancestors.pop();
+        }
+        let parent_id = ancestors.last().map(|(_, id)| *id);
+        let (severity, flags) = xplan_operation_flags(&raw.operation, &raw.temp_space);
+        operations.push(XplanOperation {
+            id: raw.id,
+            parent_id,
+            depth,
+            operation: raw.operation,
+            object_name: raw.object_name,
+            estimated_rows: raw.estimated_rows,
+            actual_rows: raw.actual_rows,
+            starts: raw.starts,
+            cost: raw.cost,
+            elapsed_time: raw.elapsed_time,
+            temp_space: raw.temp_space,
+            partition_start: raw.partition_start,
+            partition_stop: raw.partition_stop,
+            severity,
+            flags,
+            on_flagged_path: false,
+        });
+        ancestors.push((depth, operations.last().expect("operation was pushed").id));
+    }
+
+    let parents = operations
+        .iter()
+        .map(|operation| (operation.id, operation.parent_id))
+        .collect::<BTreeMap<_, _>>();
+    let flagged = operations
+        .iter()
+        .filter(|operation| !operation.flags.is_empty())
+        .map(|operation| operation.id)
+        .collect::<Vec<_>>();
+    let mut flagged_path = BTreeSet::new();
+    for id in &flagged {
+        let mut cursor = Some(*id);
+        while let Some(current) = cursor {
+            if !flagged_path.insert(current) {
+                break;
+            }
+            cursor = parents.get(&current).copied().flatten();
+        }
+    }
+    for operation in &mut operations {
+        operation.on_flagged_path = flagged_path.contains(&operation.id);
+    }
+    let has_actual_rows = operations
+        .iter()
+        .any(|operation| !operation.actual_rows.is_empty());
+
+    json!({
+        "available": true,
+        "operation_count": operations.len(),
+        "flagged_operation_count": flagged.len(),
+        "flagged_operation_ids": flagged,
+        "has_actual_rows": has_actual_rows,
+        "operations": operations,
+        "heuristic_scope": "Flags identify plan shapes that require workload-aware DBA review; they do not by themselves prove runtime cost."
+    })
 }
 
 fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
@@ -2238,6 +2701,7 @@ fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
     };
 
     let plan_hash_counts = xplan_hash_counts(&full_text);
+    let statement_profile = xplan_statement_profile(&full_text, &plan_hash_counts);
     let requested_plan_hash = arg_str(args, "plan_hash").map(str::trim);
     if let Some(plan_hash) = requested_plan_hash {
         if plan_hash.is_empty()
@@ -2273,6 +2737,8 @@ fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
         text.push_str("\n\n-- JAS-MIN NOTE: execution plan output truncated because it exceeded the tool payload limit.\n");
     }
 
+    let plan_graph = xplan_plan_graph(&text);
+
     json!({
         "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
         "sql_id": sql_id,
@@ -2285,17 +2751,24 @@ fn tool_get_sql_execution_plan(args: &Value, stem: &str) -> Value {
             "unique_plan_hashes": plan_hash_counts.keys().collect::<Vec<_>>(),
             "plan_hash_counts": plan_hash_counts
         },
+        "statement_profile": statement_profile,
+        "plan_applicability": statement_profile["plan_applicability"],
         "truncated": truncated,
         "max_bytes": MAX_XPLAN_BYTES,
-        "analysis_guidance": [
+        "analysis_guidance": if statement_profile["plan_applicability"] == "not_applicable" { json!([
+            "Do not request or invent a top-level row-source plan for this PL/SQL entry point.",
+            "Use SQL trace, ASH/SQL_ID attribution, DBMS_HPROF or DBMS_PROFILER to identify expensive inner SQL and PL/SQL lines.",
+            "Fetch execution plans only for the material inner SQL statements identified by runtime evidence."
+        ]) } else { json!([
             "Identify the dominant operations by cost, cardinality, bytes, elapsed time evidence, and likely row-source impact.",
             "Check access paths: full scans, index range scans, index unique scans, skip scans, bitmap operations, partition pruning.",
             "Check join methods and join order: nested loops, hash joins, merge joins, cartesian joins, bloom filters.",
             "Compare estimated rows with actual rows if A-Rows/Starts are present; highlight cardinality estimation errors.",
             "Look for expensive sorts, temp spills, remote operations, adaptive plan notes, bind peeking/sensitivity, dynamic sampling, SQL plan directives, parallel execution, and partition-related issues.",
             "Produce concrete recommendations: stats refresh, histograms, extended stats, SQL rewrite, indexing, partitioning, SPM baseline/profile, or bind/literal handling."
-        ],
-        "plan_text": text
+        ]) },
+        "plan_text": text,
+        "plan_graph": plan_graph
     })
 }
 
@@ -2321,6 +2794,16 @@ fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
             let plan_hash_counts = fs::read_to_string(&path)
                 .map(|text| xplan_hash_counts(&text))
                 .unwrap_or_default();
+            let statement_profile = fs::read_to_string(&path)
+                .map(|text| xplan_statement_profile(&text, &plan_hash_counts))
+                .unwrap_or_else(|_| {
+                    json!({
+                        "statement_type": "unknown",
+                        "statement_text": null,
+                        "plan_applicability": "unavailable",
+                        "interpretation": "The attachment could not be classified."
+                    })
+                });
 
             Some(json!({
                 "sql_id": sql_id,
@@ -2328,7 +2811,9 @@ fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
                 "size_bytes": size_bytes,
                 "plan_instances": plan_hash_counts.values().sum::<usize>(),
                 "unique_plan_hashes": plan_hash_counts.keys().collect::<Vec<_>>(),
-                "plan_hash_counts": plan_hash_counts
+                "plan_hash_counts": plan_hash_counts,
+                "statement_profile": statement_profile,
+                "plan_applicability": statement_profile["plan_applicability"]
             }))
         })
         .collect();
@@ -2352,7 +2837,7 @@ fn tool_list_available_sql_plans(args: &Value, stem: &str) -> Value {
         "returned": plans.len(),
         "limit": limit,
         "sql_ids_xplan": plans,
-        "usage_hint": "For a complete MCP report, call get_sql_execution_plan for every listed project/SQL_ID and every returned unique plan_hash, then record one structured analysis row per variant. When unique_plan_hashes is empty, inspect the attachment once without plan_hash and record it as unusable."
+        "usage_hint": "For a complete MCP report, call get_sql_execution_plan for every listed project/SQL_ID and every returned unique plan_hash, then record one structured analysis row per variant. A PL/SQL entry point has plan_applicability=not_applicable and must be recorded as not_applicable_plsql, never as a failed plan recapture. A non-PL/SQL attachment without a plan remains unavailable."
     })
 }
 
@@ -2838,29 +3323,33 @@ fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
     let mut pending_parse: Option<PendingAlertlogParseDetail> = None;
     let mut events = Vec::new();
     let mut parse_details = Vec::new();
+    let mut summaries = BTreeMap::new();
     let mut matching_events_total = 0usize;
     let mut matching_parse_error_details_total = 0usize;
 
-    let mut flush_pending = |pending: &mut Option<PendingAlertlogParseDetail>,
-                             parse_details: &mut Vec<AlertlogParseDetail>,
-                             matching_total: &mut usize| {
-        if let Some(detail) = pending.take() {
-            let detail = detail.to_detail();
-            let matches_pattern = code_pattern
-                .as_ref()
-                .map(|p| {
-                    detail.code.to_lowercase().contains(p)
-                        || detail.description.to_lowercase().contains(p)
-                })
-                .unwrap_or(true);
-            if include_parse_error_details && matches_pattern {
-                *matching_total += 1;
-                if parse_details.len() < limit {
-                    parse_details.push(detail);
+    let flush_pending =
+        |pending: &mut Option<PendingAlertlogParseDetail>,
+         parse_details: &mut Vec<AlertlogParseDetail>,
+         matching_total: &mut usize,
+         summaries: &mut BTreeMap<String, AlertlogSummaryAccumulator>| {
+            if let Some(detail) = pending.take() {
+                let detail = detail.to_detail();
+                let matches_pattern = code_pattern
+                    .as_ref()
+                    .map(|p| {
+                        detail.code.to_lowercase().contains(p)
+                            || detail.description.to_lowercase().contains(p)
+                    })
+                    .unwrap_or(true);
+                if include_parse_error_details && matches_pattern {
+                    *matching_total += 1;
+                    observe_alert_parse_detail(summaries, &detail);
+                    if parse_details.len() < limit {
+                        parse_details.push(detail);
+                    }
                 }
             }
-        }
-    };
+        };
 
     use std::io::{BufRead, BufReader};
     for raw_line in BufReader::new(file).lines() {
@@ -2874,6 +3363,7 @@ fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
                 &mut pending_parse,
                 &mut parse_details,
                 &mut matching_parse_error_details_total,
+                &mut summaries,
             );
             current_ts = Some(ts);
             suppress_parse_error_detail_lines = 0;
@@ -2895,6 +3385,7 @@ fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
                 &mut pending_parse,
                 &mut parse_details,
                 &mut matching_parse_error_details_total,
+                &mut summaries,
             );
             let count = caps
                 .name("count")
@@ -2964,6 +3455,7 @@ fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
                     &mut pending_parse,
                     &mut parse_details,
                     &mut matching_parse_error_details_total,
+                    &mut summaries,
                 );
             }
         }
@@ -2990,9 +3482,11 @@ fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
                 .unwrap_or(true);
             if matches_pattern {
                 matching_events_total += 1;
+                let timestamp = ts.format("%Y-%m-%d %H:%M:%S").to_string();
+                observe_alert_event(&mut summaries, &code, &description, &timestamp, total);
                 if events.len() < limit {
                     events.push(AlertlogEvent {
-                        timestamp: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        timestamp,
                         date: current_day.to_string(),
                         code,
                         description,
@@ -3005,13 +3499,14 @@ fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
         }
 
         if suppress_parse_error_detail_lines > 0 {
-            suppress_parse_error_detail_lines -= 1;
+            suppress_parse_error_detail_lines = suppress_parse_error_detail_lines.saturating_sub(1);
         }
     }
     flush_pending(
         &mut pending_parse,
         &mut parse_details,
         &mut matching_parse_error_details_total,
+        &mut summaries,
     );
 
     let truncated = matching_events_total > events.len()
@@ -3036,6 +3531,7 @@ fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
     };
     let payload_value = serde_json::to_value(&payload).unwrap_or_else(|_| json!({}));
     let alertlog_errors_toon = encode(&payload_value, None);
+    let error_summary = finalized_alert_summaries(summaries);
 
     json!({
         "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
@@ -3050,9 +3546,10 @@ fn tool_get_alertlog_errors(args: &Value, stem: &str) -> Value {
         "returned_parse_error_details": payload.returned_parse_error_details,
         "matching_events_total": payload.matching_events_total,
         "matching_parse_error_details_total": payload.matching_parse_error_details_total,
+        "error_summary": error_summary,
         "format": "TOON",
         "alertlog_errors_toon": alertlog_errors_toon,
-        "usage_hint": "Use alertlog_errors_toon as the authoritative structured alert.log evidence for this date range. For parse-error investigations, call again with include_parse_error_details=true and the narrowest relevant date range."
+        "usage_hint": "Use error_summary for deterministic report coverage and alertlog_errors_toon for the authoritative event stream. For parse-error investigations, call with include_parse_error_details=true; report event-record counts separately from max_reported_count because Oracle warning counters can be cumulative."
     })
 }
 
@@ -4448,6 +4945,119 @@ LPAR,T0001,9.115,10,40,28,10.00,172,0.00,18.99,32.55,1,0,52.48,4.56,1.19,32.93,5
         assert!(plan_text.contains("child number 1"));
         assert!(!plan_text.contains("child number 0"));
         assert!(!plan_text.contains("child number 2"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plsql_xplan_attachment_is_not_misclassified_as_failed_sql_plan() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "jasmin_plsql_xplan_test_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        let stem = root.join("sample_report");
+        let attachments = PathBuf::from(format!("{}_attachments", stem.display()));
+        std::fs::create_dir_all(&attachments).unwrap();
+        std::fs::write(
+            attachments.join("ffnd3s42wxp77.xplan"),
+            b"SQL_ID ffnd3s42wxp77\nBEGIN FFP513_22032019.FORMULA;END;\n",
+        )
+        .unwrap();
+
+        let listed = tool_list_available_sql_plans(&json!({"limit": 100}), &stem.to_string_lossy());
+        let item = &listed["sql_ids_xplan"][0];
+        assert_eq!(item["sql_id"], "ffnd3s42wxp77");
+        assert_eq!(item["unique_plan_hashes"], json!([]));
+        assert_eq!(item["statement_profile"]["statement_type"], "PL/SQL");
+        assert_eq!(item["plan_applicability"], "not_applicable");
+
+        let fetched = tool_get_sql_execution_plan(
+            &json!({"sql_id": "ffnd3s42wxp77"}),
+            &stem.to_string_lossy(),
+        );
+        assert_eq!(fetched["plan_applicability"], "not_applicable");
+        assert_eq!(fetched["statement_profile"]["statement_type"], "PL/SQL");
+        assert_eq!(fetched["plan_graph"]["available"], false);
+        assert!(fetched["analysis_guidance"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|guidance| guidance.contains("top-level row-source plan")));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn execution_plan_graph_preserves_hierarchy_and_flags_review_nodes() {
+        let graph = xplan_plan_graph(
+            "Plan hash value: 42\n\
+| Id  | Operation                    | Name | Starts | E-Rows | A-Rows | Cost (%CPU)| Time     |\n\
+|   0 | SELECT STATEMENT             |      |      1 |        |      1 |  100 (1)   | 00:00:01 |\n\
+|   1 |  MERGE JOIN CARTESIAN        |      |      1 |    100 |    100 |  100 (1)   | 00:00:01 |\n\
+|   2 |   TABLE ACCESS FULL          | T_BIG|      1 |    100 |    100 |   90 (1)   | 00:00:01 |\n",
+        );
+
+        assert_eq!(graph["available"], true);
+        assert_eq!(graph["operation_count"], 3);
+        assert_eq!(graph["has_actual_rows"], true);
+        assert_eq!(graph["operations"][1]["parent_id"], 0);
+        assert_eq!(graph["operations"][2]["parent_id"], 1);
+        assert_eq!(graph["operations"][1]["severity"], "high");
+        assert!(graph["operations"][1]["flags"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("cartesian join")));
+        assert_eq!(graph["operations"][0]["on_flagged_path"], true);
+    }
+
+    #[test]
+    fn alertlog_summary_aggregates_parse_errors_without_summing_cumulative_counters() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "jasmin_alert_summary_test_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        let stem = root.join("sample_report");
+        let attachments = PathBuf::from(format!("{}_attachments", stem.display()));
+        std::fs::create_dir_all(&attachments).unwrap();
+        std::fs::write(
+            attachments.join("alert_sample.log"),
+            b"2026-08-01T10:00:00.000000+02:00\nWARNING: too many parse errors, count=101 SQL hash=0xabc\nPARSE ERROR: ospid=123, error=904\nsqlid=abc123\n...Current username=APPS\n...Application: JDBC Thin Client Action: query\n2026-08-01T11:00:00.000000+02:00\nWARNING: too many parse errors, count=205 SQL hash=0xabc\nPARSE ERROR: ospid=124, error=904\nsqlid=abc123\n...Current username=APPS\n...Application: JDBC Thin Client Action: query\n",
+        )
+        .unwrap();
+
+        let result = tool_get_alertlog_errors(
+            &json!({"include_parse_error_details": true, "limit": 1}),
+            &stem.to_string_lossy(),
+        );
+        assert_eq!(result["truncated"], true);
+        let summary = result["error_summary"].as_array().unwrap();
+        let warning = summary
+            .iter()
+            .find(|row| row["code"] == "WARNING_TOO_MANY_PARSE_ERRORS")
+            .unwrap();
+        assert_eq!(warning["event_records"], 2);
+        assert_eq!(warning["max_reported_count"], 205);
+        let parse = summary
+            .iter()
+            .find(|row| row["code"] == "PARSE_ERROR_ORA-00904")
+            .unwrap();
+        assert_eq!(parse["event_records"], 2);
+        assert_eq!(parse["parse_detail_records"], 2);
+        assert_eq!(parse["max_reported_count"], 205);
+        assert_eq!(parse["sql_ids"], json!(["abc123"]));
+        assert_eq!(parse["first_seen"], "2026-08-01 10:00:00");
+        assert_eq!(parse["last_seen"], "2026-08-01 11:00:00");
 
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -1306,7 +1306,26 @@ pub fn cross_model_classify(
         });
     }
 
-    results.sort_by_key(|r| r.priority);
+    // `all_events` is a HashSet, so sorting by priority alone leaves equal-priority
+    // rows in a process-random order. Downstream compact views used to take the
+    // first few rows and could therefore hide the largest contributor. Keep the
+    // classification priority primary, then rank equal-priority signals by their
+    // measured active and peak impact, with the name as a deterministic tie-break.
+    results.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| {
+                b.combined_impact
+                    .partial_cmp(&a.combined_impact)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                b.combined_peak_impact
+                    .partial_cmp(&a.combined_peak_impact)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.event_name.cmp(&b.event_name))
+    });
     results
 }
 

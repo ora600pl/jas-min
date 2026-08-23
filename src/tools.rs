@@ -164,6 +164,7 @@ fn markdown_to_html_with_toc(
     let mut html_output = String::new(); // Final HTML body
     let mut parser_with_ids = Vec::new(); // Modified event stream
     let mut heading_counter = 0; // For generating unique IDs
+    let mut table_counter = 0; // For keyboard-focusable overflow regions
     let mut current_heading_level = 1; // For closing tags manually
     let mut headings_map: HashMap<String, String> = HashMap::new();
 
@@ -196,27 +197,34 @@ fn markdown_to_html_with_toc(
                 in_heading = false;
                 // Add the heading text to the map
                 headings_map.insert(current_heading_id.clone(), heading_text.clone());
-                let heading_class = match current_heading_level_for_map {
-                    1 => "report-title",
-                    2 => "section-title",
+                let normalized = heading_text.to_ascii_lowercase();
+                let mut heading_class = match current_heading_level_for_map {
+                    1 => "report-title".to_string(),
+                    2 => "section-title".to_string(),
                     3 => {
-                        let normalized = heading_text.to_ascii_lowercase();
                         if normalized.contains("[critical /") {
-                            "finding-title severity-critical"
+                            "finding-title severity-critical".to_string()
                         } else if normalized.contains("[high /") {
-                            "finding-title severity-high"
+                            "finding-title severity-high".to_string()
                         } else if normalized.contains("[medium /") {
-                            "finding-title severity-medium"
+                            "finding-title severity-medium".to_string()
                         } else if normalized.contains("[low /") {
-                            "finding-title severity-low"
+                            "finding-title severity-low".to_string()
                         } else if normalized.contains("[informational /") {
-                            "finding-title severity-informational"
+                            "finding-title severity-informational".to_string()
                         } else {
-                            "subsection-title"
+                            "subsection-title".to_string()
                         }
                     }
-                    _ => "subsection-title",
+                    4 => "group-title".to_string(),
+                    _ => "metric-table-title".to_string(),
                 };
+                if normalized.starts_with("11. prioritized actions") {
+                    heading_class.push_str(" actions-section-title");
+                }
+                if normalized == "mandatory assessments" {
+                    heading_class.push_str(" assessment-list-title");
+                }
                 parser_with_ids.push(Event::Html(
                     format!(
                         r#"<h{} id="{}" class="{}">"#,
@@ -232,6 +240,20 @@ fn markdown_to_html_with_toc(
                 parser_with_ids.push(Event::Html(
                     format!("</h{}>", current_heading_level_for_map).into(),
                 ));
+            }
+            Event::Start(Tag::Table(_)) if !in_heading => {
+                table_counter += 1;
+                parser_with_ids.push(Event::Html(
+                    format!(
+                        "<div class=\"table-scroll\" tabindex=\"0\" role=\"region\" aria-label=\"Scrollable report table {table_counter}\">"
+                    )
+                    .into(),
+                ));
+                parser_with_ids.push(event);
+            }
+            Event::End(TagEnd::Table) if !in_heading => {
+                parser_with_ids.push(event);
+                parser_with_ids.push(Event::Html("</div>".into()));
             }
             _ => {
                 if in_heading {
@@ -378,7 +400,7 @@ fn markdown_to_html_with_toc(
         .toc li.level-1 {{ display: none; }}
         .toc li.level-2 a {{ margin-top: 0.25rem; color: var(--navy); font-weight: 750; }}
         .toc li.level-3 a {{ padding-left: 1rem; border-left: 2px solid #e1e1e1; }}
-        .toc li.level-4 a {{ padding-left: 1.5rem; }}
+        .toc li.level-4, .toc li.level-5, .toc li.level-6 {{ display: none; }}
         .report-title {{
             margin: 0 0 1rem;
             padding: clamp(1.6rem, 4vw, 3rem);
@@ -424,6 +446,20 @@ fn markdown_to_html_with_toc(
             line-height: 1.38;
             box-shadow: 0 8px 22px rgba(0, 0, 0, 0.07);
         }}
+        .group-title {{
+            margin: 1.5rem 0 0.65rem;
+            padding: 0.55rem 0.8rem;
+            border-left: 5px solid var(--high);
+            background: #f4f4f4;
+            color: var(--navy);
+            font-size: 1rem;
+        }}
+        .metric-table-title {{
+            margin: 1.15rem 0 0.35rem;
+            color: var(--navy);
+            font-size: 0.93rem;
+            letter-spacing: 0.025em;
+        }}
         .finding-title::before {{
             display: inline-block;
             margin: 0 0.55rem 0.25rem 0;
@@ -463,7 +499,7 @@ fn markdown_to_html_with_toc(
             border-radius: 0 10px 10px 0;
             background: #fbf1f2;
         }}
-        #section-2 + table {{ margin-top: 0; }}
+        #section-2 + .table-scroll {{ margin-top: 0; }}
         #section-2 ~ ul:first-of-type {{
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -482,7 +518,7 @@ fn markdown_to_html_with_toc(
             box-shadow: 0 7px 18px rgba(0, 0, 0, 0.06);
         }}
         #section-2 ~ ul:first-of-type > li > strong:first-child {{ display: block; margin-bottom: 0.35rem; color: var(--navy); }}
-        #section-26 + ul, #section-27 + ul {{
+        .actions-section-title + ul, .assessment-list-title + ul {{
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 0.8rem;
@@ -491,7 +527,7 @@ fn markdown_to_html_with_toc(
             list-style: none;
             counter-reset: audit-item;
         }}
-        #section-26 + ul > li, #section-27 + ul > li {{
+        .actions-section-title + ul > li, .assessment-list-title + ul > li {{
             position: relative;
             margin: 0;
             padding: 1rem 1rem 1rem 3.25rem;
@@ -501,7 +537,7 @@ fn markdown_to_html_with_toc(
             box-shadow: 0 6px 16px rgba(0, 0, 0, 0.05);
             counter-increment: audit-item;
         }}
-        #section-26 + ul > li::before, #section-27 + ul > li::before {{
+        .actions-section-title + ul > li::before, .assessment-list-title + ul > li::before {{
             content: counter(audit-item, decimal-leading-zero);
             position: absolute;
             top: 1rem;
@@ -516,20 +552,52 @@ fn markdown_to_html_with_toc(
             line-height: 1.8rem;
             text-align: center;
         }}
-        table {{
-            display: table;
+        .table-scroll {{
             width: 100%;
+            max-width: 100%;
             margin: 1rem 0 1.5rem;
+            overflow-x: auto;
+            overflow-y: visible;
+            overscroll-behavior-inline: contain;
+            scrollbar-gutter: stable both-edges;
             border: 1px solid #d5d5d5;
-            border-collapse: separate;
-            border-spacing: 0;
             border-radius: 12px;
-            overflow: hidden;
             background: var(--surface);
             box-shadow: 0 8px 22px rgba(0, 0, 0, 0.07);
+        }}
+        .table-scroll:focus-visible {{
+            outline: 3px solid rgba(197,34,40,0.35);
+            outline-offset: 3px;
+        }}
+        .table-scroll::-webkit-scrollbar, .plan-canvas::-webkit-scrollbar {{ height: 13px; }}
+        .table-scroll::-webkit-scrollbar-track, .plan-canvas::-webkit-scrollbar-track {{ background: #ececec; border-radius: 999px; }}
+        .table-scroll::-webkit-scrollbar-thumb, .plan-canvas::-webkit-scrollbar-thumb {{ background: #777777; border: 3px solid #ececec; border-radius: 999px; }}
+        .table-scroll::after {{
+            content: "scroll horizontally when needed →";
+            position: sticky;
+            left: 0;
+            display: block;
+            width: max-content;
+            padding: 0.32rem 0.7rem 0.45rem;
+            color: var(--muted);
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+        }}
+        table {{
+            width: max-content;
+            min-width: 100%;
+            margin: 0;
+            border: 0;
+            border-collapse: separate;
+            border-spacing: 0;
+            background: var(--surface);
             font-size: 0.92rem;
         }}
         th {{
+            position: sticky;
+            top: 0;
+            z-index: 2;
             padding: 0.72rem 0.8rem;
             background: var(--navy);
             color: white;
@@ -538,10 +606,85 @@ fn markdown_to_html_with_toc(
             text-align: left;
             text-transform: uppercase;
         }}
-        td {{ padding: 0.68rem 0.8rem; border-top: 1px solid #e4e4e4; vertical-align: top; }}
+        td {{
+            min-width: 10rem;
+            max-width: 32rem;
+            padding: 0.68rem 0.8rem;
+            border-top: 1px solid #e4e4e4;
+            vertical-align: top;
+            overflow-wrap: anywhere;
+        }}
         tbody tr:nth-child(even) {{ background: #f7f7f7; }}
         tbody tr:hover {{ background: #fae9ea; }}
         table a {{ font-weight: 720; }}
+        .plan-review {{
+            margin: 1rem 0 1.6rem;
+            border: 1px solid #cfcfcf;
+            border-radius: 14px;
+            overflow: hidden;
+            background: var(--surface);
+            box-shadow: 0 10px 26px rgba(0,0,0,0.08);
+        }}
+        .plan-review-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 1rem 1.15rem;
+            background: linear-gradient(100deg, #171717, #303030);
+            color: white;
+        }}
+        .plan-review-header h4 {{ margin: 0.2rem 0 0; color: white; font-size: 1.05rem; }}
+        .plan-review-header code {{ border-color: #666; background: #2b2b2b; color: white; }}
+        .plan-scope {{ color: #f0b9bc; font-size: 0.75rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }}
+        .plan-recommendation-badge {{ padding: 0.3rem 0.65rem; border-radius: 999px; background: var(--high); font-size: 0.73rem; font-weight: 850; text-transform: uppercase; }}
+        .sql-context {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; margin: 0; background: #fbf1f2; border-bottom: 1px solid var(--line); }}
+        .sql-context > div {{ padding: 0.9rem 1rem; border-right: 1px solid #ead5d6; border-top: 1px solid #ead5d6; }}
+        .sql-context dt, .plan-conclusion dt {{ color: var(--muted); font-size: 0.7rem; font-weight: 850; letter-spacing: 0.05em; text-transform: uppercase; }}
+        .sql-context dd, .plan-conclusion dd {{ margin: 0.25rem 0 0; }}
+        .plan-conclusion {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; margin: 0; border-bottom: 1px solid var(--line); }}
+        .plan-conclusion > div {{ padding: 0.8rem 1rem; border-right: 1px solid var(--line); border-top: 1px solid var(--line); }}
+        .entity-link {{ color: #ffccd0; text-decoration-thickness: 2px; text-underline-offset: 0.18em; }}
+        .entity-link code {{ color: inherit; }}
+        .plan-toolbar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem; padding: 0.7rem 1rem; background: #f4f4f4; border-bottom: 1px solid var(--line); font-size: 0.78rem; }}
+        .plan-toolbar button {{ padding: 0.42rem 0.7rem; border: 1px solid #999; border-radius: 7px; background: white; color: var(--ink); font-weight: 750; cursor: pointer; }}
+        .plan-toolbar button[aria-pressed="true"] {{ border-color: var(--high); background: #fae9ea; color: #8f151b; }}
+        .plan-toolbar label {{ display: flex; align-items: center; gap: 0.4rem; font-weight: 750; }}
+        .plan-toolbar span {{ margin-left: auto; color: var(--muted); }}
+        .plan-canvas {{ max-width: 100%; overflow-x: auto; padding: 1rem; scrollbar-gutter: stable both-edges; background: #f8f8f8; }}
+        .plan-canvas:focus-visible {{ outline: 3px solid rgba(197,34,40,0.35); outline-offset: -3px; }}
+        .plan-tree {{ width: max-content; min-width: 100%; zoom: var(--plan-zoom, 1); }}
+        .plan-node {{
+            width: clamp(32rem, 72vw, 66rem);
+            margin: 0.35rem 0 0.35rem calc(var(--plan-depth) * 1.55rem);
+            padding: 0.65rem 0.75rem;
+            border: 1px solid #d6d6d6;
+            border-left: 5px solid #777;
+            border-radius: 9px;
+            background: white;
+            box-shadow: 0 3px 9px rgba(0,0,0,0.04);
+        }}
+        .plan-node-high {{ border-left-color: var(--high); background: #fff7f7; }}
+        .plan-node-medium {{ border-left-color: #9b6b00; background: #fffaf0; }}
+        .plan-node-main {{ display: flex; align-items: center; gap: 0.5rem; }}
+        .plan-node-main > strong {{ color: var(--navy); }}
+        .plan-node-toggle {{ width: 1.6rem; height: 1.6rem; padding: 0; border: 1px solid #999; border-radius: 5px; background: #f5f5f5; cursor: pointer; font-weight: 900; line-height: 1; }}
+        .plan-node-leaf {{ width: 1.6rem; text-align: center; color: #888; }}
+        .plan-node-id {{ display: inline-grid; place-items: center; min-width: 1.7rem; height: 1.7rem; border-radius: 50%; background: #222; color: white; font-size: 0.7rem; font-weight: 850; }}
+        .plan-node-main code {{ margin-left: auto; }}
+        .plan-node-metrics {{ display: flex; flex-wrap: wrap; gap: 0.4rem 0.8rem; margin: 0.5rem 0 0 4.3rem; color: #555; font-size: 0.75rem; }}
+        .plan-node-flags {{ display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.5rem 0 0 4.3rem; }}
+        .plan-node-flags span {{ padding: 0.18rem 0.45rem; border-radius: 999px; background: #f2d4d6; color: #8f151b; font-size: 0.67rem; font-weight: 800; }}
+        .plan-node[data-filtered="true"], .plan-node[data-collapsed="true"] {{ display: none; }}
+        .plan-graph-unavailable {{ margin: 0; padding: 1rem; background: #fff7df; color: #5f4a00; }}
+        .plan-coverage {{ margin: 1rem 0 1.5rem; padding: 0.8rem 1rem; border: 1px solid var(--line); border-radius: 10px; background: #f8f8f8; }}
+        .plan-coverage summary {{ cursor: pointer; color: var(--navy); font-weight: 800; }}
+        .cell-details summary {{ min-width: 12rem; cursor: pointer; color: #8f151b; font-weight: 800; }}
+        .cell-details[open] summary {{ margin-bottom: 0.45rem; }}
+        .evidence-appendix {{ margin: 1rem 0 2rem; padding: 0.9rem 1rem; border: 1px solid var(--line); border-radius: 12px; background: white; }}
+        .evidence-appendix summary {{ cursor: pointer; color: var(--navy); font-weight: 850; }}
+        .evidence-appendix ul {{ columns: 2; column-gap: 2rem; padding-left: 1.2rem; }}
+        .evidence-appendix li {{ break-inside: avoid; font-size: 0.82rem; }}
         .source-navigation {{
             margin: 0 0 1.25rem;
             padding: 1rem 1.1rem;
@@ -613,15 +756,28 @@ fn markdown_to_html_with_toc(
         @media (max-width: 980px) {{
             body {{ display: block; padding: 1rem; }}
             .toc {{ position: relative; top: 0; max-height: none; margin-bottom: 1rem; }}
-            #section-2 ~ ul:first-of-type, #section-26 + ul, #section-27 + ul {{ grid-template-columns: 1fr; }}
-            table {{ display: block; overflow-x: auto; white-space: nowrap; }}
-            td {{ white-space: normal; min-width: 9rem; }}
+            #section-2 ~ ul:first-of-type, .actions-section-title + ul, .assessment-list-title + ul {{ grid-template-columns: 1fr; }}
+            .plan-conclusion {{ grid-template-columns: 1fr; }}
+            .plan-toolbar span {{ width: 100%; margin-left: 0; }}
+            .sql-context, .plan-conclusion {{ grid-template-columns: 1fr; }}
+            .evidence-appendix ul {{ columns: 1; }}
+            td {{ min-width: 9rem; }}
         }}
         @media print {{
             body {{ display: block; padding: 0; background: white; font-size: 10pt; }}
             .toc {{ position: static; max-height: none; box-shadow: none; page-break-after: always; }}
             .section-title {{ break-before: page; box-shadow: none; }}
-            .finding-title, .subsection-title, table, pre {{ break-inside: avoid; box-shadow: none; }}
+            .finding-title, .subsection-title, pre {{ break-inside: avoid; box-shadow: none; }}
+            .table-scroll {{ overflow: visible; border: 0; box-shadow: none; }}
+            .table-scroll::after, .plan-toolbar {{ display: none; }}
+            table {{ width: 100%; min-width: 0; font-size: 7pt; box-shadow: none; }}
+            th {{ position: static; }}
+            th, td {{ min-width: 0; max-width: none; padding: 0.3rem; overflow-wrap: anywhere; }}
+            tr {{ break-inside: avoid; }}
+            .plan-review {{ break-inside: auto; box-shadow: none; }}
+            .plan-canvas {{ overflow: visible; padding: 0.4rem; }}
+            .plan-tree {{ width: 100%; zoom: 0.72; }}
+            .plan-node {{ width: 100%; }}
             a {{ color: inherit; text-decoration: underline; }}
         }}
     </style>
@@ -632,6 +788,39 @@ fn markdown_to_html_with_toc(
 {navigation}
 {content}
 <footer class="brand-footer"><a href="https://www.ora-600.pl" target="_blank" rel="noopener"><img src="data:image/png;base64,{ora600_logo}" width="220" alt="ORA-600 Database Whisperers"/></a></footer>
+<script>
+document.addEventListener("click", function (event) {{
+    const filter = event.target.closest("[data-plan-filter]");
+    if (filter) {{
+        const review = filter.closest("[data-plan-review]");
+        const pressed = filter.getAttribute("aria-pressed") !== "true";
+        filter.setAttribute("aria-pressed", String(pressed));
+        filter.textContent = pressed ? "Show complete plan" : "Show flagged paths only";
+        review.querySelectorAll("[data-plan-node]").forEach(function (node) {{
+            node.dataset.filtered = String(pressed && node.dataset.onFlaggedPath !== "true");
+        }});
+        return;
+    }}
+    const toggle = event.target.closest("[data-plan-node-toggle]");
+    if (!toggle) return;
+    const node = toggle.closest("[data-plan-node]");
+    const depth = Number(node.dataset.depth || 0);
+    const expanded = toggle.getAttribute("aria-expanded") === "true";
+    let sibling = node.nextElementSibling;
+    while (sibling && sibling.matches("[data-plan-node]")) {{
+        if (Number(sibling.dataset.depth || 0) <= depth) break;
+        sibling.dataset.collapsed = String(expanded);
+        sibling = sibling.nextElementSibling;
+    }}
+    toggle.setAttribute("aria-expanded", String(!expanded));
+    toggle.textContent = expanded ? "+" : "−";
+}});
+document.addEventListener("input", function (event) {{
+    if (!event.target.matches("[data-plan-zoom]")) return;
+    const review = event.target.closest("[data-plan-review]");
+    review.querySelector(".plan-tree").style.setProperty("--plan-zoom", String(Number(event.target.value) / 100));
+}});
+</script>
 </body>
 </html>"#,
         brand_logo = JASMIN_AUDIT_LOGO_SVG,
@@ -1028,7 +1217,7 @@ mod tests {
     #[test]
     fn report_renderer_applies_readable_audit_layout_and_severity_classes() {
         let html = render_markdown_html_document(
-            "# Oracle Performance Analysis\n\n## Wait Events\n\n### Cursor contention [critical / high]\n\nEvidence.\n\n### Storage is healthy [informational / high]\n\nEvidence.",
+            "# Oracle Performance Analysis\n\n## Wait Events\n\n### Cursor contention [critical / high]\n\nEvidence.\n\n| SQL ID | Finding |\n|---|---|\n| abc123 | Wide diagnostic evidence that remains scrollable |\n\n### Storage is healthy [informational / high]\n\nEvidence.\n\n## 11. Prioritized Actions and Mandatory Assessments\n\n- Fix the proven issue.\n\n### Mandatory Assessments\n\n- CPU pressure assessed.",
             "",
             "",
             HashMap::new(),
@@ -1041,7 +1230,13 @@ mod tests {
         assert!(html.contains("class=\"finding-title severity-informational\""));
         assert!(html.contains("grid-template-columns: minmax(240px, 300px)"));
         assert!(html.contains("@media print"));
-        assert!(html.contains("#section-26 + ul"));
+        assert!(html.contains(".actions-section-title + ul"));
+        assert!(html.contains("class=\"section-title actions-section-title\""));
+        assert!(html.contains("class=\"subsection-title assessment-list-title\""));
+        assert!(html.contains("class=\"table-scroll\" tabindex=\"0\""));
+        assert!(html.contains("overflow-x: auto"));
+        assert!(html.contains("width: max-content"));
+        assert!(!html.contains("#section-26 + ul"));
         assert!(html.contains("<header class=\"brand-banner\">"));
         assert!(html.contains("ORACLE PERFORMANCE EVIDENCE"));
         assert!(html.contains("data:image/png;base64,"));
