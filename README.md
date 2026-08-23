@@ -372,6 +372,8 @@ score  = |xi - median| / MAD
 
 An observation is treated as anomalous when its MAD score is above the current fixed score cutoff of `7.0`. `-m, --mad-top` does not change that cutoff; it controls how many highest-scoring MAD anomalies are retained, with a default of `10`.
 
+Missing Top-N rows are treated as unobserved samples and do not participate in the median or MAD. A series needs at least three observed samples. When the observed baseline is constant (`MAD = 0`), unchanged values are ignored and finite departures from that baseline receive a finite score above the anomaly threshold.
+
 `-W, --mad-window-size` controls whether MAD is global or local:
 
 - `-W 100` uses the whole time series as the reference population.
@@ -437,7 +439,7 @@ JAS-MIN then fits four complementary regression models:
 
 | Model | Method | What it is good for |
 |---|---|---|
-| Ridge | Dense linear solve with L2 regularization: `(X'X + lambda I) beta = X'y` | Stable ranking when predictors are numerous or correlated. |
+| Ridge | Dense linear solve with sample-normalized L2 regularization: `(X'X/n + lambda I) beta = X'y/n` | Stable ranking when predictors are numerous or correlated. |
 | Elastic Net | Coordinate descent with L1 and L2 penalties | Sparse ranking that highlights dominant drivers and suppresses redundant correlated predictors. |
 | Huber | Iteratively Reweighted Least Squares with Huber loss | Robust ranking that downweights extreme outlier snapshots. |
 | Quantile 95 | Quantile regression focused on the 95th percentile | Tail-risk analysis for the worst periods rather than average behavior. |
@@ -446,18 +448,34 @@ The configurable parameters are:
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `-R, --ridge-lambda` | Ridge L2 regularization strength | `50` |
-| `-E, --en-lambda` | Elastic Net regularization strength | `30` |
-| `-A, --en-alpha` | Elastic Net L1/L2 mix; `1.0` is Lasso, `0.0` is Ridge-like | `0.333` |
+| `-R, --ridge-lambda` | Ridge L2 regularization strength in the sample-normalized objective | `0.05` |
+| `-E, --en-lambda` | Optional fixed Elastic Net regularization strength; bypasses automatic selection | automatic |
+| `-A, --en-alpha` | Elastic Net L1/L2 mix; `1.0` is Lasso, `0.0` is Ridge-like | `0.2` |
 | `-I, --en-max-iter` | Coordinate descent iteration limit | `5000` |
-| `-T, --en-tol` | Elastic Net convergence tolerance | `0.000001` |
+| `--en-tol` | Elastic Net convergence tolerance | `0.000001` |
 | `--top-gradient` | Number of top rows kept per regression model | `10` |
 
-JAS-MIN calculates an impact score using the fitted coefficient and the MAD of the raw predictor deltas:
+Models are fitted on standardized predictor deltas. Elastic Net also standardizes the target delta, then converts its coefficients back to DB Time or DB CPU units after fitting. JAS-MIN converts each fitted coefficient back to the raw predictor scale before combining it with the MAD or percentile of raw deltas:
 
 ```text
-impact_j = beta_j * MAD(delta_x_j)
+beta_raw_j = beta_standardized_j / stddev(delta_x_j)
+impact_j   = beta_raw_j * MAD(delta_x_j)
 ```
+
+Since version 0.9.3, Ridge, Huber, and Quantile losses are normalized by the number of observations before regularization. The Ridge default changed from the legacy sum-loss value `50` to the mean-loss value `0.05`, which preserves the approximate strength used for a 1,000-snapshot collection while making it independent of collection length.
+
+When `--en-lambda` is omitted, Elastic Net selects lambda independently for every gradient section:
+
+1. Predictor and target deltas are standardized using training data only.
+2. `lambda_max = max(abs(X' y / n)) / alpha` defines the zero-model end of the regularization path.
+3. Forty logarithmically spaced ratios from `1.0` through `0.001` are evaluated. Each fold applies the same ratio to its own training-only `lambda_max`.
+4. Five expanding-window, forward-chaining folds preserve snapshot order; no observations are shuffled.
+5. The one-standard-error rule selects the largest, most regularizing lambda whose mean validation loss remains within one standard error of the minimum.
+6. The selected ratio is applied to full-data `lambda_max`, and the final coefficients are fitted and converted back to target units.
+
+Collections with fewer than 12 target deltas, insufficient variable training folds, or no usable validation folds use the deterministic fallback `0.05 * lambda_max`. A constant or entirely unrelated standardized target produces a zero Elastic Net model. Automatic selection requires `alpha > 0`; use an explicit `--en-lambda` for the pure-L2 `alpha=0` case.
+
+Every gradient section records `elastic_net_lambda_mode`, selected `elastic_net_lambda`, `elastic_net_lambda_max`, `elastic_net_lambda_ratio`, the CV rule and fold count, validation loss when available, target-standardization status, and the final number of non-zero coefficients. Explicit `--en-lambda` values operate on the standardized-target objective and are therefore not numerically compatible with fixed lambdas from releases that fitted Elastic Net against the unstandardized target.
 
 The sign is preserved. Positive values indicate metrics associated with DB Time increases; negative values indicate metrics associated with DB Time decreases. This prevents idle or anti-correlated metrics from being reported as bottlenecks simply because their absolute coefficient is large.
 
@@ -640,11 +658,11 @@ Options:
   -S, --security-level <SECURITY_LEVEL>      Security level: 0, 1, or 2 [default: 0]
   -u, --url-context-file <URL_CONTEXT_FILE>  URL context JSON file
   -B, --tokens-budget <TOKENS_BUDGET>        Token budget for AI analysis; local mode treats it as the context ceiling [default: 256000]
-  -R, --ridge-lambda <RIDGE_LAMBDA>          Ridge L2 regularization [default: 50]
-  -E, --en-lambda <EN_LAMBDA>                Elastic Net regularization [default: 30]
-  -A, --en-alpha <EN_ALPHA>                  Elastic Net L1/L2 mix [default: 0.333]
+  -R, --ridge-lambda <RIDGE_LAMBDA>          Ridge L2 regularization [default: 0.05]
+  -E, --en-lambda <EN_LAMBDA>                Fixed Elastic Net regularization; omitted means automatic selection
+  -A, --en-alpha <EN_ALPHA>                  Elastic Net L1/L2 mix [default: 0.2]
   -I, --en-max-iter <EN_MAX_ITER>            Elastic Net max iterations [default: 5000]
-  -T, --en-tol <EN_TOL>                      Elastic Net tolerance [default: 0.000001]
+      --en-tol <EN_TOL>                      Elastic Net tolerance [default: 0.000001]
       --top-gradient <TOP_GRADIENT>          Top N rows per regression model [default: 10]
   -c, --convert-md2html <CONVERT_MD2HTML>    Convert Markdown to HTML without AI call
   -G, --gradient-custom <GRADIENT_CUSTOM>    Custom gradient: SQL=<sql_id> or WAIT=<event>

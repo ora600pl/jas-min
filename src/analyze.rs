@@ -5954,67 +5954,8 @@ pub fn main_report_builder(
         last_snap_time
     );
 
-    let jasmin_html_scripts: String = format!(
+    let report_html_scripts: String = format!(
         r#"
-        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-        <script> //JAS-MIN Assistant
-        const messages = document.getElementById('messages');
-        const input = document.getElementById('user-input');
-        const sendBtn = document.getElementById('send-btn');
-        if (messages && input && sendBtn) {{
-            messages.innerHTML += `<div class="message ai-msg" style="color: grey;">Example of questions to JAS-MIN Assistant:<br>Summarise Report<br>What is the most important Wait Event</div>`;
-            function showLoadingIndicator() {{
-                const loadingDiv = document.createElement('div');
-                loadingDiv.className = 'message ai-msg loading-message';
-                loadingDiv.id = 'loading-indicator';
-                loadingDiv.innerHTML = '<span class="loading-dots"></span>';
-                messages.appendChild(loadingDiv);
-                messages.scrollTop = messages.scrollHeight;
-                return loadingDiv;
-            }}        
-            function removeLoadingIndicator() {{
-                const loadingDiv = document.getElementById('loading-indicator');
-                if (loadingDiv) {{
-                    loadingDiv.remove();
-                }}
-            }}
-            async function sendMessage() {{
-                const userMsg = input.value.trim();
-                if (userMsg === '') return;
-                input.disabled = true;
-                sendBtn.disabled = true;
-                messages.innerHTML += `<div class="message user-msg">${{userMsg}}</div>`;
-                messages.scrollTop = messages.scrollHeight;
-                input.value = '';
-                showLoadingIndicator();
-                try {{
-                    const response = await fetch('http://localhost:1234/api/chat', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ message: userMsg }})
-                    }});
-                    const data = await response.json();
-                    removeLoadingIndicator();
-                    messages.innerHTML += `<div class="message ai-msg">${{marked.parse(data.reply)}}</div>`;
-  &DF*:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::&&&                  messages.scrollTop = messages.scrollHeight;
-                }} catch (error) {{
-                    removeLoadingIndicator();
-    }}}}}} messages.innerHTML += `<div class="message ai-msg">Error retrieving response.</div>`;
-                    messages.scrollTop = messages.scrollHeight;
-                }} finally {{
-                    input.disabled = false;
-                    sendBtn.disabled = false;
-                    input.focus();
-                }}
-            }}
-            input.addEventListener('keydown', function(event) {{
-                if (event.key === 'Enter' && !input.disabled) {{
-                    sendMessage();
-                }}
-            }});
-            sendBtn.addEventListener('click', sendMessage);
-        }}
-        </script>
         <script>//JAS-MIN scripts
         function toggleTable(buttonId, tableId) {{
             const button = document.getElementById(buttonId);
@@ -6047,7 +5988,6 @@ pub fn main_report_builder(
         toggleTable('show-sqls-button', 'sqls-table');
         toggleTable('show-bgevents-button', 'bgevents-table');
         toggleTable('show-anomalies-button', 'anomalies-sum-table');
-        toggleTable('show-JASMINAI-button', 'chat-container');
         function sortTable(tableId, columnId) {{
             const table = document.getElementById(tableId);
             if (!table) return;
@@ -6283,7 +6223,7 @@ pub fn main_report_builder(
             bgevent_table_html,
             anomalies_summary_html,
             sqls_table_html,
-            jasmin_html_scripts)
+            report_html_scripts)
     );
     let highlight_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Load Profile</h4></div>\n";
     let explorer_title = "<div><h4 style=\"margin-top: 40px;margin-bottom: 0px; width: 100%; text-align: center;\">Stats Explorer</h4></div>\n";

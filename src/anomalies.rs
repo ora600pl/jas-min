@@ -29,7 +29,12 @@ pub struct AnomalySummaryItem {
     pub mad_score: f64,
 }
 
-fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> HashMap<String, Vec<f64>> {
+type ObservedSeriesMap = HashMap<String, Vec<Option<f64>>>;
+
+const MAD_ANOMALY_THRESHOLD: f64 = 7.0;
+const MIN_OBSERVED_SAMPLES: usize = 3;
+
+fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> ObservedSeriesMap {
     //Create list of all events
     let mut all_events: HashSet<String> = HashSet::new();
     if bg_or_fg == "FOREGROUND" {
@@ -46,10 +51,10 @@ fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> HashMap<String, Vec
             .collect();
     }
 
-    //This will hold event name and vector of values filled with 0.0 as default value
-    let mut event_map: HashMap<String, Vec<f64>> = all_events
+    // Missing Top-N rows are censored observations, not numeric zeroes or negative values.
+    let mut event_map: ObservedSeriesMap = all_events
         .iter()
-        .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+        .map(|e| (e.clone(), vec![None; awrs.len()]))
         .collect();
 
     //we are iterating over AWR
@@ -73,16 +78,16 @@ fn get_event_map_vectors(awrs: &Vec<AWR>, bg_or_fg: &str) -> HashMap<String, Vec
 
         //Let's go through all of the event names
         for event in &all_events {
-            //If some event name exists in this snapshot, set actual value in the map, instead of -1.0
+            // Record only values actually present in this snapshot.
             if let Some(&val) = snapshot_map.get(event) {
-                event_map.get_mut(event).unwrap()[i] = val;
+                event_map.get_mut(event).unwrap()[i] = Some(val);
             }
         }
     }
     event_map
 }
 
-fn get_sql_map_vectors(awrs: &Vec<AWR>, sql_type: &str) -> HashMap<String, Vec<f64>> {
+fn get_sql_map_vectors(awrs: &Vec<AWR>, sql_type: &str) -> ObservedSeriesMap {
     //Create list of all SQLs
     let mut all_sqls: HashSet<String> = HashSet::new();
     if sql_type == "ELAPSED_TIME" {
@@ -93,10 +98,9 @@ fn get_sql_map_vectors(awrs: &Vec<AWR>, sql_type: &str) -> HashMap<String, Vec<f
             .collect();
     }
 
-    //This will hold SQL_ID and vector of values filled with -1.0 as default value
-    let mut sql_map: HashMap<String, Vec<f64>> = all_sqls
+    let mut sql_map: ObservedSeriesMap = all_sqls
         .iter()
-        .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+        .map(|e| (e.clone(), vec![None; awrs.len()]))
         .collect();
 
     //we are iterating over AWR
@@ -114,16 +118,15 @@ fn get_sql_map_vectors(awrs: &Vec<AWR>, sql_type: &str) -> HashMap<String, Vec<f
 
         //Let's go through all of the event names
         for sql in &all_sqls {
-            //If some event name exists in this snapshot, set actual value in the map, instead of -1.0
             if let Some(&val) = snapshot_map.get(sql) {
-                sql_map.get_mut(sql).unwrap()[i] = val;
+                sql_map.get_mut(sql).unwrap()[i] = Some(val);
             }
         }
     }
     sql_map
 }
 
-fn get_loadprofile_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
+fn get_loadprofile_map_vectors(awrs: &Vec<AWR>) -> ObservedSeriesMap {
     //Create list of all SQLs
     let all_loadprofile: HashSet<String> = awrs
         .iter()
@@ -131,10 +134,9 @@ fn get_loadprofile_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
         .map(|l| l.stat_name.clone())
         .collect();
 
-    //This will hold load profile stat name and vector of values filled with -1.0 as default value
-    let mut profile_map: HashMap<String, Vec<f64>> = all_loadprofile
+    let mut profile_map: ObservedSeriesMap = all_loadprofile
         .iter()
-        .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+        .map(|e| (e.clone(), vec![None; awrs.len()]))
         .collect();
 
     //we are iterating over AWR
@@ -149,16 +151,15 @@ fn get_loadprofile_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
 
         //Let's go through all of the load profile stats
         for l in &all_loadprofile {
-            //If some event name exists in this snapshot, set actual value in the map, instead of -1.0
             if let Some(&val) = snapshot_map.get(l) {
-                profile_map.get_mut(l).unwrap()[i] = val;
+                profile_map.get_mut(l).unwrap()[i] = Some(val);
             }
         }
     }
     profile_map
 }
 
-fn get_statistics_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
+fn get_statistics_map_vectors(awrs: &Vec<AWR>) -> ObservedSeriesMap {
     //Create list of all statistics
     let all_stats: HashSet<String> = awrs
         .iter()
@@ -166,10 +167,9 @@ fn get_statistics_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
         .map(|l| l.statname.clone())
         .collect();
 
-    //This will hold stat name and vector of values filled with -1.0 as default value
-    let mut stats_map: HashMap<String, Vec<f64>> = all_stats
+    let mut stats_map: ObservedSeriesMap = all_stats
         .iter()
-        .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+        .map(|e| (e.clone(), vec![None; awrs.len()]))
         .collect();
 
     //we are iterating over AWR
@@ -184,16 +184,15 @@ fn get_statistics_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
 
         //Let's go through all of the instance stats
         for l in &all_stats {
-            //If some stat exists in this snapshot, set actual value in the map, instead of -1.0
             if let Some(&val) = snapshot_map.get(l) {
-                stats_map.get_mut(l).unwrap()[i] = val;
+                stats_map.get_mut(l).unwrap()[i] = Some(val);
             }
         }
     }
     stats_map
 }
 
-fn get_dc_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
+fn get_dc_map_vectors(awrs: &Vec<AWR>) -> ObservedSeriesMap {
     //Create list of all statistics
     let all_stats: HashSet<String> = awrs
         .iter()
@@ -201,10 +200,9 @@ fn get_dc_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
         .map(|l| l.statname.clone())
         .collect();
 
-    //This will hold stat name and vector of values filled with -1.0 as default value
-    let mut stats_map: HashMap<String, Vec<f64>> = all_stats
+    let mut stats_map: ObservedSeriesMap = all_stats
         .iter()
-        .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+        .map(|e| (e.clone(), vec![None; awrs.len()]))
         .collect();
 
     //we are iterating over AWR
@@ -219,16 +217,15 @@ fn get_dc_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
 
         //Let's go through all of the instance stats
         for l in &all_stats {
-            //If some stat exists in this snapshot, set actual value in the map, instead of -1.0
             if let Some(&val) = snapshot_map.get(l) {
-                stats_map.get_mut(l).unwrap()[i] = val;
+                stats_map.get_mut(l).unwrap()[i] = Some(val);
             }
         }
     }
     stats_map
 }
 
-fn get_libcache_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
+fn get_libcache_map_vectors(awrs: &Vec<AWR>) -> ObservedSeriesMap {
     //Create list of all statistics
     let all_stats: HashSet<String> = awrs
         .iter()
@@ -236,10 +233,9 @@ fn get_libcache_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
         .map(|l| l.statname.clone())
         .collect();
 
-    //This will hold stat name and vector of values filled with -1.0 as default value
-    let mut stats_map: HashMap<String, Vec<f64>> = all_stats
+    let mut stats_map: ObservedSeriesMap = all_stats
         .iter()
-        .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+        .map(|e| (e.clone(), vec![None; awrs.len()]))
         .collect();
 
     //we are iterating over AWR
@@ -254,16 +250,15 @@ fn get_libcache_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
 
         //Let's go through all of the instance stats
         for l in &all_stats {
-            //If some stat exists in this snapshot, set actual value in the map, instead of -1.0
             if let Some(&val) = snapshot_map.get(l) {
-                stats_map.get_mut(l).unwrap()[i] = val;
+                stats_map.get_mut(l).unwrap()[i] = Some(val);
             }
         }
     }
     stats_map
 }
 
-fn get_latch_activity_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
+fn get_latch_activity_map_vectors(awrs: &Vec<AWR>) -> ObservedSeriesMap {
     //Create list of all statistics
     let all_stats: HashSet<String> = awrs
         .iter()
@@ -271,10 +266,9 @@ fn get_latch_activity_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> 
         .map(|l| l.statname.clone())
         .collect();
 
-    //This will hold stat name and vector of values filled with -1.0 as default value
-    let mut stats_map: HashMap<String, Vec<f64>> = all_stats
+    let mut stats_map: ObservedSeriesMap = all_stats
         .iter()
-        .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+        .map(|e| (e.clone(), vec![None; awrs.len()]))
         .collect();
 
     //we are iterating over AWR
@@ -289,16 +283,15 @@ fn get_latch_activity_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> 
 
         //Let's go through all of the instance stats
         for l in &all_stats {
-            //If some stat exists in this snapshot, set actual value in the map, instead of -1.0
             if let Some(&val) = snapshot_map.get(l) {
-                stats_map.get_mut(l).unwrap()[i] = val;
+                stats_map.get_mut(l).unwrap()[i] = Some(val);
             }
         }
     }
     stats_map
 }
 
-fn get_time_model_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
+fn get_time_model_map_vectors(awrs: &Vec<AWR>) -> ObservedSeriesMap {
     //Create list of all statistics
     let all_stats: HashSet<String> = awrs
         .iter()
@@ -306,10 +299,9 @@ fn get_time_model_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
         .map(|l| l.stat_name.clone())
         .collect();
 
-    //This will hold stat name and vector of values filled with -1.0 as default value
-    let mut stats_map: HashMap<String, Vec<f64>> = all_stats
+    let mut stats_map: ObservedSeriesMap = all_stats
         .iter()
-        .map(|e| (e.clone(), vec![-1.0; awrs.len()]))
+        .map(|e| (e.clone(), vec![None; awrs.len()]))
         .collect();
 
     //we are iterating over AWR
@@ -324,9 +316,8 @@ fn get_time_model_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
 
         //Let's go through all of the instance stats
         for l in &all_stats {
-            //If some stat exists in this snapshot, set actual value in the map, instead of -1.0
             if let Some(&val) = snapshot_map.get(l) {
-                stats_map.get_mut(l).unwrap()[i] = val;
+                stats_map.get_mut(l).unwrap()[i] = Some(val);
             }
         }
     }
@@ -335,7 +326,7 @@ fn get_time_model_map_vectors(awrs: &Vec<AWR>) -> HashMap<String, Vec<f64>> {
 
 fn detect_anomalies_mad_sliding(
     awrs: &Vec<AWR>,
-    stats_vector: &HashMap<String, Vec<f64>>,
+    stats_vector: &ObservedSeriesMap,
     args: &Args,
 ) -> HashMap<String, Vec<(String, f64)>> {
     debug_note!(
@@ -359,12 +350,16 @@ fn detect_anomalies_mad_sliding(
         return anomalies;
     }
 
-    let threshold = 7.0;
     let top_n = args.mad_top;
     let len = awrs.len();
-    let mut full_window_size = ((args.mad_window_size as f32 / 100.0) * len as f32) as usize;
-    if full_window_size % 2 == 1 {
-        full_window_size = full_window_size + 1;
+    if len == 0 {
+        return anomalies;
+    }
+    let minimum_window = MIN_OBSERVED_SAMPLES.min(len);
+    let requested_window = ((args.mad_window_size as f64 / 100.0) * len as f64) as usize;
+    let mut full_window_size = requested_window.clamp(minimum_window, len);
+    if full_window_size % 2 == 1 && full_window_size < len {
+        full_window_size += 1;
     }
     let half_window_size = full_window_size / 2;
 
@@ -374,7 +369,10 @@ fn detect_anomalies_mad_sliding(
         .map(|(stat_name, values)| {
             //each thread will process one statistic
             let mut local_anomalies = Vec::new();
-            for (i, &val) in values.iter().enumerate() {
+            for (i, value) in values.iter().enumerate() {
+                let Some(val) = *value else {
+                    continue;
+                };
                 //For the given statistic process vector values of each snap and define local window
 
                 /* Define boundries for the window  */
@@ -391,20 +389,23 @@ fn detect_anomalies_mad_sliding(
                 };
                 /* ********************************** */
 
-                let window = &values[start..end]; //local surrounding window
-
-                let local_median = median(window);
-                let local_mad = mad_with_median(window, local_median);
-
-                if local_mad == 0.0 {
-                    continue; // no scatter - ignore
+                let observed_window: Vec<f64> = values[start..end]
+                    .iter()
+                    .filter_map(|value| *value)
+                    .collect();
+                if observed_window.len() < MIN_OBSERVED_SAMPLES {
+                    continue;
                 }
 
-                let val_mad_check = ((val - local_median).abs()) / local_mad;
+                let local_median = median(&observed_window);
+                let local_mad = mad_with_median(&observed_window, local_median);
+
+                let Some(val_mad_check) = mad_anomaly_score(val, local_median, local_mad) else {
+                    continue;
+                };
 
                 //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
-                if val_mad_check > threshold && val >= 0.0 {
-                    //Don't take into considaration negative values that are placeholders
+                if val_mad_check > MAD_ANOMALY_THRESHOLD && val >= 0.0 {
                     let snap_date = awrs[i].snap_info.begin_snap_time.clone();
                     local_anomalies.push((snap_date, val_mad_check)); //put in vector date of anomalie and value of MAD
                 }
@@ -429,31 +430,34 @@ fn detect_anomalies_mad_sliding(
 
 fn detect_anomalies_mad(
     awrs: &Vec<AWR>,
-    stats_vector: &HashMap<String, Vec<f64>>,
+    stats_vector: &ObservedSeriesMap,
     args: &Args,
 ) -> HashMap<String, Vec<(String, f64)>> {
     let mut anomalies: HashMap<String, Vec<(String, f64)>> = HashMap::new();
     //                          event        date   mad => for each event it will collect date of anomaly and value of MAD
-    let threshold = 7.0;
     let top_n = args.mad_top;
 
     for (stat_name, values) in stats_vector {
-        let med = median(values);
-        let mad_val = mad_with_median(values, med);
-
-        if mad_val == 0.0 {
-            continue; // no anomalies - just move on
+        let observed_values: Vec<f64> = values.iter().filter_map(|value| *value).collect();
+        if observed_values.len() < MIN_OBSERVED_SAMPLES {
+            continue;
         }
+        let med = median(&observed_values);
+        let mad_val = mad_with_median(&observed_values, med);
 
         //Collect all anomalies for this statistic first
         let mut stat_anomalies: Vec<(String, f64)> = Vec::new();
 
-        for (i, &val) in values.iter().enumerate() {
-            let val_mad_check = ((val - med).abs()) / mad_val;
+        for (i, value) in values.iter().enumerate() {
+            let Some(val) = *value else {
+                continue;
+            };
+            let Some(val_mad_check) = mad_anomaly_score(val, med, mad_val) else {
+                continue;
+            };
 
             //if anomaly is bigger than threshold - put event name on index corresponding to detected anomaly
-            if val_mad_check > threshold && val >= 0.0 {
-                //Don't take into considaration negative values that are placeholders
+            if val_mad_check > MAD_ANOMALY_THRESHOLD && val >= 0.0 {
                 let snap_date = awrs[i].snap_info.begin_snap_time.clone();
                 stat_anomalies.push((snap_date, val_mad_check));
             }
@@ -474,6 +478,23 @@ fn detect_anomalies_mad(
     }
 
     anomalies
+}
+
+fn mad_anomaly_score(value: f64, median_value: f64, mad_value: f64) -> Option<f64> {
+    if !value.is_finite() || !median_value.is_finite() || !mad_value.is_finite() {
+        return None;
+    }
+    let deviation = (value - median_value).abs();
+    if mad_value > f64::EPSILON {
+        return Some(deviation / mad_value);
+    }
+    if deviation <= f64::EPSILON {
+        return None;
+    }
+
+    // A constant observed baseline has MAD=0. A finite score above the threshold
+    // retains genuine departures without introducing infinities into JSON output.
+    Some(MAD_ANOMALY_THRESHOLD + 1.0 + deviation / median_value.abs().max(1.0))
 }
 
 //Median Absolute Deviation for anomalies detection in wait events
@@ -900,4 +921,58 @@ pub fn trim_anomalies_summary(
             .map(Vec::len)
             .sum::<usize>()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn snapshots(count: usize) -> Vec<AWR> {
+        (0..count)
+            .map(|index| {
+                let mut awr = AWR::default();
+                awr.snap_info.begin_snap_time = format!("snap-{index:03}");
+                awr
+            })
+            .collect()
+    }
+
+    fn anomaly_args() -> Args {
+        Args::try_parse_from(["jas-min", "--file", "fixture.html"]).unwrap()
+    }
+
+    #[test]
+    fn sparse_observations_do_not_pollute_median_and_mad() {
+        let awrs = snapshots(100);
+        let mut values = vec![None; awrs.len()];
+        for (index, value) in [1.0, 2.0, 3.0, 4.0, 100.0].into_iter().enumerate() {
+            values[index] = Some(value);
+        }
+        let series = HashMap::from([("intermittent event".to_string(), values)]);
+
+        let anomalies = detect_anomalies_mad_sliding(&awrs, &series, &anomaly_args());
+        let event_anomalies = anomalies.get("intermittent event").unwrap();
+
+        assert_eq!(event_anomalies.len(), 1);
+        assert_eq!(event_anomalies[0].0, "snap-004");
+        assert!(event_anomalies[0].1 > MAD_ANOMALY_THRESHOLD);
+    }
+
+    #[test]
+    fn departure_from_constant_observed_baseline_gets_a_finite_score() {
+        let awrs = snapshots(20);
+        let mut values = vec![None; awrs.len()];
+        for (index, value) in [10.0, 10.0, 10.0, 10.0, 50.0].into_iter().enumerate() {
+            values[index] = Some(value);
+        }
+        let series = HashMap::from([("constant baseline".to_string(), values)]);
+
+        let anomalies = detect_anomalies_mad_sliding(&awrs, &series, &anomaly_args());
+        let event_anomalies = anomalies.get("constant baseline").unwrap();
+
+        assert_eq!(event_anomalies.len(), 1);
+        assert_eq!(event_anomalies[0].0, "snap-004");
+        assert!(event_anomalies[0].1.is_finite());
+    }
 }
