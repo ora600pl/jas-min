@@ -64,15 +64,11 @@ macro_rules! debug_trace {
 #[macro_export]
 macro_rules! debug_note {
     ($($arg:tt)*) => {{
-        use crate::tools::get_timestamp;
-        let time = get_timestamp();
-        let file = file!();
-        let line = line!();
         $crate::debug_trace!(
             "[{}] [{}:{}] {}",
-            time,
-            file,
-            line,
+            $crate::tools::get_timestamp(),
+            file!(),
+            line!(),
             format_args!($($arg)*)
         );
     }};

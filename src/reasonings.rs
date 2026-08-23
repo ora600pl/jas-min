@@ -229,6 +229,13 @@ async fn request_openrouter_json(
 
     for attempt in 1..=OPENROUTER_REQUEST_ATTEMPTS {
         attempts_made = attempt;
+        debug_note!(
+            "OpenRouter request attempt: context='{}', attempt={}/{}, payload_bytes={}",
+            context,
+            attempt,
+            OPENROUTER_REQUEST_ATTEMPTS,
+            payload.to_string().len()
+        );
         let (tx, rx) = oneshot::channel();
         let spinner = tokio::spawn(spinning_beer(rx));
 
@@ -248,6 +255,12 @@ async fn request_openrouter_json(
             Ok(response) => response,
             Err(error) => {
                 last_error = format!("OpenRouter transport error during {context}: {error}");
+                debug_note!(
+                    "OpenRouter transport failure: context='{}', attempt={}, error={}",
+                    context,
+                    attempt,
+                    error
+                );
                 if attempt < OPENROUTER_REQUEST_ATTEMPTS {
                     eprintln!(
                         "⚠️ {last_error}. Retrying ({}/{})...",
@@ -279,6 +292,13 @@ async fn request_openrouter_json(
                 break;
             }
         };
+        debug_note!(
+            "OpenRouter response received: context='{}', attempt={}, status={}, body_bytes={}",
+            context,
+            attempt,
+            status,
+            body.len()
+        );
 
         if !status.is_success() {
             last_error = format!(
@@ -304,7 +324,14 @@ async fn request_openrouter_json(
         };
 
         match parse_openrouter_response_json(&body, response_file, &diagnostic_context) {
-            Ok(json) => return Ok(json),
+            Ok(json) => {
+                debug_note!(
+                    "OpenRouter response parsed: context='{}', attempt={}",
+                    context,
+                    attempt
+                );
+                return Ok(json);
+            }
             Err(error) => {
                 last_error = error.to_string();
                 if attempt < OPENROUTER_REQUEST_ATTEMPTS {
@@ -320,6 +347,12 @@ async fn request_openrouter_json(
         }
     }
 
+    debug_note!(
+        "OpenRouter request exhausted retries: context='{}', attempts={}, last_error={}",
+        context,
+        attempts_made,
+        last_error
+    );
     Err(format!(
         "OpenRouter request failed during {context} after {attempts_made} attempt(s): {last_error}"
     )
@@ -1402,6 +1435,13 @@ pub async fn gemini(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tools_mode = args.tools_mode;
     let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
+    debug_note!(
+        "Starting Gemini analysis: model='{}', language='{}', mode={}, report_chars={}",
+        vendor_model_lang.get(1).copied().unwrap_or(""),
+        vendor_model_lang.get(2).copied().unwrap_or(""),
+        mode_label,
+        report_for_ai.len()
+    );
     println!(
         "{}{}{}{}{}",
         "=== Consulting Google Gemini (".bright_cyan(),
@@ -1625,7 +1665,11 @@ pub async fn gemini(
             }
         }
 
-        debug_note!("Payload for Gemini API is {:?}", payload);
+        debug_note!(
+            "Gemini request prepared: payload_bytes={}, estimated_tokens={}",
+            payload.to_string().len(),
+            estimate_tokens_from_value(&payload)
+        );
 
         let (tx, rx) = oneshot::channel();
         let spinner = tokio::spawn(spinning_beer(rx));
@@ -1673,6 +1717,7 @@ pub async fn gemini(
                     let parsed_args = tc.get("args").cloned().unwrap_or_else(|| json!({}));
 
                     println!("🛠  Gemini tool call: {}({})", fn_name, parsed_args);
+                    debug_note!("Gemini requested diagnostic tool: name='{}'", fn_name);
 
                     let result_text = dispatch_tool_call(
                         &fn_name,
@@ -1791,9 +1836,15 @@ pub async fn gemini(
     }
 
     if final_content.is_empty() {
+        debug_note!("Gemini analysis completed without extractable content");
         eprintln!("⚠️ Gemini response had no extractable final content");
     } else {
         fs::write(&response_file, final_content.as_bytes())?;
+        debug_note!(
+            "Gemini analysis output written: path='{}', bytes={}",
+            response_file,
+            final_content.len()
+        );
         println!("🍻 Gemini response written to file: {}", &response_file);
         convert_md_to_html_file(&response_file, events_sqls.clone());
         println!(
@@ -1839,6 +1890,13 @@ pub async fn openrouter(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tools_mode = args.tools_mode;
     let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
+    debug_note!(
+        "Starting OpenRouter analysis: model='{}', language='{}', mode={}, report_chars={}",
+        vendor_model_lang.get(1).copied().unwrap_or(""),
+        vendor_model_lang.get(2).copied().unwrap_or(""),
+        mode_label,
+        report_for_ai.len()
+    );
     println!(
         "=== Consulting OpenRouter ({}) model: {} ===",
         mode_label, vendor_model_lang[1]
@@ -2022,7 +2080,11 @@ pub async fn openrouter(
             }
         }
 
-        debug_note!("Payload for AI is {:?}", payload);
+        debug_note!(
+            "OpenRouter request prepared: payload_bytes={}, estimated_tokens={}",
+            payload.to_string().len(),
+            estimate_tokens_from_value(&payload)
+        );
 
         let json =
             request_openrouter_json(&client, &api_key, &payload, &response_file, "tool_loop")
@@ -2051,6 +2113,7 @@ pub async fn openrouter(
                             serde_json::from_str(raw_args).unwrap_or_else(|_| json!({}));
 
                         println!("🛠  Tool call: {}({})", fn_name, parsed_args);
+                        debug_note!("OpenRouter requested diagnostic tool: name='{}'", fn_name);
 
                         let result = dispatch_tool_call(
                             &fn_name,
@@ -2116,7 +2179,11 @@ pub async fn openrouter(
                             final_payload_tokens, openrouter_tool_payload_budget
                         );
 
-                        debug_note!("Final synthesis payload for AI is {:?}", final_payload);
+                        debug_note!(
+                            "OpenRouter final synthesis prepared: payload_bytes={}, estimated_tokens={}",
+                            final_payload.to_string().len(),
+                            final_payload_tokens
+                        );
 
                         let final_json = request_openrouter_json(
                             &client,
@@ -2170,6 +2237,12 @@ pub async fn openrouter(
     }
 
     fs::write(&response_file, final_content.as_bytes())?;
+    debug_note!(
+        "OpenRouter analysis output written: path='{}', bytes={}, finish_reason='{}'",
+        response_file,
+        final_content.len(),
+        last_finish
+    );
     println!("🍻 OpenRouter response written to file: {}", &response_file);
     convert_md_to_html_file(&response_file, events_sqls.clone());
     println!(
@@ -2289,6 +2362,13 @@ pub async fn openai_gpt(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tools_mode = args.tools_mode;
     let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
+    debug_note!(
+        "Starting OpenAI analysis: model='{}', language='{}', mode={}, report_chars={}",
+        vendor_model_lang.get(1).copied().unwrap_or(""),
+        vendor_model_lang.get(2).copied().unwrap_or(""),
+        mode_label,
+        report_for_ai.len()
+    );
     println!(
         "{}{}{}{}{}",
         "=== Consulting OpenAI (".bright_cyan(),
@@ -2488,7 +2568,11 @@ pub async fn openai_gpt(
                 estimated_payload_tokens
             );
         }
-        debug_note!("Payload for OpenAI Responses API is {:?}", payload);
+        debug_note!(
+            "OpenAI Responses request prepared: payload_bytes={}, estimated_tokens={}",
+            payload.to_string().len(),
+            estimated_payload_tokens
+        );
 
         let (tx, rx) = oneshot::channel();
         let spinner = tokio::spawn(spinning_beer(rx));
@@ -2548,6 +2632,7 @@ pub async fn openai_gpt(
                     let parsed_args: Value = serde_json::from_str(raw_args).unwrap_or(json!({}));
 
                     println!("🛠  OpenAI tool call: {}({})", fn_name, parsed_args);
+                    debug_note!("OpenAI requested diagnostic tool: name='{}'", fn_name);
 
                     let result = dispatch_tool_call(
                         &fn_name,
@@ -2610,8 +2695,9 @@ pub async fn openai_gpt(
                     );
 
                     debug_note!(
-                        "Final synthesis payload for OpenAI Responses API is {:?}",
-                        final_payload
+                        "OpenAI final synthesis prepared: payload_bytes={}, estimated_tokens={}",
+                        final_payload.to_string().len(),
+                        final_payload_tokens
                     );
 
                     let (tx, rx) = oneshot::channel();
@@ -2654,9 +2740,15 @@ pub async fn openai_gpt(
     }
 
     if final_content.is_empty() {
+        debug_note!("OpenAI analysis completed without final content");
         eprintln!("⚠️  No final content produced");
     } else {
         fs::write(&response_file, final_content.as_bytes())?;
+        debug_note!(
+            "OpenAI analysis output written: path='{}', bytes={}",
+            response_file,
+            final_content.len()
+        );
         println!("🧠 OpenAI response written to file: {}", &response_file);
         convert_md_to_html_file(&response_file, events_sqls);
         println!("Total tokens (OpenAI): {}", last_usage);

@@ -216,6 +216,7 @@ fn load_env() {
         if path.exists() {
             from_path(&path).expect("Can't load .env z JASMIN_HOME");
             println!("✅ Loaded .env from JASMIN_HOME: {:?}", path);
+            debug_note!("Environment file loaded from JASMIN_HOME");
             true
         } else {
             false
@@ -230,8 +231,10 @@ fn load_env() {
         if local_path.exists() {
             from_path(&local_path).expect("Can't load .env from local dir");
             println!("✅ Loaded local .env");
+            debug_note!("Environment file loaded from current directory");
         } else {
             println!("⚠️  No .env found");
+            debug_note!("No environment file found; using process environment only");
         }
     }
 }
@@ -316,6 +319,12 @@ fn absolute_output_key(path: &Path) -> Result<PathBuf, String> {
 
 fn load_mcp_projects(args: &Args) -> Result<Vec<AnalysisProject>, String> {
     let source_count = args.directory.len() + args.json_file.len();
+    debug_note!(
+        "Validating MCP project sources: directories={}, json_files={}, total={}",
+        args.directory.len(),
+        args.json_file.len(),
+        source_count
+    );
     if source_count == 0 {
         return Err("--mcp requires at least one --directory or --json-file".to_string());
     }
@@ -387,6 +396,12 @@ fn load_mcp_projects(args: &Args) -> Result<Vec<AnalysisProject>, String> {
         };
         debug_note!("Starting to parse MCP project directory: {}", directory);
         let parsed = awr::parse_awr_dir(project_args, &mut report_links, &json_output);
+        debug_note!(
+            "MCP directory project parsed: source='{}', snapshots={}, report_link_groups={}",
+            directory,
+            parsed.collection.awrs.len(),
+            report_links.len()
+        );
         projects.push(AnalysisProject::new(
             unique_project_id(directory, &mut used_project_ids),
             parsed.collection,
@@ -411,6 +426,12 @@ fn load_mcp_projects(args: &Args) -> Result<Vec<AnalysisProject>, String> {
         let mut report_links = HashMap::new();
         debug_note!("Starting to load MCP project JSON: {}", json_file);
         let parsed = awr::prarse_json_file(project_args, &mut report_links);
+        debug_note!(
+            "MCP JSON project parsed: source='{}', snapshots={}, report_link_groups={}",
+            json_file,
+            parsed.collection.awrs.len(),
+            report_links.len()
+        );
         let stem = PathBuf::from(json_file)
             .with_extension("")
             .to_string_lossy()
@@ -429,6 +450,7 @@ fn load_mcp_projects(args: &Args) -> Result<Vec<AnalysisProject>, String> {
         ));
     }
 
+    debug_note!("MCP project loading completed: projects={}", projects.len());
     Ok(projects)
 }
 
@@ -436,6 +458,16 @@ fn main() {
     load_env();
     let mut reportfile: String = "".to_string();
     let args = Args::parse();
+    debug_note!(
+        "JAS-MIN invocation parsed: mcp={}, directories={}, json_files={}, single_file={}, ai={}, markdown_conversion={}, parallel={}",
+        args.mcp.is_some(),
+        args.directory.len(),
+        args.json_file.len(),
+        !args.file.is_empty(),
+        !args.ai.is_empty(),
+        !args.convert_md2html.is_empty(),
+        args.parallel
+    );
     println!(
         "{}{} (Running with parallel degree: {})",
         "JAS-MIN v".bright_yellow(),
@@ -450,8 +482,13 @@ fn main() {
         .num_threads(args.parallel)
         .build_global()
         .expect("Can't create rayon pool");
+    debug_note!(
+        "Rayon global thread pool initialized: threads={}",
+        args.parallel
+    );
 
     if let Some(endpoint) = args.mcp.clone() {
+        debug_note!("Entering MCP server mode: endpoint={}", endpoint.url());
         let projects = load_mcp_projects(&args).unwrap_or_else(|error| {
             eprintln!("ERROR: {error}");
             std::process::exit(2);
@@ -461,6 +498,7 @@ fn main() {
             std::process::exit(2);
         });
         if let Err(error) = run_mcp_server(runtime, endpoint) {
+            debug_note!("MCP server terminated with error: {:#}", error);
             eprintln!("ERROR: MCP server failed: {error:#}");
             std::process::exit(1);
         }
@@ -476,9 +514,14 @@ fn main() {
     let mut events_sqls: &mut HashMap<&str, HashSet<String>> = &mut HashMap::new();
 
     if !args.file.is_empty() {
+        debug_note!("Entering single-report parse mode: file='{}'", args.file);
         let awr_doc = awr::parse_awr_report(&args.file, false, &args).unwrap();
         println!("{}", awr_doc);
     } else if !args.directory().is_empty() {
+        debug_note!(
+            "Entering directory analysis mode: directory='{}'",
+            args.directory()
+        );
         if PathBuf::from(args.directory()).exists() {
             let mut fname = PathBuf::from(args.directory())
                 .with_extension("json")
@@ -498,6 +541,7 @@ fn main() {
             eprintln!("ERROR: Directory: '{}' does not exists!", args.directory());
         }
     } else if !args.json_file().is_empty() {
+        debug_note!("Entering JSON analysis mode: file='{}'", args.json_file());
         if PathBuf::from(args.json_file()).exists() {
             let parsed = awr::prarse_json_file(args.clone(), events_sqls);
             report_for_ai = parsed.report_for_ai;
@@ -535,6 +579,13 @@ fn main() {
         } else {
             vendor_model_lang_parts
         };
+        debug_note!(
+            "Starting AI analysis: vendor='{}', model='{}', language='{}', tools_mode={}",
+            vendor_model_lang.first().copied().unwrap_or(""),
+            vendor_model_lang.get(1).copied().unwrap_or(""),
+            vendor_model_lang.get(2).copied().unwrap_or(""),
+            args.tools_mode
+        );
 
         if vendor_model_lang[0] == "openai" {
             openai_gpt(
@@ -596,6 +647,7 @@ fn main() {
     if !args.convert_md2html.is_empty() {
         convert_md_to_html_file(&args.convert_md2html, events_sqls.clone());
     }
+    debug_note!("JAS-MIN invocation completed");
 }
 
 #[cfg(test)]

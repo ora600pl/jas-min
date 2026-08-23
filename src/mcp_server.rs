@@ -7,6 +7,7 @@
 
 use crate::ai_tools::{dispatch_tool_call_value, tools_schema};
 use crate::awr::AWRSCollection;
+use crate::debug_note;
 use crate::local_agent::{build_case_seed, dispatch_precomputed_analysis, GuidanceLibrary};
 use crate::reasonings::{CrossModelClassification, DbTimeGradientSection, ReportForAI};
 use crate::tools::{get_safe_filename, render_markdown_html_document};
@@ -55,6 +56,10 @@ const MCP_TOOLS_LIST_TTL_MS: u64 = 300_000;
 pub const MAX_MCP_PROJECTS: usize = 32;
 
 static MCP_TOOL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+// ---------------------------------------------------------------------------
+// Bounded operational logging
+// ---------------------------------------------------------------------------
 
 /// One tool-call lifecycle record written to the terminal.
 ///
@@ -201,6 +206,12 @@ fn serialized_json_size<T: Serialize + ?Sized>(value: &T) -> usize {
     serde_json::to_vec(value).map_or(0, |encoded| encoded.len())
 }
 
+// ---------------------------------------------------------------------------
+// Deterministic report contract
+// ---------------------------------------------------------------------------
+
+// These headings and category lists are validation data, not just renderer
+// labels. Changing them alters what get_report_status accepts as complete.
 const STABLE_MARKDOWN_HEADINGS: &[&str] = &[
     "## 1. Executive Summary",
     "## 2. Overall Performance Profile and DB Time Degradation",
@@ -320,6 +331,7 @@ impl FromStr for McpEndpoint {
 
     fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
         let raw = raw.trim();
+        debug_note!("Parsing MCP endpoint: raw='{}'", raw);
         if raw.is_empty() {
             return Err("MCP endpoint cannot be empty".to_string());
         }
@@ -343,7 +355,9 @@ impl FromStr for McpEndpoint {
         if path == "/" || path.contains("..") || path.chars().any(char::is_whitespace) {
             return Err(format!("invalid MCP endpoint path '{path}'"));
         }
-        Ok(Self { address, path })
+        let endpoint = Self { address, path };
+        debug_note!("MCP endpoint accepted: url={}", endpoint.url());
+        Ok(endpoint)
     }
 }
 
@@ -617,6 +631,10 @@ fn report_table_definition(
     }
 }
 
+/// Mutable evidence and report state owned by one explicit `analysis_id`.
+///
+/// The mutex is deliberately session-scoped: parsed projects remain immutable
+/// and concurrent clients only contend when they mutate the same investigation.
 struct AnalysisSession {
     project_ids: Vec<String>,
     config: ReportConfig,
@@ -695,6 +713,10 @@ impl AnalysisProject {
 }
 
 #[derive(Clone)]
+/// Immutable project payload shared by every MCP transport session.
+///
+/// Large parsed structures are reference counted so creating a new HTTP
+/// session does not clone an entire AWR corpus.
 struct ProjectData {
     project_id: Arc<String>,
     collection: Arc<AWRSCollection>,
@@ -899,6 +921,10 @@ impl AnalysisRuntime {
     }
 
     pub fn from_projects(projects: Vec<AnalysisProject>) -> Result<Self> {
+        debug_note!(
+            "Initializing MCP analysis runtime: supplied_projects={}",
+            projects.len()
+        );
         if projects.is_empty() {
             bail!("at least one MCP project is required");
         }
@@ -921,15 +947,28 @@ impl AnalysisRuntime {
             if indexed.contains_key(&project_id) {
                 bail!("duplicate MCP project_id '{project_id}'");
             }
+            debug_note!(
+                "Registering MCP project: project_id='{}', stem='{}', snapshots={}, security_level={}",
+                project_id,
+                project.stem,
+                project.collection.awrs.len(),
+                project.security_level
+            );
             project.project_id = project_id.clone();
             indexed.insert(project_id, Arc::new(ProjectData::from(project)));
         }
-        Ok(Self {
+        let runtime = Self {
             projects: Arc::new(indexed),
             guidance: Arc::new(GuidanceLibrary::load()),
             sessions: Arc::new(DashMap::new()),
             sequence: Arc::new(AtomicU64::new(1)),
-        })
+        };
+        debug_note!(
+            "MCP analysis runtime ready: projects={}, guidance_available={}",
+            runtime.projects.len(),
+            runtime.guidance.is_available()
+        );
+        Ok(runtime)
     }
 
     fn selected_project_ids(&self, arguments: &Value) -> std::result::Result<Vec<String>, Value> {
@@ -1005,6 +1044,11 @@ impl AnalysisRuntime {
             "A-{}-{sequence:04}",
             chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
         );
+        debug_note!(
+            "Starting MCP analysis session: analysis_id='{}', projects={:?}",
+            analysis_id,
+            project_ids
+        );
         let mut config = ReportConfig::default();
         if let Some(language) = arguments.get("language").and_then(Value::as_str) {
             config.language = bounded_string(language, 16);
@@ -1076,6 +1120,12 @@ impl AnalysisRuntime {
             output["quality_gates"] = project["quality_gates"].clone();
             output["recommended_next_calls"] = project["recommended_next_calls"].clone();
         }
+        debug_note!(
+            "MCP analysis session ready: analysis_id='{}', project_count={}, comparison_mode={}",
+            analysis_id,
+            project_bootstrap.len(),
+            project_bootstrap.len() > 1
+        );
         Ok(output)
     }
 
@@ -1201,6 +1251,12 @@ impl AnalysisRuntime {
         let analysis_id = Self::analysis_id(arguments)?.to_string();
         let session = self.session(&analysis_id)?;
         let project = self.project_for_session(&session, arguments)?;
+        debug_note!(
+            "Executing MCP evidence tool: analysis_id='{}', project_id='{}', tool='{}'",
+            analysis_id,
+            project.project_id,
+            name
+        );
         let mut clean_arguments = arguments.clone();
         clean_arguments.remove("analysis_id");
         clean_arguments.remove("project_id");
@@ -1229,6 +1285,12 @@ impl AnalysisRuntime {
             )
         };
         if result.get("error").is_some() {
+            debug_note!(
+                "MCP evidence tool returned an error result: analysis_id='{}', project_id='{}', tool='{}'",
+                analysis_id,
+                project.project_id,
+                name
+            );
             return Err(result);
         }
 
@@ -1242,6 +1304,12 @@ impl AnalysisRuntime {
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
         if let Some(existing_id) = state.evidence_cache.get(&cache_key).cloned() {
             if let Some(record) = state.evidence.get(&existing_id) {
+                debug_note!(
+                    "Reusing cached MCP evidence: analysis_id='{}', tool='{}', evidence_id='{}'",
+                    analysis_id,
+                    name,
+                    existing_id
+                );
                 return Ok(json!({
                     "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
                     "analysis_id": analysis_id,
@@ -1268,6 +1336,14 @@ impl AnalysisRuntime {
             },
         );
         state.finalized_markdown = None;
+        debug_note!(
+            "Stored MCP evidence: analysis_id='{}', project_id='{}', tool='{}', evidence_id='{}', result_bytes={}",
+            analysis_id,
+            project.project_id,
+            name,
+            evidence_id,
+            result.to_string().len()
+        );
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1293,6 +1369,12 @@ impl AnalysisRuntime {
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
         if let Some(existing_id) = state.evidence_cache.get(&cache_key).cloned() {
             if let Some(record) = state.evidence.get(&existing_id) {
+                debug_note!(
+                    "Reusing cached MCP comparison evidence: analysis_id='{}', tool='{}', evidence_id='{}'",
+                    analysis_id,
+                    tool_name,
+                    existing_id
+                );
                 return Ok(json!({
                     "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
                     "analysis_id": analysis_id,
@@ -1317,6 +1399,13 @@ impl AnalysisRuntime {
             },
         );
         state.finalized_markdown = None;
+        debug_note!(
+            "Stored MCP comparison evidence: analysis_id='{}', tool='{}', evidence_id='{}', result_bytes={}",
+            analysis_id,
+            tool_name,
+            evidence_id,
+            result.to_string().len()
+        );
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1640,6 +1729,8 @@ impl AnalysisRuntime {
         }))
     }
 
+    // The authoring calls below mutate only structured state. Markdown is
+    // regenerated later, which keeps validation independent of model prose.
     fn record_finding(&self, arguments: &Map<String, Value>) -> std::result::Result<Value, Value> {
         let analysis_id = Self::analysis_id(arguments)?.to_string();
         let session = self.session(&analysis_id)?;
@@ -1723,6 +1814,12 @@ impl AnalysisRuntime {
             },
         );
         state.finalized_markdown = None;
+        debug_note!(
+            "Stored MCP report finding: analysis_id='{}', finding_id='{}', findings_total={}",
+            analysis_id,
+            finding_id,
+            state.findings.len()
+        );
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1766,6 +1863,7 @@ impl AnalysisRuntime {
                 state.next_table += 1;
                 id
             });
+        let row_count = rows.len();
         state.report_tables.insert(
             table_id.clone(),
             ReportTable {
@@ -1777,6 +1875,14 @@ impl AnalysisRuntime {
             },
         );
         state.finalized_markdown = None;
+        debug_note!(
+            "Stored MCP report table: analysis_id='{}', table_id='{}', kind='{}', rows={}, tables_total={}",
+            analysis_id,
+            table_id,
+            kind,
+            row_count,
+            state.report_tables.len()
+        );
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1824,6 +1930,12 @@ impl AnalysisRuntime {
             },
         );
         state.finalized_markdown = None;
+        debug_note!(
+            "Stored MCP mandatory assessment: analysis_id='{}', assessment='{}', assessments_total={}",
+            analysis_id,
+            assessment,
+            state.assessments.len()
+        );
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -1839,7 +1951,20 @@ impl AnalysisRuntime {
         let state = session
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
-        Ok(report_status_value(&analysis_id, &state, &self.projects))
+        let status = report_status_value(&analysis_id, &state, &self.projects);
+        debug_note!(
+            "Computed MCP report status: analysis_id='{}', ready={}, findings={}, evidence={}, tables={}, assessments={}",
+            analysis_id,
+            status
+                .get("ready_to_finalize")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            state.findings.len(),
+            state.evidence.len(),
+            state.report_tables.len(),
+            state.assessments.len()
+        );
+        Ok(status)
     }
 
     fn finalize_report(&self, arguments: &Map<String, Value>) -> std::result::Result<Value, Value> {
@@ -1853,7 +1978,24 @@ impl AnalysisRuntime {
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
         let status = report_status_value(&analysis_id, &state, &self.projects);
+        let ready_to_finalize = status
+            .get("ready_to_finalize")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        debug_note!(
+            "Finalizing MCP report: analysis_id='{}', allow_incomplete={}, ready={}, findings={}, tables={}, assessments={}",
+            analysis_id,
+            allow_incomplete,
+            ready_to_finalize,
+            state.findings.len(),
+            state.report_tables.len(),
+            state.assessments.len()
+        );
         if !allow_incomplete && status.get("ready_to_finalize") != Some(&Value::Bool(true)) {
+            debug_note!(
+                "MCP report finalization blocked by contract: analysis_id='{}'",
+                analysis_id
+            );
             return Err(json!({
                 "error_code": "REPORT_INCOMPLETE",
                 "message": "The report contract is incomplete. Satisfy every missing category, assessment, evidence item, structured table kind and structured row, or explicitly request allow_incomplete=true for a draft.",
@@ -1901,6 +2043,14 @@ impl AnalysisRuntime {
         if matches!(state.config.output_format.as_str(), "json" | "both") {
             output["report"] = report_document;
         }
+        debug_note!(
+            "MCP report finalized: analysis_id='{}', revision={}, draft={}, markdown_bytes={}, output_format='{}'",
+            analysis_id,
+            state.report_revision,
+            !ready_to_finalize,
+            markdown.len(),
+            state.config.output_format
+        );
         Ok(output)
     }
 
@@ -1935,6 +2085,13 @@ impl AnalysisRuntime {
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| tool_error("INVALID_ARGUMENT", "'markdown' is required"))?;
+        debug_note!(
+            "Starting MCP Markdown-to-HTML conversion: analysis_id='{}', projects={}, markdown_bytes={}, output_directory='{}'",
+            analysis_id,
+            project_ids.len(),
+            markdown.len(),
+            output_directory.display()
+        );
         if markdown.len() > MAX_MCP_MARKDOWN_BYTES {
             return Err(tool_error(
                 "MARKDOWN_TOO_LARGE",
@@ -2054,6 +2211,14 @@ impl AnalysisRuntime {
             .as_ref()
             .map(|_| report_directory.to_string_lossy().to_string());
 
+        debug_note!(
+            "MCP HTML report written: analysis_id='{}', path='{}', html_bytes={}, validated_local_links={}",
+            analysis_id,
+            output_path.display(),
+            html.len(),
+            validated_local_links
+        );
+
         Ok(json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -2076,6 +2241,13 @@ impl AnalysisRuntime {
         name: &str,
         arguments: Map<String, Value>,
     ) -> std::result::Result<Value, Value> {
+        // Evidence tools share one dispatcher and are wrapped in evidence IDs;
+        // control tools mutate the session or render its deterministic output.
+        debug_note!(
+            "Dispatching MCP runtime tool: name='{}', argument_count={}",
+            name,
+            arguments.len()
+        );
         match name {
             "list_performance_projects" => Ok(self.list_projects()),
             "start_performance_analysis" => self.new_analysis(&Value::Object(arguments)),
@@ -2421,6 +2593,10 @@ fn sql_metric_comparisons(
 }
 
 #[derive(Clone)]
+/// Thin RMCP service facade created per transport session.
+///
+/// It owns only cheap runtime/tool-catalog clones; project data and report
+/// sessions remain shared inside `AnalysisRuntime`.
 struct JasminMcpServer {
     runtime: AnalysisRuntime,
     tools: Arc<Vec<Tool>>,
@@ -2429,6 +2605,11 @@ struct JasminMcpServer {
 impl JasminMcpServer {
     fn new(runtime: AnalysisRuntime) -> Self {
         let tools = Arc::new(build_mcp_tools(&runtime));
+        debug_note!(
+            "Created MCP service facade: projects={}, tools={}",
+            runtime.projects.len(),
+            tools.len()
+        );
         Self { runtime, tools }
     }
 }
@@ -2480,6 +2661,15 @@ impl ServerHandler for JasminMcpServer {
     ) -> impl Future<Output = std::result::Result<ListToolsResult, McpError>> + Send + '_ {
         let protocol_version = context.protocol_version();
         let include_cache_hints = supports_tools_list_cache_hints(protocol_version.as_ref());
+        debug_note!(
+            "Serving MCP tools/list: protocol_version='{}', tools={}, cache_hints={}",
+            protocol_version
+                .as_ref()
+                .map(ProtocolVersion::as_str)
+                .unwrap_or("unknown"),
+            self.tools.len(),
+            include_cache_hints
+        );
         std::future::ready(Ok(tools_list_result(
             self.tools.as_ref().clone(),
             include_cache_hints,
@@ -2572,6 +2762,11 @@ impl ServerHandler for JasminMcpServer {
 /// Starts the MCP endpoint after JAS-MIN has completed parsing and analysis.
 #[tokio::main]
 pub async fn run_mcp_server(runtime: AnalysisRuntime, endpoint: McpEndpoint) -> Result<()> {
+    debug_note!(
+        "Starting MCP HTTP server: endpoint={}, projects={}",
+        endpoint.url(),
+        runtime.projects.len()
+    );
     let cancellation = CancellationToken::new();
     let factory_runtime = runtime.clone();
     let host = endpoint.address.ip().to_string();
@@ -2599,6 +2794,7 @@ pub async fn run_mcp_server(runtime: AnalysisRuntime, endpoint: McpEndpoint) -> 
     let listener = tokio::net::TcpListener::bind(endpoint.address)
         .await
         .with_context(|| format!("cannot bind MCP endpoint {}", endpoint.url()))?;
+    debug_note!("MCP listener bound: endpoint={}", endpoint.url());
     println!(
         "{} [MCP] status=READY endpoint={}",
         mcp_log_timestamp(),
@@ -2620,9 +2816,13 @@ pub async fn run_mcp_server(runtime: AnalysisRuntime, endpoint: McpEndpoint) -> 
         })
         .await
         .context("MCP HTTP server failed")?;
+    debug_note!("MCP HTTP server stopped: endpoint={}", endpoint.url());
     Ok(())
 }
 
+/// Builds the union of evidence tools available across loaded projects and the
+/// server-owned control tools. Duplicate evidence definitions are collapsed by
+/// name because attachment availability can differ between projects.
 fn build_mcp_tools(runtime: &AnalysisRuntime) -> Vec<Tool> {
     let mut evidence_definitions = BTreeMap::new();
     for project in runtime.projects.values() {
@@ -2671,6 +2871,12 @@ fn build_mcp_tools(runtime: &AnalysisRuntime) -> Vec<Tool> {
         )
     }));
     tools.sort_by(|a, b| a.name.cmp(&b.name));
+    debug_note!(
+        "Built MCP tool catalog: projects={}, evidence_tools={}, total_tools={}",
+        runtime.projects.len(),
+        evidence_definitions.len(),
+        tools.len()
+    );
     tools
 }
 
@@ -3714,6 +3920,13 @@ fn required_gradient_rows(project: &ProjectData) -> Vec<RequiredGradientRow<'_>>
     required.into_values().collect()
 }
 
+// ---------------------------------------------------------------------------
+// Report completeness and rendering
+// ---------------------------------------------------------------------------
+
+/// Evaluates the complete deterministic gate used by both status reporting and
+/// finalization. Keeping one implementation prevents a report from passing a
+/// weaker preflight than the final renderer.
 fn report_status_value(
     analysis_id: &str,
     state: &AnalysisSession,
@@ -4327,6 +4540,9 @@ fn report_section_index(state: &AnalysisSession) -> Value {
     )
 }
 
+/// Renders only validated structured state. Evidence IDs remain machine
+/// references; reader-facing prose comes from the separately validated finding
+/// synthesis and evidence summaries.
 fn render_markdown(
     document: &Value,
     state: &AnalysisSession,
@@ -6819,6 +7035,12 @@ fn priority_rank(value: &str) -> usize {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Attachment inventory helpers
+// ---------------------------------------------------------------------------
+
+// Inventory helpers are intentionally best-effort: missing or unreadable
+// attachments are represented as limited coverage, never as clean evidence.
 fn count_extension(directory: &Path, extension: &str) -> usize {
     read_files(directory)
         .iter()

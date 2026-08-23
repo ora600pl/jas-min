@@ -322,15 +322,35 @@ const UNSIGNED_JSON_FIELDS: &[&str] = &[
 
 pub fn load_awrs_collection_from_json_str(data: &str) -> Result<AWRSCollection, serde_json::Error> {
     match serde_json::from_str::<AWRSCollection>(data) {
-        Ok(collection) => Ok(collection),
+        Ok(collection) => {
+            debug_note!(
+                "Loaded AWRSCollection JSON without normalization: bytes={}, snapshots={}",
+                data.len(),
+                collection.awrs.len()
+            );
+            Ok(collection)
+        }
         Err(original_error) => {
+            debug_note!(
+                "Direct AWRSCollection JSON decoding failed; trying unsigned counter normalization: bytes={}, error={}",
+                data.len(),
+                original_error
+            );
             let mut value: Value = serde_json::from_str(data)?;
             // Collector JSON can contain wrapped Oracle counters as negative values.
             // Existing HTML/TXT parsers already treat invalid unsigned counters as zero.
-            if normalize_unsigned_json_fields(&mut value) == 0 {
+            let normalized_fields = normalize_unsigned_json_fields(&mut value);
+            if normalized_fields == 0 {
+                debug_note!("AWRSCollection JSON recovery found no normalizable unsigned counters");
                 return Err(original_error);
             }
-            serde_json::from_value(value)
+            let collection = serde_json::from_value::<AWRSCollection>(value)?;
+            debug_note!(
+                "Recovered AWRSCollection JSON: normalized_fields={}, snapshots={}",
+                normalized_fields,
+                collection.awrs.len()
+            );
+            Ok(collection)
         }
     }
 }
@@ -3284,6 +3304,17 @@ fn parse_awr_report_internal(
     }
     awr.status = "OK".to_string();
     awr.file_name = fname.to_string();
+    debug_note!(
+        "Parsed AWR report: file='{}', snap_id={}, fg_waits={}, bg_waits={}, sql_elapsed={}, instance_stats={}, sql_texts={}, parameters={}",
+        fname,
+        awr.snap_info.begin_snap_id,
+        awr.foreground_wait_events.len(),
+        awr.background_wait_events.len(),
+        awr.sql_elapsed_time.len(),
+        awr.instance_stats.len(),
+        sqls_txt.len(),
+        parameters.len()
+    );
     (awr, sqls_txt, parameters)
 }
 
@@ -3292,6 +3323,12 @@ pub fn parse_awr_dir(
     events_sqls: &mut HashMap<&str, HashSet<String>>,
     file: &str,
 ) -> ParsedAnalysis {
+    debug_note!(
+        "Starting directory parse: directory='{}', output_json='{}', security_level={}",
+        args.directory(),
+        file,
+        args.security_level
+    );
     println!("{}", "\n==== PARSING DIRECTORY DATA ===".bright_cyan());
     //let mut awr_vec: Vec<AWR> = Vec::new();
     let mut file_collection: Vec<String> = Vec::new();
@@ -3309,6 +3346,11 @@ pub fn parse_awr_dir(
             file_collection.push(fname.clone());
         }
     }
+    debug_note!(
+        "Directory scan completed: directory='{}', report_files={}",
+        args.directory(),
+        file_collection.len()
+    );
     let pb = ProgressBar::new(file_collection.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -3370,6 +3412,11 @@ pub fn parse_awr_dir(
         )
         .collect(); //collect result into collection of awrs
 
+    debug_note!(
+        "Parallel AWR parsing completed: parsed_reports={}",
+        awr_vec.len()
+    );
+
     update_thread.join().unwrap(); //wait for thread updating progress bar to finish
     pb.finish_with_message("Finished parsing! 🎉");
 
@@ -3420,7 +3467,19 @@ pub fn parse_awr_dir(
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
     let mut f = fs::File::create(file).unwrap();
     f.write_all(json_str.as_bytes()).unwrap();
+    debug_note!(
+        "AWRSCollection JSON written: path='{}', bytes={}, snapshots={}, sql_texts={}, parameters={}",
+        file,
+        json_str.len(),
+        collection.awrs.len(),
+        collection.sql_text.len(),
+        collection.initialization_parameters.len()
+    );
     let report_for_ai = main_report_builder(&collection, args.clone(), events_sqls.clone());
+    debug_note!(
+        "Directory analysis completed: directory='{}'",
+        args.directory()
+    );
     ParsedAnalysis {
         collection,
         report_for_ai,
@@ -3432,6 +3491,7 @@ pub fn parse_awr_report(
     json_data: bool,
     args: &Args,
 ) -> Result<String, std::io::Error> {
+    debug_note!("Starting single AWR parse: json_envelope={}", json_data);
     let mut fname: String = "nofile.html".to_string();
     if json_data {
         let cmd_data: Result<HashMap<String, String>, serde_json::Error> =
@@ -3451,6 +3511,11 @@ pub fn parse_awr_report(
     let awr = parse_awr_report_internal(&fname, &args);
 
     let awr_doc: String = serde_json::to_string_pretty(&awr).unwrap();
+    debug_note!(
+        "Single AWR parse completed: file='{}', serialized_bytes={}",
+        fname,
+        awr_doc.len()
+    );
     Ok(awr_doc)
 }
 
@@ -3458,6 +3523,10 @@ pub fn prarse_json_file(
     args: Args,
     events_sqls: &mut HashMap<&str, HashSet<String>>,
 ) -> ParsedAnalysis {
+    debug_note!(
+        "Starting AWRSCollection JSON analysis: file='{}'",
+        args.json_file()
+    );
     println!("{}", "\n==== PARSING JSON DATA ===".bright_cyan());
     //fname: String, db_time_cpu_ratio: f64, filter_db_time: f64, snap_range: String
     let json_file = fs::read_to_string(args.json_file())
@@ -3468,6 +3537,12 @@ pub fn prarse_json_file(
         .clone()
         .sort_by_key(|a| a.snap_info.begin_snap_id);
     println!("{} samples found", collection.awrs.len());
+    debug_note!(
+        "AWRSCollection JSON loaded for analysis: file='{}', bytes={}, snapshots={}",
+        args.json_file(),
+        json_file.len(),
+        collection.awrs.len()
+    );
     let file_and_ext: Vec<&str> = args.json_file().split('.').collect();
     //let html_fname = format!("{}.html", file_and_ext[0]);
     let fg_events: HashSet<String> = collection
@@ -3495,6 +3570,10 @@ pub fn prarse_json_file(
     events_sqls.insert("BG", bg_events);
     events_sqls.insert("SQL", sqls);
     let report_for_ai = main_report_builder(&collection, args.clone(), events_sqls.clone());
+    debug_note!(
+        "AWRSCollection JSON analysis completed: file='{}'",
+        args.json_file()
+    );
     ParsedAnalysis {
         collection,
         report_for_ai,

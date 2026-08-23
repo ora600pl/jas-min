@@ -1,5 +1,6 @@
 use crate::ai_tools::{dispatch_tool_call, tools_schema};
 use crate::awr::{load_awrs_collection_from_json_str, AWRSCollection};
+use crate::debug_note;
 use crate::reasonings::{DbTimeGradientSection, ReportForAI};
 use crate::tools::estimate_tokens_from_str;
 use reqwest::Client;
@@ -452,6 +453,17 @@ impl LocalChatClient {
             payload["response_format"] = response_format;
         }
 
+        debug_note!(
+            "Local model request prepared: endpoint='{}', model='{}', messages={}, tools={}, max_tokens={}, thinking={}, payload_bytes={}",
+            self.endpoint,
+            self.cfg.model,
+            messages.len(),
+            tools.and_then(Value::as_array).map_or(0, Vec::len),
+            max_tokens,
+            enable_thinking,
+            payload.to_string().len()
+        );
+
         let response = self
             .http
             .post(&self.endpoint)
@@ -463,6 +475,11 @@ impl LocalChatClient {
             .await?;
         let status = response.status();
         let body = response.text().await?;
+        debug_note!(
+            "Local model response received: status={}, body_bytes={}",
+            status,
+            body.len()
+        );
         if !status.is_success() {
             return Err(format!("LM Studio HTTP {}: {}", status, body).into());
         }
@@ -473,6 +490,22 @@ impl LocalChatClient {
             .pointer("/choices/0/message")
             .cloned()
             .ok_or("LM Studio response has no choices[0].message")?;
+
+        debug_note!(
+            "Local model response parsed: prompt_tokens={}, completion_tokens={}, finish_reason='{}'",
+            value
+                .pointer("/usage/prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            value
+                .pointer("/usage/completion_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            value
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+        );
 
         Ok(ChatTurn {
             message,
@@ -504,6 +537,11 @@ impl LocalChatClient {
             .send()
             .await
             .ok()?;
+        debug_note!(
+            "Local model context preflight response: endpoint='{}', status={}",
+            origin,
+            response.status()
+        );
         if !response.status().is_success() {
             return None;
         }
@@ -534,10 +572,22 @@ impl EvidenceStore {
         max_chars: usize,
         max_guidance_chars: usize,
     ) -> String {
+        debug_note!(
+            "Local agent tool dispatch: session={}, name='{}', argument_count={}",
+            session,
+            tool_name,
+            arguments.as_object().map_or(0, serde_json::Map::len)
+        );
         let cache_key = format!("{}:{}", tool_name, canonical_json(arguments));
         let session_cache_key = format!("{session}:{cache_key}");
         if tool_name == "get_diagnostic_guidance" {
             if let Some(guidance_ref) = self.session_guidance_cache.get(&session_cache_key) {
+                debug_note!(
+                    "Local agent reused session guidance: session={}, name='{}', reference='{}'",
+                    session,
+                    tool_name,
+                    guidance_ref
+                );
                 return serde_json::to_string(&json!({
                     "guidance_ref": guidance_ref,
                     "cached": true,
@@ -550,6 +600,12 @@ impl EvidenceStore {
                 .unwrap_or_default();
             }
         } else if let Some(evidence_id) = self.session_evidence_cache.get(&session_cache_key) {
+            debug_note!(
+                "Local agent reused session evidence: session={}, name='{}', evidence_id='{}'",
+                session,
+                tool_name,
+                evidence_id
+            );
             return serde_json::to_string(&json!({
                 "evidence_id": evidence_id,
                 "cached": true,
@@ -606,6 +662,13 @@ impl EvidenceStore {
             });
             self.session_guidance_cache
                 .insert(session_cache_key, guidance_ref.clone());
+            debug_note!(
+                "Local agent stored guidance: session={}, reference='{}', cached={}, sections={}",
+                session,
+                guidance_ref,
+                cached,
+                section_ids.len()
+            );
             return serde_json::to_string(&json!({
                 "guidance_ref": guidance_ref,
                 "section_ids": section_ids,
@@ -626,6 +689,7 @@ impl EvidenceStore {
             + 1;
         let evidence_id = format!("S{}-E{:04}", session, session_record_number);
         let bounded_result = bound_json_result(&raw_result, max_chars);
+        let raw_result_bytes = raw_result.to_string().len();
         self.records.push(EvidenceRecord {
             evidence_id: evidence_id.clone(),
             session,
@@ -636,6 +700,15 @@ impl EvidenceStore {
         });
         self.session_evidence_cache
             .insert(session_cache_key, evidence_id.clone());
+
+        debug_note!(
+            "Local agent stored evidence: session={}, name='{}', evidence_id='{}', cached={}, result_bytes={}",
+            session,
+            tool_name,
+            evidence_id,
+            cached,
+            raw_result_bytes
+        );
 
         serde_json::to_string(&json!({
             "evidence_id": evidence_id,
@@ -664,6 +737,15 @@ pub async fn analyze_report_local_agent(
     let guidance_catalog = guidance_library.prompt_notice();
     let tools = local_tools_schema(&stem, guidance_library.is_available());
     let preflight_client = LocalChatClient::new(cfg.clone());
+    debug_note!(
+        "Starting local agent analysis: report='{}', model='{}', language='{}', snapshots={}, configured_context={}, max_tool_iterations={}",
+        report_name,
+        cfg.model,
+        cfg.language,
+        collection.awrs.len(),
+        cfg.context_tokens,
+        cfg.max_tool_iterations
+    );
     if let Some(detected_context) = preflight_client.detect_model_context_tokens().await {
         if detected_context < cfg.context_tokens {
             println!(
@@ -713,6 +795,12 @@ pub async fn analyze_report_local_agent(
         checkpoint_prompt(),
     )
     .await?;
+    debug_note!(
+        "Local agent investigator session completed: evidence={}, guidance={}, usage_records={}",
+        evidence_store.records.len(),
+        evidence_store.guidance_records.len(),
+        usage.len()
+    );
     write_local_agent_progress(
         report_name,
         &checkpoint,
@@ -756,6 +844,14 @@ pub async fn analyze_report_local_agent(
         .map(str::to_string)
         .ok_or("Final local-agent response does not contain markdown")?;
 
+    debug_note!(
+        "Local agent analysis completed: markdown_bytes={}, evidence={}, guidance={}, usage_records={}",
+        final_markdown.len(),
+        evidence_store.records.len(),
+        evidence_store.guidance_records.len(),
+        usage.len()
+    );
+
     Ok(LocalAgentOutcome {
         final_markdown,
         investigation_checkpoint: checkpoint,
@@ -781,6 +877,13 @@ async fn run_investigation_session(
     usage: &mut Vec<AgentUsageRecord>,
     closing_prompt: String,
 ) -> Result<Value, Box<dyn std::error::Error>> {
+    debug_note!(
+        "Starting local investigation session: session={}, max_rounds={}, context={}, high_water={}",
+        session,
+        cfg.max_tool_iterations,
+        cfg.context_tokens,
+        cfg.high_water_tokens()
+    );
     let base_system_prompt = system_prompt.clone();
     let base_initial_prompt = initial_prompt.clone();
     let mut messages = vec![
@@ -794,6 +897,13 @@ async fn run_investigation_session(
         let raw_estimate = estimate_chat_request_tokens(&messages, Some(&round_tools));
         let estimated = calibrated_token_estimate(raw_estimate, observed_token_ratio);
         if estimated >= cfg.high_water_tokens() {
+            debug_note!(
+                "Local investigation reached high-water: session={}, round={}, estimated_tokens={}, high_water={}",
+                session,
+                round + 1,
+                estimated,
+                cfg.high_water_tokens()
+            );
             println!(
                 "Session {} reached context high-water before round {}: ~{}/{} tokens",
                 session,
@@ -835,6 +945,12 @@ async fn run_investigation_session(
 
         let tool_calls = extract_tool_calls(&turn.message);
         if tool_calls.is_empty() {
+            debug_note!(
+                "Local investigation turn returned no tool calls: session={}, round={}, finish_reason='{}'",
+                session,
+                round + 1,
+                turn.finish_reason
+            );
             if round == 0 {
                 messages.push(turn.message);
                 messages.push(json!({
@@ -849,6 +965,12 @@ async fn run_investigation_session(
         messages.push(turn.message);
         for (call_id, tool_name, arguments) in tool_calls {
             println!("  tool: {}({})", tool_name, arguments);
+            debug_note!(
+                "Local investigation requested tool: session={}, round={}, name='{}'",
+                session,
+                round + 1,
+                tool_name
+            );
             let output = evidence_store.execute(
                 session,
                 &tool_name,
@@ -904,6 +1026,13 @@ async fn run_investigation_session(
         cfg,
     );
     let coverage = build_coverage_summary(session, evidence_store, collection);
+    debug_note!(
+        "Local investigation closing context prepared: session={}, evidence={}, guidance={}, coverage_bytes={}",
+        session,
+        evidence_store.records.iter().filter(|record| record.session == session).count(),
+        evidence_store.guidance_records.iter().filter(|record| record.session == session).count(),
+        coverage.to_string().len()
+    );
     messages = build_compact_closing_messages(
         &base_system_prompt,
         &base_initial_prompt,
@@ -1012,6 +1141,11 @@ async fn run_investigation_session(
                     .into(),
             );
         }
+        debug_note!(
+            "Local reviewer session completed: markdown_bytes={}, finish_reason='{}'",
+            content.len(),
+            final_turn.finish_reason
+        );
         return Ok(json!({
             "markdown": content,
             "unresolved_limitations": Vec::<&str>::new(),
@@ -1508,6 +1642,14 @@ pub fn write_local_agent_outputs(
     base_name: &str,
     outcome: &LocalAgentOutcome,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    debug_note!(
+        "Writing local agent outputs: base='{}', markdown_bytes={}, evidence={}, guidance={}, usage_records={}",
+        base_name,
+        outcome.final_markdown.len(),
+        outcome.evidence.len(),
+        outcome.guidance.len(),
+        outcome.usage.len()
+    );
     fs::write(
         format!("{base_name}.final.md"),
         outcome.final_markdown.as_bytes(),
@@ -1528,6 +1670,7 @@ pub fn write_local_agent_outputs(
         format!("{base_name}.local_agent.usage.json"),
         serde_json::to_vec_pretty(&outcome.usage)?,
     )?;
+    debug_note!("Local agent outputs written: base='{}'", base_name);
     Ok(())
 }
 

@@ -609,7 +609,8 @@ LOCAL_CONTEXT_TOKENS=128000
 # Optional centralized home for .env and reasonings.txt
 JASMIN_HOME=/path/to/jasmin_home
 
-# Optional debug trace destination base path
+# Optional debug trace destination base path. JAS-MIN writes one
+# <base>.t<thread-id> file per thread with timestamps and source locations.
 JASMIN_TRACE=/tmp/jasmin_trace
 ```
 
