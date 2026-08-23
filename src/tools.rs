@@ -607,6 +607,38 @@ fn markdown_to_html_with_toc(
             text-align: left;
             text-transform: uppercase;
         }}
+        .table-sort-button {{
+            display: flex;
+            width: 100%;
+            min-width: 8rem;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.65rem;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+            font-weight: 850;
+            letter-spacing: inherit;
+            text-align: left;
+            text-transform: inherit;
+            cursor: pointer;
+        }}
+        .table-sort-button:focus-visible {{
+            outline: 3px solid rgba(255,255,255,0.7);
+            outline-offset: 4px;
+            border-radius: 2px;
+        }}
+        .table-sort-indicator {{
+            flex: 0 0 auto;
+            color: #d7d7d7;
+            font-size: 0.9rem;
+            line-height: 1;
+        }}
+        th[aria-sort="ascending"] .table-sort-indicator,
+        th[aria-sort="descending"] .table-sort-indicator {{ color: #ffffff; }}
         td {{
             min-width: 10rem;
             max-width: 32rem;
@@ -771,6 +803,7 @@ fn markdown_to_html_with_toc(
             .finding-title, .subsection-title, pre {{ break-inside: avoid; box-shadow: none; }}
             .table-scroll {{ overflow: visible; border: 0; box-shadow: none; }}
             .table-scroll::after, .plan-toolbar {{ display: none; }}
+            .table-sort-indicator {{ display: none; }}
             table {{ width: 100%; min-width: 0; font-size: 7pt; box-shadow: none; }}
             th {{ position: static; }}
             th, td {{ min-width: 0; max-width: none; padding: 0.3rem; overflow-wrap: anywhere; }}
@@ -790,6 +823,78 @@ fn markdown_to_html_with_toc(
 {content}
 <footer class="brand-footer"><a href="https://www.ora-600.pl" target="_blank" rel="noopener"><img src="data:image/png;base64,{ora600_logo}" width="220" alt="ORA-600 Database Whisperers"/></a></footer>
 <script>
+function tableSortText(cell) {{
+    return (cell.textContent || "").replace(/\s+/g, " ").trim();
+}}
+function tableSortNumber(value) {{
+    const normalized = value
+        .replace(/\u2212/g, "-")
+        .replace(/,/g, "")
+        .trim();
+    const match = normalized.match(/^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?)(?:\s*(?:%|ms|s|sec|seconds?|bytes?|kb|mb|gb|tb|\/s|per second))?$/i);
+    return match ? Number(match[1]) : null;
+}}
+function tableSortDate(value) {{
+    const match = value.match(/^(\d{{1,2}})-([A-Za-z]{{3}})-(\d{{2,4}})\s+(\d{{2}}):(\d{{2}})(?::(\d{{2}}))?/);
+    if (!match) return null;
+    const months = {{jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11}};
+    const month = months[match[2].toLowerCase()];
+    if (month === undefined) return null;
+    let year = Number(match[3]);
+    if (year < 100) year += 2000;
+    return Date.UTC(year, month, Number(match[1]), Number(match[4]), Number(match[5]), Number(match[6] || 0));
+}}
+function tableSortValue(cell) {{
+    const text = tableSortText(cell);
+    const number = tableSortNumber(text);
+    if (number !== null && Number.isFinite(number)) return {{kind: "number", value: number}};
+    const date = tableSortDate(text);
+    if (date !== null) return {{kind: "date", value: date}};
+    return {{kind: "text", value: text.toLocaleLowerCase()}};
+}}
+document.querySelectorAll(".table-scroll table").forEach(function (table) {{
+    const body = table.tBodies[0];
+    const headerRow = table.tHead && table.tHead.rows[0];
+    if (!body || !headerRow || body.rows.length < 2) return;
+    Array.from(body.rows).forEach(function (row, index) {{ row.dataset.originalOrder = String(index); }});
+    Array.from(headerRow.cells).forEach(function (header, columnIndex) {{
+        const label = tableSortText(header);
+        const button = document.createElement("button");
+        const indicator = document.createElement("span");
+        button.type = "button";
+        button.className = "table-sort-button";
+        button.setAttribute("aria-label", "Sort by " + label + " ascending");
+        indicator.className = "table-sort-indicator";
+        indicator.setAttribute("aria-hidden", "true");
+        indicator.textContent = "↕";
+        button.append(document.createTextNode(label), indicator);
+        header.textContent = "";
+        header.appendChild(button);
+        header.setAttribute("aria-sort", "none");
+        button.addEventListener("click", function () {{
+            const ascending = header.getAttribute("aria-sort") !== "ascending";
+            Array.from(headerRow.cells).forEach(function (other) {{
+                other.setAttribute("aria-sort", "none");
+                const otherIndicator = other.querySelector(".table-sort-indicator");
+                if (otherIndicator) otherIndicator.textContent = "↕";
+            }});
+            header.setAttribute("aria-sort", ascending ? "ascending" : "descending");
+            indicator.textContent = ascending ? "↑" : "↓";
+            button.setAttribute("aria-label", "Sort by " + label + (ascending ? " descending" : " ascending"));
+            const rows = Array.from(body.rows);
+            rows.sort(function (left, right) {{
+                const a = tableSortValue(left.cells[columnIndex]);
+                const b = tableSortValue(right.cells[columnIndex]);
+                let comparison;
+                if (a.kind === b.kind && a.kind !== "text") comparison = a.value - b.value;
+                else comparison = String(a.value).localeCompare(String(b.value), undefined, {{numeric: true, sensitivity: "base"}});
+                if (comparison === 0) comparison = Number(left.dataset.originalOrder) - Number(right.dataset.originalOrder);
+                return ascending ? comparison : -comparison;
+            }});
+            rows.forEach(function (row) {{ body.appendChild(row); }});
+        }});
+    }});
+}});
 document.addEventListener("click", function (event) {{
     const filter = event.target.closest("[data-plan-filter]");
     if (filter) {{
@@ -1256,6 +1361,10 @@ mod tests {
         assert!(html.contains("class=\"table-scroll\" tabindex=\"0\""));
         assert!(html.contains("overflow-x: auto"));
         assert!(html.contains("width: max-content"));
+        assert!(html.contains("className = \"table-sort-button\""));
+        assert!(html.contains("header.setAttribute(\"aria-sort\", \"none\")"));
+        assert!(html.contains("tableSortNumber"));
+        assert!(html.contains("tableSortDate"));
         assert!(!html.contains("#section-26 + ul"));
         assert!(html.contains("<header class=\"brand-banner\">"));
         assert!(html.contains("ORACLE PERFORMANCE EVIDENCE"));
