@@ -17,6 +17,22 @@ fn isolated_workdir(test_name: &str) -> PathBuf {
 }
 
 #[test]
+fn invalid_issue_metadata_does_not_publish_html() {
+    let workdir = isolated_workdir("invalid-issues");
+    let markdown = workdir.join("invalid.md");
+    fs::write(&markdown, "# Report\n\n```jasmin-issues\n{broken}\n```\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jas-min"))
+        .current_dir(&workdir)
+        .args(["--convert-md2html", markdown.to_str().unwrap(), "--quiet"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!workdir.join("invalid.html").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid jasmin-issues JSON"));
+    fs::remove_dir_all(workdir).unwrap();
+}
+
+#[test]
 fn no_input_exits_with_usage_error_without_creating_an_artifact() {
     let workdir = isolated_workdir("no-input");
     let output = Command::new(env!("CARGO_BIN_EXE_jas-min"))

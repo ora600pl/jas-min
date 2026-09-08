@@ -1865,8 +1865,11 @@ pub async fn gemini(
 
     if final_content.is_empty() {
         debug_note!("Gemini analysis completed without extractable content");
-        eprintln!("⚠️ Gemini response had no extractable final content");
+        fs::write(&response_file, final_content.as_bytes())?;
+        return Err("Gemini response had no extractable final report; no HTML generated".into());
     } else {
+        fs::write(&response_file, final_content.as_bytes())?;
+        let final_content = crate::report_issues::finalize_api_markdown(&final_content)?;
         fs::write(&response_file, final_content.as_bytes())?;
         debug_note!(
             "Gemini analysis output written: path='{}', bytes={}",
@@ -1874,7 +1877,7 @@ pub async fn gemini(
             final_content.len()
         );
         println!("🍻 Gemini response written to file: {}", &response_file);
-        convert_md_to_html_file(&response_file, events_sqls.clone());
+        convert_md_to_html_file(&response_file, events_sqls.clone())?;
         println!(
             "Total tokens: {}\nFinish reason: {}\n",
             last_usage, last_finish
@@ -2265,6 +2268,8 @@ pub async fn openrouter(
     }
 
     fs::write(&response_file, final_content.as_bytes())?;
+    let final_content = crate::report_issues::finalize_api_markdown(&final_content)?;
+    fs::write(&response_file, final_content.as_bytes())?;
     debug_note!(
         "OpenRouter analysis output written: path='{}', bytes={}, finish_reason='{}'",
         response_file,
@@ -2272,7 +2277,7 @@ pub async fn openrouter(
         last_finish
     );
     println!("🍻 OpenRouter response written to file: {}", &response_file);
-    convert_md_to_html_file(&response_file, events_sqls.clone());
+    convert_md_to_html_file(&response_file, events_sqls.clone())?;
     println!(
         "Total tokens: {}\nFinish reason: {}\n",
         last_usage, last_finish
@@ -2769,8 +2774,11 @@ pub async fn openai_gpt(
 
     if final_content.is_empty() {
         debug_note!("OpenAI analysis completed without final content");
-        eprintln!("⚠️  No final content produced");
+        fs::write(&response_file, final_content.as_bytes())?;
+        return Err("OpenAI response had no extractable final report; no HTML generated".into());
     } else {
+        fs::write(&response_file, final_content.as_bytes())?;
+        let final_content = crate::report_issues::finalize_api_markdown(&final_content)?;
         fs::write(&response_file, final_content.as_bytes())?;
         debug_note!(
             "OpenAI analysis output written: path='{}', bytes={}",
@@ -2778,7 +2786,7 @@ pub async fn openai_gpt(
             final_content.len()
         );
         println!("🧠 OpenAI response written to file: {}", &response_file);
-        convert_md_to_html_file(&response_file, events_sqls);
+        convert_md_to_html_file(&response_file, events_sqls)?;
         println!("Total tokens (OpenAI): {}", last_usage);
         println!("Finish reason: {}", last_finish);
     }

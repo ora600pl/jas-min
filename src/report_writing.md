@@ -14,3 +14,46 @@ Write for an expert DBA making decisions during an incident. Keep the full inves
 - In section 11 provide the complete action register and explicit mandatory assessments. Keep negative results concise (for example, no generalized slow-storage evidence); expand only measurements or uncertainty relevant to a decision. Technical depth belongs one click away, not on every line of the decision queue.
 
 Use the requested report language. Keep the eleven existing sections and all validation requirements. Do not shorten an investigation by skipping available evidence or making stronger claims.
+
+## Explicit issue identity and typed actions
+
+An issue is one decision or investigation, possibly supported by findings in several sections. It is not automatically a proven cause or a currently active incident. Give it an explicit `issue_id`, a short `title`, `decision_summary`, `decision_boundary`, `scope`, `grouping_rationale`, `confidence`, one `canonical_finding_id` and all supporting `finding_ids`. Group only when the investigation identity is established. State differences between instances and periods in scope; do not silently combine historical AWR, a later live capture and a lab experiment. A finding belongs to exactly one issue; cross-cutting background coverage can have its own issue.
+
+Classify every action as `evidence_capture` (obtain or validate measurements), `mitigation` (temporary containment with guard/rollback conditions), or `durable_fix` (a tested or explicitly proposed lasting change, with correctness and performance acceptance criteria). A `durable_fix` label does not prove the fix was tested. Keep priority independent of kind. Do not classify a speculative intervention as an established remedy. Split actions that combine evidence collection and a production change. Preserve owner, priority, rationale and success_criterion.
+
+**MCP authoring:** record findings first, including recommendation `kind`; call `record_issue` to link existing finding IDs. Reuse issue_id to replace a grouping; use `delete_issue` to remove only the grouping when restructuring. The default `explicit` mode requires every finding to be assigned and every recommendation to have a kind before finalization. Follow missing_issue_assignments, unclassified_actions and stale_issues from get_report_status. After editing a member finding, review its issue and call record_issue again to refresh the decision brief. Never select legacy mode merely to evade the new contract. MCP renders the issue queue from structured state; do not add a metadata block to its finalized Markdown.
+
+**Classic API / local reviewer authoring:** keep the eleven numbered `##` sections. Assign a unique lowercase explicit anchor to each finding: `### Finding title {#finding-f-0001}`. Use its matching ID (`F-0001`) in metadata. Section 1 can say that the generator will insert the issue queue. In section 11 put these two empty markers, followed by the full mandatory assessments:
+
+<!-- jasmin-actions:start -->
+<!-- jasmin-actions:end -->
+
+After the report, append exactly one fenced block with language `jasmin-issues` and valid JSON. Use this schema (example data below illustrates syntax only, not case evidence):
+
+```jasmin-issues
+{
+  "version": 1,
+  "issues": [{
+    "issue_id": "I-0001",
+    "title": "Investigate import cursor contention",
+    "decision_summary": "State the observed impact and decision in about 40-60 words, using actual case measurements.",
+    "decision_boundary": "State the missing proof that could change the decision.",
+    "scope": "Name the actual workload, instances and time windows.",
+    "grouping_rationale": "Explain why the linked findings are perspectives of this one investigation.",
+    "confidence": "medium",
+    "canonical_finding_id": "F-0001",
+    "finding_ids": ["F-0001", "F-0002"]
+  }],
+  "actions": [{
+    "finding_id": "F-0001",
+    "kind": "evidence_capture",
+    "owner": "DBA",
+    "priority": "immediate",
+    "action": "Specify the concrete next capture for this case.",
+    "rationale": "Explain why this capture discriminates between the remaining hypotheses.",
+    "success_criterion": "Specify the required timestamped measurements and identities."
+  }]
+}
+```
+
+Replace every example value with case-specific content. Include every finding in exactly one issue and all recommendations in `actions`. Write the complete technical findings and mandatory assessments in Markdown; never put that detail only in metadata. Do not duplicate the action register manually. The generator validates references and renders the summary/register; metadata is retained in saved Markdown and hidden in HTML. Missing or malformed metadata in a newly generated AI report blocks HTML publication. Existing Markdown without metadata remains supported by standalone conversion.

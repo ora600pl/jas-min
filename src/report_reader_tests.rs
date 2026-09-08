@@ -22,6 +22,7 @@ fn finding(id: &str, category: &str, priority: &str) -> ReportFinding {
             quote: "Inspect the holder before changing the shared pool.".into(),
         }],
         recommendations: vec![Recommendation {
+            kind: ActionKind::EvidenceCapture,
             owner: "DBA".into(),
             priority: priority.into(),
             action: "Capture the holder and waiter timeline.".into(),
@@ -35,6 +36,7 @@ fn finding(id: &str, category: &str, priority: &str) -> ReportFinding {
 #[test]
 fn decision_queue_ranks_actions_and_keeps_evidence_and_limitations() {
     let mut state = AnalysisSession::new(json!({}), ReportConfig::default(), vec![]);
+    state.config.issue_grouping = "legacy".into();
     for (id, category, priority) in [
         ("F-1", "sql", "high"),
         ("F-2", "wait_events", "immediate"),
@@ -112,6 +114,37 @@ fn replay_archived_report() {
     for value in document["findings"].as_array().unwrap() {
         let finding: ReportFinding = serde_json::from_value(value.clone()).unwrap();
         state.findings.insert(finding.finding_id.clone(), finding);
+    }
+    // Optional reviewed migration overlay; never infer groupings/action kinds
+    // from SQL IDs or wording when replaying an old customer report.
+    if let Ok(path) = std::env::var("JASMIN_REPORT_ISSUES") {
+        let overlay: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        let issues: Vec<ReportIssue> = serde_json::from_value(overlay["issues"].clone()).unwrap();
+        let known = state
+            .findings
+            .keys()
+            .map(|id| report_issues::finding_anchor(id))
+            .collect();
+        let membership = report_issues::validate_issues(&issues, &known).unwrap();
+        assert_eq!(membership.len(), state.findings.len());
+        for finding in state.findings.values_mut() {
+            let kinds: Vec<ActionKind> =
+                serde_json::from_value(overlay["action_kinds"][&finding.finding_id].clone())
+                    .unwrap();
+            assert_eq!(kinds.len(), finding.recommendations.len());
+            for (action, kind) in finding.recommendations.iter_mut().zip(kinds) {
+                assert_ne!(kind, ActionKind::Unclassified);
+                action.kind = kind;
+            }
+        }
+        for issue in issues {
+            state.issue_finding_snapshots.insert(
+                issue.issue_id.clone(),
+                issue_finding_snapshot(&state, &issue),
+            );
+            state.issues.insert(issue.issue_id.clone(), issue);
+        }
+        state.config.issue_grouping = "explicit".into();
     }
     for (key, value) in document["mandatory_assessments"].as_object().unwrap() {
         state

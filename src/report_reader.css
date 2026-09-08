@@ -20,7 +20,7 @@ h2, h3, [id] { scroll-margin-top: 1rem; }
 .decision-card .decision-meta { font-size: .8rem; color: #555; }
 .decision-card .decision-boundary { font-size: .88rem; color: #484848; }
 .finding-title { font-size: 1.3rem; margin-top: 2.5rem; }
-.technical-evidence, .finding-evidence, .methodology, .coverage-detail {
+.technical-evidence, .finding-evidence, .methodology, .coverage-detail, .issue-register {
     margin: .8rem 0 1.5rem; padding: .8rem 1rem;
     border: 1px solid #d4d4d4; border-radius: 8px; background: #fafafa;
     min-width: 0;

@@ -1670,6 +1670,8 @@ pub fn write_local_agent_outputs(
         format!("{base_name}.local_agent.usage.json"),
         serde_json::to_vec_pretty(&outcome.usage)?,
     )?;
+    let final_markdown = crate::report_issues::finalize_api_markdown(&outcome.final_markdown)?;
+    fs::write(format!("{base_name}.final.md"), final_markdown)?;
     debug_note!("Local agent outputs written: base='{}'", base_name);
     Ok(())
 }
