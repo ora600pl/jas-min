@@ -857,3 +857,12 @@ MCP additionally returns non-blocking editorial feedback in
 `get_report_status.readability_review`. See [report presentation and replay](docs/mcp-server.md#findings)
 for details. Rebuild the binary and restart the MCP process to use changed server
 instructions; existing HTML files require regeneration.
+
+
+AI reports now support explicit **issues** that join distinct findings under one
+short decision summary. New MCP sessions use `record_issue` after recording
+findings, and every recommendation identifies evidence capture, mitigation or
+a durable fix. Updating a member finding requires reviewing its issue summary
+again. Classic APIs and the local reviewer use the same validated decision
+metadata and renderer. See [issue authoring and migration](docs/report-issues.md)
+for required fields, legacy compatibility and export validation.

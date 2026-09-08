@@ -1033,7 +1033,18 @@ pub(crate) fn render_markdown_html_document(
         html_absolute_dir,
         events_sqls.len()
     );
-    let html_plain = markdown_to_html_with_toc(markdown, html_dir, html_absolute_dir);
+    try_render_markdown_html_document(markdown, html_dir, html_absolute_dir, events_sqls)
+        .expect("invalid report decision metadata")
+}
+
+pub(crate) fn try_render_markdown_html_document(
+    markdown: &str,
+    html_dir: &str,
+    html_absolute_dir: &str,
+    events_sqls: HashMap<&str, HashSet<String>>,
+) -> Result<String, String> {
+    let (prepared, _) = crate::report_issues::prepare_api_report(markdown)?;
+    let html_plain = markdown_to_html_with_toc(&prepared, html_dir, html_absolute_dir);
     let html = add_links_to_html(
         html_plain,
         events_sqls,
@@ -1041,11 +1052,14 @@ pub(crate) fn render_markdown_html_document(
         html_absolute_dir.to_string(),
     );
     debug_note!("Markdown HTML document rendered: html_bytes={}", html.len());
-    html
+    Ok(html)
 }
 
 /// Reads a Markdown file, converts to HTML with TOC, writes to .html file
-pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, HashSet<String>>) {
+pub fn convert_md_to_html_file(
+    input_path: &str,
+    events_sqls: HashMap<&str, HashSet<String>>,
+) -> Result<(), String> {
     debug_note!(
         "Starting Markdown file conversion: input='{}', link_groups={}",
         input_path,
@@ -1062,7 +1076,8 @@ pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, Hash
     if input_path.contains("_deep_") {
         html_dir = ".".to_string();
     }
-    let html = render_markdown_html_document(&markdown, &html_dir, &html_absolute_dir, events_sqls);
+    let html =
+        try_render_markdown_html_document(&markdown, &html_dir, &html_absolute_dir, events_sqls)?;
 
     let output_path = Path::new(input_path).with_extension("html");
 
@@ -1076,6 +1091,7 @@ pub fn convert_md_to_html_file(input_path: &str, events_sqls: HashMap<&str, Hash
 
     println!("✅ HTML file generated at: {:?}", output_path);
     open::that(output_path);
+    Ok(())
 }
 
 //Calculate pearson correlation of 2 vectors and return simple result

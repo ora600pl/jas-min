@@ -22,6 +22,7 @@ mod local_agent;
 mod macros;
 mod mcp_server;
 mod reasonings;
+mod report_issues;
 mod staticdata;
 mod tools;
 
@@ -679,23 +680,27 @@ fn main() {
         );
 
         if vendor_model_lang[0] == "openai" {
-            openai_gpt(
+            if let Err(error) = openai_gpt(
                 &reportfile,
                 vendor_model_lang,
                 events_sqls.clone(),
                 &args,
                 &toon_str,
-            )
-            .unwrap();
+            ) {
+                eprintln!("❌ OpenAI analysis failed: {error}");
+                std::process::exit(1);
+            }
         } else if vendor_model_lang[0] == "google" {
-            gemini(
+            if let Err(error) = gemini(
                 &reportfile,
                 vendor_model_lang,
                 events_sqls.clone(),
                 &args,
                 &toon_str,
-            )
-            .unwrap();
+            ) {
+                eprintln!("❌ Gemini analysis failed: {error}");
+                std::process::exit(1);
+            }
         } else if vendor_model_lang[0] == "openrouter" {
             if let Err(error) = openrouter(
                 &reportfile,
@@ -718,11 +723,16 @@ fn main() {
                 Ok(outcome) => {
                     if let Err(e) = write_local_agent_outputs(&reportfile, &outcome) {
                         eprintln!("❌ writing local agent outputs failed: {e}");
+                        std::process::exit(1);
                     } else {
                         convert_md_to_html_file(
                             &format!("{reportfile}.final.md"),
                             events_sqls.clone(),
-                        );
+                        )
+                        .unwrap_or_else(|error| {
+                            eprintln!("Report export failed: {error}");
+                            std::process::exit(1);
+                        });
                     }
                 }
                 Err(e) => {
@@ -737,7 +747,12 @@ fn main() {
     }
 
     if !args.convert_md2html.is_empty() {
-        convert_md_to_html_file(&args.convert_md2html, events_sqls.clone());
+        convert_md_to_html_file(&args.convert_md2html, events_sqls.clone()).unwrap_or_else(
+            |error| {
+                eprintln!("Report export failed: {error}");
+                std::process::exit(1);
+            },
+        );
     }
     debug_note!("JAS-MIN invocation completed");
 }

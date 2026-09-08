@@ -496,6 +496,8 @@ plans in large attachments.
 | `compare_project_sql` | Registers a same-SQL cross-project comparison as evidence. |
 | `configure_report` | Updates report presentation settings. |
 | `record_finding` | Creates or replaces an evidence-backed finding. |
+| `record_issue` | Atomically groups existing findings into one reviewed decision brief. |
+| `delete_issue` | Removes a grouping while retaining every finding and evidence record. |
 | `record_report_table` | Creates or replaces a provenance-validated structured analysis table. |
 | `set_report_assessment` | Stores one mandatory final assessment. |
 | `get_report_status` | Validates report coverage without rendering it. |
@@ -508,7 +510,7 @@ Every successful measurement tool call is wrapped in an evidence envelope:
 
 ```json
 {
-  "schema_version": "2026-08-23.4",
+  "schema_version": "2026-09-08.2",
   "analysis_id": "A-20260804T100000Z-0001",
   "project_id": "before-upgrade",
   "evidence_id": "E-0002",
@@ -803,6 +805,18 @@ variants remain in a compact coverage disclosure. SQL IDs and wait events link
 directly to each project-specific JAS-MIN detail page, and HTML export rejects
 missing local link targets.
 
+### Explicit issues and findings
+
+New sessions default to explicit issue grouping. Record findings first, then
+use `record_issue` to supply a concise decision brief, scope, grouping rationale,
+canonical finding and member finding IDs. `delete_issue` removes only the grouping.
+Every recommendation has kind `evidence_capture`, `mitigation` or `durable_fix`.
+The completion checklist also requires no missing issue assignments,
+unclassified actions or stale issue summaries after a finding update.
+
+See [the issue contract and migration guide](report-issues.md) for MCP and API
+schemas, atomic validation, legacy compatibility and reproducible replay.
+
 ### Findings
 
 `record_finding` requires:
@@ -873,9 +887,10 @@ block, so action and summary links can reach them.
 
 The deterministic Markdown renderer uses three reading layers:
 
-1. **Decision queue:** at most five findings, ordered by the earliest action
-   priority, then severity and finding ID. Each has a real heading, conclusion,
-   next action/owner, decision boundary and canonical detail link.
+1. **Decision queue:** at most five explicitly grouped issues, ordered by the
+   earliest action priority and then issue ID. Each has a short decision summary,
+   next action/owner/kind, scope, decision boundary and canonical finding link.
+   The prior finding-based queue remains available in legacy mode.
 2. **Finding:** conclusion, decisive measurements, workload/time scope, next
    action and decision-changing limitations stay visible. Mechanism, source
    links, provenance and extended narrative are in a disclosure.
@@ -896,7 +911,8 @@ reviewer's final report, MCP initialization, the analysis prompt and the report
 contract. It asks for concise titles, one canonical issue per mechanism/workload,
 clear observation versus hypothesis, concise decisive measurements and measured
 acceptance criteria. Existing findings are not automatically rewritten or
-semantically merged. Provider compliance with writing targets is model-dependent.
+semantically merged. Explicit references and action kinds are validated before
+publication in MCP and new API output; synthesis quality remains model-dependent.
 
 `get_report_status.readability_review` gives non-blocking editorial feedback
 for titles over 12 words and decision fields over 180 words. These warnings
