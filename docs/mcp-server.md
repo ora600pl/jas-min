@@ -861,23 +861,70 @@ server creates a new identifier instead of overwriting arbitrary state.
 Recommendations are structured as an owner (`DBA`, `Developer`, or
 `Management`), a priority (`immediate`, `high`, `medium`, or `low`), an action,
 the evidence-backed `rationale` for that action and priority, and a measurable
-`success_criterion` including a regression guard. The renderer groups actions
-by accountable owner rather than emitting one flat list.
+`success_criterion` including a regression guard. The renderer orders actions by priority, labels the accountable owner, and
+consolidates exact duplicates while retaining links to every supporting finding.
 
 Accepted finding categories are `performance_profile`, `wait_events`, `sql`,
 `segments`, `latches`, `io`, `undo_redo`, `gradients_anomalies`, `parameters`,
 and `limitations`. The structured JSON retains all categories. The numbered
 Markdown body maps the first nine analytical categories to sections 2 through
-10; a high-severity `limitations` finding can appear in the executive summary
-but currently has no dedicated numbered section.
+10; `limitations` findings have canonical anchors in an expandable coverage
+block, so action and summary links can reach them.
 
-The deterministic Markdown renderer leads every section with diagnostic
-findings and follows them with the exhaustive structured evidence tables. The
-executive summary repeats the mechanism, affected workload, temporal pattern,
-and evidence boundary for the five leading findings; a one-sentence register
-alone is not considered a sufficient summary. `compact` omits a finding's
-`details` field, `standard` keeps it in a disclosure below the diagnostic
-synthesis, and `deep` renders it inline.
+The deterministic Markdown renderer uses three reading layers:
+
+1. **Decision queue:** at most five findings, ordered by the earliest action
+   priority, then severity and finding ID. Each has a real heading, conclusion,
+   next action/owner, decision boundary and canonical detail link.
+2. **Finding:** conclusion, decisive measurements, workload/time scope, next
+   action and decision-changing limitations stay visible. Mechanism, source
+   links, provenance and extended narrative are in a disclosure.
+3. **Technical evidence:** all required tables remain in expandable blocks.
+   Verbatim guidance quotations are deduplicated by reference and exact text,
+   printed once in the methodology appendix and linked where applied. Applied
+   quotations remain available even if the optional consulted-guidance catalog
+   is disabled.
+
+`compact` omits the free-form `details` field, `standard` retains it in a nested
+context disclosure, and `deep` retains the entire field within supporting
+evidence. All three initially collapse technical evidence; depth controls
+content, not urgency. The eleven sections and all completeness gates remain.
+
+The shared [writing contract](../src/report_writing.md) also reaches classic
+OpenAI, Google and OpenRouter instructions (with and without tools), the local
+reviewer's final report, MCP initialization, the analysis prompt and the report
+contract. It asks for concise titles, one canonical issue per mechanism/workload,
+clear observation versus hypothesis, concise decisive measurements and measured
+acceptance criteria. Existing findings are not automatically rewritten or
+semantically merged. Provider compliance with writing targets is model-dependent.
+
+`get_report_status.readability_review` gives non-blocking editorial feedback
+for titles over 12 words and decision fields over 180 words. These warnings
+request revision without changing `ready_to_finalize`, deleting facts or
+weakening evidence requirements. Investigations remain complete even when a
+complex finding legitimately needs more words.
+
+The shared HTML renderer removes blanket highlighting of bold-led paragraphs,
+upgrades the legacy numbered summary format into headings, preserves explicit
+Markdown heading IDs, starts the TOC with sections, provides expand/collapse
+controls, opens enclosing disclosures for fragment links and expands evidence
+for printing (restoring the reader's state afterward). It requires no external
+assets or network access. Keyboard-accessible native disclosures also work
+without JavaScript.
+
+An optional archived-data replay test reads customer fixtures outside the repo:
+
+```bash
+JASMIN_REPORT_FIXTURE=/path/to/archived-evidence \
+JASMIN_REPORT_PREVIEW=/path/to/new-preview.html \
+  cargo test replay_archived_report -- --ignored --nocapture
+```
+
+The fixture contains `finalized-report.json`, `finalized.md`,
+`evidence-full.json` and `guidance.json`; source report directories must resolve
+beside the preview. The replay preserves the archived provenance verbatim,
+checks local links/fragments and creates new files only. It is a rendering
+regression, not a new model investigation or proof of live provider behavior.
 
 ### Mandatory assessments
 

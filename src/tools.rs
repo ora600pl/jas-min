@@ -151,6 +151,10 @@ fn markdown_to_html_with_toc(
     html_dir: &str,
     html_absolute_dir: &str,
 ) -> String {
+    // Upgrade the old MCP summary format without treating ordinary bold labels
+    // (Mechanism, Evidence basis, etc.) as headings.
+    let legacy_summary = Regex::new(r"(?m)^\*\*(\d+\. [^\n]+ \[(?:critical|high|medium|low|informational) / [^\]\n]+\])\*\* — ([^\n]+)$").unwrap();
+    let markdown_input = legacy_summary.replace_all(markdown_input, "### $1\n\n$2");
     // Enable desired Markdown extensions
     let mut options = Options::empty();
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
@@ -158,12 +162,13 @@ fn markdown_to_html_with_toc(
     options.insert(Options::ENABLE_FOOTNOTES);
 
     // Parse the Markdown with extensions
-    let parser = Parser::new_ext(markdown_input, options);
+    let parser = Parser::new_ext(&markdown_input, options);
 
     // Prepare variables
     let mut toc: Vec<(usize, String)> = Vec::new(); // (level, id, title)
     let mut html_output = String::new(); // Final HTML body
     let mut parser_with_ids = Vec::new(); // Modified event stream
+    let mut used_heading_ids = HashSet::new();
     let mut heading_counter = 0; // For generating unique IDs
     let mut table_counter = 0; // For keyboard-focusable overflow regions
     let mut current_heading_level = 1; // For closing tags manually
@@ -181,11 +186,20 @@ fn markdown_to_html_with_toc(
     let mut parser_iter = parser.into_iter().peekable();
     while let Some(event) = parser_iter.next() {
         match &event {
-            Event::Start(Tag::Heading { level, .. }) => {
+            Event::Start(Tag::Heading { level, id, .. }) => {
                 heading_counter += 1;
                 current_heading_level = heading_level_to_int(level);
                 current_heading_level_for_map = current_heading_level;
-                let id = format!("section-{}", heading_counter);
+                let requested_id = id
+                    .as_ref()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| format!("section-{}", heading_counter));
+                let mut id = requested_id.clone();
+                let mut suffix = 2;
+                while !used_heading_ids.insert(id.clone()) {
+                    id = format!("{requested_id}-{suffix}");
+                    suffix += 1;
+                }
                 current_heading_id = id.clone();
                 heading_text.clear();
                 in_heading = true;
@@ -229,7 +243,9 @@ fn markdown_to_html_with_toc(
                 parser_with_ids.push(Event::Html(
                     format!(
                         r#"<h{} id="{}" class="{}">"#,
-                        current_heading_level_for_map, current_heading_id, heading_class
+                        current_heading_level_for_map,
+                        encode_double_quoted_attribute(&current_heading_id),
+                        heading_class
                     )
                     .into(),
                 ));
@@ -286,7 +302,9 @@ fn markdown_to_html_with_toc(
         let label = encode_text(&headings_map[id]);
         toc_html.push_str(&format!(
             r##"<li class="level-{}"><a href="#{}">{}</a></li>"##,
-            level, id, label
+            level,
+            encode_double_quoted_attribute(id),
+            label
         ));
     }
     toc_html.push_str("</ul></nav>");
@@ -493,32 +511,6 @@ fn markdown_to_html_with_toc(
             box-shadow: 0 8px 22px rgba(0, 0, 0, 0.06);
             font-size: 1.02rem;
         }}
-        p:has(> strong:first-child) {{
-            max-width: none;
-            padding: 0.8rem 1rem;
-            border-left: 4px solid var(--cyan);
-            border-radius: 0 10px 10px 0;
-            background: #fbf1f2;
-        }}
-        #section-2 + .table-scroll {{ margin-top: 0; }}
-        #section-2 ~ ul:first-of-type {{
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.9rem;
-            margin: 1rem 0 0;
-            padding: 0;
-            list-style: none;
-        }}
-        #section-2 ~ ul:first-of-type > li {{
-            margin: 0;
-            padding: 1rem 1.1rem;
-            border: 1px solid var(--line);
-            border-top: 4px solid var(--high);
-            border-radius: 12px;
-            background: var(--surface);
-            box-shadow: 0 7px 18px rgba(0, 0, 0, 0.06);
-        }}
-        #section-2 ~ ul:first-of-type > li > strong:first-child {{ display: block; margin-bottom: 0.35rem; color: var(--navy); }}
         .actions-section-title + ul, .assessment-list-title + ul {{
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -789,7 +781,7 @@ fn markdown_to_html_with_toc(
         @media (max-width: 980px) {{
             body {{ display: block; padding: 1rem; }}
             .toc {{ position: relative; top: 0; max-height: none; margin-bottom: 1rem; }}
-            #section-2 ~ ul:first-of-type, .actions-section-title + ul, .assessment-list-title + ul {{ grid-template-columns: 1fr; }}
+            .actions-section-title + ul, .assessment-list-title + ul {{ grid-template-columns: 1fr; }}
             .plan-conclusion {{ grid-template-columns: 1fr; }}
             .plan-toolbar span {{ width: 100%; margin-left: 0; }}
             .sql-context, .plan-conclusion {{ grid-template-columns: 1fr; }}
@@ -815,6 +807,8 @@ fn markdown_to_html_with_toc(
             a {{ color: inherit; text-decoration: underline; }}
         }}
     </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>{reader_css}</style>
 </head>
 <body>
 <header class="brand-banner"><a href="https://github.com/ora600pl/jas-min" target="_blank" rel="noopener" aria-label="JAS-MIN project">{brand_logo}</a></header>
@@ -927,8 +921,11 @@ document.addEventListener("input", function (event) {{
     review.querySelector(".plan-tree").style.setProperty("--plan-zoom", String(Number(event.target.value) / 100));
 }});
 </script>
+<script>{reader_js}</script>
 </body>
 </html>"#,
+        reader_css = include_str!("report_reader.css"),
+        reader_js = include_str!("report_reader.js"),
         brand_logo = JASMIN_AUDIT_LOGO_SVG,
         toc = toc_html,
         navigation = classic_navigation,
@@ -1306,6 +1303,24 @@ pub fn rounded_json_for_toon(mut value: Value) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn legacy_summary_headings_and_explicit_finding_links_survive_conversion() {
+        let html = render_markdown_html_document(
+            "# Report\n\n## 1. Executive Summary\n\n**1. Cursor issue [high / high]** — Two waiters.\n\n**Mechanism:** Holder parsing.\n\n[Detail](#cursor-case)\n\n### Cursor evidence {#cursor-case}\n\nExact values.\n\n### Duplicate {#cursor-case}\n",
+            "", "", HashMap::new(),
+        );
+        let document = scraper::Html::parse_document(&html);
+        let select = |s| scraper::Selector::parse(s).unwrap();
+        assert_eq!(document.select(&select("h3")).count(), 3);
+        assert_eq!(document.select(&select("h3#cursor-case")).count(), 1);
+        assert_eq!(document.select(&select("h3#cursor-case-2")).count(), 1);
+        assert!(document
+            .select(&select("p"))
+            .any(|node| node.text().collect::<String>() == "Mechanism: Holder parsing."));
+        assert!(!html.contains("p:has(> strong:first-child)"));
+        assert!(html.contains("revealFragment"));
+    }
 
     #[test]
     fn classic_navigation_links_only_existing_reports_without_iframes_or_placeholders() {
