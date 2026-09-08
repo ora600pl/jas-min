@@ -843,3 +843,17 @@ See [LICENSE](LICENSE).
 <p align="center">
   <em>If you need expert Oracle performance tuning, reach out to <a href="https://www.ora-600.pl/en/">ora-600.pl</a></em>
 </p>
+
+### Reading AI reports during an incident
+
+AI reports now use an action-ranked summary, clearly separated finding headings,
+visible decision boundaries and expandable technical evidence. The full tables
+and provenance remain available, with expand/collapse controls and links that
+reveal their target. Identical actions are consolidated; verified methodology
+quotations appear once. The eleven-section evidence contract remains intact.
+
+MCP and classic API providers share the [report writing contract](src/report_writing.md).
+MCP additionally returns non-blocking editorial feedback in
+`get_report_status.readability_review`. See [report presentation and replay](docs/mcp-server.md#findings)
+for details. Rebuild the binary and restart the MCP process to use changed server
+instructions; existing HTML files require regeneration.

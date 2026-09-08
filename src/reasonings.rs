@@ -69,6 +69,8 @@ fn build_model_instructions(
         spell.push_str(&tools_mode_instructions(stem));
     }
 
+    spell.push_str("\n\n");
+    spell.push_str(include_str!("report_writing.md"));
     spell
 }
 
