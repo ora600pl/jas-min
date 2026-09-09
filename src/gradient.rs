@@ -2,12 +2,12 @@ use crate::debug_note;
 use crate::make_notes;
 use crate::reasonings::{
     AnomalyDescription, AnomlyCluster, CollinearGroupImpact, CrossModelClassification,
-    DbTimeGradientSection, GradientSettings, GradientTopItem, IOStatsByFunctionSummary,
-    InstanceStatisticCorrelation, LatchActivitySummary, LoadProfileAnomalies, MadAnomaliesEvents,
-    MadAnomaliesSQL, PctOfTimesThisSQLFoundInOtherTopSections, ReportForAI, StatisticsDescription,
-    StatsSummary, Top10SegmentStats, TopBackgroundWaitEvents, TopForegroundWaitEvents,
-    TopPeaksSelected, TopSQLsByElapsedTime, VifDiagnostic, WaitEventsFromASH,
-    WaitEventsWithStrongCorrelation,
+    DbTimeGradientSection, GradientCoverage, GradientSettings, GradientTopItem,
+    IOStatsByFunctionSummary, InstanceStatisticCorrelation, LatchActivitySummary,
+    LoadProfileAnomalies, MadAnomaliesEvents, MadAnomaliesSQL,
+    PctOfTimesThisSQLFoundInOtherTopSections, ReportForAI, StatisticsDescription, StatsSummary,
+    Top10SegmentStats, TopBackgroundWaitEvents, TopForegroundWaitEvents, TopPeaksSelected,
+    TopSQLsByElapsedTime, VifDiagnostic, WaitEventsFromASH, WaitEventsWithStrongCorrelation,
 };
 use crate::Args;
 use std::collections::{BTreeMap, HashSet};
@@ -57,14 +57,13 @@ pub struct EventImpact {
     pub signed_impact: f64,
 
     /// Active impact = |raw-scale coef| * P90(|raw Δx|)
-    /// Measures contribution when the predictor is *actively moving*.
-    /// **Primary metric for DB tuning prioritization.**
+    /// P90 includes zero movements; rare signals can have zero active impact.
     pub impact_active: f64,
-    /// Signed active impact (positive = true bottleneck contributor).
+    /// Signed active impact (positive association, not causal proof).
     pub signed_impact_active: f64,
 
     /// Peak impact = |raw-scale coef| * P99(|raw Δx|)
-    /// Measures worst-case single-snapshot contribution.
+    /// P99 of predictor movement, not the maximum and not a causal attribution.
     pub impact_peak: f64,
 
     /// Share of total active impact across all predictors in this ranking.
@@ -84,6 +83,7 @@ pub struct DbTimeGradientResult {
     pub huber_gradient_by_event: EventScalarMap,
     //Quantile regression (tau=0.95) coefficients
     pub quantile95_gradient_by_event: EventScalarMap,
+    pub quantile95_diagnostics: crate::quantile::QuantileDiagnostics,
 
     /// Ridge impact ranking (sorted by impact descending)
     pub ridge_ranking: Vec<EventImpact>,
@@ -114,7 +114,7 @@ enum RegressionResult {
     Ridge(Result<EventScalarMap, String>),
     ElasticNet(Result<(EventScalarMap, ElasticNetSelection), String>),
     Huber(EventScalarMap),
-    Quantile95(EventScalarMap),
+    Quantile95(Result<(EventScalarMap, crate::quantile::QuantileDiagnostics), String>),
 }
 
 fn compute_abs_percentile_by_event(series_by_event: &EventSeriesMap, p: f64) -> EventScalarMap {
@@ -183,8 +183,15 @@ pub fn compute_db_time_gradient(
         }
     }
 
+    if db_time_series
+        .iter()
+        .chain(event_series.values().flatten())
+        .any(|v| !v.is_finite())
+    {
+        return Err("Gradient inputs must be finite".into());
+    }
     let db_time_delta_raw = compute_time_deltas(db_time_series);
-    // Center target variable (implicit intercept)
+    // Mean centering supplies the least-squares intercept only. Q95 fits its own intercept.
     let y_mean = db_time_delta_raw.iter().sum::<f64>() / db_time_delta_raw.len() as f64;
     let db_time_delta: Vec<f64> = db_time_delta_raw.iter().map(|&y| y - y_mean).collect();
     let event_delta_by_event = compute_event_deltas(event_series)?;
@@ -235,13 +242,13 @@ pub fn compute_db_time_gradient(
                 elastic_net_tol,
                 ridge_lambda,
             )),
-            3 => RegressionResult::Quantile95(quantile_regression_irls_map(
+            3 => RegressionResult::Quantile95(crate::quantile::fit(
                 &event_delta_standardized_by_event,
-                &db_time_delta,
+                &db_time_delta_raw,
                 0.95,
-                200,
-                elastic_net_tol,
-                ridge_lambda,
+                crate::quantile::Q95_LAMBDA,
+                crate::quantile::Q95_MAX_ITER,
+                crate::quantile::Q95_TOL,
             )),
             _ => unreachable!(),
         })
@@ -253,6 +260,7 @@ pub fn compute_db_time_gradient(
     let mut elastic_net_selection = None;
     let mut huber_gradient_by_event = None;
     let mut quantile95_gradient_by_event = None;
+    let mut quantile95_diagnostics = None;
 
     for result in results {
         match result {
@@ -263,7 +271,11 @@ pub fn compute_db_time_gradient(
                 elastic_net_selection = Some(selection);
             }
             RegressionResult::Huber(m) => huber_gradient_by_event = Some(m),
-            RegressionResult::Quantile95(m) => quantile95_gradient_by_event = Some(m),
+            RegressionResult::Quantile95(result) => {
+                let (coefficients, diagnostics) = result?;
+                quantile95_gradient_by_event = Some(coefficients);
+                quantile95_diagnostics = Some(diagnostics);
+            }
         }
     }
 
@@ -345,6 +357,7 @@ pub fn compute_db_time_gradient(
         elastic_net_selection,
         huber_gradient_by_event,
         quantile95_gradient_by_event,
+        quantile95_diagnostics: quantile95_diagnostics.unwrap(),
         ridge_ranking,
         elastic_net_ranking,
         huber_ranking,
@@ -1063,113 +1076,6 @@ fn huber_regression_map(
 }
 
 /* =========================================================================================
-Quantile regression via IRLS (map-based, tau=0.95)
-========================================================================================= */
-
-fn quantile_regression_irls_map(
-    x_by_event: &EventSeriesMap,
-    y: &[f64],
-    tau: f64,
-    max_iter: usize,
-    tol: f64,
-    ridge_penalty: f64,
-) -> EventScalarMap {
-    println!("  -> Building Quantile regression tau={}", tau);
-
-    let n = y.len();
-    let event_names: Vec<String> = x_by_event.keys().cloned().collect();
-    let p = event_names.len();
-    if p == 0 || n == 0 {
-        return BTreeMap::new();
-    }
-
-    // Pre-materialize columns ONCE — eliminate all BTreeMap lookups
-    let columns: Vec<&[f64]> = event_names
-        .iter()
-        .map(|name| x_by_event[name].as_slice())
-        .collect();
-
-    let mut beta: Vec<f64> = vec![0.0; p];
-    let eps = 1e-6;
-    let q_ridge = (ridge_penalty * 0.01).max(1e-6);
-
-    // Pre-allocate matrices ONCE, reuse across iterations
-    let mut xtwx: Vec<f64> = vec![0.0; p * p]; // flat layout for cache
-    let mut xtwy: Vec<f64> = vec![0.0; p];
-    let mut weights: Vec<f64> = vec![1.0; n];
-
-    for _iter in 0..max_iter {
-        let beta_old = beta.clone();
-
-        // Compute weights
-        for t in 0..n {
-            let mut pred = 0.0;
-            for j in 0..p {
-                pred += beta[j] * columns[j][t];
-            }
-            let r = y[t] - pred;
-            let abs_r = r.abs().max(eps);
-            weights[t] = if r >= 0.0 {
-                tau / abs_r
-            } else {
-                (1.0 - tau) / abs_r
-            };
-        }
-
-        // Zero out — much faster than reallocating
-        xtwx.iter_mut().for_each(|v| *v = 0.0);
-        xtwy.iter_mut().for_each(|v| *v = 0.0);
-
-        // Build X'WX (symmetric, upper triangle) + X'Wy
-        for t in 0..n {
-            let w = weights[t];
-            let wyt = w * y[t];
-            for j in 0..p {
-                let xj = columns[j][t];
-                let wxj = w * xj;
-                xtwy[j] += xj * wyt;
-                // Upper triangle only, flat indexing
-                for k in j..p {
-                    xtwx[j * p + k] += wxj * columns[k][t];
-                }
-            }
-        }
-
-        // Normalize the weighted loss before adding regularization so lambda does
-        // not change meaning when the same observations are duplicated.
-        let inverse_sample_count = 1.0 / n as f64;
-        for value in &mut xtwx {
-            *value *= inverse_sample_count;
-        }
-        for value in &mut xtwy {
-            *value *= inverse_sample_count;
-        }
-
-        // Mirror upper triangle to lower + add ridge
-        for j in 0..p {
-            for k in (j + 1)..p {
-                xtwx[k * p + j] = xtwx[j * p + k];
-            }
-            xtwx[j * p + j] += q_ridge;
-        }
-
-        // Solve in-place (reusing xtwx as augmented matrix)
-        solve_dense_linear_system_flat(&mut xtwx, &mut xtwy, p, &mut beta);
-
-        let max_change: f64 = beta
-            .iter()
-            .zip(beta_old.iter())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0, f64::max);
-        if max_change < tol {
-            break;
-        }
-    }
-
-    event_names.into_iter().zip(beta).collect()
-}
-
-/* =========================================================================================
 Dense linear system solver with partial pivoting
 ========================================================================================= */
 /// Solves Ax = b in-place.
@@ -1564,7 +1470,7 @@ fn build_ranking(
     }
 
     // Primary sort: signed_impact_active DESC
-    // This puts real bottlenecks (positive coef × active magnitude) on top,
+    // This puts positive associations (coefficient × active magnitude) on top,
     // and suppressors (negative coef) at the bottom.
     ranking.sort_by(|a, b| {
         b.signed_impact_active
@@ -1579,7 +1485,7 @@ Cross-model triangulation / classification
 ========================================================================================= */
 
 /// Classify events/stats/SQLs by cross-referencing all 4 model rankings.
-/// Returns a list of classifications sorted by confidence (confirmed bottlenecks first).
+/// Returns selection patterns; these are not causal confidence levels.
 pub fn cross_model_classify(
     section: &DbTimeGradientSection,
     top_n: usize,
@@ -1636,69 +1542,51 @@ pub fn cross_model_classify(
             .iter()
             .filter(|&&b| b)
             .count();
-        let ridge_impact = section
-            .ridge_top
-            .iter()
-            .find_map(|r| (&r.event_name == event).then(|| r.impact_active))
-            .unwrap_or(0.0);
-        let en_impact = section
-            .elastic_net_top
-            .iter()
-            .find_map(|r| (&r.event_name == event).then(|| r.impact_active))
-            .unwrap_or(0.0);
-        let huber_impact = section
-            .huber_top
-            .iter()
-            .find_map(|r| (&r.event_name == event).then(|| r.impact_active))
-            .unwrap_or(0.0);
-        let q95_impact = section
-            .quantile95_top
-            .iter()
-            .find_map(|r| (&r.event_name == event).then(|| r.impact_active))
-            .unwrap_or(0.0);
-        let combined_impact = ridge_impact + en_impact + huber_impact + q95_impact;
-
-        let ridge_peak_impact = section
-            .ridge_top
-            .iter()
-            .find_map(|r| (&r.event_name == event).then(|| r.impact_peak))
-            .unwrap_or(0.0);
-        let en_peak_impact = section
-            .elastic_net_top
-            .iter()
-            .find_map(|r| (&r.event_name == event).then(|| r.impact_peak))
-            .unwrap_or(0.0);
-        let huber_peak_impact = section
-            .huber_top
-            .iter()
-            .find_map(|r| (&r.event_name == event).then(|| r.impact_peak))
-            .unwrap_or(0.0);
-        let q95_peak_impact = section
-            .quantile95_top
-            .iter()
-            .find_map(|r| (&r.event_name == event).then(|| r.impact_peak))
-            .unwrap_or(0.0);
-
-        let combined_peak_impact =
-            ridge_peak_impact + en_peak_impact + huber_peak_impact + q95_peak_impact;
+        // Aggregate the same complete fits for every selected candidate. TOP
+        // membership describes visibility, not whether a coefficient exists.
+        let mut combined_impact = 0.0;
+        let mut combined_peak_impact = 0.0;
+        let mut combined_extreme_impact = 0.0;
+        for (name, fallback) in [
+            ("ridge", &section.ridge_top),
+            ("elastic_net", &section.elastic_net_top),
+            ("huber", &section.huber_top),
+            ("quantile95", &section.quantile95_top),
+        ] {
+            if name == "quantile95"
+                && section
+                    .settings
+                    .quantile95
+                    .as_ref()
+                    .is_some_and(|d| !d.converged)
+            {
+                continue;
+            }
+            let rows = section.model_rankings.get(name).unwrap_or(fallback);
+            if let Some(row) = rows
+                .iter()
+                .find(|row| row.event_name == *event && row.gradient_coef > 0.0)
+            {
+                combined_impact += row.impact_active;
+                combined_peak_impact += row.impact_peak;
+                combined_extreme_impact += row.impact_extreme;
+            }
+        }
 
         let (classification, priority) = if in_ridge && in_en && in_huber && in_q95 {
             // All 4 models agree
             ("CONFIRMED_BOTTLENECK", 0)
         } else if in_ridge && in_huber && in_q95 && !in_en {
-            // Ridge + Huber + Q95 but NOT EN → EN zeroed it due to collinearity with another
-            // dominant event. Still very high confidence since 3 independent models agree
-            // including the tail-risk model.
+            // Legacy code retained for compatibility; EN omission does not prove collinearity.
             ("CONFIRMED_BOTTLENECK_EN_COLLINEAR", 1)
         } else if in_ridge && in_en && in_huber && !in_q95 {
             // Strong across average behavior, not dominant in tail
             ("STRONG_CONTRIBUTOR", 2)
         } else if in_ridge && in_huber && !in_en && !in_q95 {
-            // Stable systematic contributor, but EN dropped it (collinear)
-            // and not a tail risk
+            // A selection pattern; inspect full coefficients before explaining omissions.
             ("STABLE_CONTRIBUTOR", 3)
         } else if in_q95 && !in_ridge {
-            // Worst-case only — hidden danger
+            // Tail-weighted selection warrants comparison with measured incidents.
             ("TAIL_RISK", 4)
         } else if in_q95 && in_ridge && !in_huber {
             // High in Ridge and Q95 but NOT in Huber → impact comes from extreme
@@ -1744,7 +1632,8 @@ pub fn cross_model_classify(
             in_quantile95: in_q95,
             priority: priority as u8,
             combined_impact: combined_impact,
-            combined_peak_impact: combined_peak_impact,
+            combined_peak_impact,
+            combined_extreme_impact,
         });
     }
 
@@ -1768,7 +1657,42 @@ pub fn cross_model_classify(
             })
             .then_with(|| a.event_name.cmp(&b.event_name))
     });
+    if section.settings.methodology_version == "gradient-v2" {
+        let order = cross_model_ranks(&results);
+        results.sort_by_key(|r| order[&r.event_name]);
+    }
     results
+}
+
+/// Preserve rare tails in compact cross-model views as well as per-model lists.
+/// The strongest active, peak and extreme signals are interleaved deterministically.
+fn cross_model_ranks(rows: &[CrossModelClassification]) -> BTreeMap<String, (usize, usize)> {
+    let mut best = BTreeMap::new();
+    for metric in 0..3 {
+        let value = |r: &&CrossModelClassification| match metric {
+            0 => r.combined_impact,
+            1 => r.combined_peak_impact,
+            _ => r.combined_extreme_impact,
+        };
+        let mut sorted: Vec<_> = rows.iter().filter(|r| value(r) > 0.0).collect();
+        sorted.sort_by(|a, b| {
+            value(b)
+                .total_cmp(&value(a))
+                .then(a.event_name.cmp(&b.event_name))
+        });
+        for (rank, row) in sorted.into_iter().enumerate() {
+            let previous = best
+                .entry(row.event_name.clone())
+                .or_insert((usize::MAX, usize::MAX));
+            *previous = (*previous).min((rank, metric));
+        }
+    }
+    // A deterministic name order breaks ties for old/manual zero-score records.
+    for (index, row) in rows.iter().enumerate() {
+        best.entry(row.event_name.clone())
+            .or_insert((usize::MAX, index));
+    }
+    best
 }
 
 /// Print cross-model classification as a console table and return HTML.
@@ -1857,6 +1781,83 @@ pub fn print_cross_model_table(
 build_db_time_gradient_section — now includes Huber + Q95 + cross-model
 ========================================================================================= */
 
+/// Rank each metric independently before taking any TOP window. Zero magnitudes
+/// never occupy a slot; negative/zero coefficients remain in the full fit only.
+fn ranked_candidates(
+    ranking: &[EventImpact],
+    coverage: &[GradientCoverage],
+    std: &EventScalarMap,
+    top_n: usize,
+) -> Vec<GradientTopItem> {
+    let mut rows: Vec<_> = ranking
+        .iter()
+        .map(|x| {
+            let maximum = coverage
+                .iter()
+                .find(|c| c.event_name == x.event_name)
+                .map_or(0.0, |c| c.max_abs_delta);
+            let scale = std[&x.event_name];
+            GradientTopItem {
+                event_name: x.event_name.clone(),
+                gradient_coef: x.gradient_coef,
+                impact: x.impact,
+                impact_active: x.impact_active,
+                impact_peak: x.impact_peak,
+                impact_share: x.impact_share,
+                impact_extreme: if scale > f64::EPSILON {
+                    (x.gradient_coef / scale).abs() * maximum
+                } else {
+                    0.0
+                },
+                ..Default::default()
+            }
+        })
+        .collect();
+    for metric in 0..3 {
+        let value = |r: &GradientTopItem| match metric {
+            0 => r.impact_active,
+            1 => r.impact_peak,
+            _ => r.impact_extreme,
+        };
+        let mut order: Vec<_> = (0..rows.len())
+            .filter(|&i| rows[i].gradient_coef > 0.0 && value(&rows[i]) > 0.0)
+            .collect();
+        order.sort_by(|&a, &b| {
+            value(&rows[b])
+                .total_cmp(&value(&rows[a]))
+                .then(rows[a].event_name.cmp(&rows[b].event_name))
+        });
+        for (rank, index) in order.into_iter().enumerate() {
+            let row = &mut rows[index];
+            match metric {
+                0 => row.active_rank = Some(rank + 1),
+                1 => row.peak_rank = Some(rank + 1),
+                _ => row.extreme_rank = Some(rank + 1),
+            }
+            if rank < top_n {
+                row.selection_reasons
+                    .push(["active_p90", "peak_p99", "extreme_max"][metric].into());
+            }
+        }
+    }
+    // Interleave the independent rankings so compact consumers see both tails
+    // and recurring work, without chopping off the peak-selected tail again.
+    rows.sort_by(|a, b| {
+        let best = |r: &GradientTopItem| {
+            [r.active_rank, r.peak_rank, r.extreme_rank]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(usize::MAX)
+        };
+        best(a)
+            .cmp(&best(b))
+            .then(b.impact_peak.total_cmp(&a.impact_peak))
+            .then(a.event_name.cmp(&b.event_name))
+    });
+    rows
+}
+
 pub fn build_db_time_gradient_section(
     db_time_series: &[f64],
     event_series: &BTreeMap<String, Vec<f64>>,
@@ -1907,29 +1908,73 @@ pub fn build_db_time_gradient_section(
         elastic_net_tol,
     )?;
 
-    let make_top = |ranking: &[EventImpact], filter_zero: bool| -> Vec<GradientTopItem> {
-        ranking
+    let predictor_coverage = event_series
+        .iter()
+        .map(|(name, series)| {
+            let deltas = compute_time_deltas(series);
+            let (index, maximum) = deltas
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+                .unwrap();
+            GradientCoverage {
+                event_name: name.clone(),
+                samples: series.len(),
+                nonzero_deltas: deltas.iter().filter(|v| **v != 0.0).count(),
+                p90_abs_delta: abs_percentile(&deltas, 0.9),
+                p99_abs_delta: abs_percentile(&deltas, 0.99),
+                max_abs_delta: maximum.abs(),
+                max_delta_end_index: index + 1,
+                input_policy: "observation_mask_unavailable".into(),
+                ..Default::default()
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut model_rankings = BTreeMap::new();
+    for (name, ranking) in [
+        ("ridge", &gradient_result.ridge_ranking),
+        ("elastic_net", &gradient_result.elastic_net_ranking),
+        ("huber", &gradient_result.huber_ranking),
+        ("quantile95", &gradient_result.quantile95_ranking),
+    ] {
+        model_rankings.insert(
+            name.into(),
+            ranked_candidates(
+                ranking,
+                &predictor_coverage,
+                &gradient_result.event_delta_std_by_event,
+                top_n,
+            ),
+        );
+    }
+    if !gradient_result.quantile95_diagnostics.converged {
+        for row in model_rankings.get_mut("quantile95").unwrap() {
+            row.selection_reasons.clear();
+        }
+    }
+    let selected = |name: &str| {
+        model_rankings[name]
             .iter()
-            .filter(|x| !filter_zero || x.gradient_coef != 0.0)
-            .take(top_n)
-            .map(|x| GradientTopItem {
-                event_name: x.event_name.clone(),
-                gradient_coef: x.gradient_coef,
-                impact: x.impact,
-                impact_active: x.impact_active,
-                impact_peak: x.impact_peak,
-                impact_share: x.impact_share,
-            })
-            .collect()
+            .filter(|r| !r.selection_reasons.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
     };
-
-    let ridge_top = make_top(&gradient_result.ridge_ranking, false);
-    let elastic_net_top = make_top(&gradient_result.elastic_net_ranking, true);
-    let huber_top = make_top(&gradient_result.huber_ranking, false);
-    let quantile95_top = make_top(&gradient_result.quantile95_ranking, false);
+    let ridge_top = selected("ridge");
+    let elastic_net_top = selected("elastic_net");
+    let huber_top = selected("huber");
+    // Retain an unconverged fit for inspection, but exclude it from agreement.
+    let quantile95_top = if gradient_result.quantile95_diagnostics.converged {
+        selected("quantile95")
+    } else {
+        Vec::new()
+    };
 
     let mut section = DbTimeGradientSection {
         settings: GradientSettings {
+            methodology_version: "gradient-v2".into(),
+            selection_policy: "union_of_positive_top_active_p90_peak_p99_extreme_max".into(),
+            top_n_per_metric: top_n,
+            quantile95: Some(gradient_result.quantile95_diagnostics.clone()),
             ridge_lambda,
             elastic_net_lambda: gradient_result.elastic_net_selection.selected_lambda,
             elastic_net_lambda_mode: gradient_result.elastic_net_selection.lambda_mode.clone(),
@@ -1948,19 +1993,30 @@ pub fn build_db_time_gradient_section(
             elastic_net_max_iter,
             elastic_net_tol,
             input_wait_event_unit: units_desc.to_string(),
-            input_db_time_unit: "db_time_per_second".to_string(),
+            input_db_time_unit: if units_desc.contains("CPU")
+                || units_desc == "statistic_values_cpu"
+            {
+                "db_cpu_per_second"
+            } else if units_desc.starts_with("custom") {
+                "custom_target_units"
+            } else {
+                "db_time_per_second"
+            }
+            .into(),
         },
         ridge_top,
         elastic_net_top,
         huber_top,
         quantile95_top,
+        model_rankings,
+        predictor_coverage,
         cross_model_classifications: Vec::new(),
         vif_diagnostics: Vec::new(),
         collinear_group_impacts: Vec::new(),
     };
 
     //Compute cross-model triangulation
-    section.cross_model_classifications = cross_model_classify(&section, 50);
+    section.cross_model_classifications = cross_model_classify(&section, usize::MAX);
 
     // VIF diagnostics
     section.vif_diagnostics = gradient_result
@@ -2122,7 +2178,25 @@ pub fn print_db_time_gradient_tables(
         }
     }
 
-    let mut gradient_html = r#"<div class="tables-grid">"#.to_string();
+    let mut gradient_html = String::from("<aside class=\"gradient-method\"><strong>Independent views: recurring work · P99 tail · maximum transition</strong><p>TOP selection combines three rankings. P90/P99 include zero changes; a zero active score does not rule out a severe incident. Extreme uses the maximum, not P99. Scores describe associations, not causal or additive DB Time.</p>");
+    if let Some(d) = &section.settings.quantile95 {
+        let status = if d.converged {
+            "converged"
+        } else {
+            "NOT CONVERGED — excluded from model agreement"
+        };
+        gradient_html.push_str(&format!("<p class=\"q95-status\"><strong>Q95: {status}</strong> · {} iterations · free intercept {:.6} · λ {} · standardized objective {:.8} · duality gap {:.3e}<br>Primal residual {:.3e} / tolerance {:.3e}; dual residual {:.3e} / tolerance {:.3e}. Conditional upper quantile of target changes, fitted on all observations.</p>", d.iterations, d.intercept, d.lambda, d.objective_standardized, d.duality_gap, d.primal_residual, d.primal_tolerance, d.dual_residual, d.dual_tolerance));
+    } else {
+        gradient_html.push_str("<p>Legacy Q95: solver diagnostics unavailable.</p>");
+    }
+    if section
+        .predictor_coverage
+        .iter()
+        .any(|c| c.missing_samples.is_some_and(|n| n > 0))
+    {
+        gradient_html.push_str("<p><strong>SQL coverage:</strong> absent AWR TOP rows use a zero-filled retained-work proxy. They are not measured zeros; entry/exit transitions can reflect list membership. Check observation coverage below and the original SQL timeline.</p>");
+    }
+    gradient_html.push_str("</aside><div class=\"tables-grid\">");
     // Ridge
     make_notes!(
         logfile_name,
@@ -2178,7 +2252,7 @@ pub fn print_db_time_gradient_tables(
         args.quiet,
         0,
         "{}",
-        "\n-- Quantile 95 TOP (worst 5% of snapshots) --\n"
+        "\n-- Quantile 95 TOP (conditional upper quantile of target changes) --\n"
             .bold()
             .bright_white()
     );
@@ -2265,6 +2339,56 @@ pub fn print_db_time_gradient_tables(
         gradient_html.push_str(&format!(r#"<div class="cross-model">{}</div>"#, grp_html));
     }
 
+    if !section.predictor_coverage.is_empty() {
+        let selected: HashSet<_> = [
+            &section.ridge_top,
+            &section.elastic_net_top,
+            &section.huber_top,
+            &section.quantile95_top,
+        ]
+        .into_iter()
+        .flatten()
+        .map(|r| r.event_name.as_str())
+        .collect();
+        let mut table = Table::new();
+        let headings = [
+            "Predictor",
+            "Observed / total",
+            "Missing",
+            "Observed zeros",
+            "Observed Δ pairs",
+            "Nonzero proxy Δ",
+            "P90 / P99 |Δ|",
+            "Max |Δ| / end index",
+            "Input policy",
+        ];
+        table.set_titles(Row::new(headings.iter().map(|s| Cell::new(s)).collect()));
+        let known =
+            |value: Option<usize>| value.map_or_else(|| "unknown".into(), |n| n.to_string());
+        for c in section
+            .predictor_coverage
+            .iter()
+            .filter(|c| selected.contains(c.event_name.as_str()))
+        {
+            table.add_row(Row::new(vec![
+                Cell::new(&c.event_name),
+                Cell::new(&format!("{} / {}", known(c.observed_samples), c.samples)),
+                Cell::new(&known(c.missing_samples)),
+                Cell::new(&known(c.observed_zero_samples)),
+                Cell::new(&known(c.observed_delta_pairs)),
+                Cell::new(&c.nonzero_deltas.to_string()),
+                Cell::new(&format!("{:.3} / {:.3}", c.p90_abs_delta, c.p99_abs_delta)),
+                Cell::new(&format!(
+                    "{:.3} / {}",
+                    c.max_abs_delta, c.max_delta_end_index
+                )),
+                Cell::new(&c.input_policy),
+            ]));
+        }
+        gradient_html.push_str("<details class=\"gradient-coverage\"><summary>Source coverage and rare transitions — selected predictors</summary><p>Counts refer to supplied source rows. Δ pairs require both endpoints observed. Transition indices are zero-based in the aligned input series. Unknown coverage is not complete coverage.</p>");
+        gradient_html.push_str(&table_to_html_string(&table, "Coverage", &headings));
+        gradient_html.push_str("</details>");
+    }
     gradient_html
 }
 
@@ -2283,6 +2407,8 @@ pub fn print_top_items_table(
         Cell::new("Peak Impact (P99)").with_style(Attr::Bold),
         Cell::new("Share %").with_style(Attr::Bold),
         Cell::new("Typical Impact (MAD)").with_style(Attr::Bold),
+        Cell::new("Extreme (max Δ)").with_style(Attr::Bold),
+        Cell::new("Selected by / rank").with_style(Attr::Bold),
     ]));
     for (idx, item) in items.iter().enumerate() {
         table.add_row(Row::new(vec![
@@ -2301,6 +2427,22 @@ pub fn print_top_items_table(
             Cell::new(&format!("{:.6}", item.impact_peak)),
             Cell::new(&format!("{:.1}%", item.impact_share * 100.0)),
             Cell::new(&format!("{:.6}", item.impact)),
+            Cell::new(&format!("{:.6}", item.impact_extreme)),
+            Cell::new(
+                &item
+                    .selection_reasons
+                    .iter()
+                    .map(|reason| {
+                        let rank = match reason.as_str() {
+                            "active_p90" => item.active_rank,
+                            "peak_p99" => item.peak_rank,
+                            _ => item.extreme_rank,
+                        };
+                        format!("{} #{}", reason, rank.unwrap_or(0))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
         ]));
     }
     make_notes!(
@@ -2324,6 +2466,8 @@ pub fn print_top_items_table(
             "Peak Impact (P99)",
             "Share %",
             "Typical Impact (MAD)",
+            "Extreme (max Δ)",
+            "Selected by / rank",
         ],
     );
     html = format!(r#"<div>{html}</div>"#);
@@ -2335,12 +2479,45 @@ pub struct GradientSectionSpec<'a> {
     pub target: &'a [f64],
     /// Feature series – already filtered/ready
     pub features: BTreeMap<String, Vec<f64>>,
+    /// AWR top-list membership, separate from the numeric proxy used by the fit.
+    pub observations: Option<BTreeMap<String, Vec<bool>>>,
     /// Label passed to `build_db_time_gradient_section`
     pub label: String,
     /// Whether this is a wait-events section (affects table rendering)
     pub is_events: bool,
     /// Human-readable name for logs
     pub display_name: String,
+}
+
+pub fn attach_observation_coverage(
+    section: &mut DbTimeGradientSection,
+    features: &EventSeriesMap,
+    masks: &BTreeMap<String, Vec<bool>>,
+) {
+    for item in &mut section.predictor_coverage {
+        if let Some(mask) = masks
+            .get(&item.event_name)
+            .filter(|m| m.len() == item.samples)
+        {
+            let observed = mask.iter().filter(|v| **v).count();
+            item.observed_samples = Some(observed);
+            item.missing_samples = Some(item.samples - observed);
+            item.observed_zero_samples = Some(
+                mask.iter()
+                    .zip(&features[&item.event_name])
+                    .filter(|(m, v)| **m && **v == 0.0)
+                    .count(),
+            );
+            item.observed_delta_pairs =
+                Some(mask.windows(2).filter(|pair| pair[0] && pair[1]).count());
+            item.input_policy = if observed < item.samples {
+                "awr_top_list_zero_filled_proxy_missing_is_not_zero"
+            } else {
+                "all_source_samples_observed"
+            }
+            .into();
+        }
+    }
 }
 
 pub fn run_gradient_section(
@@ -2364,7 +2541,10 @@ pub fn run_gradient_section(
         &spec.label,
         args.top_gradient,
     ) {
-        Ok(section) => {
+        Ok(mut section) => {
+            if let Some(mask) = &spec.observations {
+                attach_observation_coverage(&mut section, &spec.features, mask);
+            }
             debug_note!(
                 "Gradient section succeeded: name='{}', predictors={}, target_samples={}",
                 spec.display_name,
@@ -2450,7 +2630,13 @@ pub fn build_gradient_html(
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
     <style>
-        body {{ font-family: Arial, sans-serif; }}
+        body {{ font-family: Arial, sans-serif; background:#f5f6f8; color:#182432; margin:24px; line-height:1.5; }}
+        .gradient-method {{ background:white; border-left:4px solid #c52228; padding:18px 24px; margin:24px 0; border-radius:8px; }}
+        .gradient-method p {{ max-width:105ch; margin:10px 0; }}
+        .q95-status {{ color:#174e58; }}
+        .gradient-coverage {{ background:white; padding:16px; margin:24px 0; overflow-x:auto; }}
+        .gradient-coverage summary {{ cursor:pointer; font-weight:bold; }}
+        .gradient-coverage table {{ width:100%; }}
         .content {{ font-size: 14px; }}
         table {{
             width: 30%;
@@ -2489,20 +2675,21 @@ pub fn build_gradient_html(
         }}
         .tables-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(720px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(100%, 960px), 1fr));
             gap: 20px;
             align-items: start;
         }}
         .tables-grid table {{
             width: 100%;
             margin-top: 0;
-            table-layout: fixed;      /* kluczowe: nie rozpychaj się zawartością */
-            word-break: break-word;   /* długie liczby mogą się łamać */
+            min-width: 980px;
+            table-layout: auto;
         }}
+        .tables-grid > div, .cross-model {{ min-width:0; overflow-x:auto; }}
         .tables-grid td,
         .tables-grid th {{
-            overflow-wrap: anywhere;  /* żeby liczby mogły się złamać */
-            font-size: 12px;          /* odrobinę mniejsze, więcej się mieści */
+            overflow-wrap: normal;
+            font-size: 12px;
         }}
         .cross-model table {{
             width: 100%;
@@ -2624,6 +2811,164 @@ pub fn build_gradient_html(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rare_peaks_and_sub_percent_extremes_survive_top_selection() {
+        let coefs: EventScalarMap = BTreeMap::from([
+            ("steady".into(), 1.0),
+            ("rare".into(), 2.0),
+            ("ultra_rare".into(), 3.0),
+            ("negative".into(), -10.0),
+            ("zero".into(), 0.0),
+        ]);
+        let scales = coefs.keys().map(|n| (n.clone(), 1.0)).collect();
+        let p90 = BTreeMap::from([("steady".into(), 10.0)]);
+        let p99 = BTreeMap::from([("steady".into(), 11.0), ("rare".into(), 30.0)]);
+        let coverage = coefs
+            .keys()
+            .map(|n| GradientCoverage {
+                event_name: n.clone(),
+                max_abs_delta: if n == "ultra_rare" { 100.0 } else { 30.0 },
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let rows = ranked_candidates(
+            &build_ranking(&coefs, &scales, &BTreeMap::new(), &p90, &p99),
+            &coverage,
+            &scales,
+            1,
+        );
+        let row = |name: &str| rows.iter().find(|r| r.event_name == name).unwrap();
+        assert_eq!(row("rare").impact_active, 0.0);
+        assert_eq!(row("rare").peak_rank, Some(1));
+        assert!(row("rare").selection_reasons.contains(&"peak_p99".into()));
+        assert_eq!(row("ultra_rare").impact_peak, 0.0);
+        assert!(row("ultra_rare")
+            .selection_reasons
+            .contains(&"extreme_max".into()));
+        assert!(row("negative").selection_reasons.is_empty());
+        assert!(row("zero").selection_reasons.is_empty());
+        assert_eq!(rows.len(), 5);
+        let top: Vec<_> = rows
+            .iter()
+            .filter(|r| !r.selection_reasons.is_empty())
+            .cloned()
+            .collect();
+        let section = DbTimeGradientSection {
+            settings: GradientSettings {
+                methodology_version: "gradient-v2".into(),
+                ..Default::default()
+            },
+            ridge_top: top.clone(),
+            elastic_net_top: top.clone(),
+            huber_top: top.clone(),
+            quantile95_top: top,
+            model_rankings: ["ridge", "elastic_net", "huber", "quantile95"]
+                .into_iter()
+                .map(|name| (name.into(), rows.clone()))
+                .collect(),
+            ..Default::default()
+        };
+        let cross = cross_model_classify(&section, usize::MAX);
+        assert_eq!(
+            cross
+                .iter()
+                .map(|r| r.event_name.as_str())
+                .collect::<Vec<_>>(),
+            ["steady", "rare", "ultra_rare"]
+        );
+        let rare = cross.iter().find(|r| r.event_name == "rare").unwrap();
+        assert!(rare.in_ridge && rare.in_elastic_net && rare.in_huber && rare.in_quantile95);
+        assert_eq!(rare.combined_impact, 0.0);
+        assert_eq!(rare.combined_peak_impact, 240.0);
+    }
+
+    #[test]
+    fn observation_mask_distinguishes_missing_from_recorded_zero() {
+        let mut section = DbTimeGradientSection {
+            predictor_coverage: vec![GradientCoverage {
+                event_name: "sql".into(),
+                samples: 5,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        attach_observation_coverage(
+            &mut section,
+            &BTreeMap::from([("sql".into(), vec![0.0, 0.0, 12.0, 0.0, 0.0])]),
+            &BTreeMap::from([("sql".into(), vec![false, true, true, false, true])]),
+        );
+        let c = &section.predictor_coverage[0];
+        assert_eq!(c.observed_samples, Some(3));
+        assert_eq!(c.observed_zero_samples, Some(2));
+        assert_eq!(c.observed_delta_pairs, Some(1));
+        assert_eq!(c.missing_samples, Some(2));
+        assert!(c.input_policy.contains("missing_is_not_zero"));
+    }
+
+    #[test]
+    #[ignore = "requires local replay fixture and explicit output path"]
+    fn replay_gradient_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("JASMIN_GRADIENT_FIXTURE").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let target: Vec<f64> = serde_json::from_value(fixture["target"].clone()).unwrap();
+        let features: EventSeriesMap = serde_json::from_value(fixture["features"].clone()).unwrap();
+        let masks: BTreeMap<String, Vec<bool>> =
+            serde_json::from_value(fixture["observations"].clone()).unwrap();
+        let mut section = build_db_time_gradient_section(
+            &target,
+            &features,
+            0.05,
+            None,
+            0.2,
+            5000,
+            1e-6,
+            "SQL_elapsed_time",
+            10,
+        )
+        .unwrap();
+        attach_observation_coverage(&mut section, &features, &masks);
+        let output = std::env::var("JASMIN_GRADIENT_OUTPUT").unwrap();
+        std::fs::write(&output, serde_json::to_string_pretty(&section).unwrap()).unwrap();
+        let report = crate::reasonings::ReportForAI {
+            db_time_gradient_sql_elapsed_time: Some(section.clone()),
+            ..Default::default()
+        };
+        let queried = crate::local_agent::dispatch_precomputed_analysis(
+            &serde_json::json!({"section":"full_gradients", "family":"db_time_sql_elapsed_time", "contributor":"16zny8vayhh40"}),
+            &report,
+        );
+        std::fs::write(
+            format!("{output}.query.json"),
+            serde_json::to_string_pretty(&queried).unwrap(),
+        )
+        .unwrap();
+        let args = <crate::Args as clap::Parser>::parse_from(["jas-min", "--quiet"]);
+        let html = print_db_time_gradient_tables(&section, false, &format!("{output}.log"), &args);
+        std::fs::write(
+            format!("{output}.html"),
+            build_gradient_html(
+                "Gradient v2 replay",
+                "SQL elapsed → DB Time · gradient v2",
+                vec![GradientHtmlSection {
+                    heading: "Independent replay of original DNV inputs".into(),
+                    html,
+                }],
+            ),
+        )
+        .unwrap();
+        assert!(
+            section.settings.quantile95.as_ref().unwrap().converged,
+            "{:?}",
+            section.settings.quantile95
+        );
+        assert!(section
+            .quantile95_top
+            .iter()
+            .any(|r| r.event_name == "16zny8vayhh40"));
+    }
+
     use super::*;
 
     fn assert_close(left: f64, right: f64) {
@@ -2705,9 +3050,13 @@ mod tests {
             huber_regression_map(&duplicated_x, &duplicated_y, 1.0, 100, 1e-10, 0.5);
         assert_close(huber["driver"], huber_duplicated["driver"]);
 
-        let quantile = quantile_regression_irls_map(&x, &y, 0.95, 200, 1e-10, 0.5);
+        let quantile = crate::quantile::fit(&x, &y, 0.95, 0.005, 20000, 1e-9)
+            .unwrap()
+            .0;
         let quantile_duplicated =
-            quantile_regression_irls_map(&duplicated_x, &duplicated_y, 0.95, 200, 1e-10, 0.5);
+            crate::quantile::fit(&duplicated_x, &duplicated_y, 0.95, 0.005, 20000, 1e-9)
+                .unwrap()
+                .0;
         assert_close(quantile["driver"], quantile_duplicated["driver"]);
     }
 

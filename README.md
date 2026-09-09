@@ -311,7 +311,9 @@ Each gradient section contains:
 | `ridge_top` | Top Ridge regression rows. |
 | `elastic_net_top` | Top non-zero Elastic Net rows. |
 | `huber_top` | Top Huber robust regression rows. |
-| `quantile95_top` | Top Quantile-95 tail-risk rows. |
+| `quantile95_top` | Converged Q95 active/peak/extreme selection union. |
+| `model_rankings` | Complete signed fits, including zero and negative coefficients. |
+| `predictor_coverage` | Source membership, missingness and transition/percentile support. |
 | `cross_model_classifications` | Cross-model labels such as `CONFIRMED_BOTTLENECK` and `TAIL_RISK`. |
 | `vif_diagnostics` | Predictors with elevated VIF and interpretation labels. |
 | `collinear_group_impacts` | Combined impact for groups of strongly correlated predictors. |
@@ -443,7 +445,7 @@ JAS-MIN then fits four complementary regression models:
 | Ridge | Dense linear solve with sample-normalized L2 regularization: `(X'X/n + lambda I) beta = X'y/n` | Stable ranking when predictors are numerous or correlated. |
 | Elastic Net | Coordinate descent with L1 and L2 penalties | Sparse ranking that highlights dominant drivers and suppresses redundant correlated predictors. |
 | Huber | Iteratively Reweighted Least Squares with Huber loss | Robust ranking that downweights extreme outlier snapshots. |
-| Quantile 95 | Quantile regression focused on the 95th percentile | Tail-risk analysis for the worst periods rather than average behavior. |
+| Quantile 95 | ADMM pinball + L2, free intercept, standardized target, convergence certificate | Conditional upper quantile of target changes using all observations. |
 
 The configurable parameters are:
 
@@ -454,7 +456,7 @@ The configurable parameters are:
 | `-A, --en-alpha` | Elastic Net L1/L2 mix; `1.0` is Lasso, `0.0` is Ridge-like | `0.2` |
 | `-I, --en-max-iter` | Coordinate descent iteration limit | `5000` |
 | `--en-tol` | Elastic Net convergence tolerance | `0.000001` |
-| `--top-gradient` | Number of top rows kept per regression model | `10` |
+| `--top-gradient` | TOP N per independent active, peak and extreme ranking; full fits retained | `10` |
 
 Models are fitted on standardized predictor deltas. Elastic Net also standardizes the target delta, then converts its coefficients back to DB Time or DB CPU units after fitting. JAS-MIN converts each fitted coefficient back to the raw predictor scale before combining it with the MAD or percentile of raw deltas:
 
@@ -477,6 +479,13 @@ When `--en-lambda` is omitted, Elastic Net selects lambda independently for ever
 Collections with fewer than 12 target deltas, insufficient variable training folds, or no usable validation folds use the deterministic fallback `0.05 * lambda_max`. A constant or entirely unrelated standardized target produces a zero Elastic Net model. Automatic selection requires `alpha > 0`; use an explicit `--en-lambda` for the pure-L2 `alpha=0` case.
 
 Every gradient section records `elastic_net_lambda_mode`, selected `elastic_net_lambda`, `elastic_net_lambda_max`, `elastic_net_lambda_ratio`, the CV rule and fold count, validation loss when available, target-standardization status, and the final number of non-zero coefficients. Explicit `--en-lambda` values operate on the standardized-target objective and are therefore not numerically compatible with fixed lambdas from releases that fitted Elastic Net against the unstandardized target.
+
+[Gradient methodology v2](docs/gradient-methodology-v2.md) documents independent P90/P99/max
+selection, the corrected Q95 objective, convergence diagnostics and AWR membership masks.
+A zero active score no longer suppresses a large peak score. The Q95 normalized lambda is fixed
+at 0.0005 independently of Ridge, with 20,000 iterations maximum and primal/dual/gap checks.
+Regenerate source analyses and restart MCP to use the new calculations; converting old Markdown
+alone does not recompute fits.
 
 The sign is preserved. Positive values indicate metrics associated with DB Time increases; negative values indicate metrics associated with DB Time decreases. This prevents idle or anti-correlated metrics from being reported as bottlenecks simply because their absolute coefficient is large.
 

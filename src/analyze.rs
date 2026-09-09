@@ -6334,6 +6334,7 @@ pub fn main_report_builder(
         // (spec, field_name_tag) — field_name_tag used to dispatch into report_for_ai
         (
             GradientSectionSpec {
+                observations: None,
                 target: &y_vals_dbtime,
                 features: y_vals_events
                     .iter()
@@ -6347,6 +6348,7 @@ pub fn main_report_builder(
         ),
         (
             GradientSectionSpec {
+                observations: None,
                 target: &y_vals_dbtime,
                 features: instance_stats
                     .iter()
@@ -6361,6 +6363,7 @@ pub fn main_report_builder(
         ),
         (
             GradientSectionSpec {
+                observations: None,
                 target: &y_vals_dbtime,
                 features: instance_stats
                     .iter()
@@ -6375,6 +6378,7 @@ pub fn main_report_builder(
         ),
         (
             GradientSectionSpec {
+                observations: None,
                 target: &y_vals_dbtime,
                 features: instance_stats
                     .iter()
@@ -6389,6 +6393,7 @@ pub fn main_report_builder(
         ),
         (
             GradientSectionSpec {
+                observations: None,
                 target: &y_vals_dbtime,
                 features: y_vals_sqls
                     .iter()
@@ -6402,6 +6407,7 @@ pub fn main_report_builder(
         ),
         (
             GradientSectionSpec {
+                observations: None,
                 target: &y_vals_dbcpu,
                 features: instance_stats
                     .iter()
@@ -6416,6 +6422,7 @@ pub fn main_report_builder(
         ),
         (
             GradientSectionSpec {
+                observations: None,
                 target: &y_vals_dbcpu,
                 features: y_vals_sqls_cpu
                     .iter()
@@ -6450,6 +6457,7 @@ pub fn main_report_builder(
         if let Some(t) = target_data {
             gradient_specs.push((
                 GradientSectionSpec {
+                    observations: None,
                     target: t,
                     features: instance_stats
                         .iter()
@@ -6465,6 +6473,7 @@ pub fn main_report_builder(
 
             gradient_specs.push((
                 GradientSectionSpec {
+                    observations: None,
                     target: t,
                     features: y_vals_events
                         .iter()
@@ -6479,6 +6488,37 @@ pub fn main_report_builder(
             ));
 
             custom_gradient = true;
+        }
+    }
+
+    // Preserve actual AWR membership independently of the zero-filled plotting
+    // proxy. An omitted top-list row is not an observed zero execution cost.
+    for (spec, tag) in &mut gradient_specs {
+        if *tag == "sql_elapsed_time" || *tag == "cpu_sql_cpu_time" {
+            let cpu = *tag == "cpu_sql_cpu_time";
+            spec.observations = Some(
+                spec.features
+                    .keys()
+                    .map(|sql_id| {
+                        let mask = collection
+                            .awrs
+                            .iter()
+                            .filter(|awr| {
+                                awr.snap_info.begin_snap_id >= snap_range.0
+                                    && awr.snap_info.end_snap_id <= snap_range.1
+                            })
+                            .map(|awr| {
+                                if cpu {
+                                    awr.sql_cpu_time.values().any(|row| row.sql_id == *sql_id)
+                                } else {
+                                    awr.sql_elapsed_time.iter().any(|row| row.sql_id == *sql_id)
+                                }
+                            })
+                            .collect();
+                        (sql_id.clone(), mask)
+                    })
+                    .collect(),
+            );
         }
     }
 

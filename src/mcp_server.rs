@@ -47,7 +47,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-09-09.1";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-09-09.2";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -3097,6 +3097,10 @@ fn mcp_control_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "section": {"type": "string", "enum": ["foreground_waits", "background_waits", "top_sqls", "io_summary", "latches", "segment_hotspots", "instance_stat_correlations", "load_profile_anomalies", "anomaly_clusters", "initialization_parameters", "full_gradients", "db_time_degradation", "performance_peaks"]},
+                    "family": {"type": "string", "description": "full_gradients only: exact family key, e.g. db_time_sql_elapsed_time"},
+                    "contributor": {"type": "string", "description": "full_gradients only: exact SQL_ID/event/statistic lookup in full fits, including zero/negative coefficients"},
+                    "ranking": {"type": "string", "enum": ["selection", "active", "peak", "extreme"], "default": "selection"},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
                 },
                 "required": ["section"]
@@ -3830,6 +3834,9 @@ fn sorted_gradient_classifications(
         .cross_model_classifications
         .iter()
         .collect::<Vec<_>>();
+    if section.settings.methodology_version == "gradient-v2" {
+        return rows;
+    }
     rows.sort_by(|a, b| {
         a.priority
             .cmp(&b.priority)
@@ -8123,6 +8130,58 @@ mod tests {
         let encoded = bounded_log_field(&oversized);
         assert_eq!(encoded.matches('x').count(), MAX_MCP_LOG_FIELD_CHARS);
         assert!(encoded.ends_with("...\""));
+    }
+
+    #[test]
+    fn gradient_lookup_preserves_exact_query_in_mcp_evidence() {
+        use crate::reasonings::{DbTimeGradientSection, GradientTopItem};
+        let mut project = comparison_project("gradient", &[1.0, 3.0, 2.0], &[1.0]);
+        project.report.db_time_gradient_sql_elapsed_time = Some(DbTimeGradientSection {
+            model_rankings: BTreeMap::from([(
+                "ridge".into(),
+                vec![GradientTopItem {
+                    event_name: "rare_sql".into(),
+                    gradient_coef: 2.0,
+                    impact_peak: 60.0,
+                    ..Default::default()
+                }],
+            )]),
+            ..Default::default()
+        });
+        let runtime = AnalysisRuntime::from_projects(vec![project]).unwrap();
+        let schema = build_mcp_tools(&runtime);
+        let tool = schema
+            .iter()
+            .find(|t| t.name == "get_precomputed_analysis")
+            .unwrap();
+        for key in ["family", "contributor", "ranking", "offset"] {
+            assert!(tool.input_schema["properties"].get(key).is_some());
+        }
+        let bootstrap = runtime
+            .call_tool("start_performance_analysis", Map::new())
+            .unwrap();
+        let query = json!({"analysis_id":bootstrap["analysis_id"],"section":"full_gradients","family":"db_time_sql_elapsed_time","contributor":"rare_sql","ranking":"peak","offset":0,"limit":1});
+        let response = runtime
+            .call_tool(
+                "get_precomputed_analysis",
+                query.as_object().unwrap().clone(),
+            )
+            .unwrap();
+        assert_eq!(response["schema_version"], "2026-09-09.2");
+        assert!(response["evidence_id"].as_str().unwrap().starts_with("E-"));
+        assert_eq!(
+            response["result"]["data"]["db_time_sql_elapsed_time"]["model_rankings"]["ridge"][0]
+                ["event_name"],
+            "rare_sql"
+        );
+        let cached = runtime
+            .call_tool(
+                "get_precomputed_analysis",
+                query.as_object().unwrap().clone(),
+            )
+            .unwrap();
+        assert_eq!(cached["cached"], true);
+        assert_eq!(cached["evidence_id"], response["evidence_id"]);
     }
 
     #[test]
