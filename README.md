@@ -35,6 +35,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Gradient analysis | Runs Ridge, Elastic Net, Huber, and Quantile-95 regression models over DB Time and DB CPU drivers. |
 | Custom gradient | Builds extra gradient pages for a selected SQL ID or wait event with `--gradient-custom`. |
 | AI reports | Supports OpenAI, Google Gemini, OpenRouter, and a two-session local agent served by LM Studio. |
+| Analytical report atlas | Linked active/peak bubble plots, four-model selection matrices, per-instance synthesis and scoped anomaly windows in MCP/API reports. See [the report atlas guide](docs/report-signal-atlas.md). |
 | AI tools mode | Enables function/tool-call loops for cloud providers with `--tools-mode`; local analysis always uses tools. |
 | MCP server | Retains a parsed collection in memory and exposes interactive evidence, diagnostic guidance, and stable report-building tools through local Streamable HTTP. |
 | Security | Controls whether object names and SQL text are stored with `--security-level`. |

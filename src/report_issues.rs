@@ -59,6 +59,8 @@ pub(crate) struct IssueManifest {
     pub version: u32,
     pub issues: Vec<ReportIssue>,
     pub actions: Vec<IssueAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_atlas: Option<crate::report_signals::SignalAtlas>,
 }
 
 pub(crate) fn finding_anchor(id: &str) -> String {
@@ -308,6 +310,11 @@ pub(crate) fn prepare_api_report(
     let end_marker = "<!-- jasmin-actions:end -->";
     let mut action_starts = Vec::new();
     let mut action_ends = Vec::new();
+    let mut signal_starts = Vec::new();
+    let mut signal_ends = Vec::new();
+    let mut source_ids = std::collections::BTreeMap::<String, Vec<usize>>::new();
+    let signal_start_marker = "<!-- jasmin-signals:start -->";
+    let signal_end_marker = "<!-- jasmin-signals:end -->";
     for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
         match event {
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))
@@ -357,6 +364,24 @@ pub(crate) fn prepare_api_report(
                     html.match_indices(end_marker)
                         .map(|(offset, _)| range.start + offset),
                 );
+                signal_starts.extend(
+                    html.match_indices(signal_start_marker)
+                        .map(|(offset, _)| range.start + offset),
+                );
+                signal_ends.extend(
+                    html.match_indices(signal_end_marker)
+                        .map(|(offset, _)| range.start + offset),
+                );
+                for node in scraper::Html::parse_fragment(&html)
+                    .select(&scraper::Selector::parse("[id]").unwrap())
+                {
+                    if let Some(id) = node.value().attr("id") {
+                        source_ids
+                            .entry(id.to_string())
+                            .or_default()
+                            .push(range.start);
+                    }
+                }
             }
             _ => {}
         }
@@ -453,9 +478,9 @@ pub(crate) fn prepare_api_report(
     {
         return Err("Action markers must be ordered inside section 11 before metadata".into());
     }
-    for (id, position) in finding_positions {
-        if (summary.0..summary.1).contains(&position)
-            || (action_start..action_end).contains(&position)
+    for (id, position) in &finding_positions {
+        if (summary.0..summary.1).contains(position)
+            || (action_start..action_end).contains(position)
         {
             return Err(format!("Finding anchor {id} would be removed by generated content; put findings outside section 1 and the action markers"));
         }
@@ -478,6 +503,52 @@ pub(crate) fn prepare_api_report(
         ),
         (manifest_range, String::new()),
     ];
+    if let Some(atlas) = &manifest.signal_atlas {
+        crate::report_signals::validate(atlas)?;
+        if signal_starts.len() != 1 || signal_ends.len() != 1 {
+            return Err(
+                "Signal atlas needs one jasmin-signals:start/end marker pair in section 9".into(),
+            );
+        }
+        let signals_section = section(9)?;
+        let start = signal_starts[0];
+        let end = signal_ends[0];
+        if start < signals_section.0 || end < start || end >= signals_section.1 {
+            return Err("Signal atlas markers must be ordered inside section 9".into());
+        }
+        if finding_positions
+            .iter()
+            .any(|(_, position)| (start..end).contains(position))
+        {
+            return Err("Put technical findings outside the generated signal atlas markers".into());
+        }
+        let refs = atlas
+            .panels
+            .iter()
+            .flat_map(|p| &p.points)
+            .flat_map(|p| &p.evidence_refs)
+            .chain(atlas.briefs.iter().flat_map(|b| &b.evidence_refs))
+            .chain(atlas.moments.iter().flat_map(|m| &m.evidence_refs));
+        for id in refs {
+            if !source_ids
+                .get(&format!("evidence-{}", id.to_ascii_lowercase()))
+                .is_some_and(|positions| {
+                    positions.iter().any(|p| {
+                        !(start..end).contains(p)
+                            && !replacements.iter().any(|(range, _)| range.contains(p))
+                    })
+                })
+            {
+                return Err(format!(
+                    "Signal atlas requires a real provenance anchor for {id}"
+                ));
+            }
+        }
+        replacements.push((
+            start + signal_start_marker.len()..end,
+            format!("\n\n{}\n", crate::report_signals::render(atlas, true)),
+        ));
+    }
     replacements.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     let mut rendered = markdown.to_string();
     for (range, replacement) in replacements {
@@ -506,6 +577,7 @@ mod tests {
     fn manifest() -> IssueManifest {
         IssueManifest {
             version: 1,
+            signal_atlas: None,
             issues: vec![ReportIssue {
                 issue_id: "I-1".into(),
                 title: "Import cursor incident".into(),
@@ -650,6 +722,37 @@ mod tests {
         assert!(prepare_api_report(&report(&no_actions))
             .unwrap_err()
             .contains("issue actions"));
+    }
+
+    #[test]
+    fn api_atlas_uses_shared_renderer_requires_sources_and_preserves_technical_text() {
+        let mut manifest = manifest();
+        manifest.signal_atlas = Some(crate::report_signals::tests::fixture());
+        let raw = report(&manifest).replace("## 9. Section\n\n", "## 9. Section\n\n<!-- jasmin-signals:start -->\n<!-- jasmin-signals:end -->\n\n<a id=\"evidence-e-1\"></a>\n\nExact source measurements remain here.\n\n");
+        let (prepared, _) = prepare_api_report(&raw).unwrap();
+        assert!(prepared.contains("class=\"signal-atlas\""));
+        assert!(prepared.contains("Exact source measurements remain here."));
+        assert!(prepared.contains("Instance 1: 2 waiters."));
+        let normalized = finalize_api_markdown(&raw).unwrap();
+        assert_eq!(
+            prepared.trim(),
+            prepare_api_report(&normalized).unwrap().0.trim()
+        );
+        assert!(
+            prepare_api_report(&raw.replace("<a id=\"evidence-e-1\"></a>", ""))
+                .unwrap_err()
+                .contains("provenance anchor")
+        );
+        assert!(prepare_api_report(&raw.replace("<!-- jasmin-signals:end -->", "")).is_err());
+        let removed_source = raw.replace("<a id=\"evidence-e-1\"></a>", "").replace(
+            "<!-- jasmin-signals:end -->",
+            "<a id=\"evidence-e-1\"></a>\n<!-- jasmin-signals:end -->",
+        );
+        assert!(prepare_api_report(&removed_source).is_err());
+        let removed_finding = raw.replace("### Wait evidence {#finding-f-1}\n\nInstance 1: 2 waiters.\n\n", "").replace("<!-- jasmin-signals:end -->", "### Wait evidence {#finding-f-1}\n\nInstance 1: 2 waiters.\n\n<!-- jasmin-signals:end -->");
+        assert!(prepare_api_report(&removed_finding)
+            .unwrap_err()
+            .contains("technical findings"));
     }
 
     #[test]

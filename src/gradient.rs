@@ -1721,54 +1721,17 @@ pub fn cross_model_classify(
         };
 
         let description = match classification {
-            "CONFIRMED_BOTTLENECK" => {
-                "Present in ALL 4 models (Ridge, ElasticNet, Huber, Q95). Highest confidence — \
-                 systematic, robust bottleneck affecting both average and worst-case DB Time."
-            }
-            "CONFIRMED_BOTTLENECK_EN_COLLINEAR" => {
-                "Present in Ridge, Huber, and Q95 but NOT in ElasticNet. Very high confidence — \
-                 3 independent models agree. ElasticNet likely zeroed it due to collinearity with \
-                 another correlated event. Treat as confirmed bottleneck; check EN for which \
-                 correlated event was selected instead."
-            }
-            "STRONG_CONTRIBUTOR" => {
-                "Present in Ridge, ElasticNet, and Huber but not Q95. Reliable systematic \
-                 contributor to DB Time, but not especially dominant in tail/worst-case scenarios."
-            }
-            "STABLE_CONTRIBUTOR" => {
-                "Present in Ridge and Huber (both agree = robust finding) but absent from \
-                 ElasticNet (collinearity) and Q95 (not a tail driver). A steady, moderate \
-                 contributor to DB Time."
-            }
-            "TAIL_RISK" => {
-                "Present in Quantile95 but NOT in Ridge. Usually behaves fine but causes \
-                 catastrophic DB Time spikes in the worst 5% of snapshots. Investigate \
-                 specific peak periods."
-            }
-            "TAIL_OUTLIER" => {
-                "Present in Ridge and Q95 but NOT in Huber. Impact is concentrated in \
-                 extreme snapshots that are also the worst-performing ones. A high-severity \
-                 outlier problem — find and fix those specific periods."
-            }
-            "OUTLIER_DRIVEN" => {
-                "Present in Ridge but NOT in Huber (outlier-resistant). Its apparent impact \
-                 is driven by a few extreme snapshots, not systematic behavior. Examine \
-                 those specific snapshots."
-            }
-            "SPARSE_DOMINANT" => {
-                "Present in ElasticNet but NOT in Ridge top. One of a small number of truly \
-                 dominant factors selected by L1 sparsity. May be correlated with other \
-                 contributors that Ridge spreads weight across."
-            }
-            "ROBUST_ONLY" => {
-                "Present only in Huber. Stable background contributor visible only when \
-                 outliers are downweighted. Low priority but worth monitoring."
-            }
-            "MULTI_MODEL_MINOR" => {
-                "Appeared in at least 2 models but with no clear dominant pattern. Minor \
-                 contributor worth noting."
-            }
-            _ => "Appeared in only one model with low confidence.",
+            "CONFIRMED_BOTTLENECK" => "Selected in all four model top lists (Ridge, Elastic Net, Huber, Q95). Agreement supports investigation; it is not proof of a causal bottleneck or recoverable CPU.",
+            "CONFIRMED_BOTTLENECK_EN_COLLINEAR" => "Selected in Ridge, Huber and Q95, outside Elastic Net top selection. Check coefficients, VIF and collinear groups; omission alone does not establish why Elastic Net omitted the signal.",
+            "STRONG_CONTRIBUTOR" => "Selected in Ridge, Elastic Net and Huber, outside Q95 top selection. Test recurring-work influence; absence from the Q95 list does not rule out incident impact.",
+            "STABLE_CONTRIBUTOR" => "Selected in Ridge and Huber, outside Elastic Net and Q95 top selection. A recurring-work hypothesis to check against workload and timelines, not proof of collinearity or low urgency.",
+            "TAIL_RISK" => "Selected in Q95, outside Ridge top selection. Investigate tail-weighted behavior in aligned windows; this label alone establishes neither a catastrophic incident nor its cause.",
+            "TAIL_OUTLIER" => "Selected in Ridge and Q95, outside Huber top selection. Examine whether extreme observations drive the association using actual incident and baseline measurements.",
+            "OUTLIER_DRIVEN" => "Selected in Ridge, outside Huber top selection. Compare extreme and ordinary windows to test outlier sensitivity; the ranking difference is not runtime proof.",
+            "SPARSE_DOMINANT" => "Selected in Elastic Net, outside Ridge top selection. Inspect sparse selection alongside correlated predictors; ranking alone does not establish causal dominance.",
+            "ROBUST_ONLY" => "Selected in Huber, outside Ridge and Elastic Net top selection. Examine the robust-fit signal and actual workload before assigning engineering priority.",
+            "MULTI_MODEL_MINOR" => "Selected in at least two model top lists without one of the named agreement patterns. Use measured workload and incident impact to decide priority.",
+            _ => "Selected in one model top list. Corroborating runtime evidence is needed; the classification is not an incident-severity rating.",
         };
 
         results.push(CrossModelClassification {

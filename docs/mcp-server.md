@@ -484,6 +484,12 @@ plans in large attachments.
 
 ### MCP workflow tools
 
+Schema `2026-09-09.1` renders a [source-backed analytical atlas](report-signal-atlas.md)
+in section 9. Record the structured cross-signal synthesis before its concise
+finding; validated numeric tables satisfy the exact-signal requirement without
+requiring duplicate numbers in the narrative. JSON export includes the derived
+`signal_atlas`. The full evidence and readiness contract remain in force.
+
 | Tool | State effect |
 |---|---|
 | `list_performance_projects` | Lists immutable project manifests without creating an analysis. |
@@ -510,7 +516,7 @@ Every successful measurement tool call is wrapped in an evidence envelope:
 
 ```json
 {
-  "schema_version": "2026-09-08.2",
+  "schema_version": "2026-09-09.1",
   "analysis_id": "A-20260804T100000Z-0001",
   "project_id": "before-upgrade",
   "evidence_id": "E-0002",

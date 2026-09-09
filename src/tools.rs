@@ -921,10 +921,16 @@ document.addEventListener("input", function (event) {{
     review.querySelector(".plan-tree").style.setProperty("--plan-zoom", String(Number(event.target.value) / 100));
 }});
 </script>
+<script>{signals_js}</script>
 <script>{reader_js}</script>
 </body>
 </html>"#,
-        reader_css = include_str!("report_reader.css"),
+        reader_css = concat!(
+            include_str!("report_reader.css"),
+            "\n",
+            include_str!("report_signals.css")
+        ),
+        signals_js = include_str!("report_signals.js"),
         reader_js = include_str!("report_reader.js"),
         brand_logo = JASMIN_AUDIT_LOGO_SVG,
         toc = toc_html,
