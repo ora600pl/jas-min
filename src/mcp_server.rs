@@ -47,7 +47,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-09-08.2";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-09-09.1";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -523,7 +523,7 @@ const ANOMALY_CLUSTER_TABLE_COLUMNS: &[(&str, &str)] = &[
 const ANALYTIC_SYNTHESIS_TABLE_COLUMNS: &[(&str, &str)] = &[
     ("project_id", "Project"),
     ("entity", "Analytical focus"),
-    ("signal_families", "Independent signal families"),
+    ("signal_families", "Signal families compared"),
     ("target_metrics", "Target metrics"),
     ("dominant_gradient_signals", "Dominant gradient signals"),
     ("model_agreement", "Model agreement / classification"),
@@ -2109,7 +2109,7 @@ impl AnalysisRuntime {
             .filter_map(|project_id| self.projects.get(project_id))
             .map(|project| project.dataset_manifest())
             .collect::<Vec<_>>();
-        let report_document = json!({
+        let mut report_document = json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
             "revision": state.report_revision,
@@ -2130,6 +2130,11 @@ impl AnalysisRuntime {
             "coverage": status
         });
         let entity_links = ReportEntityLinks::build(&state.project_ids, &self.projects);
+        report_document["signal_atlas"] = json!(report_signal_adapter::build_signal_atlas(
+            &report_document,
+            &state,
+            &entity_links
+        ));
         let markdown = render_markdown(&report_document, &state, &entity_links);
         state.finalized_markdown = Some(markdown.clone());
         let mut output = json!({
@@ -2757,7 +2762,7 @@ impl ServerHandler for JasminMcpServer {
                 ),
         )
         .with_instructions(format!(
-            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Every finding must synthesize the measured symptom into a mechanism, temporal pattern, named affected workload and explicit evidence limitation; a conclusion plus a table dump is incomplete. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Every recommendation must name an owner and priority, explain why it follows from the finding, and define a measurable success criterion. Complete every stable category. Record gradients, anomalies and anomaly clusters as separate table kinds. When multiple analytic families are available, analytic_signal_synthesis and its gradients_anomalies finding must name at least three exact top-five contributors from at least two target families, distinguish typical from peak influence, reproduce at least two concrete model names plus an exact classification, and localize exact anomaly and cluster windows; generic statements that detectors merely converge on activity are rejected. For every foreground wait reaching 10% DB Time, call get_wait_event_sql_contributors and record the wait-to-SQL relationships; follow the strongest material contributor through SQL text, timeline and plan applicability. Correlation or ASH attribution is association evidence, not blocker/waiter proof. Inspect every supplied execution artifact. Review every unique SQL plan hash, but classify PL/SQL entry points as not_applicable_plsql because a top-level row-source plan is not expected; profile their inner SQL instead of requesting DBMS_XPLAN recapture. Choose an explicit recommendation type with artifact-specific rationale and action; generic 'validate actual rows' prose is rejected. Inspect every child-cursor diagnostic. Parse every non-empty alert attachment with include_parse_error_details=true, reproduce every error_summary code, and cite parse-error evidence in an SQL finding. Record every segment hotspot and a cross-statistic segment_synthesis. Review every collected performance parameter value; missing parameters require no row and only concern/critical ratings are reader-facing. get_report_status lists every missing item and blocks finalization until the deterministic lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage. Use each alert attachment's observed first/last timestamp rather than assuming AWR-period coverage. A zero-match literal proves only that exact filter. If guidance is applied, include a verified verbatim quotation. Complete mandatory assessments and finish through finalize_report. For HTML, finalize Markdown first and pass it unchanged to convert_markdown_to_html. Reader-facing material waits and SQL_IDs must link to every existing project-specific detail report with meaningful instance labels.\n\n{}",
+            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Every finding must synthesize the measured symptom into a mechanism, temporal pattern, named affected workload and explicit evidence limitation; a conclusion plus a table dump is incomplete. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Every recommendation must name an owner and priority, explain why it follows from the finding, and define a measurable success criterion. Complete every stable category. Record gradients, anomalies and anomaly clusters as separate table kinds. When multiple analytic families are available, record analytic_signal_synthesis before the gradients_anomalies finding. The structured synthesis must name at least three exact top-five contributors from at least two target families, distinguish active from peak influence, reproduce concrete model names and classification, and localize anomaly and cluster windows. The finding can then state the decision and its boundary briefly without repeating the numeric fields. Generic statements that detectors merely converge on activity are rejected. For every foreground wait reaching 10% DB Time, call get_wait_event_sql_contributors and record the wait-to-SQL relationships; follow the strongest material contributor through SQL text, timeline and plan applicability. Correlation or ASH attribution is association evidence, not blocker/waiter proof. Inspect every supplied execution artifact. Review every unique SQL plan hash, but classify PL/SQL entry points as not_applicable_plsql because a top-level row-source plan is not expected; profile their inner SQL instead of requesting DBMS_XPLAN recapture. Choose an explicit recommendation type with artifact-specific rationale and action; generic 'validate actual rows' prose is rejected. Inspect every child-cursor diagnostic. Parse every non-empty alert attachment with include_parse_error_details=true, reproduce every error_summary code, and cite parse-error evidence in an SQL finding. Record every segment hotspot and a cross-statistic segment_synthesis. Review every collected performance parameter value; missing parameters require no row and only concern/critical ratings are reader-facing. get_report_status lists every missing item and blocks finalization until the deterministic lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage. Use each alert attachment's observed first/last timestamp rather than assuming AWR-period coverage. A zero-match literal proves only that exact filter. If guidance is applied, include a verified verbatim quotation. Complete mandatory assessments and finish through finalize_report. For HTML, finalize Markdown first and pass it unchanged to convert_markdown_to_html. Reader-facing material waits and SQL_IDs must link to every existing project-specific detail report with meaningful instance labels.\n\n{}",
             self.runtime.projects.len(),
             include_str!("report_writing.md")
         ))
@@ -3618,7 +3623,7 @@ fn report_contract(config: &ReportConfig) -> Value {
             "narrative_order": "Lead with the diagnosis. Connect symptom to mechanism, named workload and time pattern before the exhaustive structured evidence tables.",
             "causality_boundary": "Correlation, gradient selection and ASH attribution are association evidence. evidence_limitations must state the missing runtime proof and relevant counterevidence.",
             "executive_summary": "At most five action-ranked findings: next action and owner, conclusion and decision-changing boundary, with links to the canonical detail. Do not repeat the full mechanism and evidence narrative.",
-            "gradient_anomaly_finding": "A cross-family finding must name at least three exact top-five gradient contributors from at least two target families, at least two concrete models, an exact cross-model classification, and exact anomaly/cluster windows. Generic convergence or activity prose is rejected."
+            "gradient_anomaly_finding": "Record a validated analytic_signal_synthesis table first: exact contributors across families, model selections and anomaly/cluster windows belong there. The linked finding may be brief. Without the structured synthesis, the finding must itself reproduce these exact signals. Generic convergence prose is never sufficient."
         },
         "recommendation_policy": {
             "required_fields": ["owner", "priority", "action", "rationale", "success_criterion"],
@@ -4892,6 +4897,17 @@ fn render_markdown(
     ];
     for (number, category, title) in sections {
         output.push_str(&format!("## {number}. {title}\n\n"));
+        let signal_atlas = if category == "gradients_anomalies" {
+            report_signal_adapter::build_signal_atlas(document, state, entity_links)
+        } else {
+            None
+        };
+        if let Some(atlas) = &signal_atlas {
+            output.push_str(&crate::report_signals::render(
+                atlas,
+                state.config.include_evidence_appendix,
+            ));
+        }
         let mut findings = state
             .findings
             .values()
@@ -4908,6 +4924,7 @@ fn render_markdown(
             .map(String::as_str)
             .unwrap_or(&state.config.detail_level);
         for finding in findings {
+            output.push_str("<article class=\"report-finding\">\n\n");
             if let Some(issue) = issue_for_finding(state, &finding.finding_id) {
                 output.push_str(&format!(
                     "**Issue:** [{}](#issue-detail-{}) · [Canonical finding](#{})\n\n",
@@ -4917,27 +4934,38 @@ fn render_markdown(
                 ));
             }
             output.push_str(&format!(
-                "<a id=\"finding-{}\"></a>\n\n### {} [{} / {}]\n\n{}\n\n**Affected workload:** {}\n\n**Temporal pattern:** {}\n\n**Evidence basis:** {}\n\n",
+                "<a id=\"finding-{}\"></a>\n\n### {} [{} / {}]\n\n{}\n\n",
                 evidence_anchor(&finding.finding_id),
                 finding.title,
                 finding.severity,
                 finding.confidence,
                 finding.conclusion,
-                finding.affected_workload,
-                finding.temporal_pattern,
-                finding.evidence_summary,
             ));
+            if signal_atlas.is_none() {
+                output.push_str(&render_finding_entity_shortcuts(
+                    finding,
+                    state,
+                    &project_labels,
+                    entity_links,
+                ));
+            }
+            if signal_atlas.is_none() {
+                output.push_str(&format!("<div class=\"finding-context\">\n\n**Affected workload:** {}\n\n**Temporal pattern:** {}\n\n</div>\n\n**Evidence basis:** {}\n\n",finding.affected_workload,finding.temporal_pattern,finding.evidence_summary));
+            }
             output.push_str(&render_next_action(finding));
             output.push_str(&format!(
                 "**Decision boundary:** {}\n\n<details class=\"finding-evidence\"><summary>Measurements, mechanism and supporting evidence</summary>\n\n**Diagnostic mechanism:** {}\n\n",
                 finding.evidence_limitations, finding.mechanism
             ));
-            output.push_str(&render_finding_entity_shortcuts(
-                finding,
-                state,
-                &project_labels,
-                entity_links,
-            ));
+            if signal_atlas.is_some() {
+                output.push_str(&format!("**Affected workload:** {}\n\n**Temporal pattern:** {}\n\n**Evidence basis:** {}\n\n",finding.affected_workload,finding.temporal_pattern,finding.evidence_summary));
+                output.push_str(&render_finding_entity_shortcuts(
+                    finding,
+                    state,
+                    &project_labels,
+                    entity_links,
+                ));
+            }
             output.push_str(&render_guidance_quotes(&finding.guidance_quotes, state));
             if state.config.include_evidence_appendix && !finding.evidence_refs.is_empty() {
                 output.push_str(&format!(
@@ -4956,7 +4984,7 @@ fn render_markdown(
                     ));
                 }
             }
-            output.push_str("</details>\n\n");
+            output.push_str("</details>\n\n</article>\n\n");
         }
 
         let tables = state
@@ -5338,10 +5366,7 @@ fn render_finding_entity_shortcuts(
                 "background_wait" => "background wait",
                 _ => "detail",
             };
-            shortcuts.push(format!(
-                "[{} — {}: {}](<{}>)",
-                label, kind_label, entity, target
-            ));
+            shortcuts.push((label, format!("{kind_label}: {entity}"), target.clone()));
         }
     }
     shortcuts.sort();
@@ -5350,10 +5375,24 @@ fn render_finding_entity_shortcuts(
     if shortcuts.is_empty() {
         String::new()
     } else {
-        format!(
-            "**Interactive evidence shortcuts:** {}\n\n",
-            shortcuts.join(" · ")
-        )
+        let mut result = "<nav class=\"evidence-shortcuts\" aria-label=\"Interactive evidence shortcuts\"><span>OPEN SOURCE EVIDENCE</span>".to_string();
+        let mut previous = String::new();
+        for (label, name, target) in shortcuts {
+            if previous != label {
+                if !previous.is_empty() {
+                    result.push_str("</div>");
+                }
+                result.push_str(&format!("<div><b>{}</b>", encode_text(&label)));
+                previous = label.to_string();
+            }
+            result.push_str(&format!(
+                "<a href=\"{}\">{} ↗</a>",
+                html_escape::encode_double_quoted_attribute(&target),
+                encode_text(&name)
+            ));
+        }
+        result.push_str("</div></nav>\n\n");
+        result
     }
 }
 
@@ -6534,6 +6573,35 @@ fn validate_gradient_anomaly_finding_synthesis(
     for project_id in project_ids {
         let sections = cited_analytic_sections(state, evidence_refs, project_id);
         if sections.len() < 2 || !sections.contains("full_gradients") {
+            continue;
+        }
+        // A validated structured synthesis already carries the exact contributors,
+        // model names and windows. Requiring the same values in the finding prose
+        // encouraged unreadable numerical paragraphs without adding evidence.
+        if let Some(row) = state
+            .report_tables
+            .values()
+            .filter(|table| table.kind == "analytic_signal_synthesis")
+            .flat_map(|table| &table.rows)
+            .find(|row| row.cells.get("project_id").map(String::as_str) == Some(project_id))
+        {
+            validate_cross_family_analytic_text(
+                state,
+                &row.evidence_refs,
+                project_id,
+                row.cells
+                    .get("dominant_gradient_signals")
+                    .map(String::as_str)
+                    .unwrap_or(""),
+                row.cells
+                    .get("model_agreement")
+                    .map(String::as_str)
+                    .unwrap_or(""),
+                row.cells
+                    .get("temporal_evidence")
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            )?;
             continue;
         }
         validate_cross_family_analytic_text(
@@ -8803,6 +8871,39 @@ mod tests {
             "Physical write (blocks) deviated at 24-Jul-26 15:30:17; cluster SNAP_ID 156679 at 20-Jul-26 00:00:28 also contains flashback log file write",
         )
         .unwrap();
+        let short_finding = |state: &AnalysisSession| {
+            validate_gradient_anomaly_finding_synthesis(
+                state,
+                &refs,
+                "Reduce recurring monitoring work and isolate pin incidents.",
+                "Two distinct mechanisms need matched runtime tests.",
+                "The captured historical window.",
+                "Monitoring and import workloads.",
+                "See the structured signal comparison.",
+                "The exclusive holder is not yet identified.",
+            )
+        };
+        assert!(short_finding(&state).is_err());
+        state.report_tables.insert("SYNTHESIS".into(), ReportTable {
+            table_id: "SYNTHESIS".into(), kind: "analytic_signal_synthesis".into(), category: "gradients_anomalies".into(), title: "Validated synthesis".into(),
+            rows: vec![ReportTableRow { cells:BTreeMap::from([
+                ("project_id".into(),project_id.into()),
+                ("dominant_gradient_signals".into(),"session logical reads and 7ud94ccmpaz8u dominate typical work; cursor: pin S wait on X is a peak signal".into()),
+                ("model_agreement".into(),"Huber and Ridge: CONFIRMED_BOTTLENECK_EN_COLLINEAR".into()),
+                ("temporal_evidence".into(),"Physical write (blocks) at 24-Jul-26 15:30:17; cluster 156679 contains flashback log file write".into())
+            ]), evidence_refs:refs.clone() }]
+        });
+        assert!(short_finding(&state).is_ok());
+        state.report_tables.get_mut("SYNTHESIS").unwrap().rows[0]
+            .cells
+            .insert(
+                "dominant_gradient_signals".into(),
+                "Several signals agree".into(),
+            );
+        assert!(
+            short_finding(&state).is_err(),
+            "A generic structured row must not bypass exact-signal validation"
+        );
     }
 
     #[test]
@@ -9991,6 +10092,9 @@ mod tests {
         std::fs::remove_dir_all(test_directory).unwrap();
     }
 }
+
+#[path = "report_signal_adapter.rs"]
+mod report_signal_adapter;
 
 #[cfg(test)]
 #[path = "report_reader_tests.rs"]

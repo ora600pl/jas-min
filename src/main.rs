@@ -23,6 +23,7 @@ mod macros;
 mod mcp_server;
 mod reasonings;
 mod report_issues;
+mod report_signals;
 mod staticdata;
 mod tools;
 

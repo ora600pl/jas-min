@@ -24,7 +24,9 @@
         button.type = 'button';
         button.textContent = label;
         button.addEventListener('click', () => {
-            document.querySelectorAll('details').forEach(detail => { detail.open = expanded; });
+            document.querySelectorAll('details').forEach(detail => {
+                detail.open = detail.matches('.signal-enhanced [data-signal-panel]') || expanded;
+            });
         });
         controls.append(button);
     }
@@ -39,6 +41,7 @@
         if (!id) return;
         const target = document.getElementById(id);
         if (!target) return;
+        if (target.tagName === 'DETAILS') target.open = true;
         let ancestor = target.parentElement;
         while (ancestor) {
             if (ancestor.tagName === 'DETAILS') ancestor.open = true;
