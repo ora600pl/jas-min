@@ -76,3 +76,21 @@ The atlas has `version: 1`, `panels`, `briefs` and `moments` arrays with these e
 - Moment: `project_id`, `project_label`, `kind`, `window`, `title`, `measure`, `context`, `evidence_refs`. Include exact observation windows and explain the supplied subset; do not imply exhaustive incident coverage or rank incident severity by anomaly count.
 
 Every referenced source ID requires a real provenance anchor outside generated regions, for example `<a id="evidence-e-0001"></a>` for `E-0001`, with its actual source and measurement context. Keep full source tables below the atlas. The source data belongs in technical evidence even if only a subset is visualized. When no valid gradient data is supplied, leave `signal_atlas` null and state the missing coverage; never invent chart coordinates. Reports without an atlas remain supported for compatibility.
+
+
+## Gradient v2 evidence contract
+
+Read `settings.methodology_version` and `settings.quantile95` before treating Q95 as usable.
+Q95 models the conditional upper quantile of target changes, with a free intercept and independent,
+unit-invariant regularization. An iteration-limited fit is diagnostic, excluded from agreement.
+
+Compare independent `active_p90`, `peak_p99` and `extreme_max` selections. P90 and P99 include zeros;
+zero active impact does not mean no incident impact. Use `model_rankings`, `selection_reasons`, ranks
+and `predictor_coverage` to explain rare peaks. In MCP/local API tools, query full_gradients with
+`family`, `contributor`, `ranking` and `offset` for full signed coefficients and paging metadata.
+Source absence, outside TOP, fitted zero and negative coefficient are different states.
+
+SQL fits use retained top-list work with a zero-filled proxy; missing rows are not measured zeros.
+Report observed/missing counts and observed delta pairs when coverage affects the decision. Align
+actual SQL peaks with DB Time/waits before calling them incidents. Max and P99 are distinct metrics.
+Cross-model selection labels never establish causality, collinearity, explained variance or savings.

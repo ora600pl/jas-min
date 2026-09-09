@@ -21,6 +21,7 @@ mod gradient;
 mod local_agent;
 mod macros;
 mod mcp_server;
+mod quantile;
 mod reasonings;
 mod report_issues;
 mod report_signals;
@@ -155,7 +156,7 @@ struct Args {
     #[clap(long, default_value_t = 1e-6)]
     en_tol: f64,
 
-    /// Keep only top N results per regression model.
+    /// Select top N active, peak and extreme candidates per model; retain full rankings.
     #[arg(long, default_value_t = 10)]
     pub top_gradient: usize,
 
@@ -652,7 +653,12 @@ fn main() {
         }
     }
 
-    let j = rounded_json_for_toon(serde_json::to_value(&report_for_ai).unwrap());
+    fs::write(
+        "report_for_ai.full.json",
+        serde_json::to_vec(&report_for_ai).unwrap(),
+    )
+    .unwrap();
+    let j = rounded_json_for_toon(gradient_prompt_value(&report_for_ai));
     let toon_str = encode(&j, None);
     if toon_str.len() > 128 {
         let mut f = fs::File::create("report_for_ai.toon").unwrap();

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::env::Args;
 use std::error::Error;
 use std::fmt::format;
@@ -754,6 +755,14 @@ pub struct AnomlyCluster {
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct GradientSettings {
+    #[serde(default)]
+    pub methodology_version: String,
+    #[serde(default)]
+    pub selection_policy: String,
+    #[serde(default)]
+    pub top_n_per_metric: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantile95: Option<crate::quantile::QuantileDiagnostics>,
     pub ridge_lambda: f64,
     /// Selected Elastic Net lambda. In automatic mode this is the value chosen
     /// by forward-chaining validation and used for the final full-data fit.
@@ -786,9 +795,38 @@ pub struct GradientTopItem {
     pub event_name: String,
     pub gradient_coef: f64,
     pub impact: f64,        // typical (MAD-based) — legacy, keep for compatibility
-    pub impact_active: f64, // P90-based — primary tuning metric
-    pub impact_peak: f64,   // P99-based — worst-case
+    pub impact_active: f64, // P90 over all absolute deltas, including zeros
+    pub impact_peak: f64,   // P99, not the maximum
     pub impact_share: f64,  // % of total active impact
+    /// Maximum input |delta| contribution; may involve missingness proxies.
+    #[serde(default)]
+    pub impact_extreme: f64,
+    #[serde(default)]
+    pub selection_reasons: Vec<String>,
+    #[serde(default)]
+    pub active_rank: Option<usize>,
+    #[serde(default)]
+    pub peak_rank: Option<usize>,
+    #[serde(default)]
+    pub extreme_rank: Option<usize>,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+pub struct GradientCoverage {
+    pub event_name: String,
+    pub samples: usize,
+    pub nonzero_deltas: usize,
+    pub p90_abs_delta: f64,
+    pub p99_abs_delta: f64,
+    pub max_abs_delta: f64,
+    /// Index of the ending sample of the largest absolute transition.
+    pub max_delta_end_index: usize,
+    /// None means the source did not provide an observation mask.
+    pub observed_samples: Option<usize>,
+    pub observed_zero_samples: Option<usize>,
+    pub observed_delta_pairs: Option<usize>,
+    pub missing_samples: Option<usize>,
+    pub input_policy: String,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
@@ -798,6 +836,11 @@ pub struct DbTimeGradientSection {
     pub elastic_net_top: Vec<GradientTopItem>,
     pub huber_top: Vec<GradientTopItem>,
     pub quantile95_top: Vec<GradientTopItem>,
+    /// Full signed fits, including zero and negative coefficients. TOP is a view.
+    #[serde(default)]
+    pub model_rankings: BTreeMap<String, Vec<GradientTopItem>>,
+    #[serde(default)]
+    pub predictor_coverage: Vec<GradientCoverage>,
     pub cross_model_classifications: Vec<CrossModelClassification>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vif_diagnostics: Vec<VifDiagnostic>,
@@ -818,6 +861,8 @@ pub struct CrossModelClassification {
     pub priority: u8,
     pub combined_impact: f64,
     pub combined_peak_impact: f64,
+    #[serde(default)]
+    pub combined_extreme_impact: f64,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
@@ -937,6 +982,57 @@ pub fn strip_gradient_descriptions(report: &mut ReportForAI) {
     }
 }
 
+/// Keep independent TOP unions in the classic API prompt without copying every
+/// dense fit four times. MCP/local tools retain the original ReportForAI object.
+/// The CLI persists the complete value separately for coefficient inspection.
+pub fn gradient_prompt_value(report: &ReportForAI) -> Value {
+    let mut value = serde_json::to_value(report).unwrap();
+    for section in value.as_object_mut().unwrap().values_mut() {
+        let Some(object) = section.as_object_mut() else {
+            continue;
+        };
+        if !object.contains_key("model_rankings") {
+            continue;
+        }
+        let mut names = HashSet::new();
+        for key in [
+            "ridge_top",
+            "elastic_net_top",
+            "huber_top",
+            "quantile95_top",
+        ] {
+            if let Some(rows) = object.get(key).and_then(Value::as_array) {
+                names.extend(
+                    rows.iter()
+                        .filter_map(|r| r["event_name"].as_str().map(str::to_string)),
+                );
+            }
+        }
+        let counts = object["model_rankings"]
+            .as_object()
+            .map(|models| {
+                models
+                    .iter()
+                    .map(|(name, rows)| (name.clone(), json!(rows.as_array().map_or(0, Vec::len))))
+                    .collect::<serde_json::Map<_, _>>()
+            })
+            .unwrap_or_default();
+        object.remove("model_rankings");
+        object.insert("full_fit_counts".into(), json!(counts));
+        object.insert(
+            "full_fit_source".into(),
+            json!("report_for_ai.full.json; prompt retains independent TOP unions only"),
+        );
+        if let Some(rows) = object
+            .get_mut("predictor_coverage")
+            .and_then(Value::as_array_mut)
+        {
+            rows.retain(|r| r["event_name"].as_str().is_some_and(|n| names.contains(n)));
+        }
+    }
+    value
+}
+
 static SPELL: &str =
 "# ROLE & IDENTITY
 
@@ -990,141 +1086,66 @@ sensitivity to various factors.
 Sections `db_cpu_gradient_instance_stats` and `db_cpu_gradient_sql_cpu_time` contain multi-model 
 regression analysis of **DB CPU** sensitivity to instance statistics and SQL CPU time respectively.
 
-The `db_cpu_gradient_sql_cpu_time` section is particularly important for CPU-bound analysis:
-- It reveals which SQL_IDs contribute most to DB CPU changes, ranked by CPU time consumption.
-- Cross-reference SQL_IDs found here with `top_sqls_by_elapsed_time` to distinguish between 
-  SQLs that are CPU-intensive vs. those that are wait-bound.
-- A SQL_ID appearing as CONFIRMED_BOTTLENECK in both `db_time_gradient_sql_elapsed_time` AND 
-  `db_cpu_gradient_sql_cpu_time` is a CPU-dominant bottleneck — optimization should target 
-  reducing logical I/O (buffer gets), improving execution plans, or reducing execution frequency.
-- A SQL_ID in `db_time_gradient_sql_elapsed_time` but NOT in `db_cpu_gradient_sql_cpu_time` 
-  is wait-bound — its elapsed time is dominated by waits, not CPU work.
-- A SQL_ID in `db_cpu_gradient_sql_cpu_time` but NOT in `db_time_gradient_sql_elapsed_time` 
-  consumes CPU but does not significantly impact overall DB Time — lower priority unless 
-  CPU saturation is observed.
+Compare DB Time and DB CPU fits with actual SQL CPU/elapsed measurements and source coverage.
+Model-list membership cannot classify a SQL as CPU-bound or wait-bound by itself.
 
-Each gradient section contains results from four regression models:
-- **Ridge** (`ridge_top`) — stabilized, dense ranking of all contributing factors
-- **Elastic Net** (`elastic_net_top`) — sparse ranking highlighting dominant factors
-- **Huber** (`huber_top`) — outlier-resistant ranking (downweights extreme snapshots)
-- **Quantile 95** (`quantile95_top`) — models the worst 5% of snapshots (tail risk)
+Each section has Ridge, Elastic Net, Huber and Quantile 95 fits. Q95 estimates the conditional
+0.95 quantile of target DELTAS using all observations, not a regression on the largest 5% of snapshots.
+Gradient v2 fits an unpenalized Q95 intercept and standardizes the target before minimizing
+mean pinball loss + lambda/2 * squared coefficient norm. Coefficients and intercept are restored to
+original target units. Read `settings.quantile95` for method, lambda, iterations, objective, primal/
+dual residuals and convergence. Unconverged Q95 coefficients are diagnostic only and excluded from
+TOP selection and cross-model agreement. Old sections without these diagnostics are unverified.
 
-Elastic Net standardizes both predictor and target deltas. Unless a fixed lambda override was
-requested, it selects a per-section lambda from a lambda/lambda_max path using expanding-window,
-forward-chaining validation and the one-standard-error rule. Inspect `settings.elastic_net_lambda_mode`,
-`elastic_net_lambda`, `elastic_net_lambda_max`, `elastic_net_lambda_ratio`, `elastic_net_cv_rule`,
-`elastic_net_cv_folds`, and `elastic_net_nonzero_coefficients` before interpreting an empty or unusually
-dense sparse-model result. The reported coefficient has already been converted back to DB Time or DB CPU
-target units; do not apply target standard deviation a second time.
+Elastic Net retains its per-family automatic lambda selection: standardized predictor/target deltas,
+forward-chaining cross-validation and the one-standard-error rule, unless explicitly overridden.
+Read its lambda mode, lambda/lambda_max, CV rule and nonzero count before interpreting omissions.
 
-### Gradient Impact Metrics (GradientTopItem fields)
+### Independent ranking dimensions
 
-Each entry in `ridge_top` / `elastic_net_top` / `huber_top` / `quantile95_top` contains:
+- `gradient_coef`: original target units per one predictor-delta standard deviation. Positive is an
+  association, not proof of a cause; negative and zero coefficients remain available in full fits.
+- `impact_active` = abs(coef / stddev(delta_x)) * P90(abs(delta_x)). This percentile INCLUDES zeros.
+  Rare severe events can have active impact zero. It is not a conditional-on-activity percentile.
+- `impact_peak` uses P99(abs(delta_x)); it is not the maximum. Even P99 can be zero for very rare events.
+- `impact_extreme` uses max(abs(delta_x)); inspect the named transition and coverage before interpreting it.
+- `impact` uses MAD(delta_x), a typical-variability comparison which can also be zero for bursts.
+- `impact_share` is a normalized positive active-magnitude share, NOT explained variance, DB Time share,
+  causal attribution, or recoverable CPU. These model magnitudes are not additive resource costs.
 
-- `gradient_coef` — standardized regression coefficient.
-  Sensitivity: how DB Time responds to a 1-sigma move of the predictor.
-  Sign matters: positive = contributes to DB Time, negative = suppressor/confounder.
-  Use for understanding mechanics.
+Gradient v2 preserves every coefficient in `model_rankings`. The four legacy `*_top` arrays are now
+unions of independent positive TOP active/P90, peak/P99 and extreme/max rankings. Read `selection_reasons`
+and the three ranks; zero magnitudes do not occupy positive ranking slots. No signal needs positive
+P90 to appear in peak or extreme selection. In MCP/local tools, `get_precomputed_analysis` with
+section=full_gradients accepts family, contributor (exact SQL_ID/event/statistic), ranking and offset;
+use it to distinguish outside-TOP from a fitted zero, a negative coefficient or an absent predictor.
+The seed is only a bounded preview. Full source fits remain available through paginated queries.
 
-- `impact_active` = abs(coef / stddev(delta_x)) * P90(abs(delta_x)) — **PRIMARY TUNING METRIC**.
-  Contribution to DB Time when the predictor is actively moving (not during idle periods).
-  Expressed in DB Time units. **Use this first when ranking bottlenecks.**
+`predictor_coverage` retains nonzero-delta counts, percentile values and the extreme transition index.
+For SQL top lists it also records observed samples, observed zeros, missing samples and pairs with
+both endpoints observed. The fit uses a ZERO-FILLED RETAINED-WORK PROXY where rows are absent; these
+are not measurements of zero work. Deltas at top-list entry/exit can reflect selection censoring.
+Do not interpret those coefficients as an unbiased estimate of complete SQL workload. Verify peaks
+against observed SQL rows and aligned DB Time/waits. A missing observation mask means unknown coverage.
 
-- `impact_peak` = abs(coef / stddev(delta_x)) * P99(abs(delta_x)) — worst-case single-snapshot contribution.
-  How much DB Time this predictor can add during its most aggressive moments.
-  Use for capacity planning and identifying spike causes.
+### Cross-model synthesis
 
-- `impact` = abs(coef / stddev(delta_x)) * MAD(delta_x) — legacy/typical impact.
-  Contribution during *median* variability. Often near zero for bursty events.
-  Use only as comparison baseline (see diagnostic rule below).
+`in_ridge`, `in_elastic_net`, `in_huber`, `in_quantile95` indicate membership in the independent TOP
+union, not coefficient existence. Models share inputs; agreement is not independent causal evidence.
+Legacy classification codes (including CONFIRMED_BOTTLENECK and CONFIRMED_BOTTLENECK_EN_COLLINEAR)
+remain compatibility labels for selection patterns. They do not prove a bottleneck, collinearity,
+incident severity or a specific reason for an omitted Elastic Net coefficient. Use the accompanying
+plain-language description and coefficient/coverage lookup. Never assign CRITICAL merely from a label.
+`combined_impact` and `combined_peak_impact` sum positive magnitudes from complete eligible fits for
+each selected candidate. They are comparison scores, not additive DB Time or potential savings.
 
-- `impact_share` = impact_active / sum(impact_active across positive-coef predictors).
-  Range [0.0, 1.0]. Use to communicate relative importance, e.g., 
-  'this event explains 23% of DB Time variance'.
+VIF and collinear-group fits identify unstable attribution, not true causal group cost. Inspect
+correlated features, source overlap and actual incident windows before choosing an intervention.
+A group sum can mix units or overlapping work and must not become a resource-accounting claim.
 
-**Ranking rule:** Entries are sorted by signed_impact_active descending — positive contributors 
-(real bottlenecks) first, suppressors last. When reporting top factors, focus on entries with 
-gradient_coef > 0.
-
-**Diagnostic rule — bursty vs systematic behavior:**
-
-Compare `impact_active` and `impact` for each predictor:
-- `impact_active` much greater than `impact` (e.g., ratio > 5x): **bursty behavior** — 
-  predictor is quiet most of the time but causes large DB Time contribution during activity 
-  windows. Investigate batch jobs, scheduled tasks, or commit storms.
-- `impact_active` approximately equal to `impact`: **systematic behavior** — predictor 
-  contributes steadily. Typical of background I/O or constantly-active workloads.
-- `impact_active` much less than `impact`: rarely happens; suggests data quality issues.
-
-**Reporting guidelines:**
-- When citing a predictor's contribution to DB Time, quote `impact_active` as the main number.
-- Use `impact_share` (as a percentage) to express relative importance.
-- Quote `impact_peak` when discussing worst-case behavior or capacity risk.
-- Mention the bursty/systematic distinction explicitly when `impact_active` and `impact` diverge.
-- NEVER use `impact` (MAD-based) as the primary metric — it systematically underestimates 
-  rare-but-severe events (log file sync bursts, lock spikes, etc.).
-
-### Cross-Model Classification Rules
-
-Each gradient section includes `cross_model_classifications` with pre-computed triangulation.
-Interpret classifications using this priority hierarchy:
-
-- `CONFIRMED_BOTTLENECK` (all 4 models) — systematic, robust bottleneck. **CRITICAL** priority.
-- `CONFIRMED_BOTTLENECK_EN_COLLINEAR` (Ridge + Huber + Q95, not EN) — bottleneck masked by L1 
-  collinearity. **CRITICAL — find correlated EN factor.**
-- `TAIL_OUTLIER` (Ridge + Q95, not Huber) — extreme snapshots that ARE the worst periods. 
-  HIGH priority.
-- `TAIL_RISK` (Q95 only, not Ridge) — rare catastrophic spikes. HIGH priority — warn about 
-  peak periods.
-- `STRONG_CONTRIBUTOR` (Ridge + EN + Huber, not Q95) — reliable systematic contributor. 
-  MEDIUM priority.
-- `OUTLIER_DRIVEN` (Ridge, not Huber) — few extreme snapshots only. MEDIUM priority — 
-  check anomaly_clusters.
-- `SPARSE_DOMINANT` (EN, not Ridge) — dominant among correlated group. MEDIUM priority.
-- `STABLE_CONTRIBUTOR` (Ridge + Huber, not EN, not Q95) — steady background contributor. 
-  LOW-MEDIUM priority.
-- `ROBUST_ONLY` (Huber only) — background factor without outliers. LOW priority.
-- `MULTI_MODEL_MINOR` (2+ models, no pattern) — minor contributor. LOW priority.
-- `SINGLE_MODEL` (1 model only) — low confidence. INFORMATIONAL.
-
-The `combined_impact` field in each classification is the sum of `impact_active` across all 
-models where the predictor appears — treat it as the aggregate active-impact signal.
-
-The `combined_peak_impact` field in each classification is the sum of `impact_peak` across all 
-models where the predictor appears — treat it as the aggregate peak-impact signal.
-
-### VIF Diagnostics & Collinear Groups
-
-Each gradient section may contain:
-- `vif_diagnostics` — Variance Inflation Factor for predictors with VIF > 5.
-  - VIF > 10: coefficients are unreliable due to multicollinearity; use group impact instead
-  - VIF > 100: extreme collinearity; individual impact values are meaningless
-- `collinear_group_impacts` — when collinear predictors are detected, their raw signals
-  are summed and a single univariate coefficient is computed for the group.
-  - `combined_impact` represents the TRUE impact of the collinear group on DB Time
-  - This resolves cases where individual impact is near zero despite high correlation
-
-**When VIF diagnostics are present:**
-1. Do NOT report individual `impact_active` values for events with VIF > 10 as meaningful
-2. Instead, report the collinear group's `combined_impact`
-3. Explain to the reader that individual regression coefficients cannot separate
-   the effects of highly correlated events
-4. Example: if TX row lock and TM contention have VIF > 800, their individual
-   `impact_active` near zero is an artifact — the group impact reveals their true contribution
-
-**Gradient analysis strategy:**
-1. Start with CONFIRMED_BOTTLENECK and CONFIRMED_BOTTLENECK_EN_COLLINEAR — highest priority
-2. Rank within each classification by `impact_active` (not `impact`)
-3. Flag TAIL_RISK and TAIL_OUTLIER items as hidden dangers; quote their `impact_peak` values
-4. Cross-reference OUTLIER_DRIVEN with anomaly_clusters for root cause
-5. Use SPARSE_DOMINANT to find representative factors in correlated groups
-6. For each top predictor, report: `impact_active`, `impact_share` (%), and the 
-   bursty-vs-systematic diagnosis derived from `impact_active` vs `impact`
-7. Integrate with traditional AWR analysis — gradients explain *why* DB Time changes
-8. For DB CPU gradients: cross-reference `db_cpu_gradient_sql_cpu_time` with 
-   `db_time_gradient_sql_elapsed_time` to classify each SQL as CPU-dominant, wait-dominant, 
-   or mixed — this determines whether optimization should target execution plans/LIOs (CPU) 
-   or wait events/I/O (waits)
+For each family compare recurring work, P99 tails and observed extremes. State what changed together,
+where/when it happened, an alternative explanation and a discriminating runtime test. Integrate SQL,
+wait, CPU and anomaly evidence without using a model score as proof of the mechanism.
 
 # ANALYTICAL METHODOLOGY
 
@@ -2798,6 +2819,51 @@ pub async fn openai_gpt(
 mod openrouter_response_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn classic_api_context_preserves_peak_union_without_duplicating_full_fits() {
+        let rare = GradientTopItem {
+            event_name: "rare".into(),
+            impact_active: 0.0,
+            impact_peak: 60.0,
+            selection_reasons: vec!["peak_p99".into()],
+            ..Default::default()
+        };
+        let report = ReportForAI {
+            db_time_gradient_sql_elapsed_time: Some(DbTimeGradientSection {
+                ridge_top: vec![rare.clone()],
+                model_rankings: BTreeMap::from([("ridge".into(), vec![rare])]),
+                predictor_coverage: vec![
+                    GradientCoverage {
+                        event_name: "rare".into(),
+                        missing_samples: Some(90),
+                        ..Default::default()
+                    },
+                    GradientCoverage {
+                        event_name: "other".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let context = gradient_prompt_value(&report);
+        let section = &context["db_time_gradient_sql_elapsed_time"];
+        assert!(section.get("model_rankings").is_none());
+        assert_eq!(section["full_fit_counts"]["ridge"], 1);
+        assert_eq!(section["ridge_top"][0]["event_name"], "rare");
+        assert_eq!(section["predictor_coverage"].as_array().unwrap().len(), 1);
+        assert_eq!(section["predictor_coverage"][0]["missing_samples"], 90);
+        assert_eq!(
+            report
+                .db_time_gradient_sql_elapsed_time
+                .unwrap()
+                .model_rankings["ridge"]
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn whitespace_only_openrouter_response_is_identified_and_saved() {

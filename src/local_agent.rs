@@ -1782,12 +1782,93 @@ fn compact_gradient(section: Option<&DbTimeGradientSection>) -> Value {
 /// which silently capped model rankings at three rows and triangulation at four
 /// rows regardless of the caller's `limit` argument.
 fn detailed_gradient(section: Option<&DbTimeGradientSection>, limit: usize) -> Value {
+    detailed_gradient_query(section, limit, &json!({}))
+}
+
+fn detailed_gradient_query(
+    section: Option<&DbTimeGradientSection>,
+    limit: usize,
+    args: &Value,
+) -> Value {
     let Some(section) = section else {
         return Value::Null;
     };
     let limited = |count: usize| count.min(limit);
+    let contributor = args["contributor"].as_str();
+    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+    let metric = args["ranking"].as_str().unwrap_or("selection");
+    let mut full = serde_json::Map::new();
+    let mut pages = serde_json::Map::new();
+    for (model, rows) in &section.model_rankings {
+        let mut rows: Vec<_> = rows
+            .iter()
+            .filter(|r| contributor.is_none_or(|name| r.event_name == name))
+            .collect();
+        if metric != "selection" {
+            let value = |r: &&crate::reasonings::GradientTopItem| match metric {
+                "active" => r.impact_active,
+                "peak" => r.impact_peak,
+                "extreme" => r.impact_extreme,
+                _ => 0.0,
+            };
+            rows.sort_by(|a, b| {
+                (b.gradient_coef > 0.0)
+                    .cmp(&(a.gradient_coef > 0.0))
+                    .then(value(b).total_cmp(&value(a)))
+                    .then(a.event_name.cmp(&b.event_name))
+            });
+        }
+        let total = rows.len();
+        let page: Vec<_> = rows.into_iter().skip(offset).take(limit).collect();
+        pages.insert(model.clone(), json!({"total": total, "offset": offset, "returned": page.len(), "next_offset": if offset.saturating_add(page.len()) < total { Some(offset + page.len()) } else { None }}));
+        full.insert(model.clone(), json!(page));
+    }
+    let mut coverage: Vec<_> = section
+        .predictor_coverage
+        .iter()
+        .filter(|r| contributor.is_none_or(|name| r.event_name == name))
+        .collect();
+    if contributor.is_none() {
+        // Match the displayed ranking page; coverage must not be an unrelated alphabetic slice.
+        let names: HashSet<_> = full
+            .values()
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|r| r["event_name"].as_str())
+            .collect();
+        coverage.retain(|r| names.contains(r.event_name.as_str()));
+    }
+    let mut cross: Vec<_> = section
+        .cross_model_classifications
+        .iter()
+        .filter(|r| contributor.is_none_or(|name| r.event_name == name))
+        .collect();
+    if metric == "peak" {
+        cross.sort_by(|a, b| {
+            b.combined_peak_impact
+                .total_cmp(&a.combined_peak_impact)
+                .then(a.event_name.cmp(&b.event_name))
+        });
+    }
+    let top_page = |rows: &Vec<crate::reasonings::GradientTopItem>| {
+        rows.iter()
+            .filter(|r| contributor.is_none_or(|name| r.event_name == name))
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let ridge = top_page(&section.ridge_top);
+    let en = top_page(&section.elastic_net_top);
+    let huber = top_page(&section.huber_top);
+    let q95 = top_page(&section.quantile95_top);
     json!({
         "settings": section.settings,
+        "full_rankings_available": !section.model_rankings.is_empty(),
+        "ranking": metric,
+        "contributor": contributor,
+        "model_rankings": full,
+        "ranking_pages": pages,
+        "predictor_coverage": coverage,
         "counts": {
             "cross_model_classifications": section.cross_model_classifications.len(),
             "vif_diagnostics": section.vif_diagnostics.len(),
@@ -1798,36 +1879,43 @@ fn detailed_gradient(section: Option<&DbTimeGradientSection>, limit: usize) -> V
             "quantile95": section.quantile95_top.len()
         },
         "returned": {
-            "cross_model_classifications": limited(section.cross_model_classifications.len()),
+            "cross_model_classifications": limited(cross.len()),
             "vif_diagnostics": limited(section.vif_diagnostics.len()),
             "collinear_group_impacts": limited(section.collinear_group_impacts.len()),
-            "ridge": limited(section.ridge_top.len()),
-            "elastic_net": limited(section.elastic_net_top.len()),
-            "huber": limited(section.huber_top.len()),
-            "quantile95": limited(section.quantile95_top.len())
+            "ridge": ridge.len(),
+            "elastic_net": en.len(),
+            "huber": huber.len(),
+            "quantile95": q95.len()
         },
-        "cross_model_classifications": section.cross_model_classifications.iter().take(limit).collect::<Vec<_>>(),
+        "cross_model_classifications": cross.into_iter().take(limit).collect::<Vec<_>>(),
         "vif_diagnostics": section.vif_diagnostics.iter().take(limit).collect::<Vec<_>>(),
         "collinear_group_impacts": section.collinear_group_impacts.iter().take(limit).collect::<Vec<_>>(),
-        "ridge_top": section.ridge_top.iter().take(limit).collect::<Vec<_>>(),
-        "elastic_net_top": section.elastic_net_top.iter().take(limit).collect::<Vec<_>>(),
-        "huber_top": section.huber_top.iter().take(limit).collect::<Vec<_>>(),
-        "quantile95_top": section.quantile95_top.iter().take(limit).collect::<Vec<_>>()
+        "ridge_top": ridge,
+        "elastic_net_top": en,
+        "huber_top": huber,
+        "quantile95_top": q95
     })
 }
 
-fn detailed_gradients(report: &ReportForAI, limit: usize) -> Value {
-    json!({
-        "db_time_foreground_wait_events": detailed_gradient(report.db_time_gradient_fg_wait_events.as_ref(), limit),
-        "db_time_instance_stats_counters": detailed_gradient(report.db_time_gradient_instance_stats_counters.as_ref(), limit),
-        "db_time_instance_stats_volumes": detailed_gradient(report.db_time_gradient_instance_stats_volumes.as_ref(), limit),
-        "db_time_instance_stats_time": detailed_gradient(report.db_time_gradient_instance_stats_time.as_ref(), limit),
-        "db_time_sql_elapsed_time": detailed_gradient(report.db_time_gradient_sql_elapsed_time.as_ref(), limit),
-        "db_cpu_instance_stats": detailed_gradient(report.db_cpu_gradient_instance_stats.as_ref(), limit),
-        "db_cpu_sql_cpu_time": detailed_gradient(report.db_cpu_gradient_sql_cpu_time.as_ref(), limit),
-        "custom_wait_events": detailed_gradient(report.custom_gradient_wait_events.as_ref(), limit),
-        "custom_instance_stats": detailed_gradient(report.custom_gradient_instance_stats.as_ref(), limit)
-    })
+fn detailed_gradients(report: &ReportForAI, limit: usize, args: &Value) -> Value {
+    let mut value = json!({
+        "db_time_foreground_wait_events": detailed_gradient_query(report.db_time_gradient_fg_wait_events.as_ref(), limit, args),
+        "db_time_instance_stats_counters": detailed_gradient_query(report.db_time_gradient_instance_stats_counters.as_ref(), limit, args),
+        "db_time_instance_stats_volumes": detailed_gradient_query(report.db_time_gradient_instance_stats_volumes.as_ref(), limit, args),
+        "db_time_instance_stats_time": detailed_gradient_query(report.db_time_gradient_instance_stats_time.as_ref(), limit, args),
+        "db_time_sql_elapsed_time": detailed_gradient_query(report.db_time_gradient_sql_elapsed_time.as_ref(), limit, args),
+        "db_cpu_instance_stats": detailed_gradient_query(report.db_cpu_gradient_instance_stats.as_ref(), limit, args),
+        "db_cpu_sql_cpu_time": detailed_gradient_query(report.db_cpu_gradient_sql_cpu_time.as_ref(), limit, args),
+        "custom_wait_events": detailed_gradient_query(report.custom_gradient_wait_events.as_ref(), limit, args),
+        "custom_instance_stats": detailed_gradient_query(report.custom_gradient_instance_stats.as_ref(), limit, args)
+    });
+    if let Some(family) = args["family"].as_str() {
+        value
+            .as_object_mut()
+            .unwrap()
+            .retain(|key, _| key == family);
+    }
+    value
 }
 
 fn compact_degradation(report: &ReportForAI) -> Value {
@@ -1879,9 +1967,13 @@ fn local_tools_schema(stem: &str, guidance_available: bool) -> Value {
                                 "full_gradients", "db_time_degradation", "performance_peaks"
                             ]
                         },
+                        "family": {"type": "string", "description": "full_gradients only: exact family key, e.g. db_time_sql_elapsed_time"},
+                        "contributor": {"type": "string", "description": "full_gradients only: exact SQL_ID/event/statistic lookup across full fitted rankings"},
+                        "ranking": {"type": "string", "enum": ["selection", "active", "peak", "extreme"]},
+                        "offset": {"type": "integer", "minimum": 0},
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum top-level rows, default 20, max 100"
+                            "description": "Maximum rows per list, default 20, max 100"
                         }
                     },
                     "required": ["section"]
@@ -2050,7 +2142,19 @@ pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) 
                 .take(limit)
                 .collect::<HashMap<_, _>>())
         }
-        "full_gradients" => detailed_gradients(report, limit),
+        "full_gradients" => {
+            if args["ranking"]
+                .as_str()
+                .is_some_and(|r| !["selection", "active", "peak", "extreme"].contains(&r))
+            {
+                return json!({"error": "unknown gradient ranking"});
+            }
+            let result = detailed_gradients(report, limit, args);
+            if result.as_object().is_some_and(|o| o.is_empty()) {
+                return json!({"error": "unknown gradient family"});
+            }
+            result
+        }
         "db_time_degradation" => compact_degradation(report),
         "performance_peaks" => json!(report
             .top_spikes_marked
@@ -2935,6 +3039,74 @@ TRIGGER: user logons and connection creation spike.
         assert_eq!(checkpoint["claims"][0]["guidance_refs"][0], "S1-G0001");
         assert_eq!(checkpoint["consulted_guidance_refs"][0], "S1-G0001");
         assert_eq!(checkpoint["raw_model_checkpoint_prefix"], "{\"claims\":[");
+    }
+
+    #[test]
+    fn full_gradient_query_can_find_unselected_coefficients_and_page_peak_ranks() {
+        use crate::reasonings::{DbTimeGradientSection, GradientTopItem};
+        let rows = vec![
+            GradientTopItem {
+                event_name: "steady".into(),
+                gradient_coef: 1.0,
+                impact_active: 50.0,
+                impact_peak: 10.0,
+                ..Default::default()
+            },
+            GradientTopItem {
+                event_name: "rare".into(),
+                gradient_coef: 2.0,
+                impact_active: 0.0,
+                impact_peak: 60.0,
+                ..Default::default()
+            },
+            GradientTopItem {
+                event_name: "zero".into(),
+                gradient_coef: 0.0,
+                ..Default::default()
+            },
+        ];
+        let section = DbTimeGradientSection {
+            ridge_top: vec![rows[0].clone()],
+            model_rankings: std::collections::BTreeMap::from([("ridge".into(), rows)]),
+            ..Default::default()
+        };
+        let report = ReportForAI {
+            db_time_gradient_sql_elapsed_time: Some(section),
+            ..Default::default()
+        };
+        let run = |args| dispatch_precomputed_analysis(&args, &report);
+        let exact = run(
+            json!({"section":"full_gradients", "family":"db_time_sql_elapsed_time", "contributor":"zero", "limit":1}),
+        );
+        let data = &exact["data"]["db_time_sql_elapsed_time"];
+        assert_eq!(data["model_rankings"]["ridge"][0]["gradient_coef"], 0.0);
+        assert_eq!(data["ranking_pages"]["ridge"]["total"], 1);
+        assert_eq!(exact["data"].as_object().unwrap().len(), 1);
+        let peak = run(
+            json!({"section":"full_gradients", "family":"db_time_sql_elapsed_time", "ranking":"peak", "limit":1}),
+        );
+        assert_eq!(
+            peak["data"]["db_time_sql_elapsed_time"]["model_rankings"]["ridge"][0]["event_name"],
+            "rare"
+        );
+        assert_eq!(
+            peak["data"]["db_time_sql_elapsed_time"]["ranking_pages"]["ridge"]["next_offset"],
+            1
+        );
+        let next = run(
+            json!({"section":"full_gradients", "family":"db_time_sql_elapsed_time", "ranking":"peak", "limit":1,"offset":1}),
+        );
+        assert_eq!(
+            next["data"]["db_time_sql_elapsed_time"]["model_rankings"]["ridge"][0]["event_name"],
+            "steady"
+        );
+        let absent = run(
+            json!({"section":"full_gradients", "family":"db_time_sql_elapsed_time", "contributor":"absent"}),
+        );
+        assert_eq!(
+            absent["data"]["db_time_sql_elapsed_time"]["ranking_pages"]["ridge"]["total"],
+            0
+        );
     }
 
     #[test]

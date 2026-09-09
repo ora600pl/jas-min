@@ -1367,3 +1367,13 @@ To add an MCP-only workflow tool:
 Keep measurement, methodology, and conclusions as separate data types. That
 separation is the central invariant that makes an interactive JAS-MIN report
 auditable.
+
+
+### Gradient v2 coefficient lookup
+
+With schema `2026-09-09.2`, `get_precomputed_analysis(section="full_gradients")`
+accepts optional `family`, exact `contributor`, `ranking` (`selection`, `active`,
+`peak`, `extreme`) and `offset`. `model_rankings` and `ranking_pages` expose bounded
+pages of complete signed fits; `*_top` remain selected previews. Read Q95 solver
+status and `predictor_coverage` before interpreting scores. See
+[the full v2 methodology and migration notes](gradient-methodology-v2.md).
