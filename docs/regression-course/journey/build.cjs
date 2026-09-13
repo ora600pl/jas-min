@@ -1,0 +1,13 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),{prepare}=require('./engine.cjs');
+const here=__dirname,read=p=>fs.readFileSync(path.join(here,p),'utf8'),context={window:{}};
+vm.runInNewContext(read('../src/data.js'),context);
+for(const file of ['../src/math.js','../src/data.js','scenes.js','player.js'])new vm.Script(read(file),{filename:file});
+const trace=prepare(context.window.RECORDED_DATA);
+const payload='window.JOURNEY_TRACE='+JSON.stringify(trace)+';\n';
+fs.writeFileSync(path.join(here,'trace.js'),payload);
+let html=read('index.html').replace('<link rel="stylesheet" href="journey.css">','<style>'+read('journey.css')+'</style>');
+for(const file of ['../src/math.js','../src/data.js','trace.js','scenes.js','player.js'])html=html.replace('<script src="'+file+'"></script>',()=>'<script>'+read(file).replace(/<\/script/gi,'<\\/script')+'</script>');
+html=html.replace('href="../index.html"','href="index.html"');
+fs.writeFileSync(path.join(here,'../journey.html'),html);
+console.log(JSON.stringify({bytes:Buffer.byteLength(html),rows:trace.n,elasticPasses:trace.elastic.iterations,huberPasses:trace.huber.states.length,q95:{iterations:trace.quantile.iterations,converged:trace.quantile.converged,gap:trace.quantile.final.gap},cvSelected:trace.cv.selected},null,2));

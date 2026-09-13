@@ -54,7 +54,7 @@ fn build_model_instructions(
     stem: &str,
     tools_mode: bool,
 ) -> String {
-    let mut spell = format!("{} {}", SPELL, lang);
+    let mut spell = format!("{} {}\n\n{}", SPELL, lang, ACCESS_PATH_REASONING);
 
     if let Some(pr) = private_reasonings() {
         spell = format!("{spell}\n#ADVANCED RULES\n{pr}");
@@ -906,7 +906,8 @@ pub struct DbTimeDegradationReport {
 pub struct DbTimeDegradationDomainSummary {
     pub domain: String,
     pub findings_count: usize,
-    pub total_positive_delta: f64,
+    #[serde(default)]
+    pub max_change_score: f64,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
@@ -919,7 +920,12 @@ pub struct DbTimeDegradationFinding {
     pub delta_pct: f64,
     pub robust_z_score: f64,
     pub correlation_with_db_time: f64,
-    pub estimated_db_time_delta_share: f64,
+    #[serde(default)]
+    pub unit: String,
+    #[serde(default)]
+    pub change_score: f64,
+    #[serde(default)]
+    pub domain_rank: usize,
     pub severity: String,
     pub evidence: String,
 }
@@ -954,6 +960,8 @@ pub struct ReportForAI {
     pub custom_gradient_wait_events: Option<DbTimeGradientSection>,
     pub custom_gradient_instance_stats: Option<DbTimeGradientSection>,
     pub db_time_degradation_report: Option<DbTimeDegradationReport>,
+    #[serde(default)]
+    pub db_load_sources: BTreeMap<String, crate::measurements::TargetSourceCounts>,
     pub initialization_parameters: HashMap<String, String>,
 }
 
@@ -1033,6 +1041,8 @@ pub fn gradient_prompt_value(report: &ReportForAI) -> Value {
     value
 }
 
+pub(crate) const ACCESS_PATH_REASONING: &str = include_str!("access_path_reasoning.md");
+
 static SPELL: &str =
 "# ROLE & IDENTITY
 
@@ -1054,8 +1064,9 @@ The ReportForAI contains these analytical sections:
   **Note:** `top_foreground_wait_events` may contain an optional field 
   `tables_associated_with_event_based_on_ash_sql` — a list of table names extracted by 
   parsing SQL text of queries associated with this wait event (via ASH or correlation). 
-  When present, use these table names as **authoritative evidence** of which tables are 
-  involved in the wait event. Cross-reference them with segment statistics sections. 
+  When present, these names establish only which tables appear in the collected SQL text.
+  Treat them as candidates and require aligned runtime evidence before attributing a wait or
+  segment mechanism. Cross-reference them with segment statistics sections.
   When this field is absent (sql_text was not available), continue to reason about 
   potentially involved tables based on segment statistics, correlations, and other 
   available data — but note that such reasoning is inferential.
@@ -1068,7 +1079,14 @@ The ReportForAI contains these analytical sections:
 - `instance_stats_pearson_correlation` — instance statistics correlated with DB Time (abs(rho) >= 0.5)
 - `load_profile_anomalies` — MAD-detected load profile anomalies
 - `anomaly_clusters` — temporally grouped anomalies across multiple domains
+- `db_load_sources` — per-target snapshot counts for Time Model, Load Profile fallback and unavailable values.
+  DB Time/DB CPU rates prefer Time Model seconds divided by actual wall seconds. This avoids
+  rounded Load Profile targets. Raw snapshot Load Profile rows retain their collected values.
 - `db_time_degradation_report` — baseline-vs-recent statistical degradation report for DB Time.
+  `change_score` is dimensionless and ranked only within its domain. `unit` describes each delta.
+  Never sum deltas from different metrics, estimate their DB Time share, or call them savings.
+  Regression interval totals are normalized by actual wall seconds (gauges retain levels).
+  Missing or invalid exposure excludes rate predictors; missing host CPU is unknown.
   Use it to state whether the latest snapshots statistically departed from the prior baseline,
   and to list the SQL IDs, wait events, instance statistics, time-model metrics, and load-profile
   counters that increased together with DB Time.
@@ -2819,6 +2837,19 @@ pub async fn openai_gpt(
 mod openrouter_response_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn classic_api_receives_hypothesis_policy_with_and_without_tools() {
+        use clap::Parser;
+        let args = crate::Args::parse_from(["jas-min"]);
+        for tools_mode in [false, true] {
+            let prompt =
+                build_model_instructions("EN", &args, &HashMap::new(), "unused", tools_mode);
+            assert!(prompt.contains(ACCESS_PATH_REASONING));
+            assert!(!prompt.contains("mandatory evidence gate for empty-block"));
+            assert!(!prompt.contains("- `access_path_diagnostics`"));
+        }
+    }
 
     #[test]
     fn classic_api_context_preserves_peak_union_without_duplicating_full_fits() {

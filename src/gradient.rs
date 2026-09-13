@@ -1995,6 +1995,7 @@ pub fn build_db_time_gradient_section(
             input_wait_event_unit: units_desc.to_string(),
             input_db_time_unit: if units_desc.contains("CPU")
                 || units_desc == "statistic_values_cpu"
+                || units_desc == "statistic_rate_cpu"
             {
                 "db_cpu_per_second"
             } else if units_desc.starts_with("custom") {

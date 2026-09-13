@@ -133,6 +133,24 @@ ADMM with SciPy SLSQP's epigraph formulation (`a + X beta + u - v = y`,
 For a local source replay, the ignored `replay_gradient_fixture` test accepts
 `JASMIN_GRADIENT_FIXTURE` (JSON with aligned `target`, named `features`, named
 boolean `observations`) and `JASMIN_GRADIENT_OUTPUT`. It exports full results,
-an exact-contributor query and generated HTML. The DNV regression assertion
+an exact-contributor query and generated HTML. The real-data regression assertion
 checks that the reported rare SQL survives Q95 selection on the original inputs.
 No private source dataset is included in the repository.
+
+### DB Time and DB CPU target precision (2026-09-13)
+
+DB Time/DB CPU targets now prefer the matching `time_model_stats.time_s` divided by
+actual snapshot wall seconds. This avoids Load Profile rounding (for example,
+`13.32 / 60 = 0.222 s/s` instead of `0.2 s/s`) distorting adjacent target deltas.
+Selection is independent for each metric and snapshot. Missing/disabled Time Model,
+invalid/nonpositive exposure or invalid timing values fall back to the collected
+Load Profile rate. A measured zero remains zero. If neither source is usable, the
+aligned target is unavailable and no gradient is fitted across that missing target.
+
+The same selection feeds gradients, degradation, DB-load anomaly comparisons, peak
+filters and metric timelines. `ReportForAI.db_load_sources` records per-target counts
+of Time Model, Load Profile fallback and unavailable snapshots. Snapshot tools expose
+`db_time_rate`/`db_cpu_rate` with `per_second` and `source`; DB-load metric timelines
+include `value_source`. Raw Load Profile rows in the input and snapshot detail remain
+unchanged. Recompute existing projects; historical rounded-target ranks and coefficients
+are not directly comparable with these fits. No model parameter or TOP policy changed.

@@ -91,7 +91,7 @@ pub const KEY_STATS_VOLUME: [&str; 22] = [
 // ─────────────────────────────────────────────────────────────────────────────
 // COUNTERS — statistics describing database behavior and workload
 // ─────────────────────────────────────────────────────────────────────────────
-pub const KEY_STATS_COUNTERS: [&str; 104] = [
+pub const KEY_STATS_COUNTERS: [&str; 106] = [
     // Session / cursor churn
     "logons cumulative",
     "logons current",
@@ -187,6 +187,9 @@ pub const KEY_STATS_COUNTERS: [&str; 104] = [
     "table scans (direct read)",
     "table fetch by rowid",
     "table fetch continued row",
+    "table scan blocks gotten",
+    // Scan activity, NOT live rows or application work completed.
+    "table scan rows gotten",
     "index range scans",
     "index fast full scans (full)",
     "index fast full scans (direct read)",
@@ -216,7 +219,7 @@ pub const KEY_STATS_COUNTERS: [&str; 104] = [
 // CPU — statistics that best explain DB CPU consumption
 // (used to build the DB CPU gradient, NOT the DB Time gradient)
 // ─────────────────────────────────────────────────────────────────────────────
-pub const KEY_STATS_CPU: [&str; 47] = [
+pub const KEY_STATS_CPU: [&str; 49] = [
     // ── CPU time (direct) ────────────────────────────────────────────
     "cpu used by this session",
     "cpu used when call started",
@@ -263,6 +266,8 @@ pub const KEY_STATS_CPU: [&str; 47] = [
     // ── SQL engine complexity indicators ─────────────────────────────
     "table fetch by rowid",
     "table fetch continued row",
+    "table scan blocks gotten",
+    "table scan rows gotten",
     "index fetch by key",
     "index range scans",
     "index fast full scans (full)",

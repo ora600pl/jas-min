@@ -33,6 +33,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Anomalies | Uses MAD-based anomaly detection with configurable threshold, sliding-window percentage, and optional trimming to the largest anomaly clusters. |
 | Correlation | Computes Pearson correlations between DB Time and wait events, SQL elapsed time, and instance statistics. |
 | Gradient analysis | Runs Ridge, Elastic Net, Huber, and Quantile-95 regression models over DB Time and DB CPU drivers. |
+| Interactive regression course | Local, offline mathematics course in [Polish](docs/regression-course/index.html#pl/start) and [English](docs/regression-course/index.html#en/start): a continuous brewhouse-to-database story, worked derivations, Gaussian elimination, four regression models, quizzes and local data experiments. See [course instructions](docs/regression-course/README.md). |
 | Custom gradient | Builds extra gradient pages for a selected SQL ID or wait event with `--gradient-custom`. |
 | AI reports | Supports OpenAI, Google Gemini, OpenRouter, and a two-session local agent served by LM Studio. |
 | Analytical report atlas | Linked active/peak bubble plots, four-model selection matrices, per-instance synthesis and scoped anomaly windows in MCP/API reports. See [the report atlas guide](docs/report-signal-atlas.md). |
@@ -876,3 +877,5 @@ a durable fix. Updating a member finding requires reviewing its issue summary
 again. Classic APIs and the local reviewer use the same validated decision
 metadata and renderer. See [issue authoring and migration](docs/report-issues.md)
 for required fields, legacy compatibility and export validation.
+
+- [Scan and row-continuation reasoning](docs/access-path-diagnostics.md): AI hypotheses from existing gradients, degradation and SQL costs; optional confirmation evidence.

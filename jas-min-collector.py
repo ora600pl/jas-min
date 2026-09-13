@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from html import unescape
 from html.parser import HTMLParser
 import json
+import math
 from pathlib import Path
 
 
@@ -469,6 +470,10 @@ def build_arg_parser():
         type=parse_existing_dir_arg,
         help="directory containing prepared operating system statistics files",
     )
+    parser.add_argument(
+        "--access-path-evidence", type=Path, metavar="JSON",
+        help="merge scoped SQL/segment evidence into collected JSON; exact DB/instance/window match required; requires security level 2",
+    )
     return parser
 
 
@@ -769,6 +774,8 @@ def default_awr(path):
             "end_snap_time": "",
         },
         "status": "OK",
+        "data_availability": {},
+        "access_path_observations": [],
         "load_profile": [],
         "instance_efficiency": [],
         "redo_log": {"stat_name": "", "per_hour": 0.0},
@@ -800,6 +807,118 @@ def default_awr(path):
         "latch_activity": [],
         "segment_stats": {},
     }
+
+
+def mark_data_availability(awr):
+    """Empty sections remain unknown; legacy numeric placeholders are not measurements."""
+    domains = ("load_profile", "instance_stats", "sql_elapsed_time", "sql_gets",
+               "time_model_stats", "foreground_wait_events", "segment_stats")
+    mask = {key: bool(awr.get(key)) for key in domains}
+    host = awr["host_cpu"]
+    percentages = [host[key] for key in ("pct_user", "pct_system", "pct_wio", "pct_idle")]
+    mask["host_cpu"] = all(0 <= x <= 100 for x in percentages) and 95 <= sum(percentages) <= 105
+    mask["ash"] = bool(awr["top_sql_with_top_events"])
+    mask["access_path_observations"] = bool(awr["access_path_observations"])
+    awr["data_availability"] = mask
+
+
+def evidence_integer(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def validate_evidence_scope(scope):
+    for name in ("dbid", "inst_id", "con_id"):
+        if not evidence_integer(scope.get(name)):
+            raise CollectorError("Invalid scope identity: " + name)
+    for name in ("child_number", "plan_hash_value", "object_id", "data_object_id"):
+        if scope.get(name) is not None and not evidence_integer(scope[name]):
+            raise CollectorError("Invalid optional scope identity: " + name)
+    if not isinstance(scope.get("sql_id"), str) or not SQL_ID_RE.fullmatch(scope["sql_id"]):
+        raise CollectorError("Invalid SQL_ID")
+
+
+def merge_access_path_evidence(json_path, evidence_path):
+    """Validate every window before writing; no ordinal, nearest-time or cross-RAC joins."""
+    try:
+        collection = json.loads(Path(json_path).read_text(encoding="utf-8"))
+        evidence = json.loads(Path(evidence_path).read_text(encoding="utf-8"))
+        dbi = collection["db_instance_information"]
+        if evidence["schema_version"] != "2026-09-13.1":
+            raise CollectorError("Unsupported access-path evidence schema_version")
+        if evidence["dbid"] != dbi["db_id"] or evidence["inst_id"] != dbi["instance_num"]:
+            raise CollectorError("Access-path evidence DBID/INST_ID does not match collection")
+        index = {}
+        keys = ("begin_snap_id", "end_snap_id", "begin_snap_time", "end_snap_time")
+        for awr in collection["awrs"]:
+            key = tuple(awr["snap_info"][k] for k in keys)
+            if key in index:
+                raise CollectorError("Ambiguous duplicate collection window")
+            index[key] = awr
+        seen = set()
+        for window in evidence["windows"]:
+            key = tuple(window["snap_info"][k] for k in keys)
+            if key in seen or key not in index:
+                raise CollectorError("Evidence window must match exactly one DB/instance/snapshot/time interval")
+            seen.add(key)
+            awr = index[key]
+            if awr.get("access_path_observations"):
+                raise CollectorError("Refusing to overwrite existing access-path observations")
+            identities = set()
+            for observation in window["observations"]:
+                scope = observation["scope"]
+                validate_evidence_scope(scope)
+                if scope["dbid"] != evidence["dbid"] or scope["inst_id"] != evidence["inst_id"]:
+                    raise CollectorError("Observation identity does not match evidence DBID/INST_ID")
+                identity = tuple(scope.get(k) for k in ("dbid", "inst_id", "con_id", "sql_id", "child_number", "plan_hash_value", "object_id", "data_object_id"))
+                if identity in identities:
+                    raise CollectorError("Duplicate SQL/child/plan/segment observation in one window")
+                identities.add(identity)
+                if not isinstance(scope.get("con_id"), int) or scope["con_id"] < 0 or not SQL_ID_RE.fullmatch(scope["sql_id"]):
+                    raise CollectorError("Invalid SQL/container identity")
+                if not observation["evidence_ref"].strip() or not evidence_integer(observation["executions"]) or observation["executions"] <= 0:
+                    raise CollectorError("Observation requires an evidence reference and positive execution delta")
+                for metric in ("buffer_gets", "elapsed_s", "scan_blocks", "continued_rows"):
+                    value = observation.get(metric)
+                    if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0):
+                        raise CollectorError("Invalid or reset delta: " + metric)
+                    if metric in ("scan_blocks", "continued_rows") and value is not None and not evidence_integer(value):
+                        raise CollectorError("Expected integer delta: " + metric)
+                work = observation.get("useful_work")
+                if work is not None:
+                    completed = work.get("completed")
+                    if not work["name"].strip() or not work["unit"].strip() or isinstance(completed, bool) or not isinstance(completed, (int, float)) or not math.isfinite(completed) or completed <= 0:
+                        raise CollectorError("Useful work requires a name, unit and positive measured count")
+                structure = observation.get("structure")
+                if structure is not None:
+                    for field in ("evidence_ref", "observed_at", "method"):
+                        if not isinstance(structure.get(field), str) or not structure[field].strip():
+                            raise CollectorError("Structural evidence requires " + field)
+                    for field in ("blocks_below_hwm", "verified_empty_blocks_below_hwm", "fs4_blocks", "chained_rows"):
+                        if structure.get(field) is not None and not evidence_integer(structure[field]):
+                            raise CollectorError("Structural counts must be nonnegative integers")
+                intervention = observation.get("intervention")
+                if intervention is not None:
+                    validate_evidence_scope(intervention["after_scope"])
+                    for field in ("before_begin_snap_id", "after_begin_snap_id"):
+                        if not evidence_integer(intervention.get(field)):
+                            raise CollectorError("Intervention requires snapshot identity: " + field)
+                    for field in ("same_plan", "same_logical_data", "comparable_cache_and_concurrency", "equivalent_work"):
+                        if not isinstance(intervention.get(field), bool):
+                            raise CollectorError("Intervention controls must be explicit booleans")
+                    for field in ("evidence_ref", "controls_evidence_ref"):
+                        if not isinstance(intervention.get(field), str) or not intervention[field].strip():
+                            raise CollectorError("Intervention requires " + field)
+            awr["access_path_observations"] = window["observations"]
+            mask = window.get("data_availability", {})
+            if any(not isinstance(v, bool) for v in mask.values()):
+                raise CollectorError("Availability masks must contain booleans")
+            awr.setdefault("data_availability", {}).update(mask)
+            awr["data_availability"]["access_path_observations"] = bool(window["observations"])
+        Path(json_path).write_text(json.dumps(collection, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    except CollectorError:
+        raise
+    except (OSError, KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise CollectorError("Invalid access-path evidence: {}".format(exc))
 
 
 def merge_db_instance(target, source):
@@ -1265,6 +1384,7 @@ def parse_html_report(path, security_level):
         elif summary == "This table displays total number of waits, and information about total wait time, for each wait event":
             apply_wait_histogram(awr, parse_wait_histogram(table))
 
+    mark_data_availability(awr)
     return awr, sql_text, parameters, db_instance
 
 
@@ -1295,10 +1415,16 @@ def parse_text_snap_info(path, lines):
             nums = re.findall(r"\d+", line)
             if nums:
                 result["begin_snap_id"] = int(nums[0])
+            date = re.search(r"\d{1,2}-[A-Za-z]{3}-\d{2,4}\s+\d{2}:\d{2}:\d{2}", line)
+            if date:
+                result["begin_snap_time"] = date.group(0)
         elif "End Snap:" in line or re.search(r"\bEnd\s+Snap", line):
             nums = re.findall(r"\d+", line)
             if nums:
                 result["end_snap_id"] = int(nums[0])
+            date = re.search(r"\d{1,2}-[A-Za-z]{3}-\d{2,4}\s+\d{2}:\d{2}:\d{2}", line)
+            if date:
+                result["end_snap_time"] = date.group(0)
     return result
 
 
@@ -1413,6 +1539,7 @@ def parse_text_report(path, security_level):
     awr["sql_gets"] = parse_text_sql_section(find_text_section(lines, "SQL ordered by Gets", ["SQL ordered by Reads", "SQL ordered by Executions"]), "gets")
     awr["sql_reads"] = parse_text_sql_section(find_text_section(lines, "SQL ordered by Reads", ["SQL ordered by Executions", "SQL ordered by Parse"]), "reads")
     db_instance = default_db_instance()
+    mark_data_availability(awr)
     return awr, {}, {}, db_instance
 
 
@@ -2643,7 +2770,7 @@ def main(argv=None):
             args.os_stats_dir,
         )
         package_mode = args.package_mode if args.package_mode is not None else ask_package_mode()
-        json_required = package_includes_json(package_mode) or include_sql_plans
+        json_required = package_includes_json(package_mode) or include_sql_plans or args.access_path_evidence is not None
         security_level = args.security_level
         if json_required:
             security_level = security_level if security_level is not None else ask_security_level()
@@ -2673,6 +2800,10 @@ def main(argv=None):
         if json_required:
             print("Parsing generated reports to JAS-MIN JSON...")
             json_path = parse_reports_to_json(reports, output_dir, stem, security_level)
+            if args.access_path_evidence is not None:
+                if security_level != 2:
+                    raise CollectorError("--access-path-evidence requires --security-level 2 to preserve explicit evidence references")
+                merge_access_path_evidence(json_path, args.access_path_evidence)
             print("JSON file: {}".format(json_path))
 
         xplan_info = {

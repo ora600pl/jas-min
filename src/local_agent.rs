@@ -6,12 +6,12 @@ use crate::tools::estimate_tokens_from_str;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{env, fs};
 
-const LOCAL_AGENT_SCHEMA_VERSION: &str = "2026-08-23.4";
+const LOCAL_AGENT_SCHEMA_VERSION: &str = "2026-09-13.3";
 const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 16 * 1024;
 const DEFAULT_CONTEXT_HIGH_WATER_PCT: usize = 72;
 const DEFAULT_TOOL_OUTPUT_TOKENS: usize = 3_072;
@@ -1738,6 +1738,8 @@ pub(crate) fn build_case_seed(report: &ReportForAI) -> Value {
         "performance_peaks": spikes,
         "performance_peaks_total": report.top_spikes_marked.len(),
         "db_time_degradation": compact_degradation(report),
+        "db_load_source_policy": crate::measurements::DB_LOAD_SOURCE_POLICY,
+        "db_load_sources": report.db_load_sources,
         "gradients": {
             "db_time_foreground_wait_events": compact_gradient(report.db_time_gradient_fg_wait_events.as_ref()),
             "db_time_instance_stats_counters": compact_gradient(report.db_time_gradient_instance_stats_counters.as_ref()),
@@ -1919,31 +1921,32 @@ fn detailed_gradients(report: &ReportForAI, limit: usize, args: &Value) -> Value
 }
 
 fn compact_degradation(report: &ReportForAI) -> Value {
+    degradation_query(report, &json!({"limit":3}))
+}
+
+fn degradation_query(report: &ReportForAI, args: &Value) -> Value {
     let Some(degradation) = report.db_time_degradation_report.as_ref() else {
         return Value::Null;
     };
-    json!({
-        "is_degradation_detected": degradation.is_degradation_detected,
-        "verdict": degradation.verdict,
-        "baseline_start": degradation.baseline_start,
-        "baseline_end": degradation.baseline_end,
-        "degraded_start": degradation.degraded_start,
-        "degraded_end": degradation.degraded_end,
-        "baseline_samples": degradation.baseline_samples,
-        "degraded_samples": degradation.degraded_samples,
-        "db_time_baseline_avg": degradation.db_time_baseline_avg,
-        "db_time_degraded_avg": degradation.db_time_degraded_avg,
-        "db_time_delta_avg": degradation.db_time_delta_avg,
-        "db_time_delta_pct": degradation.db_time_delta_pct,
-        "db_time_robust_z_score": degradation.db_time_robust_z_score,
-        "db_cpu_baseline_avg": degradation.db_cpu_baseline_avg,
-        "db_cpu_degraded_avg": degradation.db_cpu_degraded_avg,
-        "db_cpu_delta_avg": degradation.db_cpu_delta_avg,
-        "db_cpu_delta_pct": degradation.db_cpu_delta_pct,
-        "dominant_domains": degradation.dominant_domains,
-        "findings_total": degradation.findings.len(),
-        "findings": degradation.findings.iter().take(10).collect::<Vec<_>>()
-    })
+    let limit = args["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
+    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+    let mut groups: BTreeMap<&str, Vec<_>> = BTreeMap::new();
+    for finding in &degradation.findings {
+        if args["domain"].as_str().is_none_or(|d| d == finding.domain) {
+            groups.entry(&finding.domain).or_default().push(finding);
+        }
+    }
+    let counts: BTreeMap<_, _> = groups.iter().map(|(k, v)| (*k, v.len())).collect();
+    let rows: Vec<_> = groups
+        .values()
+        .flat_map(|rows| rows.iter().skip(offset).take(limit).copied())
+        .collect();
+    let mut value = serde_json::to_value(degradation).unwrap();
+    value["findings"] = json!(rows);
+    value["findings_total"] = json!(degradation.findings.len());
+    value["domain_counts"] = json!(counts);
+    value["pagination"] = json!({"limit_per_domain":limit,"offset_per_domain":offset});
+    value
 }
 
 fn local_tools_schema(stem: &str, guidance_available: bool) -> Value {
@@ -1968,6 +1971,7 @@ fn local_tools_schema(stem: &str, guidance_available: bool) -> Value {
                             ]
                         },
                         "family": {"type": "string", "description": "full_gradients only: exact family key, e.g. db_time_sql_elapsed_time"},
+                        "domain": {"type":"string","description":"db_time_degradation only: exact domain filter; limit and offset apply per domain"},
                         "contributor": {"type": "string", "description": "full_gradients only: exact SQL_ID/event/statistic lookup across full fitted rankings"},
                         "ranking": {"type": "string", "enum": ["selection", "active", "peak", "extreme"]},
                         "offset": {"type": "integer", "minimum": 0},
@@ -2155,7 +2159,7 @@ pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) 
             }
             result
         }
-        "db_time_degradation" => compact_degradation(report),
+        "db_time_degradation" => degradation_query(report, args),
         "performance_peaks" => json!(report
             .top_spikes_marked
             .iter()
@@ -2177,10 +2181,14 @@ pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) 
 }
 
 fn investigator_system_prompt(language: &str, guidance_catalog: &str) -> String {
+    let access_path_reasoning = crate::reasonings::ACCESS_PATH_REASONING;
     format!(
         r#"You are JAS-MIN Investigator, an expert Oracle Database performance diagnostician.
 
 You receive only a compact, high-signal seed: gradient analyses, DB Time degradation and DB CPU/DB Time ratios for performance peaks. Detailed AWR/STATSPACK evidence is available through read-only tools.
+
+SCAN / ROW-CONTINUATION REASONING:
+{access_path_reasoning}
 
 DIAGNOSTIC GUIDANCE AVAILABILITY:
 {guidance_catalog}
@@ -2215,10 +2223,14 @@ Every important claim must cite evidence_id values and include exact supporting 
 }
 
 fn reviewer_system_prompt(language: &str, guidance_catalog: &str) -> String {
+    let access_path_reasoning = crate::reasonings::ACCESS_PATH_REASONING;
     format!(
         r#"You are JAS-MIN Reviewer, a skeptical senior Oracle performance engineer.
 
 You receive the original compact seed and a structured checkpoint from another investigation session. Do not merely rewrite or endorse it. Try to falsify every material conclusion, search for alternative explanations, verify temporal alignment, and obtain fresh evidence through tools. Re-query important evidence because the prior raw conversation is intentionally unavailable.
+
+SCAN / ROW-CONTINUATION REASONING:
+{access_path_reasoning}
 
 DIAGNOSTIC GUIDANCE AVAILABILITY:
 {guidance_catalog}
@@ -3107,6 +3119,53 @@ TRIGGER: user logons and connection creation spike.
             absent["data"]["db_time_sql_elapsed_time"]["ranking_pages"]["ridge"]["total"],
             0
         );
+    }
+
+    #[test]
+    fn degradation_pagination_keeps_independent_domains() {
+        let mut report = ReportForAI::default();
+        let findings = ["Foreground wait events", "Instance statistics"]
+            .into_iter()
+            .flat_map(|domain| {
+                (0..12).map(move |i| crate::reasonings::DbTimeDegradationFinding {
+                    domain: domain.into(),
+                    name: format!("metric_{i}"),
+                    domain_rank: i + 1,
+                    ..Default::default()
+                })
+            })
+            .collect();
+        report.db_time_degradation_report = Some(crate::reasonings::DbTimeDegradationReport {
+            findings,
+            ..Default::default()
+        });
+        let result = dispatch_precomputed_analysis(
+            &json!({"section":"db_time_degradation","limit":2,"offset":1}),
+            &report,
+        );
+        let rows = result["data"]["findings"].as_array().unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0]["name"], "metric_1");
+        assert_eq!(rows[2]["domain"], "Instance statistics");
+    }
+
+    #[test]
+    fn both_local_sessions_reason_from_existing_signals_without_extra_report() {
+        let policy = crate::reasonings::ACCESS_PATH_REASONING;
+        assert!(investigator_system_prompt("EN", "unavailable").contains(policy));
+        assert!(reviewer_system_prompt("EN", "unavailable").contains(policy));
+        let seed = build_case_seed(&ReportForAI::default());
+        assert!(seed.get("access_path_diagnostics").is_none());
+        assert!(seed.get("gradients").is_some());
+        assert!(seed.get("db_time_degradation").is_some());
+        let schema = local_tools_schema("unused", false);
+        let precomputed = schema
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["function"]["name"] == "get_precomputed_analysis")
+            .unwrap();
+        assert!(!precomputed.to_string().contains("access_path_diagnostics"));
     }
 
     #[test]
