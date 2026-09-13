@@ -11,6 +11,9 @@
 *.sln.docstates
 *.txt 
 *.html
+# Public, self-contained regression course and its authored template.
+!/docs/regression-course/index.html
+!/docs/regression-course/src/index.html
 *.pyc
 *.swp
 .rustc_info.json

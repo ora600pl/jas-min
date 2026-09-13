@@ -141,19 +141,9 @@ fn get_loadprofile_map_vectors(awrs: &Vec<AWR>) -> ObservedSeriesMap {
 
     //we are iterating over AWR
     for (i, awr) in awrs.iter().enumerate() {
-        let mut snapshot_map: HashMap<&String, f64> = HashMap::new();
-
-        snapshot_map = awr
-            .load_profile
-            .iter()
-            .map(|l| (&l.stat_name, l.per_second))
-            .collect();
-
-        //Let's go through all of the load profile stats
-        for l in &all_loadprofile {
-            if let Some(&val) = snapshot_map.get(l) {
-                profile_map.get_mut(l).unwrap()[i] = Some(val);
-            }
+        for name in &all_loadprofile {
+            profile_map.get_mut(name).unwrap()[i] =
+                crate::measurements::load_profile_rate(awr, name);
         }
     }
     profile_map

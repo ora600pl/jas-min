@@ -105,7 +105,7 @@ cargo test --offline replay_signal_atlas_from_archived_audit -- --ignored --noca
 The external customer fixture is not committed. Replay reads `report.json` and
 the archived `evidence_*.json` envelopes, preserves delivered provenance and
 methodology verbatim, checks all fragments/local links, and refuses to overwrite
-any prior export. The DNV regression covers 14 separate fits and 228 recorded
+any prior export. The real-data regression covers 14 separate fits and 228 recorded
 contributors. Unit tests cover unknowns, exact values, flags, zero ratios,
 scope/URL validation and API normalization.
 

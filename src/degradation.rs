@@ -1,5 +1,6 @@
 use crate::awr::{AWRSCollection, AWR};
 use crate::debug_note;
+use crate::measurements;
 use crate::reasonings::{
     DbTimeDegradationDomainSummary, DbTimeDegradationFinding, DbTimeDegradationReport,
 };
@@ -73,21 +74,34 @@ pub fn build_db_time_degradation_report(
         }
     };
     let db_cpu_stats = compare_windows(db_cpu, &baseline, &degraded).unwrap_or_default();
-    // Positive DB Time delta is used as the denominator for the "share" score. If DB Time
-    // did not rise, contributors can still be listed by z-score/correlation, but their
-    // estimated DB Time share is intentionally forced to 0.
-    let db_time_delta = db_time_stats.delta_avg.max(0.0);
 
+    let instance_rates = measurements::instance_rates(collection, snap_range);
+    let wait_rates = measurements::domain_rates(
+        collection,
+        snap_range,
+        wait_events,
+        "foreground_wait_events",
+    );
     let load_profile = load_profile_series(collection, snap_range, db_time.len());
-    let time_model = time_model_series(collection, snap_range, db_time.len());
+    let time_model = measurements::domain_rates(
+        collection,
+        snap_range,
+        &time_model_series(collection, snap_range, db_time.len()),
+        "time_model_stats",
+    );
     let mut sql_elapsed_wide = sql_elapsed_series(collection, snap_range, db_time.len());
     for (sql_id, series) in sql_elapsed {
         sql_elapsed_wide.insert(sql_id.clone(), series.clone());
     }
 
-    // Keep a separate top-N per domain. A single unit-heavy domain, especially SQL elapsed
-    // time, can otherwise dominate the global ranking and hide waits/statistics that changed
-    // at the same time as DB Time.
+    let sql_elapsed_wide = measurements::domain_rates(
+        collection,
+        snap_range,
+        &sql_elapsed_wide,
+        "sql_elapsed_time",
+    );
+
+    // Keep independent top-N lists per domain. No cross-unit ranking or additive cost.
     let per_domain_limit = args.top_gradient.max(10);
     let mut findings = Vec::new();
     findings.extend(top_findings(
@@ -97,67 +111,43 @@ pub fn build_db_time_degradation_report(
             db_time,
             &baseline,
             &degraded,
-            db_time_delta,
         ),
         per_domain_limit,
     ));
     findings.extend(top_findings(
         score_domain(
             "Foreground wait events",
-            wait_events,
+            &wait_rates,
             db_time,
             &baseline,
             &degraded,
-            db_time_delta,
         ),
         per_domain_limit,
     ));
     findings.extend(top_findings(
         score_domain(
             "Instance statistics",
-            &instance_stats
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            &instance_rates,
             db_time,
             &baseline,
             &degraded,
-            db_time_delta,
         ),
         per_domain_limit,
     ));
     findings.extend(top_findings(
-        score_domain(
-            "Time model",
-            &time_model,
-            db_time,
-            &baseline,
-            &degraded,
-            db_time_delta,
-        ),
+        score_domain("Time model", &time_model, db_time, &baseline, &degraded),
         per_domain_limit,
     ));
     findings.extend(top_findings(
-        score_domain(
-            "Load profile",
-            &load_profile,
-            db_time,
-            &baseline,
-            &degraded,
-            db_time_delta,
-        ),
+        score_domain("Load profile", &load_profile, db_time, &baseline, &degraded),
         per_domain_limit,
     ));
 
+    // Domain order is lexical; ranks have meaning only inside their own domain.
     findings.sort_by(|a, b| {
-        b.estimated_db_time_delta_share
-            .partial_cmp(&a.estimated_db_time_delta_share)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| {
-                b.robust_z_score
-                    .partial_cmp(&a.robust_z_score)
-                    .unwrap_or(Ordering::Equal)
-            })
+        a.domain
+            .cmp(&b.domain)
+            .then(a.domain_rank.cmp(&b.domain_rank))
     });
     let dominant_domains = summarize_domains(&findings);
     let is_degradation_detected = is_db_time_degraded(&db_time_stats);
@@ -238,29 +228,29 @@ pub fn find_degraded_sqls_for_analysis(
         return Vec::new();
     }
 
-    let Some(db_time_stats) = compare_windows(&db_time, &baseline, &degraded) else {
+    let Some(_) = compare_windows(&db_time, &baseline, &degraded) else {
         debug_note!("Skipping degraded SQL scan: window comparison unavailable");
         return Vec::new();
     };
 
     let sql_elapsed = sql_elapsed_series(collection, snap_range, db_time.len());
     let sql_modules = sql_module_map(collection, snap_range);
-    let db_time_delta = db_time_stats.delta_avg.max(0.0);
 
     // Do not cap this list with --top-gradient. The goal here is not presentation ranking;
     // it is coverage: every SQL_ID identified as degraded should be available to the regular
     // SQL analysis pipeline, otherwise the detailed pages/tables/gradients can miss it.
+    let sql_elapsed =
+        measurements::domain_rates(collection, snap_range, &sql_elapsed, "sql_elapsed_time");
     let mut sql_findings = score_domain(
         "SQL elapsed time",
         &sql_elapsed,
         &db_time,
         &baseline,
         &degraded,
-        db_time_delta,
     );
     sql_findings.sort_by(|a, b| {
-        b.estimated_db_time_delta_share
-            .partial_cmp(&a.estimated_db_time_delta_share)
+        b.change_score
+            .partial_cmp(&a.change_score)
             .unwrap_or(Ordering::Equal)
             .then_with(|| {
                 b.robust_z_score
@@ -292,7 +282,7 @@ pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> Strin
             "<tr><td>{}</td><td>{}</td><td>{:.3}</td></tr>",
             encode_text(&d.domain),
             d.findings_count,
-            d.total_positive_delta
+            d.max_change_score
         ));
         domain_options.push_str(&format!(
             r#"<option value="{}">{}</option>"#,
@@ -305,7 +295,7 @@ pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> Strin
     for f in &report.findings {
         let name_html = linked_finding_name(f);
         finding_rows.push_str(&format!(
-            "<tr data-domain=\"{}\"><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td>{:.3}</td><td>{:.1}%</td><td>{:.2}</td><td>{:.2}</td><td>{:.1}%</td><td>{}</td><td>{}</td></tr>",
+            "<tr data-domain=\"{}\"><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td>{:.3}</td><td>{:.1}%</td><td>{:.2}</td><td>{:.2}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             encode_text(&f.domain),
             encode_text(&f.domain),
             name_html,
@@ -315,7 +305,7 @@ pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> Strin
             f.delta_pct,
             f.robust_z_score,
             f.correlation_with_db_time,
-            f.estimated_db_time_delta_share * 100.0,
+            encode_text(&f.unit),
             encode_text(&f.severity),
             encode_text(&f.evidence)
         ));
@@ -391,9 +381,9 @@ pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> Strin
         <strong>DB CPU:</strong> {:.3} -> {:.3} s/s, delta {:.3} ({:.1}%)</p>
     </div>
 
-    <h3>Dominant Domains</h3>
+    <h3>Changed Domains</h3><p>Ranked within each domain by dimensionless change score. Metrics overlap and must not be summed. No percentage of DB Time or recoverable time is estimated.</p>
     <table>
-        <thead><tr><th>Domain</th><th>Findings</th><th>Total positive delta</th></tr></thead>
+        <thead><tr><th>Domain</th><th>Findings</th><th>Maximum change score (dimensionless)</th></tr></thead>
         <tbody>{}</tbody>
     </table>
 
@@ -403,7 +393,7 @@ pub fn build_db_time_degradation_html(report: &DbTimeDegradationReport) -> Strin
         <select id="domain-filter">{}</select>
     </div>
     <table id="degraded-parameters-table">
-        <thead><tr><th>Domain</th><th>Name</th><th>Baseline avg</th><th>Recent avg</th><th>Delta</th><th>Delta %</th><th>Robust z</th><th>Corr DB Time</th><th>DB Time delta share</th><th>Severity</th><th>Evidence</th></tr></thead>
+        <thead><tr><th>Domain</th><th>Name</th><th>Baseline avg</th><th>Recent avg</th><th>Delta</th><th>Delta %</th><th>Robust z</th><th>Corr DB Time</th><th>Unit</th><th>Severity</th><th>Evidence</th></tr></thead>
         <tbody>{}</tbody>
     </table>
 </div>
@@ -463,7 +453,7 @@ struct WindowComparison {
     robust_z_score: f64,
 }
 
-fn split_windows(len: usize) -> (Vec<usize>, Vec<usize>) {
+pub(crate) fn split_windows(len: usize) -> (Vec<usize>, Vec<usize>) {
     // The recent window represents the suspected degradation period. A 25% tail works well
     // for "last few days vs previous week" reports while the hard cap prevents long inputs
     // from diluting the recent signal with too many older snapshots.
@@ -481,7 +471,7 @@ fn compare_windows(
     baseline: &[usize],
     degraded: &[usize],
 ) -> Option<WindowComparison> {
-    if series.len() <= *degraded.last()? {
+    if series.iter().any(|v| !v.is_finite()) || series.len() <= *degraded.last()? {
         return None;
     }
     let baseline_values: Vec<f64> = baseline.iter().map(|&i| series[i]).collect();
@@ -536,7 +526,6 @@ fn score_domain(
     db_time: &[f64],
     baseline: &[usize],
     degraded: &[usize],
-    db_time_delta: f64,
 ) -> Vec<DbTimeDegradationFinding> {
     let mut findings = Vec::new();
     for (name, series) in series_map {
@@ -553,22 +542,18 @@ fn score_domain(
         if !is_degraded_finding(&stats, corr) {
             continue;
         }
-        // This is a ranking heuristic, not a strict accounting identity. Some domains use
-        // different units (for example SQL elapsed seconds vs DB Time s/s), so the value is
-        // best read as "relative pressure compared with the DB Time level shift".
-        let share = if db_time_delta > 1e-9 {
-            (stats.delta_avg / db_time_delta).clamp(0.0, 9.99)
-        } else {
-            0.0
+        // Unit-invariant change evidence, never an accounting share or a time saving.
+        let score = stats.robust_z_score.max(0.0).min(99.0)
+            + (1.0 + stats.delta_pct.max(0.0) / 100.0).ln() * corr.max(0.0);
+        let severity = classify_severity(stats.robust_z_score, stats.delta_pct, corr);
+        let unit = match domain {
+            "SQL elapsed time" | "Foreground wait events" | "Time model" => "s/s".to_string(),
+            "Instance statistics" => format!("{} ({})", measurements::statistic_unit(name), name),
+            _ => format!("reported units/s ({})", name),
         };
-        let severity = classify_severity(stats.robust_z_score, stats.delta_pct, share, corr);
         let evidence = format!(
-            "avg {:.3} -> {:.3}; robust z {:.2}; corr(DB Time) {:.2}; estimated DB Time delta share {:.1}%",
-            stats.baseline_avg,
-            stats.degraded_avg,
-            stats.robust_z_score,
-            corr,
-            share * 100.0
+            "avg {:.3} -> {:.3} {}; robust z {:.2}; corr(DB Time) {:.2}; change score {:.2}; association only",
+            stats.baseline_avg, stats.degraded_avg, unit, stats.robust_z_score, corr, score
         );
         findings.push(DbTimeDegradationFinding {
             domain: domain.to_string(),
@@ -579,7 +564,9 @@ fn score_domain(
             delta_pct: stats.delta_pct,
             robust_z_score: stats.robust_z_score,
             correlation_with_db_time: corr,
-            estimated_db_time_delta_share: share,
+            change_score: score,
+            unit,
+            domain_rank: 0,
             severity,
             evidence,
         });
@@ -667,19 +654,16 @@ fn safe_pearson(a: &[f64], b: &[f64]) -> f64 {
     }
 }
 
-fn classify_severity(z: f64, delta_pct: f64, share: f64, corr: f64) -> String {
-    // Severity is deliberately conservative: the highest tiers require agreement between
-    // magnitude (delta_pct), statistical abnormality (z), DB Time relationship (corr), and
-    // ranking impact (share). This reduces false "critical" labels for isolated noisy metrics.
-    if z >= 6.0 && delta_pct >= 100.0 && share >= 0.25 && corr >= 0.5 {
-        "critical".to_string()
-    } else if z >= 3.0 && delta_pct >= 50.0 && (share >= 0.10 || corr >= 0.4) {
-        "high".to_string()
-    } else if z >= 2.5 || delta_pct >= 25.0 || corr >= 0.3 {
-        "medium".to_string()
+fn classify_severity(z: f64, delta_pct: f64, corr: f64) -> String {
+    // Statistical change severity does not establish materiality or mechanism.
+    if z >= 6.0 && delta_pct >= 100.0 && corr >= 0.5 {
+        "high"
+    } else if z >= 2.5 || delta_pct >= 25.0 {
+        "medium"
     } else {
-        "low".to_string()
+        "low"
     }
+    .to_string()
 }
 
 fn summarize_domains(findings: &[DbTimeDegradationFinding]) -> Vec<DbTimeDegradationDomainSummary> {
@@ -691,29 +675,22 @@ fn summarize_domains(findings: &[DbTimeDegradationFinding]) -> Vec<DbTimeDegrada
                 .or_insert_with(|| DbTimeDegradationDomainSummary {
                     domain: f.domain.clone(),
                     findings_count: 0,
-                    total_positive_delta: 0.0,
+                    max_change_score: 0.0,
                 });
         entry.findings_count += 1;
-        entry.total_positive_delta += f.delta_avg.max(0.0);
+        entry.max_change_score = entry.max_change_score.max(f.change_score);
     }
-    let mut rows: Vec<_> = by_domain.into_values().collect();
-    rows.sort_by(|a, b| {
-        b.total_positive_delta
-            .partial_cmp(&a.total_positive_delta)
-            .unwrap_or(Ordering::Equal)
-    });
-    rows
+    by_domain.into_values().collect()
 }
 
 fn top_findings(
     mut findings: Vec<DbTimeDegradationFinding>,
     limit: usize,
 ) -> Vec<DbTimeDegradationFinding> {
-    // Rank first by contribution-like pressure score, then by robust abnormality. This puts
-    // large DB Time-aligned shifts above tiny but statistically neat changes.
+    // Unit-invariant rank within a domain; materiality is evaluated separately.
     findings.sort_by(|a, b| {
-        b.estimated_db_time_delta_share
-            .partial_cmp(&a.estimated_db_time_delta_share)
+        b.change_score
+            .partial_cmp(&a.change_score)
             .unwrap_or(Ordering::Equal)
             .then_with(|| {
                 b.robust_z_score
@@ -721,6 +698,9 @@ fn top_findings(
                     .unwrap_or(Ordering::Equal)
             })
     });
+    for (i, f) in findings.iter_mut().enumerate() {
+        f.domain_rank = i + 1;
+    }
     findings.truncate(limit);
     findings
 }
@@ -739,13 +719,7 @@ fn load_profile_series(
     fill_series(
         names,
         expected_len,
-        |awr, name| {
-            awr.load_profile
-                .iter()
-                .find(|lp| lp.stat_name == name)
-                .map(|lp| lp.per_second)
-                .unwrap_or(0.0)
-        },
+        |awr, name| measurements::load_profile_rate(awr, name).unwrap_or(f64::NAN),
         collection,
         snap_range,
     )
@@ -769,8 +743,9 @@ fn time_model_series(
             awr.time_model_stats
                 .iter()
                 .find(|tm| tm.stat_name == name)
+                .filter(|_| measurements::available(awr, "time_model_stats", true))
                 .map(|tm| tm.time_s)
-                .unwrap_or(0.0)
+                .unwrap_or(f64::NAN)
         },
         collection,
         snap_range,
@@ -778,17 +753,7 @@ fn time_model_series(
 }
 
 fn db_time_series(collection: &AWRSCollection, snap_range: &(u64, u64)) -> Vec<f64> {
-    filtered_awrs(&collection.awrs, snap_range)
-        .map(|awr| {
-            awr.load_profile
-                .iter()
-                .find(|lp| {
-                    lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time")
-                })
-                .map(|lp| lp.per_second)
-                .unwrap_or(0.0)
-        })
-        .collect()
+    measurements::db_load_series(collection, snap_range, measurements::DbLoadMetric::DbTime)
 }
 
 fn sql_elapsed_series(
@@ -857,4 +822,68 @@ fn filtered_awrs<'a>(awrs: &'a [AWR], snap_range: &(u64, u64)) -> impl Iterator<
     let (begin, end) = *snap_range;
     awrs.iter()
         .filter(move |awr| awr.snap_info.begin_snap_id >= begin && awr.snap_info.end_snap_id <= end)
+}
+
+pub(crate) fn detected(c: &AWRSCollection, range: &(u64, u64)) -> bool {
+    let series = db_time_series(c, range);
+    if series.len() < 5 {
+        return false;
+    }
+    let (b, r) = split_windows(series.len());
+    compare_windows(&series, &b, &r).is_some_and(|s| is_db_time_degraded(&s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn changing_counter_unit_cannot_create_a_db_time_share_or_change_rank() {
+        let x = vec![10.0, 11.0, 9.0, 10.0, 12.0, 10.0, 30.0, 32.0];
+        let y = vec![1.0, 1.1, 0.9, 1.0, 1.2, 1.0, 3.0, 3.2];
+        let (b, r) = split_windows(x.len());
+        let base = score_domain(
+            "Instance statistics",
+            &BTreeMap::from([("counter".into(), x.clone())]),
+            &y,
+            &b,
+            &r,
+        );
+        let scaled = score_domain(
+            "Instance statistics",
+            &BTreeMap::from([("counter".into(), x.iter().map(|x| x * 1e6).collect())]),
+            &y,
+            &b,
+            &r,
+        );
+        assert!((base[0].change_score - scaled[0].change_score).abs() < 1e-8);
+        let value = serde_json::to_value(&scaled[0]).unwrap();
+        assert!(value.get("estimated_db_time_delta_share").is_none());
+        let html = build_db_time_degradation_html(&DbTimeDegradationReport {
+            findings: scaled,
+            ..Default::default()
+        });
+        assert!(!html.contains("999.0%"));
+        assert!(!html.contains("DB Time delta share"));
+        assert!(html.contains("Unit"));
+    }
+    #[test]
+    fn domain_summaries_do_not_sum_counter_deltas() {
+        let findings = vec![
+            DbTimeDegradationFinding {
+                domain: "Instance statistics".into(),
+                delta_avg: 1e9,
+                change_score: 4.0,
+                ..Default::default()
+            },
+            DbTimeDegradationFinding {
+                domain: "Time model".into(),
+                delta_avg: 0.1,
+                change_score: 10.0,
+                ..Default::default()
+            },
+        ];
+        let value = serde_json::to_value(summarize_domains(&findings)).unwrap();
+        assert!(value[0].get("total_positive_delta").is_none());
+        assert_eq!(value[0]["max_change_score"], 4.0);
+    }
 }

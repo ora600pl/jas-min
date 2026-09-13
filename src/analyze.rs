@@ -2,6 +2,7 @@ use crate::awr::{
     AWRSCollection, GetStats, HostCPU, IOStats, LoadProfile, SQLCPUTime, SQLGets, SQLIOTime,
     SQLReads, SegmentStats, WaitEvents, AWR,
 };
+use crate::measurements::{self, DbLoadMetric};
 use crate::staticdata::*;
 
 use serde::{Deserialize, Serialize};
@@ -168,26 +169,13 @@ fn find_top_stats(
     for awr in awrs {
         if awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap
         {
-            let mut dbtime: f64 = 0.0;
-            let mut cputime: f64 = 0.0;
-            let mut dbtime_filter = 0.0;
-            let mut cputime_filter = 0.0;
-
-            //We want to find dbtime and cputime because based on their delta we will base our decisions
-            for tm in &awr.time_model_stats {
-                if tm.stat_name.starts_with("DB Time") || tm.stat_name.starts_with("DB time") {
-                    dbtime = tm.time_s;
-                } else if tm.stat_name.starts_with("DB CPU") {
-                    cputime = tm.time_s;
-                }
-            }
-            for lp in awr.load_profile.clone() {
-                if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
-                    dbtime_filter = lp.per_second;
-                } else if lp.stat_name.starts_with("DB CPU") {
-                    cputime_filter = lp.per_second;
-                }
-            }
+            let dbtime =
+                measurements::db_load_seconds(awr, DbLoadMetric::DbTime).unwrap_or(f64::NAN);
+            let cputime =
+                measurements::db_load_seconds(awr, DbLoadMetric::DbCpu).unwrap_or(f64::NAN);
+            let dbtime_filter = measurements::db_load_rate(awr, DbLoadMetric::DbTime)
+                .map(|r| r.per_second)
+                .unwrap_or(f64::NAN);
             //If proportion of cputime and dbtime is less then db_time_cpu_ratio (default 0.666) than we want to find out what might be the problem
             //because it means that Oracle spent some time waiting on wait events and not working on CPU
 
@@ -2703,7 +2691,7 @@ pub fn tracked_stats_specs() -> &'static [TrackedStatSpec] {
         },
         TrackedStatSpec {
             key: TrackedStatKey::TableScanRows,
-            display_name: "Table Scan Rows",
+            display_name: "Table Scan Rows (scan activity; not live rows)",
             unit: "#",
             source: StatSource::InstanceStatExact("table scan rows gotten"),
             requires_logfilesync: false,
@@ -2952,6 +2940,8 @@ pub fn main_report_builder(
         args.json_file()
     );
 
+    report_for_ai.db_load_sources = measurements::db_load_sources(&collection, &snap_range);
+
     //Filenames and Paths used to save JAS-MIN files
     let mut logfile_name = PathBuf::from(args.directory())
         .with_extension("txt")
@@ -3006,15 +2996,16 @@ pub fn main_report_builder(
         }
     }
     // Y-axis
-    let mut y_vals_dbtime: Vec<f64> = Vec::new();
-    let mut y_vals_dbcpu: Vec<f64> = Vec::new();
+    let y_vals_dbtime =
+        measurements::db_load_series(&collection, &snap_range, DbLoadMetric::DbTime);
+    let y_vals_dbcpu = measurements::db_load_series(&collection, &snap_range, DbLoadMetric::DbCpu);
     let mut y_vals_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_bgevents: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut y_vals_sqls_cpu: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut y_vals_cpu_user: Vec<f64> = Vec::new();
-    let mut y_vals_cpu_load: Vec<f64> = Vec::new();
-    let mut y_vals_cpu_count: Vec<u32> = Vec::new();
+    let mut y_vals_cpu_user: Vec<Option<f64>> = Vec::new();
+    let mut y_vals_cpu_load: Vec<Option<f64>> = Vec::new();
+    let mut y_vals_cpu_count: Vec<Option<u32>> = Vec::new();
     let mut tracked_stats = build_tracked_stats();
 
     /*Variables used for statistics computations*/
@@ -3209,34 +3200,19 @@ pub fn main_report_builder(
                 }
             }
 
-            let mut is_statspack: bool = false;
             ingest_load_profile(
                 &mut tracked_stats,
                 awr,
                 collection.db_instance_information.db_block_size as u64,
             );
 
-            //DB Time and DB CPU are in each snap, so you don't need that kind of precautions
-            for lp in &awr.load_profile {
-                if lp.stat_name.starts_with("DB Time") || lp.stat_name.starts_with("DB time") {
-                    y_vals_dbtime.push(lp.per_second);
-                    if lp.stat_name.starts_with("DB time") {
-                        is_statspack = true;
-                    }
-                } else if lp.stat_name.starts_with("DB CPU") {
-                    y_vals_dbcpu.push(lp.per_second);
-                }
-            }
-
             // IO Stats data gathering and preparing them for plotting
             // ----- Host CPU
-            if awr.host_cpu.pct_user < 0.0 {
-                y_vals_cpu_user.push(0.0);
-            } else {
-                y_vals_cpu_user.push(awr.host_cpu.pct_user);
-            }
-            y_vals_cpu_load.push(100.0 - awr.host_cpu.pct_idle);
-            y_vals_cpu_count.push(awr.host_cpu.cpus);
+            let cpu_available = crate::measurements::host_cpu_available(awr);
+            y_vals_cpu_user.push(cpu_available.then_some(awr.host_cpu.pct_user));
+            y_vals_cpu_load.push(cpu_available.then_some(100.0 - awr.host_cpu.pct_idle));
+            y_vals_cpu_count
+                .push((cpu_available && awr.host_cpu.cpus > 0).then_some(awr.host_cpu.cpus));
 
             let mut calls: u64 = 0;
             let mut commits: u64 = 0;
@@ -3335,9 +3311,18 @@ pub fn main_report_builder(
     //Get Global Stats for Lod Profile
     global_statistics.insert(
         "CPU Load".to_string(),
-        get_statistics(y_vals_cpu_load.clone()),
+        get_statistics(y_vals_cpu_load.iter().flatten().copied().collect()),
     );
-    global_statistics.insert("AAS".to_string(), get_statistics(y_vals_dbtime.clone()));
+    global_statistics.insert(
+        "AAS".to_string(),
+        get_statistics(
+            y_vals_dbtime
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .collect(),
+        ),
+    );
     global_statistics.insert(
         "Executions/s".to_string(),
         get_statistics(raw_values_of(
@@ -5450,9 +5435,7 @@ pub fn main_report_builder(
         let per_second_v: Vec<f64> = collection
             .awrs
             .iter()
-            .flat_map(|awr| &awr.load_profile)
-            .filter(|lp| lp.stat_name == l)
-            .map(|flp| flp.per_second)
+            .filter_map(|awr| measurements::load_profile_rate(awr, &l))
             .collect();
         let mean_per_s = mean(per_second_v).unwrap_or(0.0);
 
@@ -5477,12 +5460,8 @@ pub fn main_report_builder(
                     .awrs
                     .iter()
                     .find(|awr| awr.snap_info.begin_snap_time == a.0)
-                    .unwrap()
-                    .load_profile
-                    .iter()
-                    .find(|lp| lp.stat_name == l)
-                    .map(|lpf| lpf.per_second)
-                    .unwrap_or(0.0);
+                    .and_then(|awr| measurements::load_profile_rate(awr, &l))
+                    .unwrap_or(f64::NAN);
 
                 let c_date = Cell::new(&a.0);
                 let c_mad = Cell::new(&format!("{:.2}", a.1));
@@ -6329,6 +6308,25 @@ pub fn main_report_builder(
     let elastic_net_max_iter = args.en_max_iter;
     let elastic_net_tol = args.en_tol;
 
+    let gradient_instance_stats = crate::measurements::instance_rates(&collection, &snap_range);
+    let gradient_events = crate::measurements::domain_rates(
+        &collection,
+        &snap_range,
+        &y_vals_events,
+        "foreground_wait_events",
+    );
+    let gradient_sql_elapsed = crate::measurements::domain_rates(
+        &collection,
+        &snap_range,
+        &y_vals_sqls,
+        "sql_elapsed_time",
+    );
+    let gradient_sql_cpu = crate::measurements::domain_rates(
+        &collection,
+        &snap_range,
+        &y_vals_sqls_cpu,
+        "sql_cpu_time",
+    );
     // Define all gradient sections declaratively
     let mut gradient_specs: Vec<(GradientSectionSpec, &str)> = vec![
         // (spec, field_name_tag) — field_name_tag used to dispatch into report_for_ai
@@ -6336,11 +6334,11 @@ pub fn main_report_builder(
             GradientSectionSpec {
                 observations: None,
                 target: &y_vals_dbtime,
-                features: y_vals_events
+                features: gradient_events
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "event_wait_s".to_string(),
+                label: "event_wait_s_per_s".to_string(),
                 is_events: true,
                 display_name: "DB TIME GRADIENT for wait events".to_string(),
             },
@@ -6350,12 +6348,12 @@ pub fn main_report_builder(
             GradientSectionSpec {
                 observations: None,
                 target: &y_vals_dbtime,
-                features: instance_stats
+                features: gradient_instance_stats
                     .iter()
                     .filter(|(k, _)| is_counter_stat(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "statistic_values_counter".to_string(),
+                label: "statistic_rate_counter".to_string(),
                 is_events: false,
                 display_name: "DB TIME GRADIENT for stats counters".to_string(),
             },
@@ -6365,12 +6363,12 @@ pub fn main_report_builder(
             GradientSectionSpec {
                 observations: None,
                 target: &y_vals_dbtime,
-                features: instance_stats
+                features: gradient_instance_stats
                     .iter()
                     .filter(|(k, _)| is_volume_stat(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "statistic_values_volume".to_string(),
+                label: "statistic_rate_volume".to_string(),
                 is_events: false,
                 display_name: "DB TIME GRADIENT for stats volumes".to_string(),
             },
@@ -6380,12 +6378,12 @@ pub fn main_report_builder(
             GradientSectionSpec {
                 observations: None,
                 target: &y_vals_dbtime,
-                features: instance_stats
+                features: gradient_instance_stats
                     .iter()
                     .filter(|(k, _)| is_time_stat(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "statistic_values_time".to_string(),
+                label: "statistic_rate_time".to_string(),
                 is_events: false,
                 display_name: "DB TIME GRADIENT for stats time".to_string(),
             },
@@ -6395,11 +6393,11 @@ pub fn main_report_builder(
             GradientSectionSpec {
                 observations: None,
                 target: &y_vals_dbtime,
-                features: y_vals_sqls
+                features: gradient_sql_elapsed
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "SQL_elapsed_time".to_string(),
+                label: "SQL_elapsed_s_per_s".to_string(),
                 is_events: false,
                 display_name: "DB TIME GRADIENT for SQL elapsed time".to_string(),
             },
@@ -6409,12 +6407,12 @@ pub fn main_report_builder(
             GradientSectionSpec {
                 observations: None,
                 target: &y_vals_dbcpu,
-                features: instance_stats
+                features: gradient_instance_stats
                     .iter()
                     .filter(|(k, _)| is_cpu_stat(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "statistic_values_cpu".to_string(),
+                label: "statistic_rate_cpu".to_string(),
                 is_events: false,
                 display_name: "CPU TIME GRADIENT for stats".to_string(),
             },
@@ -6424,11 +6422,11 @@ pub fn main_report_builder(
             GradientSectionSpec {
                 observations: None,
                 target: &y_vals_dbcpu,
-                features: y_vals_sqls_cpu
+                features: gradient_sql_cpu
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                label: "SQL_CPU_time".to_string(),
+                label: "SQL_CPU_s_per_s".to_string(),
                 is_events: false,
                 display_name: "CPU TIME GRADIENT for SQL CPU".to_string(),
             },
@@ -6445,9 +6443,9 @@ pub fn main_report_builder(
             .collect::<Vec<&str>>();
         let mut target_data: Option<&Vec<f64>> = None;
         if sql_id_event[0] == "SQL" {
-            target_data = y_vals_sqls.get(sql_id_event[1]);
+            target_data = gradient_sql_elapsed.get(sql_id_event[1]);
         } else if sql_id_event[0] == "WAIT" {
-            target_data = y_vals_events.get(sql_id_event[1]);
+            target_data = gradient_events.get(sql_id_event[1]);
         } else {
             println!(
                 "WARNING! parameter gradient_custom was wrongly specified as: {}",
@@ -6459,7 +6457,7 @@ pub fn main_report_builder(
                 GradientSectionSpec {
                     observations: None,
                     target: t,
-                    features: instance_stats
+                    features: gradient_instance_stats
                         .iter()
                         //.filter(|(k, _)| is_in_any_categhory(k))
                         .map(|(k, v)| (k.clone(), v.clone()))
@@ -6475,7 +6473,7 @@ pub fn main_report_builder(
                 GradientSectionSpec {
                     observations: None,
                     target: t,
-                    features: y_vals_events
+                    features: gradient_events
                         .iter()
                         .filter(|(e, _)| *e != sql_id_event[1])
                         .map(|(k, v)| (k.clone(), v.clone()))

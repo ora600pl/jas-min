@@ -255,6 +255,11 @@ pub struct TopSQLWithTopEvents {
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct AWR {
+    /// False means not collected, even when a legacy numeric field contains zero.
+    #[serde(default)]
+    pub data_availability: HashMap<String, bool>,
+    #[serde(default)]
+    pub access_path_observations: Vec<crate::access_path::SqlObservation>,
     pub file_name: String,
     pub snap_info: SnapInfo,
     status: String,
@@ -1884,7 +1889,12 @@ fn time_model_stats(table: ElementRef) -> Vec<TimeModelStats> {
             let stat_name = stat_name[0].trim();
 
             let time_s = columns[1].text().collect::<Vec<_>>();
-            let time_s = f64::from_str(&time_s[0].trim().replace(",", "")).unwrap_or(0.0);
+            let Some(time_s) = f64::from_str(&time_s[0].trim().replace(",", ""))
+                .ok()
+                .filter(|value| value.is_finite() && *value >= 0.0)
+            else {
+                continue;
+            };
 
             let pct_dbtime = columns[2].text().collect::<Vec<_>>();
             let pct_dbtime = f64::from_str(&pct_dbtime[0].trim().replace(",", "")).unwrap_or(0.0);
@@ -3584,6 +3594,16 @@ pub fn prarse_json_file(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn time_model_html_preserves_precision_and_skips_invalid_seconds() {
+        let html = Html::parse_document("<table><tr><td>DB time</td><td>13.32</td><td>100</td></tr><tr><td>DB CPU</td><td>0.00</td><td>0</td></tr><tr><td>invalid</td><td>N/A</td><td>0</td></tr><tr><td>negative</td><td>-1</td><td>0</td></tr><tr><td>nonfinite</td><td>NaN</td><td>0</td></tr></table>");
+        let selector = Selector::parse("table").unwrap();
+        let rows = time_model_stats(html.select(&selector).next().unwrap());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].time_s, 13.32);
+        assert_eq!(rows[1].time_s, 0.0);
+    }
 
     #[test]
     fn load_awrs_collection_json_clamps_negative_unsigned_collector_values() {

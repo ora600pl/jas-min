@@ -12,6 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str;
 
+mod access_path;
 mod ai_tools;
 mod analyze;
 mod anomalies;
@@ -21,6 +22,7 @@ mod gradient;
 mod local_agent;
 mod macros;
 mod mcp_server;
+mod measurements;
 mod quantile;
 mod reasonings;
 mod report_issues;

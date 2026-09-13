@@ -47,7 +47,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-09-09.2";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-09-13.3";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -2764,7 +2764,7 @@ impl ServerHandler for JasminMcpServer {
         .with_instructions(format!(
             "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Every finding must synthesize the measured symptom into a mechanism, temporal pattern, named affected workload and explicit evidence limitation; a conclusion plus a table dump is incomplete. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Every recommendation must name an owner and priority, explain why it follows from the finding, and define a measurable success criterion. Complete every stable category. Record gradients, anomalies and anomaly clusters as separate table kinds. When multiple analytic families are available, record analytic_signal_synthesis before the gradients_anomalies finding. The structured synthesis must name at least three exact top-five contributors from at least two target families, distinguish active from peak influence, reproduce concrete model names and classification, and localize anomaly and cluster windows. The finding can then state the decision and its boundary briefly without repeating the numeric fields. Generic statements that detectors merely converge on activity are rejected. For every foreground wait reaching 10% DB Time, call get_wait_event_sql_contributors and record the wait-to-SQL relationships; follow the strongest material contributor through SQL text, timeline and plan applicability. Correlation or ASH attribution is association evidence, not blocker/waiter proof. Inspect every supplied execution artifact. Review every unique SQL plan hash, but classify PL/SQL entry points as not_applicable_plsql because a top-level row-source plan is not expected; profile their inner SQL instead of requesting DBMS_XPLAN recapture. Choose an explicit recommendation type with artifact-specific rationale and action; generic 'validate actual rows' prose is rejected. Inspect every child-cursor diagnostic. Parse every non-empty alert attachment with include_parse_error_details=true, reproduce every error_summary code, and cite parse-error evidence in an SQL finding. Record every segment hotspot and a cross-statistic segment_synthesis. Review every collected performance parameter value; missing parameters require no row and only concern/critical ratings are reader-facing. get_report_status lists every missing item and blocks finalization until the deterministic lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage. Use each alert attachment's observed first/last timestamp rather than assuming AWR-period coverage. A zero-match literal proves only that exact filter. If guidance is applied, include a verified verbatim quotation. Complete mandatory assessments and finish through finalize_report. For HTML, finalize Markdown first and pass it unchanged to convert_markdown_to_html. Reader-facing material waits and SQL_IDs must link to every existing project-specific detail report with meaningful instance labels.\n\n{}",
             self.runtime.projects.len(),
-            include_str!("report_writing.md")
+            concat!(include_str!("report_writing.md"), "\n\n", include_str!("access_path_reasoning.md"))
         ))
     }
 
@@ -2860,7 +2860,7 @@ impl ServerHandler for JasminMcpServer {
                 Role::User,
                 format!(
                     "Investigate {focus} using the JAS-MIN MCP server. Begin with list_performance_projects when multiple projects may be loaded, then call start_performance_analysis with the intended project_ids and use its analysis_id for all evidence calls. In comparative sessions pass project_id to project-specific tools and use compare_project_metric or compare_project_sql for cross-project evidence. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. For gradient/anomaly synthesis, name the dominant exact contributors across target families, distinguish typical from peak influence, state which Ridge, Elastic Net, Huber or Quantile-95 models agree, reproduce the server classification, and anchor the conclusion to exact anomaly and cluster windows; a generic statement that independent detectors converge on activity is not analysis. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings with exact reader-facing evidence summaries instead of exposing raw evidence IDs as prose. Every applied guidance reference requires a verbatim quote from the retrieved section. Complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html; ensure comparative output links every source project report.\n\n{}",
-                    include_str!("report_writing.md")
+                    concat!(include_str!("report_writing.md"), "\n\n", include_str!("access_path_reasoning.md"))
                 ),
             )])
             .with_description("Tool-first Oracle performance investigation workflow")
@@ -3098,6 +3098,7 @@ fn mcp_control_definitions() -> Vec<Value> {
                 "properties": {
                     "section": {"type": "string", "enum": ["foreground_waits", "background_waits", "top_sqls", "io_summary", "latches", "segment_hotspots", "instance_stat_correlations", "load_profile_anomalies", "anomaly_clusters", "initialization_parameters", "full_gradients", "db_time_degradation", "performance_peaks"]},
                     "family": {"type": "string", "description": "full_gradients only: exact family key, e.g. db_time_sql_elapsed_time"},
+                    "domain": {"type":"string","description":"db_time_degradation only: exact domain filter; limit and offset apply per domain"},
                     "contributor": {"type": "string", "description": "full_gradients only: exact SQL_ID/event/statistic lookup in full fits, including zero/negative coefficients"},
                     "ranking": {"type": "string", "enum": ["selection", "active", "peak", "extreme"], "default": "selection"},
                     "offset": {"type": "integer", "minimum": 0, "default": 0},
@@ -3382,6 +3383,8 @@ fn mcp_bootstrap_seed(report: &ReportForAI) -> Value {
             &["report_date", "snap_id", "db_time_value", "db_cpu_value", "dbcpu_dbtime_ratio"]
         ),
         "db_time_degradation": degradation,
+        "db_load_source_policy": crate::measurements::DB_LOAD_SOURCE_POLICY,
+        "db_load_sources": report.db_load_sources,
         "gradient_highlights": gradient_highlights,
         "drilldown_hint": "Call get_precomputed_analysis for full degradation, gradient, wait, SQL, I/O, latch, anomaly, segment, or parameter evidence."
     })
@@ -3459,7 +3462,7 @@ fn calculation_catalog() -> Value {
         {"id": "mad_anomalies", "outputs": ["global MAD", "sliding-window MAD", "top anomaly clusters"], "access": ["get_precomputed_analysis(load_profile_anomalies)", "get_precomputed_analysis(anomaly_clusters)"], "caveat": "An anomaly is a temporal deviation, not automatically a bottleneck."},
         {"id": "pearson_correlations", "threshold": "absolute rho >= 0.5 for selected summaries", "access": ["get_precomputed_analysis(instance_stat_correlations)", "get_metric_time_series"], "caveat": "Correlation must be temporally aligned and independently verified."},
         {"id": "multi_model_gradients", "models": ["Ridge", "Elastic Net", "Huber", "Quantile 95"], "primary_metrics": ["impact_active", "impact_peak", "impact_share", "cross_model_classification"], "access": ["get_precomputed_analysis(full_gradients)"], "caveat": "Use VIF and collinear-group evidence; near-zero baselines can create unstable percentage sensitivities."},
-        {"id": "db_time_degradation", "method": "baseline versus recent window with robust change statistics", "outputs": ["delta", "delta_pct", "robust_z_score", "estimated_db_time_delta_share"], "access": ["get_precomputed_analysis(db_time_degradation)"], "caveat": "A degraded recent window identifies co-moving contributors, not automatic causality."},
+        {"id": "db_time_degradation", "method": "baseline versus recent window with robust change statistics", "outputs": ["delta", "delta_pct", "robust_z_score", "unit", "change_score", "domain_rank"], "access": ["get_precomputed_analysis(db_time_degradation)"], "caveat": "Ranks are within-domain statistical changes; never sum mixed units or infer recoverable DB Time. A degraded recent window identifies associations, not causality."},
         {"id": "timeline_and_baseline_comparison", "outputs": ["metric series", "SQL timeline", "wait timeline", "snapshot comparison", "wait histogram"], "access": ["get_metric_time_series", "get_sql_timeline", "get_wait_event_timeline", "compare_snapshots", "get_wait_event_histogram"], "caveat": "Always pair SNAP_ID with timestamp and compare a peak with a representative quiet baseline."},
         {"id": "cross_project_comparison", "outputs": ["sample coverage", "mean", "median", "p95", "standard deviation", "relative delta", "standardized mean difference", "direction-aware classification"], "access": ["compare_project_metric", "compare_project_sql"], "caveat": "A statistical change does not prove causality or equivalent workload mix. Missing samples are not zero, and improvement/degradation labels require explicit metric direction."}
     ])
@@ -3618,7 +3621,7 @@ fn report_contract(config: &ReportConfig) -> Value {
             {"number": 10, "id": "parameters", "title": "Relevant Initialization Parameters"},
             {"number": 11, "id": "recommendations", "title": "Prioritized Actions and Mandatory Assessments"}
         ],
-        "reader_workflow": include_str!("report_writing.md"),
+        "reader_workflow": concat!(include_str!("report_writing.md"), "\n\n", include_str!("access_path_reasoning.md")),
         "issue_schema": report_issues::issue_schema(),
         "issue_policy": "New sessions use explicit grouping: record findings first, then record_issue with a canonical finding and distinct evidence perspectives. All findings require assignment, every action requires kind, and duplicate membership or unknown references are rejected. Legacy mode is an explicit compatibility option; old archives retain their layout without inferred grouping.",
         "required_finding_categories": REQUIRED_REPORT_CATEGORIES,
@@ -8133,6 +8136,194 @@ mod tests {
     }
 
     #[test]
+    fn time_model_rates_and_fallback_are_identical_in_classic_and_mcp_evidence() {
+        let mut collection = crate::measurements::replay_tests::native_target_collection();
+        collection.awrs[1]
+            .time_model_stats
+            .retain(|r| !r.stat_name.eq_ignore_ascii_case("DB time"));
+        // A Load Profile availability mask must not hide a valid Time Model target.
+        collection.awrs[0]
+            .data_availability
+            .insert("load_profile".into(), false);
+        let report = ReportForAI {
+            db_load_sources: crate::measurements::db_load_sources(&collection, &(0, u64::MAX)),
+            ..Default::default()
+        };
+        let query = json!({"kind":"load_profile", "name":"DB Time(s)"});
+        let classic = crate::ai_tools::dispatch_tool_call_value(
+            "get_metric_time_series",
+            &query,
+            &collection,
+            "unused",
+        );
+        assert!((classic["series"][0]["value"].as_f64().unwrap() - 0.222).abs() < 1e-15);
+        assert_eq!(classic["series"][0]["value_source"], "time_model");
+        assert_eq!(classic["series"][1]["value"], 0.3);
+        assert_eq!(classic["series"][1]["value_source"], "load_profile");
+        let runtime = AnalysisRuntime::from_projects(vec![AnalysisProject::new(
+            "native".into(),
+            collection,
+            report,
+            "unused".into(),
+            0,
+            HashMap::new(),
+            "unused.html_reports".into(),
+        )])
+        .unwrap();
+        let bootstrap = runtime
+            .call_tool("start_performance_analysis", Map::new())
+            .unwrap();
+        let mut args = query.as_object().unwrap().clone();
+        args.insert("analysis_id".into(), bootstrap["analysis_id"].clone());
+        let result = runtime.call_tool("get_metric_time_series", args).unwrap();
+        assert_eq!(result["result"], classic);
+        assert!(result["evidence_id"].as_str().unwrap().starts_with("E-"));
+        let snapshots = runtime
+            .call_tool(
+                "list_snapshots",
+                json!({"analysis_id":bootstrap["analysis_id"],"limit":2})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        assert!(
+            (snapshots["result"]["snapshots"][0]["db_time_rate"]["per_second"]
+                .as_f64()
+                .unwrap()
+                - 0.222)
+                .abs()
+                < 1e-15
+        );
+        assert_eq!(
+            snapshots["result"]["snapshots"][1]["db_time_rate"]["source"],
+            "load_profile"
+        );
+        assert!(bootstrap.to_string().contains("db_load_sources"));
+    }
+
+    #[test]
+    fn recorded_scan_and_continuation_reach_existing_classic_and_mcp_reports() {
+        for (name, data, signal) in [
+            (
+                "scan",
+                include_str!("../tests/fixtures/empty_calories/scan_degradation.json"),
+                "table scan blocks gotten",
+            ),
+            (
+                "migration",
+                include_str!("../tests/fixtures/empty_calories/migr_degradation.json"),
+                "table fetch continued row",
+            ),
+        ] {
+            let (collection, report) = crate::measurements::replay_tests::standard_report(data);
+            let classic = crate::reasonings::gradient_prompt_value(&report);
+            assert!(classic.get("access_path_diagnostics").is_none());
+            let degradation = report.db_time_degradation_report.as_ref().unwrap();
+            assert!(degradation.is_degradation_detected);
+            assert_eq!(
+                (degradation.baseline_samples, degradation.degraded_samples),
+                (11, 4)
+            );
+            let finding = degradation
+                .findings
+                .iter()
+                .find(|r| r.name == signal)
+                .unwrap();
+            assert_eq!(finding.unit, format!("events/s ({signal})"));
+            if name == "scan" {
+                // Sparse system continuation is counterevidence, not a migration finding.
+                assert!(!degradation
+                    .findings
+                    .iter()
+                    .any(|r| r.name == "table fetch continued row"));
+            }
+            for key in [
+                "db_time_gradient_instance_stats_counters",
+                "db_cpu_gradient_instance_stats",
+            ] {
+                assert!(classic[key]["ridge_top"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["event_name"] == signal));
+            }
+            let metric_args = json!({"kind":"instance_stat", "name":signal, "field":"per_second"});
+            let expected_rates = crate::ai_tools::dispatch_tool_call_value(
+                "get_metric_time_series",
+                &metric_args,
+                &collection,
+                "unused",
+            );
+            let expected_optional = crate::ai_tools::dispatch_tool_call_value(
+                "get_access_path_diagnostics",
+                &json!({"limit":1}),
+                &collection,
+                "unused",
+            );
+            let runtime = AnalysisRuntime::from_projects(vec![AnalysisProject::new(
+                name.into(),
+                collection,
+                report.clone(),
+                "unused".into(),
+                0,
+                HashMap::new(),
+                "unused.html_reports".into(),
+            )])
+            .unwrap();
+            let bootstrap = runtime
+                .call_tool("start_performance_analysis", Map::new())
+                .unwrap();
+            assert!(!bootstrap
+                .to_string()
+                .contains("\"access_path_diagnostics\":"));
+            assert!(bootstrap.to_string().contains("plausible mechanism"));
+            let mut query = json!({"analysis_id":bootstrap["analysis_id"], "section":"db_time_degradation", "domain":"Instance statistics", "limit":100});
+            let expected = crate::local_agent::dispatch_precomputed_analysis(&query, &report);
+            let actual = runtime
+                .call_tool(
+                    "get_precomputed_analysis",
+                    query.as_object().unwrap().clone(),
+                )
+                .unwrap();
+            assert_eq!(actual["result"], expected);
+            for family in ["db_time_instance_stats_counters", "db_cpu_instance_stats"] {
+                query = json!({"analysis_id":bootstrap["analysis_id"], "section":"full_gradients", "family":family, "contributor":signal, "limit":1});
+                let expected = crate::local_agent::dispatch_precomputed_analysis(&query, &report);
+                let actual = runtime
+                    .call_tool(
+                        "get_precomputed_analysis",
+                        query.as_object().unwrap().clone(),
+                    )
+                    .unwrap();
+                assert_eq!(actual["result"], expected);
+                for model in ["ridge", "elastic_net", "huber", "quantile95"] {
+                    assert_eq!(
+                        actual["result"]["data"][family]["model_rankings"][model][0]["event_name"],
+                        signal
+                    );
+                }
+            }
+            let mut args = metric_args.as_object().unwrap().clone();
+            args.insert("analysis_id".into(), bootstrap["analysis_id"].clone());
+            let rates = runtime.call_tool("get_metric_time_series", args).unwrap();
+            assert_eq!(rates["result"], expected_rates);
+            assert_eq!(rates["result"]["points"], 15);
+            // Supplied evidence is still available on demand, never automatically seeded.
+            let optional = runtime
+                .call_tool(
+                    "get_access_path_diagnostics",
+                    json!({"analysis_id":bootstrap["analysis_id"],"limit":1})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+                .unwrap();
+            assert_eq!(optional["result"], expected_optional);
+        }
+    }
+
+    #[test]
     fn gradient_lookup_preserves_exact_query_in_mcp_evidence() {
         use crate::reasonings::{DbTimeGradientSection, GradientTopItem};
         let mut project = comparison_project("gradient", &[1.0, 3.0, 2.0], &[1.0]);
@@ -8167,7 +8358,7 @@ mod tests {
                 query.as_object().unwrap().clone(),
             )
             .unwrap();
-        assert_eq!(response["schema_version"], "2026-09-09.2");
+        assert_eq!(response["schema_version"], "2026-09-13.3");
         assert!(response["evidence_id"].as_str().unwrap().starts_with("E-"));
         assert_eq!(
             response["result"]["data"]["db_time_sql_elapsed_time"]["model_rankings"]["ridge"][0]

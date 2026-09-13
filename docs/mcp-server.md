@@ -1377,3 +1377,34 @@ accepts optional `family`, exact `contributor`, `ranking` (`selection`, `active`
 pages of complete signed fits; `*_top` remain selected previews. Read Q95 solver
 status and `predictor_coverage` before interpreting scores. See
 [the full v2 methodology and migration notes](gradient-methodology-v2.md).
+
+### Scan and row-continuation reasoning (`2026-09-13.2`)
+
+The existing DB Time counter and DB CPU regressions include `table scan blocks gotten`
+and `table scan rows gotten`, alongside `table fetch continued row`. AI instructions
+connect these signals with degradation, logical reads and SQL costs to suggest scanning
+or chaining/migration hypotheses and targeted confirmation. Structural measurements are
+needed for confirmation, not for mentioning a plausible mechanism. No separate HTML or
+precomputed `access_path_diagnostics` section is generated; normal TOP selection is unchanged.
+
+Use `get_precomputed_analysis(section="full_gradients", family=..., contributor=...)`
+for exact signed fits and `section="db_time_degradation"` with optional `domain` and
+per-domain pagination. Use existing metric/SQL timelines for activity rates, volume and
+per-execution cost. The optional `get_access_path_diagnostics` tool can inspect richer
+supplied evidence after a hypothesis emerges.
+
+Degradation findings contain `unit`, `change_score` and `domain_rank` instead of
+`estimated_db_time_delta_share`; domain summaries use `max_change_score` instead of
+summing heterogeneous deltas. Regression interval features are normalized by wall seconds.
+See [the reasoning and optional evidence contract](access-path-diagnostics.md).
+
+### Precise DB-load targets (`2026-09-13.3`)
+
+DB Time/DB CPU rates prefer existing Time Model seconds / actual snapshot duration,
+with per-metric, per-snapshot Load Profile fallback. The bootstrap seed carries
+`db_load_sources` counts and `db_load_source_policy`. `list_snapshots` and snapshot
+summaries expose `db_time_rate` and `db_cpu_rate` (`per_second`, `source`). Existing
+`get_metric_time_series(kind="load_profile", name="DB Time(s)")` and DB CPU queries
+return these same selected rates plus `value_source` for each observed point. Other
+Load Profile metrics keep their original rates. Raw snapshot fields are preserved.
+Classic functions and MCP use the same accessor; no additional Oracle queries are run.
