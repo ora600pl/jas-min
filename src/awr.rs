@@ -233,6 +233,14 @@ pub struct LatchActivity {
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct SegmentStats {
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub pdb_name: Option<String>,
+    #[serde(default)]
+    pub con_id: Option<u32>,
+    #[serde(default)]
+    pub subobject_name: Option<String>,
     pub obj: u64,
     pub objd: u64,
     pub object_name: String,
@@ -859,54 +867,67 @@ fn top_sql_with_top_events(table: ElementRef) -> HashMap<String, TopSQLWithTopEv
 }
 
 fn segment_stats(table: ElementRef, stat_name: &str, args: &Args) -> Vec<SegmentStats> {
-    let mut segment_stats: Vec<SegmentStats> = Vec::new();
-    let row_selector = Selector::parse("tr").unwrap();
-    let column_selector = Selector::parse("td").unwrap();
-
-    for row in table.select(&row_selector) {
-        let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
-        if columns.len() >= 7 {
-            let mut version_modificator = 0;
-
-            if columns.len() == 7 {
-                //this is for older AWR format (like 11g)
-                version_modificator = 1;
-            }
-
-            let mut segment_name = "#".to_string();
-            if args.security_level > 0 {
-                let sname = columns[2].text().collect::<Vec<_>>();
-                segment_name = sname[0].trim().to_string();
-            }
-
-            let segment_type = columns[4].text().collect::<Vec<_>>();
-            let segment_type = segment_type[0].trim().to_string();
-
-            let mut obj = 0;
-            let mut objd = 0;
-            if version_modificator == 0 {
-                let vobj = columns[5].text().collect::<Vec<_>>();
-                obj = u64::from_str(&vobj[0].trim().replace(",", "")).unwrap_or(0);
-
-                let vobjd = columns[6].text().collect::<Vec<_>>();
-                objd = u64::from_str(&vobjd[0].trim().replace(",", "")).unwrap_or(0);
-            }
-
-            let stat_value = columns[7 - version_modificator].text().collect::<Vec<_>>();
-            let stat_value = f64::from_str(&stat_value[0].trim().replace(",", "")).unwrap_or(0.0);
-
-            segment_stats.push(SegmentStats {
-                obj: obj,
-                objd: objd,
-                object_name: segment_name,
-                object_type: segment_type,
-                stat_name: stat_name.to_string(),
-                stat_vlalue: stat_value,
-            });
+    let rows = Selector::parse("tr").unwrap();
+    let cells = Selector::parse("td").unwrap();
+    let heads = Selector::parse("th").unwrap();
+    let headers: Vec<String> = table
+        .select(&heads)
+        .map(|h| h.text().collect::<String>().trim().to_ascii_lowercase())
+        .collect();
+    let index = |names: &[&str]| headers.iter().position(|h| names.contains(&h.as_str()));
+    let mut result = Vec::new();
+    for row in table.select(&rows) {
+        let columns: Vec<_> = row
+            .select(&cells)
+            .map(|c| c.text().collect::<String>().trim().to_string())
+            .collect();
+        if columns.len() < 7 {
+            continue;
         }
+        let field = |names: &[&str], fallback: Option<usize>| -> Option<String> {
+            let value = columns.get(index(names).or(fallback)?)?;
+            (!value.is_empty()).then(|| value.clone())
+        };
+        let visible = |names: &[&str]| {
+            if args.security_level > 0 {
+                field(names, None)
+            } else {
+                None
+            }
+        };
+        let legacy = columns.len() == 7;
+        let metric_index =
+            index(&[stat_name.to_ascii_lowercase().as_str()]).unwrap_or(if legacy { 5 } else { 7 });
+        let Some(value) = columns
+            .get(metric_index)
+            .and_then(|s| s.replace(',', "").parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+        else {
+            continue;
+        };
+        result.push(SegmentStats {
+            owner: visible(&["owner"]),
+            pdb_name: visible(&["pdb name", "container name"]),
+            con_id: field(&["con_id", "con id", "container id"], None)
+                .and_then(|s| s.replace(',', "").parse().ok()),
+            subobject_name: visible(&["subobject name", "subobject"]),
+            obj: field(&["obj#", "object id"], (!legacy).then_some(5))
+                .and_then(|s| s.replace(',', "").parse().ok())
+                .unwrap_or(0),
+            objd: field(&["dataobj#", "data object id"], (!legacy).then_some(6))
+                .and_then(|s| s.replace(',', "").parse().ok())
+                .unwrap_or(0),
+            object_name: if args.security_level > 0 {
+                field(&["object name"], Some(2)).unwrap_or_default()
+            } else {
+                "#".into()
+            },
+            object_type: field(&["obj. type", "object type"], Some(4)).unwrap_or_default(),
+            stat_name: stat_name.into(),
+            stat_vlalue: value,
+        });
     }
-
-    segment_stats
+    result
 }
 
 fn dictionary_cache_stats(table: ElementRef) -> Vec<DictionaryCache> {
@@ -3594,6 +3615,39 @@ pub fn prarse_json_file(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn segment_html_preserves_scope_legacy_values_and_security_mask() {
+        use clap::Parser;
+        let args = Args::parse_from(["jas-min", "--security-level", "1"]);
+        let html = Html::parse_document(include_str!(
+            "../tests/fixtures/empty_calories/segment_scope.html"
+        ));
+        let selector = Selector::parse("table").unwrap();
+        let tables: Vec<_> = html.select(&selector).collect();
+        let scoped = segment_stats(tables[0], "Logical Reads", &args);
+        assert_eq!(scoped.len(), 1);
+        let s = &scoped[0];
+        assert_eq!(s.owner.as_deref(), Some("LAB"));
+        assert_eq!(s.pdb_name.as_deref(), Some("PDB_A"));
+        assert_eq!(s.con_id, Some(3));
+        assert_eq!(s.subobject_name.as_deref(), Some("P_01"));
+        assert_eq!(s.stat_vlalue, 12345.0);
+        let legacy = segment_stats(tables[1], "Logical Reads", &args);
+        assert_eq!(legacy[0].stat_vlalue, 9876.0);
+        assert_eq!(legacy[0].obj, 0);
+        let hidden = segment_stats(
+            tables[0],
+            "Logical Reads",
+            &Args::parse_from(["jas-min", "--security-level", "0"]),
+        );
+        assert_eq!(hidden[0].object_name, "#");
+        assert!(
+            hidden[0].owner.is_none()
+                && hidden[0].pdb_name.is_none()
+                && hidden[0].subobject_name.is_none()
+        );
+    }
 
     #[test]
     fn time_model_html_preserves_precision_and_skips_invalid_seconds() {

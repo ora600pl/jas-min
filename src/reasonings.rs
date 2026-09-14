@@ -961,6 +961,8 @@ pub struct ReportForAI {
     pub custom_gradient_instance_stats: Option<DbTimeGradientSection>,
     pub db_time_degradation_report: Option<DbTimeDegradationReport>,
     #[serde(default)]
+    pub performance_hints: Option<crate::performance_hints::PerformanceHintsReport>,
+    #[serde(default)]
     pub db_load_sources: BTreeMap<String, crate::measurements::TargetSourceCounts>,
     pub initialization_parameters: HashMap<String, String>,
 }
@@ -1080,6 +1082,7 @@ The ReportForAI contains these analytical sections:
 - `load_profile_anomalies` — MAD-detected load profile anomalies
 - `anomaly_clusters` — temporally grouped anomalies across multiple domains
 - `db_load_sources` — per-target snapshot counts for Time Model, Load Profile fallback and unavailable values.
+- `performance_hints` — deterministic work-growth signals with independent CPU/elapsed support. Inspect signal_kind, time_impact_status, comparisons[].cost_evaluations, trajectory and episode_status. Work-only signals remain useful: nullable cost means no supported time comparison, never zero cost. Global continuation is instance context, not SQL/segment attribution. Physical mechanisms remain alternative explanations, including wider rows and necessary continuation. Persistent-cost observations use absolute observed_metrics/observed_segments with null baseline/comparison and establish neither growth nor stability. In JAS-only mode unresolved physical cause is a complete, valid conclusion; extra database measurements are optional confirmation.
   DB Time/DB CPU rates prefer Time Model seconds divided by actual wall seconds. This avoids
   rounded Load Profile targets. Raw snapshot Load Profile rows retain their collected values.
 - `db_time_degradation_report` — baseline-vs-recent statistical degradation report for DB Time.
