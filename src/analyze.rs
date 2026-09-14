@@ -6184,6 +6184,9 @@ pub fn main_report_builder(
                 <a href=\"stats/gradient_cpu.html\" target=\"_blank\" style=\"text-decoration: none;\">
                     <button id=\"show-stat_corr-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">DB CPU Gradient Analyzes</span><span>DB CPU Gradient Analyzes</span></button>
                 </a>
+                <a href=\"stats/performance_hints.html\" target=\"_blank\" style=\"text-decoration: none;\">
+                    <button id=\"show-hints-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">HINTS</span><span>HINTS</span></button>
+                </a>
                 {}
                 {}",
                 db_time_degradation_button,
@@ -6679,6 +6682,30 @@ pub fn main_report_builder(
             eprintln!("Error writing file {}: {}", gradient_filename, e);
         }
     }
+
+    let mut hints = crate::performance_hints::build(
+        &collection,
+        &snap_range,
+        crate::performance_hints::Policy::load(&args.hints_policy)
+            .expect("HINTS policy was validated before analysis"),
+    );
+    // Use the same optional plan attachments as the API. Missing plans retain
+    // provisional hints; matched plan hashes add object context, never causality.
+    let hints_stem = if args.json_file().is_empty() {
+        args.directory().trim_end_matches('/').to_string()
+    } else {
+        PathBuf::from(args.json_file())
+            .with_extension("")
+            .to_string_lossy()
+            .into_owned()
+    };
+    crate::performance_hints::enrich_with_plans(&mut hints, collection, &hints_stem);
+    fs::write(
+        format!("{}/stats/performance_hints.html", &html_dir),
+        crate::performance_hints::render_html(&hints),
+    )
+    .expect("Failed to write HINTS report");
+    report_for_ai.performance_hints = Some(hints);
 
     // Write the updated HTML back to the file
     fs::write(&fname, plotly_html).expect("Failed to write updated Plotly HTML file");

@@ -1740,6 +1740,7 @@ pub(crate) fn build_case_seed(report: &ReportForAI) -> Value {
         "db_time_degradation": compact_degradation(report),
         "db_load_source_policy": crate::measurements::DB_LOAD_SOURCE_POLICY,
         "db_load_sources": report.db_load_sources,
+        "performance_hints": crate::performance_hints::index(report.performance_hints.as_ref()),
         "gradients": {
             "db_time_foreground_wait_events": compact_gradient(report.db_time_gradient_fg_wait_events.as_ref()),
             "db_time_instance_stats_counters": compact_gradient(report.db_time_gradient_instance_stats_counters.as_ref()),
@@ -1967,10 +1968,13 @@ fn local_tools_schema(stem: &str, guidance_available: bool) -> Value {
                                 "io_summary", "latches", "segment_hotspots",
                                 "instance_stat_correlations", "load_profile_anomalies",
                                 "anomaly_clusters", "initialization_parameters",
-                                "full_gradients", "db_time_degradation", "performance_peaks"
+                                "full_gradients", "db_time_degradation", "performance_peaks", "performance_hints"
                             ]
                         },
                         "family": {"type": "string", "description": "full_gradients only: exact family key, e.g. db_time_sql_elapsed_time"},
+                        "rule_id": {"type":"string","description":"performance_hints only: exact rule filter"},
+                        "hint_id": {"type":"string","description":"performance_hints only: exact episode filter"},
+                        "scope": {"type":"string","description":"performance_hints only: exact assessment scope, e.g. sql:gn3gtqxvucbj8 or instance"},
                         "domain": {"type":"string","description":"db_time_degradation only: exact domain filter; limit and offset apply per domain"},
                         "contributor": {"type": "string", "description": "full_gradients only: exact SQL_ID/event/statistic lookup across full fitted rankings"},
                         "ranking": {"type": "string", "enum": ["selection", "active", "peak", "extreme"]},
@@ -2160,6 +2164,9 @@ pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) 
             result
         }
         "db_time_degradation" => degradation_query(report, args),
+        "performance_hints" => {
+            crate::performance_hints::query(report.performance_hints.as_ref(), args)
+        }
         "performance_peaks" => json!(report
             .top_spikes_marked
             .iter()

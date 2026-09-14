@@ -48,6 +48,29 @@ fn no_input_exits_with_usage_error_without_creating_an_artifact() {
 }
 
 #[test]
+fn invalid_hints_policy_exits_before_analyzing_input() {
+    let workdir = isolated_workdir("invalid-hints-policy");
+    let input = workdir.join("input.json");
+    fs::write(&input, "not parsed yet").unwrap();
+    let policy = workdir.join("policy.json");
+    fs::write(&policy, r#"{"consecutive_windows":0}"#).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jas-min"))
+        .current_dir(&workdir)
+        .args([
+            "--json-file",
+            input.to_str().unwrap(),
+            "--hints-policy",
+            policy.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid HINTS policy"));
+    assert!(!workdir.join("input.html_reports").exists());
+    fs::remove_dir_all(workdir).unwrap();
+}
+
+#[test]
 fn missing_directory_exits_with_usage_error_without_creating_an_artifact() {
     let workdir = isolated_workdir("missing-directory");
     let output = Command::new(env!("CARGO_BIN_EXE_jas-min"))

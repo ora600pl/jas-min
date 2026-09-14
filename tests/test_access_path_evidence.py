@@ -13,6 +13,22 @@ spec.loader.exec_module(collector)
 
 
 class AccessPathEvidenceTests(unittest.TestCase):
+    def test_segment_scope_legacy_values_and_security_mask(self):
+        parser = collector.AWRHTMLTableParser()
+        parser.feed((ROOT / "tests/fixtures/empty_calories/segment_scope.html").read_text())
+        scoped = collector.parse_segment_stats(parser.tables[0], "Logical Reads", 1)
+        self.assertEqual(len(scoped), 1)
+        self.assertEqual((scoped[0]["owner"], scoped[0]["pdb_name"], scoped[0]["con_id"], scoped[0]["subobject_name"]), ("LAB", "PDB_A", 3, "P_01"))
+        self.assertEqual(scoped[0]["stat_vlalue"], 12345)
+        legacy = collector.parse_segment_stats(parser.tables[1], "Logical Reads", 1)
+        self.assertEqual(legacy[0]["stat_vlalue"], 9876)
+        self.assertEqual(legacy[0]["obj"], 0)
+        hidden = collector.parse_segment_stats(parser.tables[0], "Logical Reads", 0)[0]
+        self.assertEqual(hidden["object_name"], "#")
+        self.assertIsNone(hidden["owner"])
+        self.assertIsNone(hidden["pdb_name"])
+        self.assertIsNone(hidden["subobject_name"])
+
     def fixtures(self):
         collection = json.loads((ROOT / "tests/fixtures/empty_calories/scan_degradation.json").read_text())
         info = collection["db_instance_information"]

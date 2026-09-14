@@ -14,6 +14,7 @@
 # Public, self-contained regression course and its authored template.
 !/docs/regression-course/index.html
 !/docs/regression-course/src/index.html
+!/tests/fixtures/empty_calories/segment_scope.html
 *.pyc
 *.swp
 .rustc_info.json

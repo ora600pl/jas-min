@@ -23,6 +23,7 @@ mod local_agent;
 mod macros;
 mod mcp_server;
 mod measurements;
+mod performance_hints;
 mod quantile;
 mod reasonings;
 mod report_issues;
@@ -85,6 +86,10 @@ struct Args {
     ///Filter snapshots, based on SNAP IDs in format BEGIN_ID- END_ID
     #[clap(short, long, default_value = "0-666666666")]
     snap_range: String,
+
+    ///Optional JSON policy for deterministic HINTS (thresholds and explicit baseline).
+    #[clap(long, default_value = "")]
+    hints_policy: String,
 
     ///Should I be quiet? This mode suppresses terminal output but still writes to log file
     #[clap(short, long)]
@@ -248,6 +253,7 @@ fn load_env() -> Result<(), String> {
 }
 
 fn validate_cli_inputs(args: &Args) -> Result<(), String> {
+    performance_hints::Policy::load(&args.hints_policy)?;
     let project_source_count = args.directory.len() + args.json_file.len();
 
     if args.mcp.is_some() {

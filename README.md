@@ -33,6 +33,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Anomalies | Uses MAD-based anomaly detection with configurable threshold, sliding-window percentage, and optional trimming to the largest anomaly clusters. |
 | Correlation | Computes Pearson correlations between DB Time and wait events, SQL elapsed time, and instance statistics. |
 | Gradient analysis | Runs Ridge, Elastic Net, Huber, and Quantile-95 regression models over DB Time and DB CPU drivers. |
+| Performance hints | **HINTS** separates scan, SQL-read and row-continuation work growth from CPU/elapsed support. Cards show observed history, latest supplied state, scoped context and material segment candidates; physical causes remain unconfirmed. HTML, classic AI and MCP share the same result. See [policy, coverage and interpretation](docs/performance-hints.md). |
 | Interactive regression course | Local, offline mathematics course in [Polish](docs/regression-course/index.html#pl/start) and [English](docs/regression-course/index.html#en/start): a continuous brewhouse-to-database story, worked derivations, Gaussian elimination, four regression models, quizzes and local data experiments. See [course instructions](docs/regression-course/README.md). |
 | Custom gradient | Builds extra gradient pages for a selected SQL ID or wait event with `--gradient-custom`. |
 | AI reports | Supports OpenAI, Google Gemini, OpenRouter, and a two-session local agent served by LM Studio. |

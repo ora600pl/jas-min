@@ -1247,17 +1247,39 @@ SEGMENT_SUMMARIES = {
 
 def parse_segment_stats(table, stat_name, security_level):
     result = []
+    headers = [normalize_cell(cell).lower() for row in header_rows(table) for cell in row]
+
+    def field(row, names, fallback=None):
+        index = next((headers.index(name) for name in names if name in headers), fallback)
+        return (row[index] or None) if index is not None and index < len(row) else None
+
+    def identifier(value):
+        value = (value or "").replace(",", "")
+        return int(value) if value.isdigit() else None
+
     for row in data_rows(table):
-        if len(row) >= 7:
-            version_modifier = 1 if len(row) == 7 else 0
-            result.append({
-                "obj": parse_int(row[5]) if version_modifier == 0 and len(row) > 5 else 0,
-                "objd": parse_int(row[6]) if version_modifier == 0 and len(row) > 6 else 0,
-                "object_name": row[2] if security_level > 0 and len(row) > 2 else "#",
-                "object_type": row[4] if len(row) > 4 else "",
-                "stat_name": stat_name,
-                "stat_vlalue": parse_float(row[7 - version_modifier]) if len(row) > 7 - version_modifier else 0.0,
-            })
+        if len(row) < 7:
+            continue
+        legacy = len(row) == 7
+        raw_value = field(row, [stat_name.lower()], 5 if legacy else 7)
+        try:
+            value = float((raw_value or "").replace(",", ""))
+        except ValueError:
+            continue
+        if not math.isfinite(value) or value < 0:
+            continue
+        result.append({
+            "owner": field(row, ["owner"]) if security_level > 0 else None,
+            "pdb_name": field(row, ["pdb name", "container name"]) if security_level > 0 else None,
+            "con_id": identifier(field(row, ["con_id", "con id", "container id"])),
+            "subobject_name": field(row, ["subobject name", "subobject"]) if security_level > 0 else None,
+            "obj": identifier(field(row, ["obj#", "object id"], None if legacy else 5)) or 0,
+            "objd": identifier(field(row, ["dataobj#", "data object id"], None if legacy else 6)) or 0,
+            "object_name": (field(row, ["object name"], 2) or "") if security_level > 0 else "#",
+            "object_type": field(row, ["obj. type", "object type"], 4) or "",
+            "stat_name": stat_name,
+            "stat_vlalue": value,
+        })
     return result
 
 

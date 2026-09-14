@@ -3096,7 +3096,10 @@ fn mcp_control_definitions() -> Vec<Value> {
             json!({
                 "type": "object",
                 "properties": {
-                    "section": {"type": "string", "enum": ["foreground_waits", "background_waits", "top_sqls", "io_summary", "latches", "segment_hotspots", "instance_stat_correlations", "load_profile_anomalies", "anomaly_clusters", "initialization_parameters", "full_gradients", "db_time_degradation", "performance_peaks"]},
+                    "section": {"type": "string", "enum": ["foreground_waits", "background_waits", "top_sqls", "io_summary", "latches", "segment_hotspots", "instance_stat_correlations", "load_profile_anomalies", "anomaly_clusters", "initialization_parameters", "full_gradients", "db_time_degradation", "performance_peaks", "performance_hints"]},
+                    "rule_id": {"type":"string","description":"performance_hints only: exact rule filter"},
+                    "hint_id": {"type":"string","description":"performance_hints only: exact episode filter"},
+                        "scope": {"type":"string","description":"performance_hints only: exact assessment scope, e.g. sql:gn3gtqxvucbj8 or instance"},
                     "family": {"type": "string", "description": "full_gradients only: exact family key, e.g. db_time_sql_elapsed_time"},
                     "domain": {"type":"string","description":"db_time_degradation only: exact domain filter; limit and offset apply per domain"},
                     "contributor": {"type": "string", "description": "full_gradients only: exact SQL_ID/event/statistic lookup in full fits, including zero/negative coefficients"},
@@ -3386,7 +3389,8 @@ fn mcp_bootstrap_seed(report: &ReportForAI) -> Value {
         "db_load_source_policy": crate::measurements::DB_LOAD_SOURCE_POLICY,
         "db_load_sources": report.db_load_sources,
         "gradient_highlights": gradient_highlights,
-        "drilldown_hint": "Call get_precomputed_analysis for full degradation, gradient, wait, SQL, I/O, latch, anomaly, segment, or parameter evidence."
+        "performance_hints": full.get("performance_hints").cloned().unwrap_or(Value::Null),
+        "drilldown_hint": "Call get_precomputed_analysis for full performance_hints, degradation, gradient, wait, SQL, I/O, latch, anomaly, segment, or parameter evidence. Hints are hypotheses; inspect their alternatives before promoting them to findings."
     })
 }
 
@@ -8200,6 +8204,68 @@ mod tests {
             "load_profile"
         );
         assert!(bootstrap.to_string().contains("db_load_sources"));
+    }
+
+    #[test]
+    fn performance_hints_share_classic_local_and_registered_mcp_evidence() {
+        let native: AWRSCollection = serde_json::from_str(include_str!(
+            "../tests/fixtures/empty_calories/hints_native.json"
+        ))
+        .unwrap();
+        for collection in [
+            native,
+            crate::performance_hints::tests::material_cost_fixture(),
+            crate::performance_hints::tests::work_only_fixture(),
+            crate::performance_hints::tests::continuation_only_fixture(),
+        ] {
+            let hints =
+                crate::performance_hints::build(&collection, &(0, u64::MAX), Default::default());
+            assert!(!hints.hints.is_empty());
+            let report = ReportForAI {
+                performance_hints: Some(hints.clone()),
+                ..Default::default()
+            };
+            let classic = crate::reasonings::gradient_prompt_value(&report);
+            assert_eq!(
+                classic["performance_hints"],
+                serde_json::to_value(&hints).unwrap()
+            );
+            let local_seed = build_case_seed(&report);
+            assert_eq!(
+                local_seed["performance_hints"]["hints_total"],
+                hints.hints.len()
+            );
+            let seed = mcp_bootstrap_seed(&report);
+            assert_eq!(seed["performance_hints"], local_seed["performance_hints"]);
+            let args =
+                json!({"section":"performance_hints", "hint_id":hints.hints[0].hint_id, "limit":1});
+            let local = dispatch_precomputed_analysis(&args, &report);
+            let runtime = AnalysisRuntime::from_projects(vec![AnalysisProject::new(
+                "native-hints".into(),
+                collection,
+                report,
+                "unused".into(),
+                0,
+                HashMap::new(),
+                "unused.html_reports".into(),
+            )])
+            .unwrap();
+            let bootstrap = runtime
+                .call_tool("start_performance_analysis", Map::new())
+                .unwrap();
+            let mut query = args.as_object().unwrap().clone();
+            query.insert("analysis_id".into(), bootstrap["analysis_id"].clone());
+            query.insert("project_id".into(), json!("native-hints"));
+            let response = runtime
+                .call_tool("get_precomputed_analysis", query.clone())
+                .unwrap();
+            assert_eq!(response["result"], local);
+            assert!(response["evidence_id"].as_str().unwrap().starts_with("E-"));
+            let repeated = runtime
+                .call_tool("get_precomputed_analysis", query)
+                .unwrap();
+            assert_eq!(response["evidence_id"], repeated["evidence_id"]);
+        }
     }
 
     #[test]

@@ -13,3 +13,19 @@ Copied from oracle-EmptyCalories/data without semantic changes; whitespace compa
   test adapter leaves them empty. This is the recorded short-window precision case,
   not the SKIPPER fixtures above. With Time Model targets, the scan-blocks active ranks
   are Ridge 2, Huber 2 and Q95 5 under the default model settings.
+
+- `hints_native.json`: projection of all 61 native AWR windows from
+  `oracle-EmptyCalories/hourly_lab/data/awr_native.json`, source SHA-256
+  `f8447b60ce6d189834fa69971ed15eddd2d54b29cfa51bfb245a7f6764be84ed`.
+  Retains original scan counters, execute counts, Time Model, Load Profile,
+  SQL `9paxwp1pabugh` costs and ERP_SPARSE/ERP_DENSE logical reads, including the
+  historical episode and subsequent decline. Unrelated detail domains are emptied;
+  numbers, timestamps and availability masks in retained domains are unchanged.
+  No attributed observations are added. Per-window identity remains that of the
+  original collector, without invented owner/container fields.
+- `scan_counterexamples.json`: recorded `jasmin_only/evidence/calibration.json`.
+  Counter equality checks use original measurements. Detector tests wrapping these
+  counters in longer timelines explicitly use synthetic exposure/cost scaffolding;
+  they do not present that scaffold as additional Oracle measurements.
+- `segment_scope.html`: synthetic parser contract for current scoped and legacy
+  segment layouts, missing numeric values and security-level name masking.
