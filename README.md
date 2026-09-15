@@ -742,7 +742,10 @@ Pairs with equal or decreasing timestamps are skipped. For example, selecting
 13:00 includes snapshots at 13:10 and 13:19, followed by the next at 14:00.
 This replaces the former 30-minute minimum and latest-startup-only restriction.
 
-#### STATSPACK startup selection
+Since collector `0.1.11`, the same startup boundary and selection behavior also
+applies to AWR snapshots for the current database and instance.
+
+#### AWR and STATSPACK startup selection
 
 After START and END are entered, the collector checks the recorded startups
 before creating files or generating reports. One startup continues automatically,
@@ -773,9 +776,9 @@ Date arguments accept `YYYY-MM-DD HH24:MI` and `YYYY-MM-DD HH24:MI:SS`, so the
 suggested boundaries can be copied exactly. Only startups represented by stored
 snapshots can be discovered; this is not a complete restart audit.
 
-This selection applies to STATSPACK. AIX/Linux files are still copied in full
-from the supplied directory; select OS evidence from the same period during
-analysis. The startup menu does not filter their contents.
+AIX/Linux files are still copied in full from the supplied directory; select OS
+evidence from the same period during analysis. The startup menu does not filter
+their contents.
 
 `jas-min-collector.py` is a Python standard-library helper for environments where the reports should be generated directly from the target Oracle host. It expects `ORACLE_HOME`, `ORACLE_SID`, and a working `$ORACLE_HOME/bin/sqlplus` connection as `/ as sysdba`.
 

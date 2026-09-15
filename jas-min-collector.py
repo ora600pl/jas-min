@@ -26,7 +26,7 @@ from pathlib import Path
 
 
 # Version the standalone collector independently from the Rust application.
-COLLECTOR_VERSION = "0.1.10"
+COLLECTOR_VERSION = "0.1.11"
 COLLECTOR_NAME = "jas-min-collector"
 
 DATE_FORMAT = "%Y-%m-%d %H:%M"
@@ -2228,33 +2228,78 @@ def collect_sql_execution_plans(ctx, target_dir, sql_ids):
     return generated, failures
 
 
-def awr_pairs_sql(start_dt, end_dt):
+def awr_pairs_sql(start_dt, end_dt, startup_time=None):
+    """Pair consecutive AWR snapshots inside the selected instance startup."""
     start_value = start_dt.strftime(SNAPSHOT_DATE_FORMAT)
     end_value = end_dt.strftime(SNAPSHOT_DATE_FORMAT)
+    # Pin generation to the reviewed startup so report pairs cannot cross a restart.
+    startup_filter = ""
+    if startup_time is not None:
+        startup_filter = "and s.startup_time = to_timestamp('{}', 'YYYY-MM-DD HH24:MI:SS')".format(
+            startup_time.strftime(SNAPSHOT_DATE_FORMAT)
+        )
     return """
 whenever oserror exit failure
 whenever sqlerror exit failure
 set heading off feedback off verify off echo off pagesize 0 trimspool on linesize 32767 tab off
 with snapshots as (
-    select d.dbid,
+    select s.dbid,
            s.instance_number,
            s.snap_id as begin_snap,
+           s.end_interval_time as begin_time,
            lead(s.snap_id, 1, null) over (
-               partition by s.instance_number
+               partition by s.dbid, s.instance_number, s.startup_time
                order by s.snap_id
-           ) as end_snap
+           ) as end_snap,
+           lead(s.end_interval_time, 1, null) over (
+               partition by s.dbid, s.instance_number, s.startup_time
+               order by s.snap_id
+           ) as end_time
       from dba_hist_snapshot s
-      join v$database d on d.dbid = s.dbid
-     where s.end_interval_time >= to_date('{start_value}', 'YYYY-MM-DD HH24:MI:SS')
-       and s.end_interval_time <= to_date('{end_value}', 'YYYY-MM-DD HH24:MI:SS')
+     where s.dbid = (select dbid from v$database)
        and s.instance_number = (select instance_number from v$instance)
+       and s.end_interval_time >= to_timestamp('{start_value}', 'YYYY-MM-DD HH24:MI:SS')
+       and s.end_interval_time <= to_timestamp('{end_value}', 'YYYY-MM-DD HH24:MI:SS')
+       {startup_filter}
 )
 select dbid || '|' || instance_number || '|' || begin_snap || '|' || end_snap
   from snapshots
  where end_snap is not null
+   and end_time > begin_time
  order by instance_number, begin_snap;
 exit
-""".format(start_value=start_value, end_value=end_value)
+""".format(start_value=start_value, end_value=end_value, startup_filter=startup_filter)
+
+
+def awr_startup_periods_sql(start_dt, end_dt):
+    """List AWR startup periods represented by snapshots in the requested range."""
+    # Use snapshot end times because those are the boundaries accepted by AWR pairing.
+    return """
+whenever oserror exit failure
+whenever sqlerror exit failure
+set heading off feedback off verify off echo off pagesize 0 trimspool on linesize 32767 tab off
+with period_snaps as (
+    select startup_time, end_interval_time as snap_time,
+           lead(end_interval_time) over (
+               partition by dbid, instance_number, startup_time
+               order by snap_id
+           ) as next_time
+      from dba_hist_snapshot
+     where dbid = (select dbid from v$database)
+       and instance_number = (select instance_number from v$instance)
+       and end_interval_time >= to_timestamp('{start}', 'YYYY-MM-DD HH24:MI:SS')
+       and end_interval_time <= to_timestamp('{end}', 'YYYY-MM-DD HH24:MI:SS')
+)
+select nvl(to_char(startup_time, 'YYYY-MM-DD HH24:MI:SS'), 'UNKNOWN') || '|' ||
+       to_char(min(snap_time), 'YYYY-MM-DD HH24:MI:SS') || '|' ||
+       to_char(max(snap_time), 'YYYY-MM-DD HH24:MI:SS') || '|' ||
+       count(*) || '|' ||
+       sum(case when next_time > snap_time then 1 else 0 end)
+  from period_snaps
+ group by startup_time
+ order by startup_time;
+exit
+""".format(start=start_dt.strftime(SNAPSHOT_DATE_FORMAT), end=end_dt.strftime(SNAPSHOT_DATE_FORMAT))
 
 
 def statspack_pairs_sql(start_dt, end_dt, startup_time=None):
@@ -2335,9 +2380,8 @@ exit
 """.format(start=start_dt.strftime(SNAPSHOT_DATE_FORMAT), end=end_dt.strftime(SNAPSHOT_DATE_FORMAT))
 
 
-def discover_statspack_startup_periods(ctx, start_dt, end_dt):
-    """Read available periods before creating output files or patching templates."""
-    output = run_sqlplus(ctx, statspack_startup_periods_sql(start_dt, end_dt))
+def parse_startup_periods(output, report_type):
+    """Decode the common period inventory returned by AWR and STATSPACK queries."""
     periods = []
     # Reject malformed identity data instead of silently collecting an ambiguous group.
     for startup, first, last, count, pairs in parse_delimited_rows(output, 5):
@@ -2350,9 +2394,19 @@ def discover_statspack_startup_periods(ctx, start_dt, end_dt):
                 "pair_count": int(pairs),
             }
         except ValueError as exc:
-            raise CollectorError("Could not read STATSPACK startup period: {}".format(exc))
+            raise CollectorError("Could not read {} startup period: {}".format(report_type, exc))
         periods.append(period)
     return periods
+
+
+def discover_awr_startup_periods(ctx, start_dt, end_dt):
+    """Read AWR periods before creating output files or generating reports."""
+    return parse_startup_periods(run_sqlplus(ctx, awr_startup_periods_sql(start_dt, end_dt)), "AWR")
+
+
+def discover_statspack_startup_periods(ctx, start_dt, end_dt):
+    """Read STATSPACK periods before creating output files or patching templates."""
+    return parse_startup_periods(run_sqlplus(ctx, statspack_startup_periods_sql(start_dt, end_dt)), "STATSPACK")
 
 
 def startup_selection_can_prompt(args):
@@ -2368,15 +2422,15 @@ def startup_selection_can_prompt(args):
     )
 
 
-def select_statspack_startup_period(periods, allow_prompt):
+def select_startup_period(periods, allow_prompt, report_type):
     """Require one observed startup per package, with stable numbered choices."""
     if not periods:
-        raise CollectorError("No STATSPACK snapshots found for the requested date range.")
+        raise CollectorError("No {} snapshots found for the requested date range.".format(report_type))
 
     # Single-startup ranges continue automatically, including historical startups.
     if len(periods) == 1:
         if periods[0]["pair_count"] == 0:
-            raise CollectorError("No valid STATSPACK pairs in this startup; two snapshots with increasing timestamps are required.")
+            raise CollectorError("No valid {} pairs in this startup; two snapshots with increasing timestamps are required.".format(report_type))
         return periods[0]
 
     print("INFO: The requested range contains snapshots from {} instance startups.".format(len(periods)))
@@ -2400,9 +2454,9 @@ def select_statspack_startup_period(periods, allow_prompt):
 
     # No default is chosen: a batch run must be retried with one of the printed ranges.
     if not any(period["pair_count"] for period in periods):
-        raise CollectorError("None of the startup periods contains a valid STATSPACK pair.")
+        raise CollectorError("None of the startup periods contains a valid {} pair.".format(report_type))
     if not allow_prompt:
-        raise CollectorError("Multiple STATSPACK startups require a selection. Rerun with START and END from one available numbered range above.")
+        raise CollectorError("Multiple {} startups require a selection. Rerun with START and END from one available numbered range above.".format(report_type))
     while True:
         try:
             choice = input("Choose startup period [1-{}]: ".format(len(periods))).strip()
@@ -2418,8 +2472,13 @@ def select_statspack_startup_period(periods, allow_prompt):
         return selected
 
 
-def discover_awr_pairs(ctx, start_dt, end_dt):
-    output = run_sqlplus(ctx, awr_pairs_sql(start_dt, end_dt))
+def select_statspack_startup_period(periods, allow_prompt):
+    """Keep the public helper explicit for existing callers and tests."""
+    return select_startup_period(periods, allow_prompt, "STATSPACK")
+
+
+def discover_awr_pairs(ctx, start_dt, end_dt, startup_time=None):
+    output = run_sqlplus(ctx, awr_pairs_sql(start_dt, end_dt, startup_time))
     rows = parse_delimited_rows(output, 4)
     pairs = []
     for dbid, inst_num, begin_snap, end_snap in rows:
@@ -2951,21 +3010,33 @@ def main(argv=None):
         # Resolve startup ambiguity before any collection side effects or attachment prompts.
         startup_selection = None
         pairs = None
-        if report_type == "STATSPACK":
-            periods = discover_statspack_startup_periods(ctx, start_dt, end_dt)
-            selected = select_statspack_startup_period(periods, startup_selection_can_prompt(args))
-            startup_selection = {
-                "requested_start": start_dt, "requested_end": end_dt,
-                "selected_startup": selected["startup_time"],
-            }
-            start_dt, end_dt = selected["start"], selected["end"]
-            print("INFO: Selected startup {}. Report range: {} to {}.".format(
-                selected["startup_time"].strftime(SNAPSHOT_DATE_FORMAT),
-                start_dt.strftime(SNAPSHOT_DATE_FORMAT), end_dt.strftime(SNAPSHOT_DATE_FORMAT),
-            ))
+        requested_start, requested_end = start_dt, end_dt
+        periods = (
+            discover_awr_startup_periods(ctx, start_dt, end_dt)
+            if report_type == "AWR"
+            else discover_statspack_startup_periods(ctx, start_dt, end_dt)
+        )
+        selected = select_startup_period(
+            periods, startup_selection_can_prompt(args), report_type
+        )
+        startup_selection = {
+            "requested_start": requested_start,
+            "requested_end": requested_end,
+            "selected_startup": selected["startup_time"],
+        }
+        start_dt, end_dt = selected["start"], selected["end"]
+        print("INFO: Selected startup {}. Report range: {} to {}.".format(
+            selected["startup_time"].strftime(SNAPSHOT_DATE_FORMAT),
+            start_dt.strftime(SNAPSHOT_DATE_FORMAT), end_dt.strftime(SNAPSHOT_DATE_FORMAT),
+        ))
+        if report_type == "AWR":
+            pairs = discover_awr_pairs(ctx, start_dt, end_dt, selected["startup_time"])
+        else:
             pairs = discover_statspack_pairs(ctx, start_dt, end_dt, selected["startup_time"])
-            if not pairs:
-                raise CollectorError("No STATSPACK pairs remain in the selected startup. Snapshots may have been purged; rerun collection.")
+        if not pairs:
+            raise CollectorError(
+                "No {} pairs remain in the selected startup. Snapshots may have been purged; rerun collection.".format(report_type)
+            )
         include_alert = (
             args.include_alert
             if args.include_alert is not None
@@ -2994,9 +3065,6 @@ def main(argv=None):
         print("Reports directory: {}".format(reports_dir))
 
         if report_type == "AWR":
-            pairs = discover_awr_pairs(ctx, start_dt, end_dt)
-            if not pairs:
-                raise CollectorError("No AWR snapshot pairs found for the selected date range.")
             reports = generate_awr_reports(ctx, pairs, reports_dir)
         else:
             reports = generate_statspack_reports(ctx, pairs, reports_dir)
