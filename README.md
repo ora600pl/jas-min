@@ -711,6 +711,28 @@ For useful statistics, collect a meaningful run of consecutive reports. A week o
 
 ### Interactive Collector
 
+#### Collector version and provenance
+
+The standalone Python collector has its own version, independent of the Rust
+application. Run `python3 jas-min-collector.py --version` without an Oracle
+environment to identify the release. The version is also printed at startup.
+
+Every manifest records `collector_name`, `collector_version` and
+`collector_script_sha256`. The hash identifies the exact script file, including
+local edits. Generated JSON starts with an optional `collector_info` object
+containing `name`, `version`, `script_sha256`, `parser` (`python-collector`) and
+`parsed_at_utc` (UTC). This describes parsing provenance, not the report period
+or the version used for later analysis. No host paths are added to this metadata.
+
+Existing JAS-MIN and JAS-MIN PRO readers ignore the additional field; old JSON
+files remain valid. Those readers do not yet retain or display this metadata.
+Files without it have unknown collector provenance.
+
+Collector releases use `MAJOR.MINOR.PATCH`: increase PATCH for bug fixes, MINOR
+for compatible features, and MAJOR for incompatible CLI or data-contract changes.
+Version `0.1.9` is the first explicitly versioned collector, not a change to the
+Rust application's version. Update the version whenever collector behavior changes.
+
 `jas-min-collector.py` is a Python standard-library helper for environments where the reports should be generated directly from the target Oracle host. It expects `ORACLE_HOME`, `ORACLE_SID`, and a working `$ORACLE_HOME/bin/sqlplus` connection as `/ as sysdba`.
 
 ```bash

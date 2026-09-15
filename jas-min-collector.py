@@ -8,6 +8,7 @@ intentionally uses only Python standard library modules.
 """
 
 import argparse
+import hashlib
 import os
 import platform
 import re
@@ -16,13 +17,17 @@ import subprocess
 import sys
 import zipfile
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from html import unescape
 from html.parser import HTMLParser
 import json
 import math
 from pathlib import Path
 
+
+# Version the standalone collector independently from the Rust application.
+COLLECTOR_VERSION = "0.1.9"
+COLLECTOR_NAME = "jas-min-collector"
 
 DATE_FORMAT = "%Y-%m-%d %H:%M"
 DATE_FORMAT_LABEL = "YYYY-MM-DD HH24:MI"
@@ -37,6 +42,20 @@ SHARED_CURSOR_REASON_SUFFIX = ".shared_cursor_reasons"
 
 class CollectorError(Exception):
     """Expected runtime error shown without a traceback."""
+
+
+def collector_identity():
+    """Identify the release and the exact script copied to the Oracle host."""
+    # Hash the script itself; this also identifies locally modified copies.
+    try:
+        script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    except OSError as exc:
+        raise CollectorError("Could not identify collector script: {}".format(exc))
+    return {
+        "name": COLLECTOR_NAME,
+        "version": COLLECTOR_VERSION,
+        "script_sha256": script_hash,
+    }
 
 
 def tail(text, limit=4000):
@@ -369,6 +388,11 @@ def build_arg_parser():
         description="Collect Oracle AWR or Statspack reports and package them for JAS-MIN.",
         epilog=examples,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # argparse exits here, so identifying the version needs no Oracle connection.
+    parser.add_argument(
+        "--version", action="version",
+        version="{} {}".format(COLLECTOR_NAME, COLLECTOR_VERSION),
     )
     parser.add_argument(
         "-t",
@@ -1583,7 +1607,14 @@ def parse_reports_to_json(reports, output_dir, stem, security_level):
         merge_db_instance(db_instance, dbi)
 
     awrs.sort(key=lambda item: item.get("snap_info", {}).get("begin_snap_id", 0))
+    # Keep provenance first for readers; existing JSON consumers ignore this field.
+    collector_info = collector_identity()
+    collector_info.update({
+        "parser": "python-collector",
+        "parsed_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    })
     collection = {
+        "collector_info": collector_info,
         "db_instance_information": db_instance,
         "initialization_parameters": parameters,
         "awrs": awrs,
@@ -2610,9 +2641,14 @@ def write_manifest(
         )
     packaged_files.append(manifest.name)
 
+    # Include identity even in reports-only packages, without exposing host paths.
+    identity = collector_identity()
     with manifest.open("w", encoding="utf-8") as fh:
         fh.write("JAS-MIN collector manifest\n")
         fh.write("==========================\n")
+        fh.write("collector_name={}\n".format(identity["name"]))
+        fh.write("collector_version={}\n".format(identity["version"]))
+        fh.write("collector_script_sha256={}\n".format(identity["script_sha256"]))
         fh.write("ORACLE_SID={}\n".format("masked by security level 0" if mask_manifest else ctx["oracle_sid"]))
         fh.write("ORACLE_HOME={}\n".format("masked by security level 0" if mask_manifest else ctx["oracle_home"]))
         fh.write("report_type={}\n".format(report_type))
@@ -2770,6 +2806,8 @@ def create_zip_package(
 def main(argv=None):
     try:
         args = parse_collector_args(argv)
+        # Make copied terminal logs identify the collector release too.
+        print("{} {}".format(COLLECTOR_NAME, COLLECTOR_VERSION))
         ctx = require_oracle_context()
         print("Detected database from environment:")
         print("  ORACLE_SID={}".format(ctx["oracle_sid"]))

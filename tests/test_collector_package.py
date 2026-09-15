@@ -1,6 +1,11 @@
 import importlib.util
 import contextlib
 import io
+import hashlib
+import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -14,6 +19,64 @@ COLLECTOR_PATH = ROOT / "jas-min-collector.py"
 spec = importlib.util.spec_from_file_location("jas_min_collector", COLLECTOR_PATH)
 collector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(collector)
+
+
+class CollectorIdentityTests(unittest.TestCase):
+    def test_version_without_oracle_environment(self):
+        # End users must be able to identify a copy before configuring Oracle.
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("ORACLE_HOME", "ORACLE_SID")}
+        result = subprocess.run(
+            [sys.executable, str(COLLECTOR_PATH), "--version"],
+            env=env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "jas-min-collector 0.1.9")
+
+    def test_json_provenance_preserves_legacy_payload(self):
+        # Metadata is additive: removing it leaves the original collection shape.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir)
+            report = output / "sp_8_9.txt"
+            report.write_text("", encoding="utf-8")
+            path = collector.parse_reports_to_json([report], output, "sample", 0)
+            collection = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(next(iter(collection)), "collector_info")
+            info = collection.pop("collector_info")
+            self.assertEqual(info["version"], collector.COLLECTOR_VERSION)
+            self.assertEqual(info["parser"], "python-collector")
+            self.assertEqual(info["script_sha256"], hashlib.sha256(COLLECTOR_PATH.read_bytes()).hexdigest())
+            self.assertRegex(info["parsed_at_utc"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+            self.assertEqual(set(collection), {"db_instance_information", "initialization_parameters", "awrs", "sql_text"})
+            self.assertEqual(collection["awrs"][0]["snap_info"]["begin_snap_id"], 8)
+            self.assertEqual(collection["awrs"][0]["snap_info"]["end_snap_id"], 9)
+
+    def test_manifest_identity_for_reports_only_and_json(self):
+        # Both package modes carry the same script identity as generated JSON.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir)
+            identity = collector.collector_identity()
+            for mode in (collector.PACKAGE_REPORTS, collector.PACKAGE_JSON):
+                path = collector.write_manifest(
+                    {"oracle_sid": "TEST", "oracle_home": "/example/oracle"},
+                    output, "STATSPACK", collector.datetime(2026, 9, 10),
+                    collector.datetime(2026, 9, 11), [], None, mode, None, 0, None,
+                )
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("collector_version={}\n".format(identity["version"]), text)
+                self.assertIn("collector_script_sha256={}\n".format(identity["script_sha256"]), text)
+
+    def test_local_edits_change_script_identity(self):
+        # A modified copy remains distinguishable even without a version bump.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "collector.py"
+            script.write_bytes(b"original\n")
+            with mock.patch.object(collector, "__file__", str(script)):
+                before = collector.collector_identity()
+                script.write_bytes(b"modified\n")
+                after = collector.collector_identity()
+            self.assertEqual(before["version"], after["version"])
+            self.assertNotEqual(before["script_sha256"], after["script_sha256"])
 
 
 class CollectorZipPackageTests(unittest.TestCase):
