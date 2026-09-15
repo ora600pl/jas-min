@@ -26,13 +26,13 @@ from pathlib import Path
 
 
 # Version the standalone collector independently from the Rust application.
-COLLECTOR_VERSION = "0.1.9"
+COLLECTOR_VERSION = "0.1.10"
 COLLECTOR_NAME = "jas-min-collector"
 
 DATE_FORMAT = "%Y-%m-%d %H:%M"
-DATE_FORMAT_LABEL = "YYYY-MM-DD HH24:MI"
+SNAPSHOT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+DATE_FORMAT_LABEL = "YYYY-MM-DD HH24:MI[:SS]"
 NLS_LANG = "AMERICAN_AMERICA.AL32UTF8"
-STATSPACK_MIN_INTERVAL_MINUTES = 30
 PACKAGE_REPORTS = "reports"
 PACKAGE_JSON = "json"
 PACKAGE_BOTH = "both"
@@ -65,10 +65,13 @@ def tail(text, limit=4000):
 
 
 def parse_datetime(value):
-    try:
-        return datetime.strptime(value, DATE_FORMAT)
-    except ValueError:
-        raise CollectorError("Invalid date format. Expected: {}".format(DATE_FORMAT_LABEL))
+    # Accept existing minute inputs and exact snapshot boundaries copied from the menu.
+    for date_format in (DATE_FORMAT, SNAPSHOT_DATE_FORMAT):
+        try:
+            return datetime.strptime(value, date_format)
+        except ValueError:
+            continue
+    raise CollectorError("Invalid date format. Expected: {}".format(DATE_FORMAT_LABEL))
 
 
 def parse_datetime_arg(value):
@@ -79,7 +82,8 @@ def parse_datetime_arg(value):
 
 
 def datetime_sql(value):
-    return value.strftime(DATE_FORMAT)
+    # Preserve seconds when present, while keeping existing minute labels familiar.
+    return value.strftime(SNAPSHOT_DATE_FORMAT if value.second else DATE_FORMAT)
 
 
 def ask_report_type():
@@ -2225,8 +2229,8 @@ def collect_sql_execution_plans(ctx, target_dir, sql_ids):
 
 
 def awr_pairs_sql(start_dt, end_dt):
-    start_value = datetime_sql(start_dt)
-    end_value = datetime_sql(end_dt)
+    start_value = start_dt.strftime(SNAPSHOT_DATE_FORMAT)
+    end_value = end_dt.strftime(SNAPSHOT_DATE_FORMAT)
     return """
 whenever oserror exit failure
 whenever sqlerror exit failure
@@ -2241,8 +2245,8 @@ with snapshots as (
            ) as end_snap
       from dba_hist_snapshot s
       join v$database d on d.dbid = s.dbid
-     where s.end_interval_time >= to_date('{start_value}', 'YYYY-MM-DD HH24:MI')
-       and s.end_interval_time <= to_date('{end_value}', 'YYYY-MM-DD HH24:MI')
+     where s.end_interval_time >= to_date('{start_value}', 'YYYY-MM-DD HH24:MI:SS')
+       and s.end_interval_time <= to_date('{end_value}', 'YYYY-MM-DD HH24:MI:SS')
        and s.instance_number = (select instance_number from v$instance)
 )
 select dbid || '|' || instance_number || '|' || begin_snap || '|' || end_snap
@@ -2253,41 +2257,165 @@ exit
 """.format(start_value=start_value, end_value=end_value)
 
 
-def statspack_pairs_sql(start_dt, end_dt):
-    start_value = datetime_sql(start_dt)
-    end_value = datetime_sql(end_dt)
+def statspack_pairs_sql(start_dt, end_dt, startup_time=None):
+    """Pair consecutive snapshots inside each startup, including manual captures."""
+    start_value = start_dt.strftime(SNAPSHOT_DATE_FORMAT)
+    end_value = end_dt.strftime(SNAPSHOT_DATE_FORMAT)
+    # Pin generation to the selected startup even if new snapshots arrive after discovery.
+    startup_filter = ""
+    if startup_time is not None:
+        startup_filter = "and startup_time = to_date('{}', 'YYYY-MM-DD HH24:MI:SS')".format(
+            startup_time.strftime(SNAPSHOT_DATE_FORMAT)
+        )
+    # Partition before pairing so a requested period can safely include restarts.
+    # Compare timestamps directly: scheduled intervals may differ by a second.
     return """
 whenever oserror exit failure
 whenever sqlerror exit failure
 set heading off feedback off verify off echo off pagesize 0 trimspool on linesize 32767 tab off
 with v_snaps as (
     select snap_id as begin_snap,
-           lead(snap_id, 1, null) over (order by snap_id) as end_snap,
-           (lead(snap_time, 1, null) over (order by snap_id) - snap_time) * 24 * 60
-               as snap_interval_minutes
+           snap_time as begin_time,
+           lead(snap_id, 1, null) over (
+               partition by dbid, instance_number, startup_time
+               order by snap_id
+           ) as end_snap,
+           lead(snap_time, 1, null) over (
+               partition by dbid, instance_number, startup_time
+               order by snap_id
+           ) as end_time
       from perfstat.STATS$SNAPSHOT
-     where startup_time = (
-               select max(startup_time)
-                 from perfstat.STATS$SNAPSHOT
-                where dbid = (select dbid from v$database)
-                  and instance_number = (select instance_number from v$instance)
-           )
-       and dbid = (select dbid from v$database)
+     where dbid = (select dbid from v$database)
        and instance_number = (select instance_number from v$instance)
-       and snap_time >= to_date('{start_value}', 'YYYY-MM-DD HH24:MI')
-       and snap_time <= to_date('{end_value}', 'YYYY-MM-DD HH24:MI')
+       and snap_time >= to_date('{start_value}', 'YYYY-MM-DD HH24:MI:SS')
+       and snap_time <= to_date('{end_value}', 'YYYY-MM-DD HH24:MI:SS')
+       {startup_filter}
 )
 select begin_snap || '|' || end_snap
   from v_snaps
  where end_snap is not null
-   and snap_interval_minutes >= {min_interval}
+   and end_time > begin_time
  order by begin_snap;
 exit
 """.format(
         start_value=start_value,
         end_value=end_value,
-        min_interval=STATSPACK_MIN_INTERVAL_MINUTES,
+        startup_filter=startup_filter,
     )
+
+
+def statspack_startup_periods_sql(start_dt, end_dt):
+    """List observed startups, including groups too small to produce a report."""
+    # Count valid adjacent pairs so the menu never offers an unusable period.
+    return """
+whenever oserror exit failure
+whenever sqlerror exit failure
+set heading off feedback off verify off echo off pagesize 0 trimspool on linesize 32767 tab off
+with period_snaps as (
+    select startup_time, snap_time,
+           lead(snap_time) over (
+               partition by dbid, instance_number, startup_time
+               order by snap_id
+           ) as next_time
+      from perfstat.STATS$SNAPSHOT
+     where dbid = (select dbid from v$database)
+       and instance_number = (select instance_number from v$instance)
+       and snap_time >= to_date('{start}', 'YYYY-MM-DD HH24:MI:SS')
+       and snap_time <= to_date('{end}', 'YYYY-MM-DD HH24:MI:SS')
+)
+select nvl(to_char(startup_time, 'YYYY-MM-DD HH24:MI:SS'), 'UNKNOWN') || '|' ||
+       to_char(min(snap_time), 'YYYY-MM-DD HH24:MI:SS') || '|' ||
+       to_char(max(snap_time), 'YYYY-MM-DD HH24:MI:SS') || '|' ||
+       count(*) || '|' ||
+       sum(case when next_time > snap_time then 1 else 0 end)
+  from period_snaps
+ group by startup_time
+ order by startup_time;
+exit
+""".format(start=start_dt.strftime(SNAPSHOT_DATE_FORMAT), end=end_dt.strftime(SNAPSHOT_DATE_FORMAT))
+
+
+def discover_statspack_startup_periods(ctx, start_dt, end_dt):
+    """Read available periods before creating output files or patching templates."""
+    output = run_sqlplus(ctx, statspack_startup_periods_sql(start_dt, end_dt))
+    periods = []
+    # Reject malformed identity data instead of silently collecting an ambiguous group.
+    for startup, first, last, count, pairs in parse_delimited_rows(output, 5):
+        try:
+            period = {
+                "startup_time": datetime.strptime(startup, SNAPSHOT_DATE_FORMAT),
+                "start": datetime.strptime(first, SNAPSHOT_DATE_FORMAT),
+                "end": datetime.strptime(last, SNAPSHOT_DATE_FORMAT),
+                "snapshot_count": int(count),
+                "pair_count": int(pairs),
+            }
+        except ValueError as exc:
+            raise CollectorError("Could not read STATSPACK startup period: {}".format(exc))
+        periods.append(period)
+    return periods
+
+
+def startup_selection_can_prompt(args):
+    """Respect unattended runs, including a fully specified command in a terminal."""
+    # Missing collection choices indicate interactive or mixed use; redirected input never prompts.
+    json_needed = (args.package_mode != PACKAGE_REPORTS or args.include_sql_plans
+                   or args.access_path_evidence is not None)
+    choices = (args.report_type, args.start_dt, args.end_dt, args.include_alert,
+               args.include_sql_plans, args.include_os_stats, args.package_mode)
+    return sys.stdin.isatty() and (
+        any(value is None for value in choices)
+        or (json_needed and args.security_level is None)
+    )
+
+
+def select_statspack_startup_period(periods, allow_prompt):
+    """Require one observed startup per package, with stable numbered choices."""
+    if not periods:
+        raise CollectorError("No STATSPACK snapshots found for the requested date range.")
+
+    # Single-startup ranges continue automatically, including historical startups.
+    if len(periods) == 1:
+        if periods[0]["pair_count"] == 0:
+            raise CollectorError("No valid STATSPACK pairs in this startup; two snapshots with increasing timestamps are required.")
+        return periods[0]
+
+    print("INFO: The requested range contains snapshots from {} instance startups.".format(len(periods)))
+    print("INFO: Mixing startup periods in one analysis can affect statistics, anomalies and findings.")
+    print("INFO: We recommend a separate analysis for each startup. Select one period for this package.")
+    print("INFO: Only startups recorded in snapshots are listed; restarts without snapshots cannot be detected.")
+    print(" No.  Instance startup      First snapshot        Last snapshot         Snapshots  Reports")
+    # Keep unavailable groups numbered too, so all observed restarts remain visible.
+    for number, period in enumerate(periods, 1):
+        print(" {:>3}  {}   {}   {}   {:>9}  {:>7}{}".format(
+            number, period["startup_time"].strftime(SNAPSHOT_DATE_FORMAT),
+            period["start"].strftime(SNAPSHOT_DATE_FORMAT), period["end"].strftime(SNAPSHOT_DATE_FORMAT),
+            period["snapshot_count"], period["pair_count"],
+            " (unavailable: no valid pairs)" if not period["pair_count"] else "",
+        ))
+        if period["pair_count"]:
+            print('      Range {}: --start "{}" --end "{}"'.format(
+                number, period["start"].strftime(SNAPSHOT_DATE_FORMAT),
+                period["end"].strftime(SNAPSHOT_DATE_FORMAT),
+            ))
+
+    # No default is chosen: a batch run must be retried with one of the printed ranges.
+    if not any(period["pair_count"] for period in periods):
+        raise CollectorError("None of the startup periods contains a valid STATSPACK pair.")
+    if not allow_prompt:
+        raise CollectorError("Multiple STATSPACK startups require a selection. Rerun with START and END from one available numbered range above.")
+    while True:
+        try:
+            choice = input("Choose startup period [1-{}]: ".format(len(periods))).strip()
+        except EOFError:
+            raise CollectorError("No startup period selected. Rerun with one of the available ranges above.")
+        if not choice.isascii() or not choice.isdigit() or not 1 <= int(choice) <= len(periods):
+            print("Please enter an available period number from 1 to {}.".format(len(periods)))
+            continue
+        selected = periods[int(choice) - 1]
+        if not selected["pair_count"]:
+            print("This period has no valid report pairs. Please choose another number.")
+            continue
+        return selected
 
 
 def discover_awr_pairs(ctx, start_dt, end_dt):
@@ -2306,8 +2434,8 @@ def discover_awr_pairs(ctx, start_dt, end_dt):
     return pairs
 
 
-def discover_statspack_pairs(ctx, start_dt, end_dt):
-    output = run_sqlplus(ctx, statspack_pairs_sql(start_dt, end_dt))
+def discover_statspack_pairs(ctx, start_dt, end_dt, startup_time=None):
+    output = run_sqlplus(ctx, statspack_pairs_sql(start_dt, end_dt, startup_time))
     rows = parse_delimited_rows(output, 2)
     return [{"begin_snap": begin_snap, "end_snap": end_snap} for begin_snap, end_snap in rows]
 
@@ -2615,6 +2743,7 @@ def write_manifest(
     security_level,
     xplan_info,
     os_stats_info=None,
+    startup_selection=None,
 ):
     manifest = output_dir / "manifest.txt"
     mask_manifest = should_mask_manifest(package_mode, security_level)
@@ -2654,6 +2783,10 @@ def write_manifest(
         fh.write("report_type={}\n".format(report_type))
         fh.write("start={}\n".format(datetime_sql(start_dt)))
         fh.write("end={}\n".format(datetime_sql(end_dt)))
+        # Preserve both the original request and the exact chosen snapshot period.
+        if startup_selection:
+            for key, value in startup_selection.items():
+                fh.write("{}={}\n".format(key, value.strftime(SNAPSHOT_DATE_FORMAT)))
         fh.write("generated_at={}\n".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         fh.write("report_count={}\n".format(len(reports)))
         fh.write("package_content={}\n".format(package_mode_label(package_mode)))
@@ -2815,6 +2948,24 @@ def main(argv=None):
 
         report_type = args.report_type if args.report_type is not None else ask_report_type()
         start_dt, end_dt = resolve_date_range(args.start_dt, args.end_dt)
+        # Resolve startup ambiguity before any collection side effects or attachment prompts.
+        startup_selection = None
+        pairs = None
+        if report_type == "STATSPACK":
+            periods = discover_statspack_startup_periods(ctx, start_dt, end_dt)
+            selected = select_statspack_startup_period(periods, startup_selection_can_prompt(args))
+            startup_selection = {
+                "requested_start": start_dt, "requested_end": end_dt,
+                "selected_startup": selected["startup_time"],
+            }
+            start_dt, end_dt = selected["start"], selected["end"]
+            print("INFO: Selected startup {}. Report range: {} to {}.".format(
+                selected["startup_time"].strftime(SNAPSHOT_DATE_FORMAT),
+                start_dt.strftime(SNAPSHOT_DATE_FORMAT), end_dt.strftime(SNAPSHOT_DATE_FORMAT),
+            ))
+            pairs = discover_statspack_pairs(ctx, start_dt, end_dt, selected["startup_time"])
+            if not pairs:
+                raise CollectorError("No STATSPACK pairs remain in the selected startup. Snapshots may have been purged; rerun collection.")
         include_alert = (
             args.include_alert
             if args.include_alert is not None
@@ -2848,12 +2999,6 @@ def main(argv=None):
                 raise CollectorError("No AWR snapshot pairs found for the selected date range.")
             reports = generate_awr_reports(ctx, pairs, reports_dir)
         else:
-            pairs = discover_statspack_pairs(ctx, start_dt, end_dt)
-            if not pairs:
-                raise CollectorError(
-                    "No Statspack snapshot pairs found for the selected date range "
-                    "(minimum interval: {} minutes).".format(STATSPACK_MIN_INTERVAL_MINUTES)
-                )
             reports = generate_statspack_reports(ctx, pairs, reports_dir)
 
         json_path = None
@@ -2975,6 +3120,7 @@ def main(argv=None):
             security_level,
             xplan_info,
             os_stats_info,
+            startup_selection=startup_selection,
         )
         zip_path = create_zip_package(
             output_dir,

@@ -733,6 +733,50 @@ for compatible features, and MAJOR for incompatible CLI or data-contract changes
 Version `0.1.9` is the first explicitly versioned collector, not a change to the
 Rust application's version. Update the version whenever collector behavior changes.
 
+Since collector `0.1.10`, STATSPACK reports use consecutive available snapshots
+within the selected database, instance and startup. Both endpoints must fall
+inside the requested time range (inclusive). Manual snapshots and intervals
+shorter than 30 minutes are included; missing snapshot IDs do not break pairing.
+Requests spanning restarts require selecting one startup period per package.
+Pairs with equal or decreasing timestamps are skipped. For example, selecting
+13:00 includes snapshots at 13:10 and 13:19, followed by the next at 14:00.
+This replaces the former 30-minute minimum and latest-startup-only restriction.
+
+#### STATSPACK startup selection
+
+After START and END are entered, the collector checks the recorded startups
+before creating files or generating reports. One startup continues automatically,
+including a historical startup. Multiple startups produce an English INFO notice
+and a numbered list with startup time, first/last snapshot, snapshot count and
+valid report count. Numbers stay the same when an unavailable period is listed.
+
+```text
+INFO: The requested range contains snapshots from 2 instance startups.
+INFO: Mixing startup periods in one analysis can affect statistics, anomalies and findings.
+INFO: We recommend a separate analysis for each startup. Select one period for this package.
+ No.  Instance startup      First snapshot        Last snapshot         Snapshots  Reports
+   1  2026-09-09 08:15:00   2026-09-10 13:10:15   2026-09-12 22:30:00         116      115
+   2  2026-09-12 23:05:12   2026-09-12 23:30:00   2026-09-15 15:00:00         128      127
+Choose startup period [1-2]:
+```
+
+The choice must identify a period with at least one valid pair; blank input has
+no default. A period with no valid pairs is listed but cannot be selected.
+The collector pins the report query to the selected startup and uses that group's
+first/last snapshot times for collection. The manifest records `requested_start`,
+`requested_end`, `selected_startup` and the effective `start`/`end`.
+
+When stdin is not a terminal, or all collection choices were supplied through
+CLI arguments, multiple startups produce an error instead of a prompt. The list
+includes numbered `--start`/`--end` suggestions for rerunning one period at a time.
+Date arguments accept `YYYY-MM-DD HH24:MI` and `YYYY-MM-DD HH24:MI:SS`, so the
+suggested boundaries can be copied exactly. Only startups represented by stored
+snapshots can be discovered; this is not a complete restart audit.
+
+This selection applies to STATSPACK. AIX/Linux files are still copied in full
+from the supplied directory; select OS evidence from the same period during
+analysis. The startup menu does not filter their contents.
+
 `jas-min-collector.py` is a Python standard-library helper for environments where the reports should be generated directly from the target Oracle host. It expects `ORACLE_HOME`, `ORACLE_SID`, and a working `$ORACLE_HOME/bin/sqlplus` connection as `/ as sysdba`.
 
 ```bash
