@@ -31,7 +31,7 @@ class CollectorIdentityTests(unittest.TestCase):
             env=env, capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "jas-min-collector 0.1.10")
+        self.assertEqual(result.stdout.strip(), "jas-min-collector 0.1.11")
 
     def test_json_provenance_preserves_legacy_payload(self):
         # Metadata is additive: removing it leaves the original collection shape.

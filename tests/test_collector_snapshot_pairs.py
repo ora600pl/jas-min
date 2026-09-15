@@ -243,5 +243,108 @@ class StatspackPairTests(unittest.TestCase):
         self.assertEqual(args.end_dt.second, 1)
 
 
+class AwrPairTests(unittest.TestCase):
+    def setUp(self):
+        # Mirror the AWR catalog columns used by discovery and pair generation.
+        self.db = sqlite3.connect(":memory:")
+        self.addCleanup(self.db.close)
+        self.db.executescript("""
+            CREATE TABLE dba_hist_snapshot (
+                dbid INTEGER, instance_number INTEGER, startup_time TEXT,
+                snap_id INTEGER, end_interval_time TEXT
+            );
+            CREATE TABLE v$database (dbid INTEGER);
+            INSERT INTO v$database VALUES (100);
+            CREATE TABLE v$instance (instance_number INTEGER);
+            INSERT INTO v$instance VALUES (1);
+        """)
+        self.db.create_function("to_timestamp", 2, lambda value, fmt: value)
+        self.db.create_function("to_char", 2, lambda value, fmt: value)
+        self.db.create_function("nvl", 2, lambda value, fallback: value if value is not None else fallback)
+
+    def add_snap(self, snap_id, time, startup="2026-09-09 08:15:00", dbid=100, instance=1):
+        # Store ISO text so SQLite ordering matches Oracle timestamp ordering.
+        self.db.execute(
+            "INSERT INTO dba_hist_snapshot VALUES (?, ?, ?, ?, ?)",
+            (dbid, instance, startup, snap_id, "2026-09-10 " + time),
+        )
+
+    def add_two_periods(self):
+        for snap_id, time in [(101, "13:10:15"), (102, "13:19:37"), (106, "14:00:01")]:
+            self.add_snap(snap_id, time)
+        for snap_id, time in [(107, "15:00:02"), (108, "15:30:03")]:
+            self.add_snap(snap_id, time, startup="2026-09-10 14:45:12")
+
+    def query_sqlplus(self, ctx, script):
+        # Execute the exact CTE/select body while omitting SQL*Plus directives.
+        query = script[script.index("with "):].split(";", 1)[0]
+        return "\n".join(str(row[0]) for row in self.db.execute(query))
+
+    def periods(self):
+        with mock.patch.object(collector, "run_sqlplus", side_effect=self.query_sqlplus):
+            return collector.discover_awr_startup_periods(
+                {}, datetime(2026, 9, 10, 13), datetime(2026, 9, 10, 18, 30)
+            )
+
+    def pairs(self, startup=None):
+        with mock.patch.object(collector, "run_sqlplus", side_effect=self.query_sqlplus):
+            return collector.discover_awr_pairs(
+                {}, datetime(2026, 9, 10, 13), datetime(2026, 9, 10, 18, 30), startup
+            )
+
+    def test_awr_periods_are_grouped_by_startup_and_current_instance(self):
+        # Foreign DB/instance rows cannot become selectable AWR periods.
+        self.add_two_periods()
+        self.add_snap(109, "16:00:00", startup="2026-09-10 15:45:00", dbid=200)
+        self.add_snap(110, "16:30:00", startup="2026-09-10 16:15:00", instance=2)
+        periods = self.periods()
+        self.assertEqual([p["snapshot_count"] for p in periods], [3, 2])
+        self.assertEqual([p["pair_count"] for p in periods], [2, 1])
+        self.assertEqual(periods[1]["startup_time"], datetime(2026, 9, 10, 14, 45, 12))
+
+    def test_awr_pairs_are_pinned_to_selected_startup(self):
+        # A broad requested range produces only pairs from the reviewed startup.
+        self.add_two_periods()
+        pairs = self.pairs(datetime(2026, 9, 10, 14, 45, 12))
+        self.assertEqual(pairs, [{"dbid": "100", "inst_num": "1", "begin_snap": "107", "end_snap": "108"}])
+
+    def test_awr_pairs_never_cross_restart(self):
+        # Partitioning protects direct helper callers even without a startup filter.
+        self.add_two_periods()
+        self.assertEqual(
+            [(p["begin_snap"], p["end_snap"]) for p in self.pairs()],
+            [("101", "102"), ("102", "106"), ("107", "108")],
+        )
+
+    def test_interactive_awr_main_collects_numbered_period(self):
+        # Exercise AWR orchestration through manifest creation with database I/O mocked.
+        self.add_two_periods()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            def generate_reports(ctx, pairs, output):
+                self.assertEqual([(p["begin_snap"], p["end_snap"]) for p in pairs], [("107", "108")])
+                report = output / "awrrpt_1_107_108.html"
+                report.write_text("<html>AWR fixture</html>\n", encoding="utf-8")
+                return [report]
+
+            with mock.patch.object(collector, "run_sqlplus", side_effect=self.query_sqlplus), \
+                 mock.patch.object(collector, "require_oracle_context", return_value={"oracle_sid": "TEST", "oracle_home": "/oracle"}), \
+                 mock.patch.object(collector.sys.stdin, "isatty", return_value=True), \
+                 mock.patch.object(collector, "unique_output_dir", return_value=root), \
+                 mock.patch.object(collector, "generate_awr_reports", side_effect=generate_reports), \
+                 mock.patch("builtins.input", side_effect=["awr", "2026-09-10 13:00", "2026-09-10 18:30", "2", "n", "n", "n", "reports"]), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                status = collector.main([])
+
+            self.assertEqual(status, 0)
+            manifest = (root / "manifest.txt").read_text(encoding="utf-8")
+            self.assertIn("report_type=AWR", manifest)
+            self.assertIn("selected_startup=2026-09-10 14:45:12", manifest)
+            self.assertIn("requested_start=2026-09-10 13:00:00", manifest)
+            self.assertIn("start=2026-09-10 15:00:02", manifest)
+            self.assertIn("end=2026-09-10 15:30:03", manifest)
+
+
 if __name__ == "__main__":
     unittest.main()
