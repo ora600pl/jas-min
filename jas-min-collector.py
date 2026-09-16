@@ -26,7 +26,7 @@ from pathlib import Path
 
 
 # Version the standalone collector independently from the Rust application.
-COLLECTOR_VERSION = "0.1.11"
+COLLECTOR_VERSION = "0.1.12"
 COLLECTOR_NAME = "jas-min-collector"
 
 DATE_FORMAT = "%Y-%m-%d %H:%M"
@@ -37,6 +37,7 @@ PACKAGE_REPORTS = "reports"
 PACKAGE_JSON = "json"
 PACKAGE_BOTH = "both"
 SQL_ID_RE = re.compile(r"^[A-Za-z0-9]{1,30}$")
+ORACLE_SQL_ID_RE = re.compile(r"^[0-9a-z]{13}$", re.IGNORECASE)
 SHARED_CURSOR_REASON_SUFFIX = ".shared_cursor_reasons"
 
 
@@ -295,6 +296,11 @@ def normalize_sql_id(value):
 def is_valid_sql_id(value):
     sql_id = normalize_sql_id(value)
     return bool(SQL_ID_RE.match(sql_id))
+
+
+def is_oracle_sql_id(value):
+    """Recognize the fixed-width SQL identifier emitted by Oracle reports."""
+    return bool(ORACLE_SQL_ID_RE.fullmatch(normalize_sql_id(value)))
 
 
 def parse_sql_id_list(value):
@@ -1514,13 +1520,29 @@ def parse_text_wait_events(lines):
     return result
 
 
+def is_statspack_sql_row(fields):
+    """Reject wrapped SQL text that happens to contain seven whitespace fields."""
+    if len(fields) != 7 or not is_oracle_sql_id(fields[6]):
+        return False
+
+    # A real TOP SQL row has six numeric metrics before its Oracle SQL_ID.
+    for value in fields[:6]:
+        normalized = normalize_cell(value).replace(",", "").replace("%", "")
+        try:
+            if not math.isfinite(float(normalized)):
+                return False
+        except ValueError:
+            return False
+    return True
+
+
 def parse_text_sql_section(lines, kind):
     items = {} if kind != "elapsed" else []
     last_sql_id = ""
     for line in lines:
         fields = line.split()
-        if len(fields) == 7:
-            sql_id = fields[6]
+        if is_statspack_sql_row(fields):
+            sql_id = normalize_sql_id(fields[6])
             if kind == "elapsed":
                 item = {
                     "sql_id": sql_id,
@@ -1643,7 +1665,8 @@ def top_elapsed_sql_id_counts_from_json(json_path, limit=10):
     for awr in collection.get("awrs", []):
         for sql in awr.get("sql_elapsed_time", []) or []:
             sql_id = normalize_sql_id(sql.get("sql_id", ""))
-            if not is_valid_sql_id(sql_id):
+            # Old JSON remains readable, but malformed parser artifacts are never selected.
+            if not is_oracle_sql_id(sql_id):
                 continue
             if sql_id not in first_seen:
                 first_seen[sql_id] = ordinal
