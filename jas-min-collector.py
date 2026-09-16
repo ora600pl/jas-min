@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+import xml.etree.ElementTree as ET
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from html import unescape
@@ -26,7 +27,7 @@ from pathlib import Path
 
 
 # Version the standalone collector independently from the Rust application.
-COLLECTOR_VERSION = "0.1.12"
+COLLECTOR_VERSION = "0.1.13"
 COLLECTOR_NAME = "jas-min-collector"
 
 DATE_FORMAT = "%Y-%m-%d %H:%M"
@@ -1763,434 +1764,440 @@ def discover_multi_child_cursor_sqls(ctx, sql_ids):
     return rows
 
 
+SHARED_CURSOR_REASON_CATALOG = {
+    1: ("Unbound cursor (not fully parsed)", "The candidate cursor was not fully parsed and is not shareable."),
+    2: ("SQL type mismatch", "The statement or cursor SQL type differs."),
+    3: ("Optimizer mismatch", "The optimizer environment snapshots differ; fields identify the differing attributes."),
+    4: ("SQL Tune Base Object Different", "The SQL Tuning Base object context differs."),
+    5: ("Max Long Length Different", "The maximum LONG value length used by the cursor differs."),
+    6: ("error_on_overlap_time parameter mismatch", "The ERROR_ON_OVERLAP_TIME session setting differs."),
+    7: ("Top Level RPI Cursor", "The top-level recursive program interface cursor context differs."),
+    8: ("Flashback Archive mismatch", "The Flashback Data Archive context differs."),
+    9: ("PQ Slave mismatch", "The parallel-query slave compilation or execution context differs."),
+    10: ("Top-level DDL", "The top-level DDL cursor context differs."),
+    11: ("Multi-PX and slave-compiled cursor", "The multi-PX or slave-compiled cursor context differs."),
+    12: ("Bind-peeked PQ cursor", "The bind-peeking context used for parallel query differs."),
+    13: ("ANYDATA transformation", "The ANYDATA transformation context differs."),
+    14: ("Stored outline mismatch", "The stored-outline context differs."),
+    15: ("LogMiner attributes mismatch", "The LogMiner session or statement attributes differ."),
+    16: ("Statistics row-source mismatch", "The statistics row-source context differs."),
+    17: ("Literal replacement settings mismatch", "Cursor-sharing literal-replacement settings differ."),
+    18: ("Literal replacement compilation", "The literal-replacement compilation context differs."),
+    19: ("SQL Analyze", "The SQL Analyze cursor context differs."),
+    20: ("Explain Plan cursor", "One cursor was compiled for EXPLAIN PLAN or its explain context differs."),
+    21: ("Flashback cursor", "The flashback-query cursor context differs."),
+    22: ("Buffered DML mismatch", "The buffered-DML context differs."),
+    23: ("No Trigger Indicated mismatch", "The no-trigger indicator differs."),
+    24: ("Parallel DML environment mismatch", "The parallel-DML environment differs."),
+    25: ("Insert Direct Load mismatch", "The insert direct-load context differs."),
+    26: ("Logical Standby Apply", "The logical-standby apply context differs."),
+    27: ("Not Typechecked", "The candidate cursor has not completed compatible type checking."),
+    28: ("Different Call Duration", "The call-duration cursor attribute differs."),
+    29: ("Bind UACs mismatch", "Internal bind user-argument descriptors differ."),
+    30: ("User Bind Peek settings mismatch", "User bind-peeking settings differ."),
+    31: ("PL/SQL Compiler Switches", "PL/SQL compiler settings differ."),
+    32: ("Materialized View Rewrite cursor", "The materialized-view rewrite context differs."),
+    33: ("Rolling Invalidate Window Exceeded", "The rolling invalidation window was exceeded."),
+    34: ("Editions mismatch", "Edition-based redefinition context differs."),
+    35: ("Incarnation number mismatch", "An object or cursor incarnation number differs."),
+    36: ("Authorization Check failed", "Authorization objects, schemas, synonyms, or translation entries differ."),
+    37: ("Describe Cursor mismatch", "The describe-cursor context differs."),
+    38: ("ACL Check mismatch", "The access-control-list check context differs."),
+    39: ("Bind mismatch", "Bind metadata differs; fields identify position, datatype, length, or descriptor flags."),
+    40: ("Session Cached Cursor", "The session-cached-cursor context differs."),
+    41: ("Marked for Purge", "The cursor was marked unsafe or selected for purge."),
+    42: ("Code Address Relocation", "A code-address relocation attribute differs."),
+    43: ("Parallel DDL environment mismatch", "The parallel-DDL environment differs."),
+    44: ("NLS Settings", "NLS environment snapshots differ; decoded text can be equal when raw handle bytes differ."),
+    45: ("XDS Privilege Check mismatch", "The XDS privilege-check context differs."),
+    46: ("Session Specific Cursor Session Mismatch", "A cursor restricted to a session was compared from a different session context."),
+    47: ("Remote PDB ID Mismatch", "The remote pluggable-database identifier differs."),
+    48: ("Auto Reoptimization Mismatch", "Automatic reoptimization or feedback state differs."),
+    49: ("Show Invisible Columns Session Mismatch", "The session setting controlling invisible-column visibility differs."),
+    50: ("Target CON_ID mismatch for CONTAINERS()", "The target container identifier for a CONTAINERS() cursor differs."),
+    51: ("Permanent X$ attributes mismatch", "Attributes of an internal permanent X$ object differ."),
+    52: ("Preplugin backup X$ attributes mismatch", "Attributes of an internal preplugin-backup X$ object differ."),
+    53: ("COMMON_SCHEMA_ACCESS lockdown mismatch", "The COMMON_SCHEMA_ACCESS lockdown context differs."),
+    54: ("EXEMPT REDACTION POLICY mismatch", "The EXEMPT REDACTION POLICY privilege context differs."),
+    55: ("ADG redirected-statement sharing check", "The sharing context for a statement redirected from Active Data Guard differs."),
+    56: ("Statistics Query Transformation sharing check", "The sharing context for Statistics Query Transformation differs."),
+    57: ("Cross-container object DOP mismatch", "The degree of parallelism for a cross-container object differs."),
+}
+
+SHARED_CURSOR_DATATYPES = {
+    1: "VARCHAR2",
+    2: "NUMBER",
+    8: "LONG",
+    9: "VARCHAR",
+    12: "DATE",
+    23: "RAW",
+    24: "LONG RAW",
+    69: "ROWID",
+    96: "CHAR",
+    100: "BINARY_FLOAT",
+    101: "BINARY_DOUBLE",
+    102: "CURSOR / REF CURSOR",
+    104: "UROWID",
+    112: "CLOB",
+    113: "BLOB",
+    114: "BFILE",
+    180: "TIMESTAMP",
+    181: "TIMESTAMP WITH TIME ZONE",
+    182: "INTERVAL YEAR TO MONTH",
+    183: "INTERVAL DAY TO SECOND",
+    231: "TIMESTAMP WITH LOCAL TIME ZONE",
+}
+
+SHARED_CURSOR_TRANSPORT_BEGIN = "JASMIN_REASON_BEGIN|"
+SHARED_CURSOR_TRANSPORT_DATA = "JASMIN_REASON_DATA|"
+SHARED_CURSOR_TRANSPORT_END = "JASMIN_REASON_END|"
+
+
 def shared_cursor_reasons_sql(sql_id):
-    """Decode every XML reason node currently exposed for one SQL_ID."""
+    """Fetch REASON CLOBs as ordered UTF-8 hex chunks without SQL*Plus wrapping."""
     return r"""
 whenever oserror exit failure
 whenever sqlerror exit failure
-set heading off feedback off verify off echo off pagesize 0 linesize 4000
-set long 1000000 longchunksize 1000000 trimspool on trimout on tab off recsep off
+set heading off feedback off verify off echo off pagesize 0 linesize 32767
+set trimspool on trimout on tab off recsep off
+set serveroutput on size unlimited format wrapped
 
-prompt V$SQL_SHARED_CURSOR.REASON
-prompt SQL_ID: __SQL_ID__
-prompt A/B denote comparison-vector sides, never chronological old/new values.
+declare
+  l_position  pls_integer;
+  l_sequence  pls_integer;
+  l_length    pls_integer;
+  l_chunk     varchar2(2000);
+begin
+  for cursor_row in (
+    select child_number, reason
+      from v$sql_shared_cursor
+     where sql_id = '__SQL_ID__'
+       and reason is not null
+       and dbms_lob.getlength(reason) > 0
+     order by child_number
+  ) loop
+    l_position := 1;
+    l_sequence := 0;
+    l_length := dbms_lob.getlength(cursor_row.reason);
+    dbms_output.put_line(
+      'JASMIN_REASON_BEGIN|' || cursor_row.child_number || '|' || l_length
+    );
 
-with
-  reason_catalog (reason_id, canonical_reason, reason_meaning) as (
-    select  1, 'Unbound cursor (not fully parsed)',
-               'The candidate cursor was not fully parsed and is not shareable.' from dual union all
-    select  2, 'SQL type mismatch',
-               'The statement or cursor SQL type differs.' from dual union all
-    select  3, 'Optimizer mismatch',
-               'The optimizer environment snapshots differ; fields identify the differing attributes.' from dual union all
-    select  4, 'SQL Tune Base Object Different',
-               'The SQL Tuning Base object context differs.' from dual union all
-    select  5, 'Max Long Length Different',
-               'The maximum LONG value length used by the cursor differs.' from dual union all
-    select  6, 'error_on_overlap_time parameter mismatch',
-               'The ERROR_ON_OVERLAP_TIME session setting differs.' from dual union all
-    select  7, 'Top Level RPI Cursor',
-               'The top-level recursive program interface cursor context differs.' from dual union all
-    select  8, 'Flashback Archive mismatch',
-               'The Flashback Data Archive context differs.' from dual union all
-    select  9, 'PQ Slave mismatch',
-               'The parallel-query slave compilation or execution context differs.' from dual union all
-    select 10, 'Top-level DDL',
-               'The top-level DDL cursor context differs.' from dual union all
-    select 11, 'Multi-PX and slave-compiled cursor',
-               'The multi-PX or slave-compiled cursor context differs.' from dual union all
-    select 12, 'Bind-peeked PQ cursor',
-               'The bind-peeking context used for parallel query differs.' from dual union all
-    select 13, 'ANYDATA transformation',
-               'The ANYDATA transformation context differs.' from dual union all
-    select 14, 'Stored outline mismatch',
-               'The stored-outline context differs.' from dual union all
-    select 15, 'LogMiner attributes mismatch',
-               'The LogMiner session or statement attributes differ.' from dual union all
-    select 16, 'Statistics row-source mismatch',
-               'The statistics row-source context differs.' from dual union all
-    select 17, 'Literal replacement settings mismatch',
-               'Cursor-sharing literal-replacement settings differ.' from dual union all
-    select 18, 'Literal replacement compilation',
-               'The literal-replacement compilation context differs.' from dual union all
-    select 19, 'SQL Analyze',
-               'The SQL Analyze cursor context differs.' from dual union all
-    select 20, 'Explain Plan cursor',
-               'One cursor was compiled for EXPLAIN PLAN or its explain context differs.' from dual union all
-    select 21, 'Flashback cursor',
-               'The flashback-query cursor context differs.' from dual union all
-    select 22, 'Buffered DML mismatch',
-               'The buffered-DML context differs.' from dual union all
-    select 23, 'No Trigger Indicated mismatch',
-               'The no-trigger indicator differs.' from dual union all
-    select 24, 'Parallel DML environment mismatch',
-               'The parallel-DML environment differs.' from dual union all
-    select 25, 'Insert Direct Load mismatch',
-               'The insert direct-load context differs.' from dual union all
-    select 26, 'Logical Standby Apply',
-               'The logical-standby apply context differs.' from dual union all
-    select 27, 'Not Typechecked',
-               'The candidate cursor has not completed compatible type checking.' from dual union all
-    select 28, 'Different Call Duration',
-               'The call-duration cursor attribute differs.' from dual union all
-    select 29, 'Bind UACs mismatch',
-               'Internal bind user-argument descriptors differ.' from dual union all
-    select 30, 'User Bind Peek settings mismatch',
-               'User bind-peeking settings differ.' from dual union all
-    select 31, 'PL/SQL Compiler Switches',
-               'PL/SQL compiler settings differ.' from dual union all
-    select 32, 'Materialized View Rewrite cursor',
-               'The materialized-view rewrite context differs.' from dual union all
-    select 33, 'Rolling Invalidate Window Exceeded',
-               'The rolling invalidation window was exceeded.' from dual union all
-    select 34, 'Editions mismatch',
-               'Edition-based redefinition context differs.' from dual union all
-    select 35, 'Incarnation number mismatch',
-               'An object or cursor incarnation number differs.' from dual union all
-    select 36, 'Authorization Check failed',
-               'Authorization objects, schemas, synonyms, or translation entries differ.' from dual union all
-    select 37, 'Describe Cursor mismatch',
-               'The describe-cursor context differs.' from dual union all
-    select 38, 'ACL Check mismatch',
-               'The access-control-list check context differs.' from dual union all
-    select 39, 'Bind mismatch',
-               'Bind metadata differs; fields identify position, datatype, length, or descriptor flags.' from dual union all
-    select 40, 'Session Cached Cursor',
-               'The session-cached-cursor context differs.' from dual union all
-    select 41, 'Marked for Purge',
-               'The cursor was marked unsafe or selected for purge.' from dual union all
-    select 42, 'Code Address Relocation',
-               'A code-address relocation attribute differs.' from dual union all
-    select 43, 'Parallel DDL environment mismatch',
-               'The parallel-DDL environment differs.' from dual union all
-    select 44, 'NLS Settings',
-               'NLS environment snapshots differ; decoded text can be equal when raw handle bytes differ.' from dual union all
-    select 45, 'XDS Privilege Check mismatch',
-               'The XDS privilege-check context differs.' from dual union all
-    select 46, 'Session Specific Cursor Session Mismatch',
-               'A cursor restricted to a session was compared from a different session context.' from dual union all
-    select 47, 'Remote PDB ID Mismatch',
-               'The remote pluggable-database identifier differs.' from dual union all
-    select 48, 'Auto Reoptimization Mismatch',
-               'Automatic reoptimization or feedback state differs.' from dual union all
-    select 49, 'Show Invisible Columns Session Mismatch',
-               'The session setting controlling invisible-column visibility differs.' from dual union all
-    select 50, 'Target CON_ID mismatch for CONTAINERS()',
-               'The target container identifier for a CONTAINERS() cursor differs.' from dual union all
-    select 51, 'Permanent X$ attributes mismatch',
-               'Attributes of an internal permanent X$ object differ.' from dual union all
-    select 52, 'Preplugin backup X$ attributes mismatch',
-               'Attributes of an internal preplugin-backup X$ object differ.' from dual union all
-    select 53, 'COMMON_SCHEMA_ACCESS lockdown mismatch',
-               'The COMMON_SCHEMA_ACCESS lockdown context differs.' from dual union all
-    select 54, 'EXEMPT REDACTION POLICY mismatch',
-               'The EXEMPT REDACTION POLICY privilege context differs.' from dual union all
-    select 55, 'ADG redirected-statement sharing check',
-               'The sharing context for a statement redirected from Active Data Guard differs.' from dual union all
-    select 56, 'Statistics Query Transformation sharing check',
-               'The sharing context for Statistics Query Transformation differs.' from dual union all
-    select 57, 'Cross-container object DOP mismatch',
-               'The degree of parallelism for a cross-container object differs.' from dual
-  ),
-  source_rows as (
-    select s.child_number as view_child,
-           s.reason
-      from v$sql_shared_cursor s
-     where s.sql_id = '__SQL_ID__'
-       and s.reason is not null
-       and dbms_lob.getlength(s.reason) > 0
-  ),
-  reason_nodes as (
-    select s.view_child,
-           x.node_no,
-           x.xml_child,
-           x.reason_id,
-           x.reason_text,
-           x.payload_shape,
-           x.node_xml
-      from source_rows s
-      cross apply xmltable(
-        '/ReasonRoot/ChildNode'
-        passing xmltype(
-          to_clob('<ReasonRoot>') || s.reason || to_clob('</ReasonRoot>')
+    while l_position <= l_length loop
+      l_chunk := dbms_lob.substr(cursor_row.reason, 500, l_position);
+      if l_chunk is null then
+        raise_application_error(-20001, 'Unexpected empty REASON CLOB chunk');
+      end if;
+      l_sequence := l_sequence + 1;
+      dbms_output.put_line(
+        'JASMIN_REASON_DATA|' || cursor_row.child_number || '|' ||
+        l_sequence || '|' || rawtohex(
+          utl_i18n.string_to_raw(l_chunk, 'AL32UTF8')
         )
-        columns
-          node_no       for ordinality,
-          xml_child     number         path 'ChildNumber',
-          reason_id     number         path 'ID',
-          reason_text   varchar2(4000) path 'reason',
-          payload_shape varchar2(30)   path 'size',
-          node_xml      xmltype        path '.'
-      ) x
-  ),
-  payload_fields as (
-    select n.view_child,
-           n.node_no,
-           n.xml_child,
-           n.reason_id,
-           n.reason_text,
-           n.payload_shape,
-           f.field_no,
-           f.field_name,
-           f.raw_value
-      from reason_nodes n
-      outer apply xmltable(
-        '/ChildNode/*[
-           not(self::ChildNumber or self::ID or self::reason or self::size)
-         ]'
-        passing n.node_xml
-        columns
-          field_no   for ordinality,
-          field_name varchar2(128)  path 'local-name(.)',
-          raw_value  varchar2(4000) path 'string(.)'
-      ) f
-  ),
-  explained as (
-    select p.*,
-           regexp_replace(p.reason_text, '\([[:digit:]]+\)$') as reason_name,
-           case
-             when regexp_like(p.reason_text, '\([[:digit:]]+\)$') then
-               to_number(rtrim(
-                 regexp_substr(p.reason_text, '[[:digit:]]+\)$'), ')'
-               ))
-           end as reason_detail_code,
-           case
-             when p.field_name is null then 'NO_FIELD_PAYLOAD'
-             when p.reason_id = 44 and instr(p.raw_value, '->') > 0
-               then 'NLS_PAIR'
-             when p.reason_id = 3 and length(p.raw_value) = 42
-               then 'OPTIMIZER_PAIR'
-             when p.reason_id = 3
-               then 'OPTIMIZER_RAW'
-             when p.field_name like 'original\_%' escape '\'
-               then 'ORIGINAL_SCALAR'
-             when p.field_name like 'new\_%' escape '\'
-               or p.field_name like 'upgradeable\_new\_%' escape '\'
-               then 'NEW_SCALAR'
-             else 'SCALAR'
-           end as value_format,
-           case
-             when p.reason_id = 44 and instr(p.raw_value, '->') > 0
-               then substr(p.raw_value, 2, instr(p.raw_value, '->') - 3)
-             when p.reason_id = 3 and length(p.raw_value) = 42
-               then rtrim(substr(p.raw_value, 2, 20))
-             else p.raw_value
-           end as value_a,
-           case
-             when p.reason_id = 44 and instr(p.raw_value, '->') > 0
-               then substr(
-                      p.raw_value,
-                      instr(p.raw_value, '->') + 3,
-                      length(p.raw_value) - instr(p.raw_value, '->') - 3
-                    )
-             when p.reason_id = 3 and length(p.raw_value) = 42
-               then rtrim(substr(p.raw_value, 23, 20))
-           end as value_b,
-           case
-             when p.field_name is null then
-               'This reason has no field-level payload.'
-             when p.reason_id = 44 then
-               'NLS environment setting; A/B are comparison-vector sides.'
-             when p.reason_id = 3 or p.field_name like '\_%' escape '\' then
-               'Optimizer environment attribute or hidden parameter; A/B are comparison-vector sides.'
-             when lower(p.field_name) in ('bind_position', 'pos') then
-               'Internal zero-based bind position.'
-             when lower(p.field_name) in
-                    ('dty', 'oacdty', 'original_oacdty', 'new_oacdty') then
-               'Oracle internal bind datatype code.'
-             when lower(p.field_name) like '%oacmxl%' then
-               'Maximum bind value or buffer length.'
-             when regexp_like(lower(p.field_name), '(flg|flags)[[:digit:]_]*$') then
-               'Oracle internal flag bit mask; preserve the raw value unless the target-build enum is known.'
-             when regexp_like(lower(p.field_name), 'sig$') then
-               'Oracle internal signature or hash used by the sharing comparison.'
-             else
-               'Oracle criterion-specific diagnostic field; the raw value is authoritative.'
-           end as field_meaning
-      from payload_fields p
-  ),
-  decoded as (
-    select e.*,
-           case
-             when lower(e.field_name) in
-                    ('dty', 'oacdty', 'original_oacdty', 'new_oacdty')
-              and regexp_like(trim(e.value_a), '^[[:digit:]]+$')
-             then case to_number(trim(e.value_a))
-               when   1 then 'VARCHAR2'
-               when   2 then 'NUMBER'
-               when   8 then 'LONG'
-               when   9 then 'VARCHAR'
-               when  12 then 'DATE'
-               when  23 then 'RAW'
-               when  24 then 'LONG RAW'
-               when  69 then 'ROWID'
-               when  96 then 'CHAR'
-               when 100 then 'BINARY_FLOAT'
-               when 101 then 'BINARY_DOUBLE'
-               when 102 then 'CURSOR / REF CURSOR'
-               when 104 then 'UROWID'
-               when 112 then 'CLOB'
-               when 113 then 'BLOB'
-               when 114 then 'BFILE'
-               when 180 then 'TIMESTAMP'
-               when 181 then 'TIMESTAMP WITH TIME ZONE'
-               when 182 then 'INTERVAL YEAR TO MONTH'
-               when 183 then 'INTERVAL DAY TO SECOND'
-               when 231 then 'TIMESTAMP WITH LOCAL TIME ZONE'
-               else 'datatype code ' || trim(e.value_a)
-             end
-           end as value_a_decoded,
-           case
-             when lower(e.field_name) in
-                    ('dty', 'oacdty', 'original_oacdty', 'new_oacdty')
-              and regexp_like(trim(e.value_b), '^[[:digit:]]+$')
-             then case to_number(trim(e.value_b))
-               when   1 then 'VARCHAR2'
-               when   2 then 'NUMBER'
-               when   8 then 'LONG'
-               when   9 then 'VARCHAR'
-               when  12 then 'DATE'
-               when  23 then 'RAW'
-               when  24 then 'LONG RAW'
-               when  69 then 'ROWID'
-               when  96 then 'CHAR'
-               when 100 then 'BINARY_FLOAT'
-               when 101 then 'BINARY_DOUBLE'
-               when 102 then 'CURSOR / REF CURSOR'
-               when 104 then 'UROWID'
-               when 112 then 'CLOB'
-               when 113 then 'BLOB'
-               when 114 then 'BFILE'
-               when 180 then 'TIMESTAMP'
-               when 181 then 'TIMESTAMP WITH TIME ZONE'
-               when 182 then 'INTERVAL YEAR TO MONTH'
-               when 183 then 'INTERVAL DAY TO SECOND'
-               when 231 then 'TIMESTAMP WITH LOCAL TIME ZONE'
-               else 'datatype code ' || trim(e.value_b)
-             end
-           end as value_b_decoded
-      from explained e
-  ),
-  node_headers as (
-    select d.view_child,
-           d.node_no,
-           d.xml_child,
-           d.reason_id,
-           max(coalesce(d.reason_name, c.canonical_reason)) as reason_name,
-           d.reason_detail_code,
-           d.payload_shape,
-           max(coalesce(
-                 c.reason_meaning,
-                 'Unknown or release-specific sharing criterion; inspect the raw field values.'
-               )) as reason_meaning
-      from decoded d
-      left join reason_catalog c
-        on c.reason_id = d.reason_id
-     group by d.view_child,
-              d.node_no,
-              d.xml_child,
-              d.reason_id,
-              d.reason_detail_code,
-              d.payload_shape
-  ),
-  child_numbers as (
-    select distinct view_child
-      from node_headers
-  ),
-  report_rows (
-    report_group, view_child, node_no, section_no, field_no, subline_no,
-    report_line
-  ) as (
-    select 0, c.view_child, 0, 0, 0, 0, ' '
-      from child_numbers c
-    union all
-    select 0, c.view_child, 0, 1, 0, 0, rpad('=', 100, '=')
-      from child_numbers c
-    union all
-    select 0, c.view_child, 0, 2, 0, 0,
-           'CHILD CURSOR ' || to_char(c.view_child, 'FM9999990')
-      from child_numbers c
-    union all
-    select 0, c.view_child, 0, 3, 0, 0, rpad('=', 100, '=')
-      from child_numbers c
-    union all
-    select 0, n.view_child, n.node_no, 0, 0, 0, ' '
-      from node_headers n
-    union all
-    select 0, n.view_child, n.node_no, 1, 0, 0,
-           '+-- [' || lpad(to_char(n.node_no, 'FM9990'), 2, '0') || '] ' ||
-           n.reason_name ||
-           '  {ID=' || to_char(n.reason_id, 'FM9990') ||
-           ', subcode=' || coalesce(
-                             to_char(n.reason_detail_code, 'FM99990'), '?'
-                           ) ||
-           ', payload=' || coalesce(n.payload_shape, '?') || '}' ||
-           case
-             when n.xml_child <> n.view_child then
-               '  [XML child=' || to_char(n.xml_child, 'FM9999990') || ']'
-           end
-      from node_headers n
-    union all
-    select 0, n.view_child, n.node_no, 2, 0, 0,
-           '|   Why: ' || n.reason_meaning
-      from node_headers n
-    union all
-    select 0, d.view_child, d.node_no, 10, coalesce(d.field_no, 0), 0,
-           '|   ' || lpad(to_char(coalesce(d.field_no, 0), 'FM9990'), 2, '0') ||
-           '. ' || coalesce(d.field_name, '<no field payload>') || '  ' ||
-           case d.value_format
-             when 'NLS_PAIR' then
-               'A=[' || coalesce(d.value_a, '<null>') || '] | ' ||
-               'B=[' || coalesce(d.value_b, '<null>') || ']'
-             when 'OPTIMIZER_PAIR' then
-               'A=[' || coalesce(d.value_a, '<null>') || '] | ' ||
-               'B=[' || coalesce(d.value_b, '<null>') || ']'
-             when 'OPTIMIZER_RAW' then
-               '[raw; pair not safely separable] = ' || d.raw_value
-             when 'ORIGINAL_SCALAR' then
-               '[original] = ' || coalesce(d.value_a, '<null>') ||
-               case when d.value_a_decoded is not null
-                    then ' (' || d.value_a_decoded || ')' end
-             when 'NEW_SCALAR' then
-               '[new] = ' || coalesce(d.value_a, '<null>') ||
-               case when d.value_a_decoded is not null
-                    then ' (' || d.value_a_decoded || ')' end
-             when 'NO_FIELD_PAYLOAD' then
-               '<no field-level payload>'
-             else
-               '= ' || coalesce(d.value_a, '<null>') ||
-               case when d.value_a_decoded is not null
-                    then ' (' || d.value_a_decoded || ')' end
-           end
-      from decoded d
-    union all
-    select 0, d.view_child, d.node_no, 10, coalesce(d.field_no, 0), 1,
-           '|       Meaning: ' || d.field_meaning
-      from decoded d
-    union all
-    select 1, 0, 0, 0, 0, 0, ' '
-      from dual
-    union all
-    select 1, 0, 0, 1, 0, 0, rpad('-', 100, '-')
-      from dual
-    union all
-    select 1, 0, 0, 2, 0, 0,
-           'SUMMARY: ' ||
-           (select count(*) from child_numbers) || ' child cursor(s), ' ||
-           (select count(*) from node_headers) || ' reason node(s), ' ||
-           (select count(field_name) from decoded) || ' diagnostic field(s).'
-      from dual
-  )
-select report_line
-  from report_rows
- order by report_group,
-          view_child,
-          node_no,
-          section_no,
-          field_no,
-          subline_no;
+      );
+      l_position := l_position + length(l_chunk);
+    end loop;
+
+    dbms_output.put_line(
+      'JASMIN_REASON_END|' || cursor_row.child_number || '|' || l_sequence
+    );
+  end loop;
+end;
+/
 exit
 """.replace("__SQL_ID__", sql_literal(sql_id))
+
+
+def parse_shared_cursor_reason_transport(output):
+    """Reassemble and validate the hex-framed CLOB records emitted by SQL*Plus."""
+    records = []
+    active = None
+
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if line.startswith(SHARED_CURSOR_TRANSPORT_BEGIN):
+            parts = line.split("|")
+            if len(parts) != 3 or active is not None:
+                raise CollectorError("Malformed child cursor reason BEGIN record")
+            try:
+                active = {
+                    "view_child": int(parts[1]),
+                    "declared_length": int(parts[2]),
+                    "chunks": [],
+                }
+            except ValueError as exc:
+                raise CollectorError("Invalid child cursor reason BEGIN record") from exc
+            continue
+
+        if line.startswith(SHARED_CURSOR_TRANSPORT_DATA):
+            parts = line.split("|", 3)
+            if len(parts) != 4 or active is None:
+                raise CollectorError("Malformed child cursor reason DATA record")
+            try:
+                child_number = int(parts[1])
+                sequence = int(parts[2])
+                chunk = bytes.fromhex(parts[3])
+            except ValueError as exc:
+                raise CollectorError("Invalid child cursor reason DATA record") from exc
+            if child_number != active["view_child"]:
+                raise CollectorError("Child cursor number changed inside REASON transport")
+            if sequence != len(active["chunks"]) + 1:
+                raise CollectorError("Child cursor REASON chunks are out of sequence")
+            active["chunks"].append(chunk)
+            continue
+
+        if line.startswith(SHARED_CURSOR_TRANSPORT_END):
+            parts = line.split("|")
+            if len(parts) != 3 or active is None:
+                raise CollectorError("Malformed child cursor reason END record")
+            try:
+                child_number = int(parts[1])
+                chunk_count = int(parts[2])
+            except ValueError as exc:
+                raise CollectorError("Invalid child cursor reason END record") from exc
+            if child_number != active["view_child"]:
+                raise CollectorError("Child cursor number changed at REASON transport end")
+            if chunk_count != len(active["chunks"]):
+                raise CollectorError("Child cursor REASON transport is incomplete")
+            try:
+                reason = b"".join(active["chunks"]).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise CollectorError("Child cursor REASON is not valid UTF-8") from exc
+            if len(reason) != active["declared_length"]:
+                raise CollectorError("Child cursor REASON length does not match its CLOB length")
+            records.append({"view_child": active["view_child"], "reason": reason})
+            active = None
+
+    if active is not None:
+        raise CollectorError("Child cursor REASON transport ended before its END record")
+    return records
+
+
+def xml_element_text(element):
+    """Match XMLTABLE string(.) while treating an empty Oracle string as null."""
+    if element is None:
+        return None
+    value = "".join(element.itertext())
+    return value if value else None
+
+
+def parse_shared_cursor_reason_integer(value, label):
+    """Keep malformed internal identifiers visible as a collection failure."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise CollectorError("Invalid {} in V$SQL_SHARED_CURSOR.REASON".format(label)) from exc
+
+
+def shared_cursor_field_details(reason_id, field_name, raw_value):
+    """Decode comparison pairs and explain Oracle's diagnostic payload fields."""
+    if field_name is None:
+        return {
+            "value_format": "NO_FIELD_PAYLOAD",
+            "value_a": None,
+            "value_b": None,
+            "meaning": "This reason has no field-level payload.",
+        }
+
+    value_format = "SCALAR"
+    value_a = raw_value
+    value_b = None
+    arrow = raw_value.find("->") if raw_value is not None else -1
+
+    if reason_id == 44 and arrow >= 0:
+        value_format = "NLS_PAIR"
+        value_a = raw_value[1:max(1, arrow - 1)]
+        value_b = raw_value[arrow + 3:-1]
+    elif reason_id == 3 and raw_value is not None and len(raw_value) == 42:
+        value_format = "OPTIMIZER_PAIR"
+        value_a = raw_value[1:21].rstrip()
+        value_b = raw_value[22:42].rstrip()
+    elif reason_id == 3:
+        value_format = "OPTIMIZER_RAW"
+    elif field_name.startswith("original_"):
+        value_format = "ORIGINAL_SCALAR"
+    elif field_name.startswith("new_") or field_name.startswith("upgradeable_new_"):
+        value_format = "NEW_SCALAR"
+
+    lower_name = field_name.lower()
+    if reason_id == 44:
+        meaning = "NLS environment setting; A/B are comparison-vector sides."
+    elif reason_id == 3 or field_name.startswith("_"):
+        meaning = "Optimizer environment attribute or hidden parameter; A/B are comparison-vector sides."
+    elif lower_name in ("bind_position", "pos"):
+        meaning = "Internal zero-based bind position."
+    elif lower_name in ("dty", "oacdty", "original_oacdty", "new_oacdty"):
+        meaning = "Oracle internal bind datatype code."
+    elif "oacmxl" in lower_name:
+        meaning = "Maximum bind value or buffer length."
+    elif re.search(r"(flg|flags)[0-9_]*$", lower_name):
+        meaning = "Oracle internal flag bit mask; preserve the raw value unless the target-build enum is known."
+    elif lower_name.endswith("sig"):
+        meaning = "Oracle internal signature or hash used by the sharing comparison."
+    else:
+        meaning = "Oracle criterion-specific diagnostic field; the raw value is authoritative."
+
+    return {
+        "value_format": value_format,
+        "value_a": value_a,
+        "value_b": value_b,
+        "meaning": meaning,
+    }
+
+
+def shared_cursor_datatype(value):
+    """Translate the datatype codes previously decoded by the Oracle CASE expression."""
+    if value is None or not re.fullmatch(r"[0-9]+", value.strip()):
+        return None
+    code = int(value.strip())
+    return SHARED_CURSOR_DATATYPES.get(code, "datatype code {}".format(code))
+
+
+def parse_shared_cursor_reason_nodes(records):
+    """Parse every ChildNode while preserving source order and repeated reasons."""
+    nodes = []
+    structural_names = {"ChildNumber", "ID", "reason", "size"}
+
+    for record in records:
+        try:
+            root = ET.fromstring("<ReasonRoot>{}</ReasonRoot>".format(record["reason"]))
+        except ET.ParseError as exc:
+            raise CollectorError(
+                "Malformed V$SQL_SHARED_CURSOR.REASON XML for child {}: {}".format(
+                    record["view_child"], exc
+                )
+            ) from exc
+
+        reason_elements = [element for element in root if element.tag == "ChildNode"]
+        for node_no, element in enumerate(reason_elements, start=1):
+            values = {child.tag: xml_element_text(child) for child in element}
+            reason_id = parse_shared_cursor_reason_integer(values.get("ID"), "reason ID")
+            xml_child = parse_shared_cursor_reason_integer(
+                values.get("ChildNumber"), "XML child number"
+            )
+            reason_text = values.get("reason")
+            detail_match = re.search(r"\(([0-9]+)\)$", reason_text or "")
+            reason_detail_code = int(detail_match.group(1)) if detail_match else None
+            reason_name = re.sub(r"\([0-9]+\)$", "", reason_text or "") or None
+            catalog = SHARED_CURSOR_REASON_CATALOG.get(reason_id)
+
+            fields = []
+            for child in element:
+                if child.tag in structural_names:
+                    continue
+                raw_value = xml_element_text(child)
+                details = shared_cursor_field_details(reason_id, child.tag, raw_value)
+                details.update({
+                    "field_no": len(fields) + 1,
+                    "field_name": child.tag,
+                    "raw_value": raw_value,
+                })
+                fields.append(details)
+
+            nodes.append({
+                "view_child": record["view_child"],
+                "node_no": node_no,
+                "xml_child": xml_child,
+                "reason_id": reason_id,
+                "reason_name": reason_name or (catalog[0] if catalog else None),
+                "reason_detail_code": reason_detail_code,
+                "payload_shape": values.get("size"),
+                "reason_meaning": catalog[1] if catalog else (
+                    "Unknown or release-specific sharing criterion; inspect the raw field values."
+                ),
+                "fields": fields,
+            })
+    return nodes
+
+
+def format_shared_cursor_field(field):
+    """Render one payload field using the collector's established labels."""
+    value_a = field["value_a"]
+    value_b = field["value_b"]
+    value_format = field["value_format"]
+    value_a_decoded = shared_cursor_datatype(value_a) if field["field_name"] and field["field_name"].lower() in (
+        "dty", "oacdty", "original_oacdty", "new_oacdty"
+    ) else None
+
+    if value_format in ("NLS_PAIR", "OPTIMIZER_PAIR"):
+        rendered = "A=[{}] | B=[{}]".format(
+            value_a if value_a is not None else "<null>",
+            value_b if value_b is not None else "<null>",
+        )
+    elif value_format == "OPTIMIZER_RAW":
+        rendered = "[raw; pair not safely separable] = {}".format(field["raw_value"])
+    elif value_format == "ORIGINAL_SCALAR":
+        rendered = "[original] = {}".format(value_a if value_a is not None else "<null>")
+        if value_a_decoded is not None:
+            rendered += " ({})".format(value_a_decoded)
+    elif value_format == "NEW_SCALAR":
+        rendered = "[new] = {}".format(value_a if value_a is not None else "<null>")
+        if value_a_decoded is not None:
+            rendered += " ({})".format(value_a_decoded)
+    elif value_format == "NO_FIELD_PAYLOAD":
+        rendered = "<no field-level payload>"
+    else:
+        rendered = "= {}".format(value_a if value_a is not None else "<null>")
+        if value_a_decoded is not None:
+            rendered += " ({})".format(value_a_decoded)
+    return rendered
+
+
+def format_shared_cursor_reasons(sql_id, records):
+    """Produce the same human-readable attachment previously formatted in SQL."""
+    nodes = parse_shared_cursor_reason_nodes(records)
+    children = sorted({node["view_child"] for node in nodes})
+    lines = [
+        "V$SQL_SHARED_CURSOR.REASON",
+        "SQL_ID: {}".format(sql_id),
+        "A/B denote comparison-vector sides, never chronological old/new values.",
+    ]
+
+    for view_child in children:
+        lines.extend(["", "=" * 100, "CHILD CURSOR {}".format(view_child), "=" * 100])
+        child_nodes = [node for node in nodes if node["view_child"] == view_child]
+        for node in child_nodes:
+            reason_name = node["reason_name"] or ""
+            subcode = node["reason_detail_code"]
+            payload_shape = node["payload_shape"] or "?"
+            header = "+-- [{:02d}] {}  {{ID={}, subcode={}, payload={}}}".format(
+                node["node_no"],
+                reason_name,
+                node["reason_id"] if node["reason_id"] is not None else "",
+                subcode if subcode is not None else "?",
+                payload_shape,
+            )
+            if node["xml_child"] is not None and node["xml_child"] != view_child:
+                header += "  [XML child={}]".format(node["xml_child"])
+            lines.extend(["", header, "|   Why: {}".format(node["reason_meaning"])])
+
+            fields = node["fields"] or [{
+                "field_no": 0,
+                "field_name": None,
+                "raw_value": None,
+                **shared_cursor_field_details(node["reason_id"], None, None),
+            }]
+            for field in fields:
+                lines.append(
+                    "|   {:02d}. {}  {}".format(
+                        field["field_no"],
+                        field["field_name"] or "<no field payload>",
+                        format_shared_cursor_field(field),
+                    )
+                )
+                lines.append("|       Meaning: {}".format(field["meaning"]))
+
+    field_count = sum(len(node["fields"]) for node in nodes)
+    lines.extend([
+        "",
+        "-" * 100,
+        "SUMMARY: {} child cursor(s), {} reason node(s), {} diagnostic field(s).".format(
+            len(children), len(nodes), field_count
+        ),
+    ])
+    return "\n".join(lines)
 
 
 def collect_shared_cursor_reasons(ctx, target_dir, multi_child_sqls):
@@ -2211,13 +2218,14 @@ def collect_shared_cursor_reasons(ctx, target_dir, multi_child_sqls):
             output = run_sqlplus(
                 ctx,
                 shared_cursor_reasons_sql(sql_id),
-                check_output_errors=False,
             )
-            if not output.strip():
+            records = parse_shared_cursor_reason_transport(output)
+            if not records:
                 raise CollectorError(
                     "V$SQL_SHARED_CURSOR returned no decoded reasons for {}".format(sql_id)
                 )
-            target.write_text(output.rstrip() + "\n", encoding="utf-8")
+            rendered = format_shared_cursor_reasons(sql_id, records)
+            target.write_text(rendered.rstrip() + "\n", encoding="utf-8")
             ensure_generated(target)
             generated.append(target)
         except (CollectorError, OSError) as exc:

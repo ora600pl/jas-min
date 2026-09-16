@@ -745,6 +745,13 @@ This replaces the former 30-minute minimum and latest-startup-only restriction.
 Since collector `0.1.11`, the same startup boundary and selection behavior also
 applies to AWR snapshots for the current database and instance.
 
+Collector `0.1.12` validates STATSPACK TOP SQL rows as six numeric metrics plus
+a 13-character Oracle SQL ID, preventing wrapped SQL or PL/SQL source from being
+treated as a statement identifier. Collector `0.1.13` transfers
+`V$SQL_SHARED_CURSOR.REASON` CLOBs as ordered UTF-8 hex chunks and decodes their
+XML in Python. This avoids release-specific SQL parser failures while preserving
+the existing child-cursor attachment format and evidence.
+
 #### AWR and STATSPACK startup selection
 
 After START and END are entered, the collector checks the recorded startups
@@ -889,7 +896,7 @@ group by sql_id
 having count(distinct child_number) > 1;
 ```
 
-Each match is decoded from `V$SQL_SHARED_CURSOR.REASON` into `<collection_stem>_attachments/<sql_id>.shared_cursor_reasons`. Collection is best-effort: a missing/evicted cursor or an unavailable view does not prevent execution plans and the remaining package from being created; the manifest records discovery or per-SQL failures.
+Each match is decoded from `V$SQL_SHARED_CURSOR.REASON` into `<collection_stem>_attachments/<sql_id>.shared_cursor_reasons`. The collector transports each CLOB as validated, ordered UTF-8 hex chunks so SQL*Plus line wrapping cannot corrupt XML element names, then preserves every `ChildNode`, repeated reason, payload field and comparison value while formatting the attachment in Python. Collection is best-effort: a missing/evicted cursor, malformed or incomplete transport, invalid XML, or an unavailable view does not prevent execution plans and the remaining package from being created; the manifest records discovery or per-SQL failures.
 
 Execution plans are fetched with:
 
