@@ -824,6 +824,11 @@ Run `python3 jas-min-collector.py --help` for the generated CLI help. The comple
 
 When `--execution-plans` is used without `--sql-id`, the collector attaches plans for the top elapsed SQL IDs found in the generated reports and does not ask for manual additions.
 
+STATSPACK TOP SQL rows are accepted only when all metric fields are numeric and
+the final field is a 13-character Oracle SQL ID. This prevents wrapped SQL or
+PL/SQL source text from being mistaken for a statement identifier. Automatic
+plan selection applies the same check to older JSON collections.
+
 Without options, or for required options not provided in a mixed run, the collector asks for:
 
 - report type: AWR or STATSPACK

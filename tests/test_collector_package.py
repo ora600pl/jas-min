@@ -31,7 +31,7 @@ class CollectorIdentityTests(unittest.TestCase):
             env=env, capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "jas-min-collector 0.1.11")
+        self.assertEqual(result.stdout.strip(), "jas-min-collector 0.1.12")
 
     def test_json_provenance_preserves_legacy_payload(self):
         # Metadata is additive: removing it leaves the original collection shape.
@@ -83,6 +83,56 @@ class CollectorZipPackageTests(unittest.TestCase):
     def test_parse_int_uses_default_for_negative_unsigned_values(self):
         self.assertEqual(collector.parse_int("-4,254,126,895"), 0)
         self.assertEqual(collector.parse_int("1,234"), 1234)
+
+    def test_statspack_sql_parser_ignores_wrapped_scheduler_source(self):
+        # Wrapped PL/SQL can also have seven fields, but WIT is not an Oracle SQL_ID.
+        rows = collector.parse_text_sql_section(
+            [
+                "61,110,353 2 30,555,176.5 2.4 39.51 147.48 a5j2xsnpgpxjx",
+                "Module: DBMS_SCHEDULER",
+                "job_owner VARCHAR2(128) := :job_owner; job_start TIMESTAMP WIT",
+            ],
+            "elapsed",
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["sql_id"], "a5j2xsnpgpxjx")
+        self.assertEqual(rows[0]["elapsed_time_s"], 61110353.0)
+        self.assertEqual(rows[0]["sql_module"], "DBMS_SCHEDULER")
+
+    def test_top_sql_selection_skips_malformed_ids_from_legacy_json(self):
+        # Previously generated JSON stays loadable without wasting a plan slot on WIT.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = Path(tmpdir) / "legacy.json"
+            json_path.write_text(
+                json.dumps(
+                    {
+                        "awrs": [
+                            {
+                                "sql_elapsed_time": [
+                                    {"sql_id": "wit", "elapsed_time_s": 0.0},
+                                    {"sql_id": "a5j2xsnpgpxjx", "elapsed_time_s": 12.5},
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            rows = collector.top_elapsed_sql_id_counts_from_json(json_path)
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "sql_id": "a5j2xsnpgpxjx",
+                    "count": 1,
+                    "elapsed_time_s": 12.5,
+                    "first_seen": 0,
+                }
+            ],
+        )
 
     def test_zip_package_preserves_report_and_attachment_directories(self):
         with tempfile.TemporaryDirectory() as tmpdir:
