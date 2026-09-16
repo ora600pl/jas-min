@@ -562,6 +562,16 @@ After fitting Ridge, Elastic Net, Huber, and Quantile-95, JAS-MIN compares which
 
 The VIF diagnostics and collinear group impact should be read together with these labels: classification says *what looks important*, while VIF and group impact help explain whether the importance is individually attributable or group-level.
 
+### Instance Efficiency
+
+STATSPACK text reports and AWR HTML reports populate `instance_efficiency` in
+parsed JSON. The STATSPACK parser reads both metric/value pairs per line and
+normalizes padding in metric names, stopping before Shared Pool Statistics.
+Unavailable, non-finite, or negative STATSPACK percentages are stored as `null`,
+consistent with the existing AWR convention for negative percentages.
+The efficiency chart discovers metrics across the selected snapshots and keeps
+missing measurements as gaps so values remain aligned with their timestamps.
+
 ### Descriptive Statistics
 
 For wait events, SQL statements, Load Profile metrics, I/O, and latch activity, JAS-MIN computes descriptive statistics such as mean, standard deviation, median, quartiles, interquartile range, fences, minimum, maximum, variance, and weighted averages where appropriate.
@@ -711,6 +721,82 @@ For useful statistics, collect a meaningful run of consecutive reports. A week o
 
 ### Interactive Collector
 
+#### Collector version and provenance
+
+The standalone Python collector has its own version, independent of the Rust
+application. Run `python3 jas-min-collector.py --version` without an Oracle
+environment to identify the release. The version is also printed at startup.
+
+Every manifest records `collector_name`, `collector_version` and
+`collector_script_sha256`. The hash identifies the exact script file, including
+local edits. Generated JSON starts with an optional `collector_info` object
+containing `name`, `version`, `script_sha256`, `parser` (`python-collector`) and
+`parsed_at_utc` (UTC). This describes parsing provenance, not the report period
+or the version used for later analysis. No host paths are added to this metadata.
+
+Existing JAS-MIN and JAS-MIN PRO readers ignore the additional field; old JSON
+files remain valid. Those readers do not yet retain or display this metadata.
+Files without it have unknown collector provenance.
+
+Collector releases use `MAJOR.MINOR.PATCH`: increase PATCH for bug fixes, MINOR
+for compatible features, and MAJOR for incompatible CLI or data-contract changes.
+Version `0.1.9` is the first explicitly versioned collector, not a change to the
+Rust application's version. Update the version whenever collector behavior changes.
+
+Since collector `0.1.10`, STATSPACK reports use consecutive available snapshots
+within the selected database, instance and startup. Both endpoints must fall
+inside the requested time range (inclusive). Manual snapshots and intervals
+shorter than 30 minutes are included; missing snapshot IDs do not break pairing.
+Requests spanning restarts require selecting one startup period per package.
+Pairs with equal or decreasing timestamps are skipped. For example, selecting
+13:00 includes snapshots at 13:10 and 13:19, followed by the next at 14:00.
+This replaces the former 30-minute minimum and latest-startup-only restriction.
+
+Since collector `0.1.11`, the same startup boundary and selection behavior also
+applies to AWR snapshots for the current database and instance.
+
+Collector `0.1.12` validates STATSPACK TOP SQL rows as six numeric metrics plus
+a 13-character Oracle SQL ID, preventing wrapped SQL or PL/SQL source from being
+treated as a statement identifier. Collector `0.1.13` transfers
+`V$SQL_SHARED_CURSOR.REASON` CLOBs as ordered UTF-8 hex chunks and decodes their
+XML in Python. This avoids release-specific SQL parser failures while preserving
+the existing child-cursor attachment format and evidence.
+
+#### AWR and STATSPACK startup selection
+
+After START and END are entered, the collector checks the recorded startups
+before creating files or generating reports. One startup continues automatically,
+including a historical startup. Multiple startups produce an English INFO notice
+and a numbered list with startup time, first/last snapshot, snapshot count and
+valid report count. Numbers stay the same when an unavailable period is listed.
+
+```text
+INFO: The requested range contains snapshots from 2 instance startups.
+INFO: Mixing startup periods in one analysis can affect statistics, anomalies and findings.
+INFO: We recommend a separate analysis for each startup. Select one period for this package.
+ No.  Instance startup      First snapshot        Last snapshot         Snapshots  Reports
+   1  2026-09-09 08:15:00   2026-09-10 13:10:15   2026-09-12 22:30:00         116      115
+   2  2026-09-12 23:05:12   2026-09-12 23:30:00   2026-09-15 15:00:00         128      127
+Choose startup period [1-2]:
+```
+
+The choice must identify a period with at least one valid pair; blank input has
+no default. A period with no valid pairs is listed but cannot be selected.
+The collector pins the report query to the selected startup and uses that group's
+first/last snapshot times for collection. The manifest records `requested_start`,
+`requested_end`, `selected_startup` and the effective `start`/`end`.
+
+When stdin is not a terminal, or all collection choices were supplied through
+CLI arguments, multiple startups produce an error instead of a prompt. The list
+includes numbered `--start`/`--end` suggestions for rerunning one period at a time.
+Date arguments accept `YYYY-MM-DD HH24:MI` and `YYYY-MM-DD HH24:MI:SS`, so the
+suggested boundaries can be copied exactly. Only startups represented by stored
+snapshots can be discovered; this is not a complete restart audit.
+
+AIX/Linux files are still copied in full from the supplied directory; select OS
+evidence from the same period during analysis. The startup menu does not filter
+their contents.
+
 `jas-min-collector.py` is a Python standard-library helper for environments where the reports should be generated directly from the target Oracle host. It expects `ORACLE_HOME`, `ORACLE_SID`, and a working `$ORACLE_HOME/bin/sqlplus` connection as `/ as sysdba`.
 
 ```bash
@@ -754,6 +840,11 @@ Run `python3 jas-min-collector.py --help` for the generated CLI help. The comple
 | `--os-stats-dir DIR` | Recursively copy prepared OS-statistics files from `DIR`. It implies `--include-os-stats`, requires a non-empty existing directory, and cannot be combined with `--no-os-stats`. |
 
 When `--execution-plans` is used without `--sql-id`, the collector attaches plans for the top elapsed SQL IDs found in the generated reports and does not ask for manual additions.
+
+STATSPACK TOP SQL rows are accepted only when all metric fields are numeric and
+the final field is a 13-character Oracle SQL ID. This prevents wrapped SQL or
+PL/SQL source text from being mistaken for a statement identifier. Automatic
+plan selection applies the same check to older JSON collections.
 
 Without options, or for required options not provided in a mixed run, the collector asks for:
 
@@ -815,7 +906,7 @@ group by sql_id
 having count(distinct child_number) > 1;
 ```
 
-Each match is decoded from `V$SQL_SHARED_CURSOR.REASON` into `<collection_stem>_attachments/<sql_id>.shared_cursor_reasons`. Collection is best-effort: a missing/evicted cursor or an unavailable view does not prevent execution plans and the remaining package from being created; the manifest records discovery or per-SQL failures.
+Each match is decoded from `V$SQL_SHARED_CURSOR.REASON` into `<collection_stem>_attachments/<sql_id>.shared_cursor_reasons`. The collector transports each CLOB as validated, ordered UTF-8 hex chunks so SQL*Plus line wrapping cannot corrupt XML element names, then preserves every `ChildNode`, repeated reason, payload field and comparison value while formatting the attachment in Python. Collection is best-effort: a missing/evicted cursor, malformed or incomplete transport, invalid XML, or an unavailable view does not prevent execution plans and the remaining package from being created; the manifest records discovery or per-SQL failures.
 
 Execution plans are fetched with:
 
