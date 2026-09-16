@@ -562,6 +562,16 @@ After fitting Ridge, Elastic Net, Huber, and Quantile-95, JAS-MIN compares which
 
 The VIF diagnostics and collinear group impact should be read together with these labels: classification says *what looks important*, while VIF and group impact help explain whether the importance is individually attributable or group-level.
 
+### Instance Efficiency
+
+STATSPACK text reports and AWR HTML reports populate `instance_efficiency` in
+parsed JSON. The STATSPACK parser reads both metric/value pairs per line and
+normalizes padding in metric names, stopping before Shared Pool Statistics.
+Unavailable, non-finite, or negative STATSPACK percentages are stored as `null`,
+consistent with the existing AWR convention for negative percentages.
+The efficiency chart discovers metrics across the selected snapshots and keeps
+missing measurements as gaps so values remain aligned with their timestamps.
+
 ### Descriptive Statistics
 
 For wait events, SQL statements, Load Profile metrics, I/O, and latch activity, JAS-MIN computes descriptive statistics such as mean, standard deviation, median, quartiles, interquartile range, fences, minimum, maximum, variance, and weighted averages where appropriate.

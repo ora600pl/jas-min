@@ -2604,6 +2604,31 @@ fn load_profile_txt(load_section: Vec<&str>) -> Vec<LoadProfile> {
     lp
 }
 
+/// Read both name/value pairs without including the following shared-pool table.
+fn instance_efficiency_txt(lines: &[&str]) -> Vec<InstanceEfficiency> {
+    let Some(start) = lines.iter().position(|line| line.contains("Instance Efficiency")) else {
+        return Vec::new();
+    };
+    let pair = regex::Regex::new(r"([^:]+):\s*(\S+)").unwrap();
+    let mut result = Vec::new();
+    for line in &lines[start + 1..] {
+        let line = line.trim();
+        if line.is_empty() {
+            if !result.is_empty() { break; }
+            continue;
+        }
+        if line.starts_with("Shared Pool") || line.starts_with("Top ") { break; }
+        for captures in pair.captures_iter(line) {
+            // Collapse report padding; an unavailable percentage stays null, never zero.
+            let name = captures[1].split_whitespace().collect::<Vec<_>>().join(" ");
+            let value = captures[2].replace(',', "").parse::<f32>().ok()
+                .filter(|value| value.is_finite() && *value >= 0.0);
+            result.push(InstanceEfficiency { eff_stat: name, eff_pct: value });
+        }
+    }
+    result
+}
+
 fn instance_efficiency(table: ElementRef) -> Vec<InstanceEfficiency> {
     let row_selector = Selector::parse("tr").unwrap();
     let column_selector = Selector::parse("td").unwrap();
@@ -3010,6 +3035,7 @@ fn parse_awr_report_internal(
         load_profile_lines
             .extend_from_slice(&awr_lines[load_profile_index.begin + 2..load_profile_index.end]);
         awr.load_profile = load_profile_txt(load_profile_lines);
+        awr.instance_efficiency = instance_efficiency_txt(&awr_lines);
 
         let foreground_even_section_start = format!("{}{}", 12u8 as char, "Foreground Wait Events");
 
@@ -3615,6 +3641,41 @@ pub fn prarse_json_file(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // Compare every supplied report section with independently extracted name/value pairs.
+    #[test]
+    fn instance_efficiency_report_fixtures() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!("../tests/fixtures/instance_efficiency.json")).unwrap();
+        for case in cases.as_array().unwrap() {
+            let input = case["input"].as_str().unwrap();
+            let metrics = if case["kind"] == "text" {
+                instance_efficiency_txt(&input.lines().collect::<Vec<_>>())
+            } else {
+                let document = Html::parse_document(input);
+                instance_efficiency(document.select(&Selector::parse("table").unwrap()).next().unwrap())
+            };
+            let expected = case["expected"].as_array().unwrap();
+            assert_eq!(metrics.len(), expected.len(), "{}", case["source"]);
+            for (metric, expected) in metrics.iter().zip(expected) {
+                assert_eq!(metric.eff_stat, expected[0].as_str().unwrap(), "{}", case["source"]);
+                assert!((metric.eff_pct.unwrap() - expected[1].as_f64().unwrap() as f32).abs() < 0.001, "{}", case["source"]);
+            }
+        }
+    }
+
+    // Unavailable and invalid values must not turn into measurements of zero.
+    #[test]
+    fn instance_efficiency_missing_values() {
+        let metrics = instance_efficiency_txt(&[
+            "Instance Efficiency Indicators", "~~~~", "",
+            "Buffer Hit %: N/A Soft Parse %: -1.0",
+            "Latch Hit %: NaN Redo NoWait %: 0.00", "",
+            "Shared Pool Statistics", "Memory Usage %: 99.0",
+        ]);
+        assert_eq!(metrics.len(), 4);
+        assert_eq!(metrics.iter().map(|m| m.eff_pct).collect::<Vec<_>>(), vec![None, None, None, Some(0.0)]);
+        assert!(instance_efficiency_txt(&["No section here"]).is_empty());
+    }
 
     #[test]
     fn segment_html_preserves_scope_legacy_values_and_security_mask() {
