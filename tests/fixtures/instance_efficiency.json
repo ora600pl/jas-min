@@ -1,0 +1,1750 @@
+[
+  {
+    "source": "tests/test_snaps_11/sp_90_91.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:   99.99\n            Buffer  Hit   %:   99.77  Optimal W/A Exec %:  100.00\n            Library Hit   %:   97.36        Soft Parse %:   98.31\n         Execute to Parse %:   49.46         Latch Hit %:   99.98\nParse CPU to Parse Elapsd %:   72.71     % Non-Parse CPU:   98.78\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   74.38   73.97\n    % SQL with executions>1:   55.41   60.84\n  % Memory for SQL w/exec>1:   78.42   64.43\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        99.99
+      ],
+      [
+        "Buffer Hit %",
+        99.77
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        97.36
+      ],
+      [
+        "Soft Parse %",
+        98.31
+      ],
+      [
+        "Execute to Parse %",
+        49.46
+      ],
+      [
+        "Latch Hit %",
+        99.98
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        72.71
+      ],
+      [
+        "% Non-Parse CPU",
+        98.78
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_11/sp_91_92.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:   99.98\n            Buffer  Hit   %:   99.72  Optimal W/A Exec %:  100.00\n            Library Hit   %:   97.75        Soft Parse %:   98.47\n         Execute to Parse %:   49.28         Latch Hit %:   99.97\nParse CPU to Parse Elapsd %:   75.21     % Non-Parse CPU:   98.76\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   73.97   72.05\n    % SQL with executions>1:   60.84   61.65\n  % Memory for SQL w/exec>1:   64.43   64.37\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        99.98
+      ],
+      [
+        "Buffer Hit %",
+        99.72
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        97.75
+      ],
+      [
+        "Soft Parse %",
+        98.47
+      ],
+      [
+        "Execute to Parse %",
+        49.28
+      ],
+      [
+        "Latch Hit %",
+        99.97
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        75.21
+      ],
+      [
+        "% Non-Parse CPU",
+        98.76
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_11/sp_92_93.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:   99.94\n            Buffer  Hit   %:   99.87  Optimal W/A Exec %:  100.00\n            Library Hit   %:   97.90        Soft Parse %:   98.57\n         Execute to Parse %:   52.31         Latch Hit %:   99.98\nParse CPU to Parse Elapsd %:   76.89     % Non-Parse CPU:   98.85\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   72.05   70.44\n    % SQL with executions>1:   61.65   62.37\n  % Memory for SQL w/exec>1:   64.37   66.30\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        99.94
+      ],
+      [
+        "Buffer Hit %",
+        99.87
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        97.9
+      ],
+      [
+        "Soft Parse %",
+        98.57
+      ],
+      [
+        "Execute to Parse %",
+        52.31
+      ],
+      [
+        "Latch Hit %",
+        99.98
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        76.89
+      ],
+      [
+        "% Non-Parse CPU",
+        98.85
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_11/sp_93_94.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.99  Optimal W/A Exec %:  100.00\n            Library Hit   %:   98.07        Soft Parse %:   98.67\n         Execute to Parse %:   49.68         Latch Hit %:   99.98\nParse CPU to Parse Elapsd %:   75.33     % Non-Parse CPU:   98.93\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   70.44   70.81\n    % SQL with executions>1:   62.37   61.66\n  % Memory for SQL w/exec>1:   66.30   68.08\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.99
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        98.07
+      ],
+      [
+        "Soft Parse %",
+        98.67
+      ],
+      [
+        "Execute to Parse %",
+        49.68
+      ],
+      [
+        "Latch Hit %",
+        99.98
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        75.33
+      ],
+      [
+        "% Non-Parse CPU",
+        98.93
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_11/sp_94_95.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.99  Optimal W/A Exec %:  100.00\n            Library Hit   %:   98.06        Soft Parse %:   98.67\n         Execute to Parse %:   48.43         Latch Hit %:   99.98\nParse CPU to Parse Elapsd %:   75.91     % Non-Parse CPU:   98.85\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   70.81   70.98\n    % SQL with executions>1:   61.66   60.04\n  % Memory for SQL w/exec>1:   68.08   68.35\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.99
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        98.06
+      ],
+      [
+        "Soft Parse %",
+        98.67
+      ],
+      [
+        "Execute to Parse %",
+        48.43
+      ],
+      [
+        "Latch Hit %",
+        99.98
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        75.91
+      ],
+      [
+        "% Non-Parse CPU",
+        98.85
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_11/sp_95_96.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:   99.98\n            Buffer  Hit   %:   99.97  Optimal W/A Exec %:  100.00\n            Library Hit   %:   98.21        Soft Parse %:   98.67\n         Execute to Parse %:   53.98         Latch Hit %:   99.97\nParse CPU to Parse Elapsd %:   76.70     % Non-Parse CPU:   98.83\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   70.98   72.38\n    % SQL with executions>1:   60.04   57.74\n  % Memory for SQL w/exec>1:   68.35   85.07\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        99.98
+      ],
+      [
+        "Buffer Hit %",
+        99.97
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        98.21
+      ],
+      [
+        "Soft Parse %",
+        98.67
+      ],
+      [
+        "Execute to Parse %",
+        53.98
+      ],
+      [
+        "Latch Hit %",
+        99.97
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        76.7
+      ],
+      [
+        "% Non-Parse CPU",
+        98.83
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_11/sp_96_97.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.77  Optimal W/A Exec %:  100.00\n            Library Hit   %:   96.59        Soft Parse %:   98.27\n         Execute to Parse %:   65.14         Latch Hit %:   99.96\nParse CPU to Parse Elapsd %:   82.27     % Non-Parse CPU:   98.44\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   72.38   72.09\n    % SQL with executions>1:   57.74   48.65\n  % Memory for SQL w/exec>1:   85.07   76.20\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.77
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        96.59
+      ],
+      [
+        "Soft Parse %",
+        98.27
+      ],
+      [
+        "Execute to Parse %",
+        65.14
+      ],
+      [
+        "Latch Hit %",
+        99.96
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        82.27
+      ],
+      [
+        "% Non-Parse CPU",
+        98.44
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_11/sp_97_98.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.97  Optimal W/A Exec %:  100.00\n            Library Hit   %:   98.61        Soft Parse %:   99.15\n         Execute to Parse %:   44.42         Latch Hit %:   99.96\nParse CPU to Parse Elapsd %:   80.96     % Non-Parse CPU:   98.50\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   72.09   73.30\n    % SQL with executions>1:   48.65   48.53\n  % Memory for SQL w/exec>1:   76.20   61.84\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.97
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        98.61
+      ],
+      [
+        "Soft Parse %",
+        99.15
+      ],
+      [
+        "Execute to Parse %",
+        44.42
+      ],
+      [
+        "Latch Hit %",
+        99.96
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        80.96
+      ],
+      [
+        "% Non-Parse CPU",
+        98.5
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_11/sp_98_99.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   97.72  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.66        Soft Parse %:   99.81\n         Execute to Parse %:   73.59         Latch Hit %:   99.99\nParse CPU to Parse Elapsd %:   62.46     % Non-Parse CPU:   99.38\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   73.30   73.51\n    % SQL with executions>1:   48.53   48.75\n  % Memory for SQL w/exec>1:   61.84   62.34\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        97.72
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.66
+      ],
+      [
+        "Soft Parse %",
+        99.81
+      ],
+      [
+        "Execute to Parse %",
+        73.59
+      ],
+      [
+        "Latch Hit %",
+        99.99
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        62.46
+      ],
+      [
+        "% Non-Parse CPU",
+        99.38
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_11/sp_99_101.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.36  Optimal W/A Exec %:  100.00\n            Library Hit   %:   95.18        Soft Parse %:   96.95\n         Execute to Parse %:   72.00         Latch Hit %:   99.98\nParse CPU to Parse Elapsd %:   52.85     % Non-Parse CPU:   97.74\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   73.51   72.39\n    % SQL with executions>1:   48.75   59.04\n  % Memory for SQL w/exec>1:   62.34   76.80\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.36
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        95.18
+      ],
+      [
+        "Soft Parse %",
+        96.95
+      ],
+      [
+        "Execute to Parse %",
+        72.0
+      ],
+      [
+        "Latch Hit %",
+        99.98
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        52.85
+      ],
+      [
+        "% Non-Parse CPU",
+        97.74
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_19.10/sp_13_14.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:  100.00  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.79        Soft Parse %:   99.67\n         Execute to Parse %:   77.39         Latch Hit %:   99.86\nParse CPU to Parse Elapsd %:   25.07     % Non-Parse CPU:   98.72\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   93.24   93.22\n    % SQL with executions>1:   55.29   56.11\n  % Memory for SQL w/exec>1:   83.68   83.60\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        100.0
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.79
+      ],
+      [
+        "Soft Parse %",
+        99.67
+      ],
+      [
+        "Execute to Parse %",
+        77.39
+      ],
+      [
+        "Latch Hit %",
+        99.86
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        25.07
+      ],
+      [
+        "% Non-Parse CPU",
+        98.72
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_19.10/sp_14_15.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.99  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.67        Soft Parse %:   99.24\n         Execute to Parse %:   81.18         Latch Hit %:   99.86\nParse CPU to Parse Elapsd %:   24.62     % Non-Parse CPU:   99.07\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   93.22   93.11\n    % SQL with executions>1:   56.11   58.74\n  % Memory for SQL w/exec>1:   83.60   84.64\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.99
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.67
+      ],
+      [
+        "Soft Parse %",
+        99.24
+      ],
+      [
+        "Execute to Parse %",
+        81.18
+      ],
+      [
+        "Latch Hit %",
+        99.86
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        24.62
+      ],
+      [
+        "% Non-Parse CPU",
+        99.07
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_19.10/sp_15_16.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.94  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.64        Soft Parse %:   98.76\n         Execute to Parse %:   88.13         Latch Hit %:   99.83\nParse CPU to Parse Elapsd %:   25.21     % Non-Parse CPU:   98.51\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   93.11   92.96\n    % SQL with executions>1:   58.74   60.67\n  % Memory for SQL w/exec>1:   84.64   85.12\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.94
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.64
+      ],
+      [
+        "Soft Parse %",
+        98.76
+      ],
+      [
+        "Execute to Parse %",
+        88.13
+      ],
+      [
+        "Latch Hit %",
+        99.83
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        25.21
+      ],
+      [
+        "% Non-Parse CPU",
+        98.51
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_19.10/sp_16_17.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:  100.00  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.71        Soft Parse %:   98.94\n         Execute to Parse %:   88.70         Latch Hit %:   99.80\nParse CPU to Parse Elapsd %:   26.72     % Non-Parse CPU:   96.94\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   92.96   92.96\n    % SQL with executions>1:   60.67   61.50\n  % Memory for SQL w/exec>1:   85.12   85.43\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        100.0
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.71
+      ],
+      [
+        "Soft Parse %",
+        98.94
+      ],
+      [
+        "Execute to Parse %",
+        88.7
+      ],
+      [
+        "Latch Hit %",
+        99.8
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        26.72
+      ],
+      [
+        "% Non-Parse CPU",
+        96.94
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_19.10/sp_17_18.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:  100.00  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.81        Soft Parse %:   98.87\n         Execute to Parse %:   93.30         Latch Hit %:   99.82\nParse CPU to Parse Elapsd %:   26.54     % Non-Parse CPU:   98.20\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   92.96   92.93\n    % SQL with executions>1:   61.50   61.81\n  % Memory for SQL w/exec>1:   85.43   85.54\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        100.0
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.81
+      ],
+      [
+        "Soft Parse %",
+        98.87
+      ],
+      [
+        "Execute to Parse %",
+        93.3
+      ],
+      [
+        "Latch Hit %",
+        99.82
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        26.54
+      ],
+      [
+        "% Non-Parse CPU",
+        98.2
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_19.10/sp_18_19.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:  100.00  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.88        Soft Parse %:   99.37\n         Execute to Parse %:   91.65         Latch Hit %:   99.77\nParse CPU to Parse Elapsd %:   27.65     % Non-Parse CPU:   99.43\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   92.93   92.92\n    % SQL with executions>1:   61.81   62.20\n  % Memory for SQL w/exec>1:   85.54   85.83\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        100.0
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.88
+      ],
+      [
+        "Soft Parse %",
+        99.37
+      ],
+      [
+        "Execute to Parse %",
+        91.65
+      ],
+      [
+        "Latch Hit %",
+        99.77
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        27.65
+      ],
+      [
+        "% Non-Parse CPU",
+        99.43
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_19.10/sp_19_20.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.98  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.92        Soft Parse %:   99.63\n         Execute to Parse %:   89.23         Latch Hit %:   99.83\nParse CPU to Parse Elapsd %:   27.31     % Non-Parse CPU:   99.70\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   92.92   92.91\n    % SQL with executions>1:   62.20   62.60\n  % Memory for SQL w/exec>1:   85.83   86.01\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.98
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.92
+      ],
+      [
+        "Soft Parse %",
+        99.63
+      ],
+      [
+        "Execute to Parse %",
+        89.23
+      ],
+      [
+        "Latch Hit %",
+        99.83
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        27.31
+      ],
+      [
+        "% Non-Parse CPU",
+        99.7
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_19.10/sp_8_9.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:  100.00  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.61        Soft Parse %:   98.74\n         Execute to Parse %:   86.60         Latch Hit %:   99.88\nParse CPU to Parse Elapsd %:   22.48     % Non-Parse CPU:   99.48\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   93.35   93.35\n    % SQL with executions>1:   52.55   53.44\n  % Memory for SQL w/exec>1:   83.20   83.59\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        100.0
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.61
+      ],
+      [
+        "Soft Parse %",
+        98.74
+      ],
+      [
+        "Execute to Parse %",
+        86.6
+      ],
+      [
+        "Latch Hit %",
+        99.88
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        22.48
+      ],
+      [
+        "% Non-Parse CPU",
+        99.48
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_19.10/sp_9_13.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:  100.00  Optimal W/A Exec %:  100.00\n            Library Hit   %:   99.69        Soft Parse %:   98.81\n         Execute to Parse %:   88.47         Latch Hit %:   99.85\nParse CPU to Parse Elapsd %:   24.28     % Non-Parse CPU:   99.44\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   93.35   93.24\n    % SQL with executions>1:   53.44   55.29\n  % Memory for SQL w/exec>1:   83.59   83.68\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        100.0
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        99.69
+      ],
+      [
+        "Soft Parse %",
+        98.81
+      ],
+      [
+        "Execute to Parse %",
+        88.47
+      ],
+      [
+        "Latch Hit %",
+        99.85
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        24.28
+      ],
+      [
+        "% Non-Parse CPU",
+        99.44
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_abakus/sp_56042_56043.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.43  Optimal W/A Exec %:  100.00\n            Library Hit   %:   96.81        Soft Parse %:   93.77\n         Execute to Parse %:   96.15         Latch Hit %:   99.98\nParse CPU to Parse Elapsd %:   93.44     % Non-Parse CPU:   97.31\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   91.38   91.67\n    % SQL with executions>1:   83.47   87.63\n  % Memory for SQL w/exec>1:   90.12   93.52\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.43
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        96.81
+      ],
+      [
+        "Soft Parse %",
+        93.77
+      ],
+      [
+        "Execute to Parse %",
+        96.15
+      ],
+      [
+        "Latch Hit %",
+        99.98
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        93.44
+      ],
+      [
+        "% Non-Parse CPU",
+        97.31
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_abakus/sp_56043_56044.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.62  Optimal W/A Exec %:  100.00\n            Library Hit   %:   97.33        Soft Parse %:  100.00\n         Execute to Parse %:   98.40         Latch Hit %:   99.99\nParse CPU to Parse Elapsd %:  100.00     % Non-Parse CPU:   99.80\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   91.67   91.87\n    % SQL with executions>1:   87.63   87.96\n  % Memory for SQL w/exec>1:   93.52   93.84\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.62
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        97.33
+      ],
+      [
+        "Soft Parse %",
+        100.0
+      ],
+      [
+        "Execute to Parse %",
+        98.4
+      ],
+      [
+        "Latch Hit %",
+        99.99
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        100.0
+      ],
+      [
+        "% Non-Parse CPU",
+        99.8
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_snaps_abakus/sp_56044_56045.txt",
+    "kind": "text",
+    "input": "Instance Efficiency Indicators\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n            Buffer Nowait %:  100.00       Redo NoWait %:  100.00\n            Buffer  Hit   %:   99.89  Optimal W/A Exec %:  100.00\n            Library Hit   %:   97.91        Soft Parse %:   97.40\n         Execute to Parse %:   97.96         Latch Hit %:   99.96\nParse CPU to Parse Elapsd %:   92.17     % Non-Parse CPU:   98.85\n\n Shared Pool Statistics        Begin   End\n                               ------  ------\n             Memory Usage %:   91.87   89.15\n    % SQL with executions>1:   87.96   89.70\n  % Memory for SQL w/exec>1:   93.84   94.36\n\n",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer Hit %",
+        99.89
+      ],
+      [
+        "Optimal W/A Exec %",
+        100.0
+      ],
+      [
+        "Library Hit %",
+        97.91
+      ],
+      [
+        "Soft Parse %",
+        97.4
+      ],
+      [
+        "Execute to Parse %",
+        97.96
+      ],
+      [
+        "Latch Hit %",
+        99.96
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        92.17
+      ],
+      [
+        "% Non-Parse CPU",
+        98.85
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42071_42072.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.98</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.75</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.69</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            56.50</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            54.28</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            98.57</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.98
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.75
+      ],
+      [
+        "Soft Parse %",
+        99.69
+      ],
+      [
+        "Execute to Parse %",
+        56.5
+      ],
+      [
+        "Latch Hit %",
+        100.0
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        54.28
+      ],
+      [
+        "% Non-Parse CPU",
+        98.57
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42072_42073.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>           100.00</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.53</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.50</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            39.33</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            51.82</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            97.75</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        100.0
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.53
+      ],
+      [
+        "Soft Parse %",
+        99.5
+      ],
+      [
+        "Execute to Parse %",
+        39.33
+      ],
+      [
+        "Latch Hit %",
+        100.0
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        51.82
+      ],
+      [
+        "% Non-Parse CPU",
+        97.75
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42073_42074.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.99</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.70</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.64</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            51.05</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            53.42</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            97.61</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.99
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.7
+      ],
+      [
+        "Soft Parse %",
+        99.64
+      ],
+      [
+        "Execute to Parse %",
+        51.05
+      ],
+      [
+        "Latch Hit %",
+        100.0
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        53.42
+      ],
+      [
+        "% Non-Parse CPU",
+        97.61
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42074_42075.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.86</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.88</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.68</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            84.99</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.99</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            58.03</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            97.99</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.86
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.88
+      ],
+      [
+        "Soft Parse %",
+        99.68
+      ],
+      [
+        "Execute to Parse %",
+        84.99
+      ],
+      [
+        "Latch Hit %",
+        99.99
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        58.03
+      ],
+      [
+        "% Non-Parse CPU",
+        97.99
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42075_42076.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.99</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.48</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.30</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            56.46</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.99</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            63.13</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            97.02</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.99
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.48
+      ],
+      [
+        "Soft Parse %",
+        99.3
+      ],
+      [
+        "Execute to Parse %",
+        56.46
+      ],
+      [
+        "Latch Hit %",
+        99.99
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        63.13
+      ],
+      [
+        "% Non-Parse CPU",
+        97.02
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42076_42077.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>           100.00</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.60</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.47</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            52.90</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            71.11</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            97.23</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        100.0
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.6
+      ],
+      [
+        "Soft Parse %",
+        99.47
+      ],
+      [
+        "Execute to Parse %",
+        52.9
+      ],
+      [
+        "Latch Hit %",
+        100.0
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        71.11
+      ],
+      [
+        "% Non-Parse CPU",
+        97.23
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42077_42078.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.99</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.55</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.48</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            56.21</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.99</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            77.64</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            96.49</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.99
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.55
+      ],
+      [
+        "Soft Parse %",
+        99.48
+      ],
+      [
+        "Execute to Parse %",
+        56.21
+      ],
+      [
+        "Latch Hit %",
+        99.99
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        77.64
+      ],
+      [
+        "% Non-Parse CPU",
+        96.49
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42078_42079.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.99</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.55</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.44</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            62.99</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.99</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            77.66</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            96.37</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.99
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.55
+      ],
+      [
+        "Soft Parse %",
+        99.44
+      ],
+      [
+        "Execute to Parse %",
+        62.99
+      ],
+      [
+        "Latch Hit %",
+        99.99
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        77.66
+      ],
+      [
+        "% Non-Parse CPU",
+        96.37
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42079_42080.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.97</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.53</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.54</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            55.93</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.98</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            76.63</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            95.96</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.97
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.53
+      ],
+      [
+        "Soft Parse %",
+        99.54
+      ],
+      [
+        "Execute to Parse %",
+        55.93
+      ],
+      [
+        "Latch Hit %",
+        99.98
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        76.63
+      ],
+      [
+        "% Non-Parse CPU",
+        95.96
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42080_42081.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.99</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.52</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.41</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            60.40</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.99</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            77.96</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            96.25</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.99
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.52
+      ],
+      [
+        "Soft Parse %",
+        99.41
+      ],
+      [
+        "Execute to Parse %",
+        60.4
+      ],
+      [
+        "Latch Hit %",
+        99.99
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        77.96
+      ],
+      [
+        "% Non-Parse CPU",
+        96.25
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42081_42082.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.99</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.42</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.28</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            63.40</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.98</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            78.70</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            96.01</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.99
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.42
+      ],
+      [
+        "Soft Parse %",
+        99.28
+      ],
+      [
+        "Execute to Parse %",
+        63.4
+      ],
+      [
+        "Latch Hit %",
+        99.98
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        78.7
+      ],
+      [
+        "% Non-Parse CPU",
+        96.01
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42082_42083.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.99</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.31</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.23</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            56.12</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.98</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            79.58</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            95.69</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.99
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.31
+      ],
+      [
+        "Soft Parse %",
+        99.23
+      ],
+      [
+        "Execute to Parse %",
+        56.12
+      ],
+      [
+        "Latch Hit %",
+        99.98
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        79.58
+      ],
+      [
+        "% Non-Parse CPU",
+        95.69
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42083_42084.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>            99.99</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.15</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            98.97</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            61.09</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.96</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            78.41</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            93.69</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        99.99
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.15
+      ],
+      [
+        "Soft Parse %",
+        98.97
+      ],
+      [
+        "Execute to Parse %",
+        61.09
+      ],
+      [
+        "Latch Hit %",
+        99.96
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        78.41
+      ],
+      [
+        "% Non-Parse CPU",
+        93.69
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  },
+  {
+    "source": "tests/test_awrs_19/awrrpt_1_42084_42085.html",
+    "kind": "html",
+    "input": "<table border=\"0\" width=\"600\" class=\"tdiff\" summary=\"This table displays instance efficiency percentages\">\n<tr><td scope=\"row\" class='awrc'>Buffer Nowait %:</td><td align=\"right\" class='awrc'>           100.00</td><td class='awrc'>Redo NoWait %:</td><td align=\"right\" class='awrc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Buffer  Hit   %:</td><td align=\"right\" class='awrnc'>           100.00</td><td class='awrnc'>In-memory Sort %:</td><td align=\"right\" class='awrnc'>           100.00</td></tr>\n<tr><td scope=\"row\" class='awrc'>Library Hit   %:</td><td align=\"right\" class='awrc'>            99.42</td><td class='awrc'>Soft Parse %:</td><td align=\"right\" class='awrc'>            99.30</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Execute to Parse %:</td><td align=\"right\" class='awrnc'>            62.73</td><td class='awrnc'>Latch Hit %:</td><td align=\"right\" class='awrnc'>            99.99</td></tr>\n<tr><td scope=\"row\" class='awrc'>Parse CPU to Parse Elapsd %:</td><td align=\"right\" class='awrc'>            78.39</td><td class='awrc'>% Non-Parse CPU:</td><td align=\"right\" class='awrc'>            96.45</td></tr>\n<tr><td scope=\"row\" class='awrnc'>Flash Cache Hit %:</td><td align=\"right\" class='awrnc'>             0.00</td></tr>\n</table>",
+    "expected": [
+      [
+        "Buffer Nowait %",
+        100.0
+      ],
+      [
+        "Redo NoWait %",
+        100.0
+      ],
+      [
+        "Buffer  Hit   %",
+        100.0
+      ],
+      [
+        "In-memory Sort %",
+        100.0
+      ],
+      [
+        "Library Hit   %",
+        99.42
+      ],
+      [
+        "Soft Parse %",
+        99.3
+      ],
+      [
+        "Execute to Parse %",
+        62.73
+      ],
+      [
+        "Latch Hit %",
+        99.99
+      ],
+      [
+        "Parse CPU to Parse Elapsd %",
+        78.39
+      ],
+      [
+        "% Non-Parse CPU",
+        96.45
+      ],
+      [
+        "Flash Cache Hit %",
+        0.0
+      ]
+    ]
+  }
+]

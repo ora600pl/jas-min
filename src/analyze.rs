@@ -1222,47 +1222,27 @@ fn generate_instance_efficiency_plot(
         stat_name: String,
         stat_pct: Vec<Option<f32>>,
     }
-    let mut ie_stats_names: Vec<String> = awrs[0]
-        .instance_efficiency
-        .iter()
-        .map(|s| s.eff_stat.clone())
-        .collect();
-
-    let mut x_vals: Vec<String> = awrs
-        .iter()
-        .filter(|awr| {
-            awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap
-        })
-        .map(|awr| {
-            format!(
-                "{} ({})",
-                awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id
-            )
-        })
-        .collect();
-
-    let inst_eff_stats: Vec<InstEffStats> = ie_stats_names
-        .par_iter()
-        .map(|ie_name| {
-            // Collect values across all matching AWRs in range
-            let mut values: Vec<Option<f32>> = Vec::new();
-            for awr in awrs {
-                if awr.snap_info.begin_snap_id >= *f_begin_snap
-                    && awr.snap_info.end_snap_id <= *f_end_snap
-                {
-                    for ie in &awr.instance_efficiency {
-                        if ie.eff_stat == *ie_name {
-                            values.push(ie.eff_pct);
-                        }
-                    }
-                }
-            }
-            InstEffStats {
-                stat_name: ie_name.clone(),
-                stat_pct: values,
-            }
-        })
-        .collect();
+    // Use the same selected snapshots for every series and its time axis.
+    let selected: Vec<&AWR> = awrs.iter().filter(|awr| {
+        awr.snap_info.begin_snap_id >= *f_begin_snap && awr.snap_info.end_snap_id <= *f_end_snap
+    }).collect();
+    let mut names = std::collections::BTreeSet::new();
+    for awr in &selected {
+        for metric in &awr.instance_efficiency {
+            names.insert(metric.eff_stat.clone());
+        }
+    }
+    let x_vals: Vec<String> = selected.iter().map(|awr| {
+        format!("{} ({})", awr.snap_info.begin_snap_time, awr.snap_info.begin_snap_id)
+    }).collect();
+    let inst_eff_stats: Vec<InstEffStats> = names.into_iter().map(|name| {
+        // Preserve a gap for each absent measurement so later values cannot shift left.
+        let values = selected.iter().map(|awr| {
+            awr.instance_efficiency.iter().find(|metric| metric.eff_stat == name)
+                .and_then(|metric| metric.eff_pct)
+        }).collect();
+        InstEffStats { stat_name: name, stat_pct: values }
+    }).collect();
 
     // === Create the instance efficiency plot ===
     let mut plot_instance_efficiency = Plot::new();
@@ -6725,4 +6705,32 @@ pub fn main_report_builder(
         serde_json::to_vec(&report_for_ai).map_or(0, |value| value.len())
     );
     report_for_ai
+}
+
+#[cfg(test)]
+mod instance_efficiency_tests {
+    use super::*;
+
+    // A metric appearing after the first snapshot must retain all gaps on its time axis.
+    #[test]
+    fn instance_efficiency_plot_preserves_missing_snapshots() {
+        let mut reports = vec![AWR::default(); 4];
+        for (index, report) in reports.iter_mut().enumerate() {
+            report.snap_info.begin_snap_id = index as u64;
+            report.snap_info.end_snap_id = index as u64 + 1;
+        }
+        for index in [1, 3] {
+            reports[index].instance_efficiency.push(crate::awr::InstanceEfficiency {
+                eff_stat: "Soft Parse %".into(),
+                eff_pct: Some(90.0 + index as f32),
+            });
+        }
+        let rendered = generate_instance_efficiency_plot(&reports, &(0, 4), "");
+        assert!(rendered.contains("Soft Parse %"));
+        assert!(rendered.contains("[null,91.0,null,93.0]"));
+        let filtered = generate_instance_efficiency_plot(&reports, &(2, 4), "");
+        assert!(filtered.contains("[null,93.0]"));
+        assert!(!filtered.contains("91.0"));
+        assert!(!generate_instance_efficiency_plot(&Vec::new(), &(0, 4), "").is_empty());
+    }
 }
