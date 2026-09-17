@@ -27,7 +27,7 @@ from pathlib import Path
 
 
 # Version the standalone collector independently from the Rust application.
-COLLECTOR_VERSION = "0.1.13"
+COLLECTOR_VERSION = "0.1.14"
 COLLECTOR_NAME = "jas-min-collector"
 
 DATE_FORMAT = "%Y-%m-%d %H:%M"
@@ -698,22 +698,189 @@ def infer_sql_type(sql_text):
     return "SELECT"
 
 
-IDLE_EVENTS = set([
-    "SQL*Net message from client",
-    "SQL*Net message to client",
-    "rdbms ipc message",
-    "pmon timer",
-    "smon timer",
+# Keep this catalog aligned with src/staticdata.rs so collector JSON and
+# jas-min -d classify foreground/background waits the same way.
+IDLE_EVENT_PREFIXES = (
+    "cached session",
     "VKTM Logical Idle Wait",
+    "VKTM Init Wait for GSGA",
+    "IORM Scheduler Slave Idle Wait",
+    "rdbms ipc message",
+    "i/o slave wait",
+    "OFS Receive Queue",
+    "OFS idle",
+    "Generic Process Pool Dispatcher: idle",
+    "Generic Process Pool Worker: sleep",
+    "VKRM Idle",
+    "wait for unread message on broadcast channel",
+    "wait for unread message on multiple broadcast channels",
     "class slave wait",
+    "idle class spare wait event 1",
+    "idle class spare wait event 2",
+    "idle class spare wait event 3",
+    "idle class spare wait event 4",
+    "idle class spare wait event 5",
+    "idle class spare wait event 6",
+    "idle class spare wait event 7",
+    "idle class spare wait event 8",
+    "idle class spare wait event 9",
+    "idle class spare wait event 10",
+    "RMA: IPC0 completion sync",
+    "PING",
+    "spawn request deferred",
+    "watchdog main loop",
+    "process in prespawned state",
+    "pmon timer",
+    "pman timer",
+    "DNFS disp IO slave idle",
+    "NVM disp IO slave idle",
+    "BRDG: bridge controller idle",
+    "Network Retrans by Server",
+    "Network Retrans by Client",
+    "Distributed Trace: Archival Worker Idle",
+    "DIAG idle wait",
+    "ges remote message",
+    "SCM slave idle",
+    "LMS CR slave timer",
+    "gcs remote message",
+    "gcs yield cpu",
+    "heartbeat monitor sleep",
+    "GCR sleep",
+    "Shutdown completion due to error",
+    "SGA: MMAN sleep for component shrink",
+    "DBWR timer",
+    "Data Guard: Gap Manager",
+    "Data Guard: controlfile update",
+    "MRP redo arrival",
+    "Data Guard: Timer",
+    "LNS ASYNC archive log",
+    "LNS ASYNC dest activation",
+    "LNS ASYNC end of log",
+    "Archiver: redo logs",
+    "simulated log write delay",
+    "heartbeat redo informer",
+    "LGWR real time apply sync",
+    "LGWR worker group idle",
+    "parallel recovery slave idle wait",
+    "Backup Appliance waiting for work",
+    "Backup Appliance waiting restore start",
+    "Backup Appliance Surrogate wait",
+    "Backup Appliance Servlet wait",
+    "Backup Appliance Comm SGA setup wait",
+    "LogMiner builder: idle",
+    "LogMiner builder: branch",
+    "LogMiner preparer: idle",
+    "LogMiner reader: log (idle)",
+    "LogMiner reader: redo (idle)",
+    "LogMiner merger: idle",
+    "LogMiner client: transaction",
+    "LogMiner: other",
+    "LogMiner: activate",
+    "LogMiner: reset",
+    "LogMiner: find session",
+    "LogMiner: internal",
+    "Logical Standby Apply Delay",
+    "parallel recovery coordinator waits for slave cleanup",
+    "parallel recovery coordinator idle wait",
+    "parallel recovery control message reply",
+    "parallel recovery slave next change",
+    "nologging fetch slave idle",
+    "recovery sender idle",
+    "recovery receiver idle",
+    "recovery coordinator idle",
+    "recovery logmerger idle",
+    "block compare coord process idle",
+    "Data Guard PDB query SCN service idle",
+    "True Cache: background process idle",
+    "PX Deq: Txn Recovery Start",
+    "PX Deq: Txn Recovery Reply",
+    "fbar timer",
+    "smon timer",
+    "PX Deq: Metadata Update",
     "Space Manager: slave idle wait",
+    "PX Deq: Index Merge Reply",
+    "PX Deq: Index Merge Execute",
+    "PX Deq: Index Merge Close",
+    "PX Deq: kdcph_mai",
+    "PX Deq: kdcphc_ack",
+    "imco timer",
+    "IMFS defer writes scheduler",
+    "memoptimize write drain idle",
+    "MLE sleep",
+    "virtual circuit next request",
+    "shared server idle wait",
+    "dispatcher timer",
+    "cmon timer",
+    "pool server timer",
+    "lreg timer",
+    "JOX Jit Process Sleep",
+    "jobq slave wait",
+    "pipe get",
+    "PX Deque wait",
+    "PX Idle Wait",
+    "PX Deq Credit: need buffer",
+    "PX Deq Credit: send blkd",
+    "PX Deq: Msg Fragment",
+    "PX Deq: Parse Reply",
+    "PX Deq: Execute Reply",
+    "PX Deq: Execution Msg",
+    "PX Deq: Table Q Normal",
+    "PX Deq: Table Q Sample",
+    "REPL Apply: txns",
+    "REPL Capture/Apply: messages",
+    "REPL Capture: archive log",
+    "single-task message",
+    "SQL*Net message from client",
+    "SQL*Net vector message from client",
+    "SQL*Net vector message from dblink",
+    "PL/SQL lock timer",
+    "Streams AQ: emn coordinator idle wait",
+    "EMON slave idle wait",
+    "Emon coordinator main loop",
+    "Emon slave main loop",
     "Streams AQ: waiting for messages in the queue",
+    "Streams AQ: waiting for time management or cleanup tasks",
+    "Streams AQ: delete acknowledged messages",
+    "Streams AQ: deallocate messages from Streams Pool",
     "Streams AQ: qmn coordinator idle wait",
-])
+    "Streams AQ: qmn slave idle wait",
+    "AQ: 12c message cache init wait",
+    "AQ Cross Master idle",
+    "AQPC idle",
+    "Streams AQ: load balancer idle",
+    "Sharded  Queues : Part Maintenance idle",
+    "Sharded  Queues : Part Truncate idle",
+    "REPL Capture/Apply: RAC AQ qmn coordinator",
+    "Streams AQ: opt idle",
+    "HS message to agent",
+    "ASM background timer",
+    "ASM cluster membership changes",
+    "AUTO access ASM_CLIENT registration",
+    "iowp msg",
+    "iowp file id",
+    "netp network",
+    "gopp msg",
+    "auto-sqltune: wait graph update",
+    "WCR: replay client notify",
+    "WCR: replay clock",
+    "WCR: replay paused",
+    "JS external job",
+    "cell worker idle",
+    "Multi-Tenant Redo File Server - Flush Header Interval",
+    "Sharding replication",
+    "Consensus service idle",
+    "Blockchain apply clean",
+    "blockchain apply short",
+    "blockchain apply long",
+    "Blockchain reader process idle",
+)
 
 
 def is_idle_event(name):
-    return normalize_cell(name) in IDLE_EVENTS
+    # STATSPACK truncates names to 28 characters, so match the Rust parser's
+    # full-name prefix rule instead of requiring an exact string.
+    event = normalize_cell(name)
+    return any(idle.startswith(event) for idle in IDLE_EVENT_PREFIXES)
 
 
 class AWRHTMLTableParser(HTMLParser):
@@ -1157,8 +1324,9 @@ def parse_sql_gets(table):
                 "executions": parse_int(row[1]),
                 "gets_per_exec": parse_float(row[2]),
                 "pct_total": parse_float(row[3]),
-                "pct_cpu": parse_float(row[5]),
-                "pct_io": parse_float(row[6]),
+                # Some AWR releases emit these two percentages with a decimal comma.
+                "pct_cpu": parse_float(row[5].replace(",", ".")),
+                "pct_io": parse_float(row[6].replace(",", ".")),
                 "sql_module": row[8],
             }
     return result
@@ -1215,7 +1383,7 @@ def parse_io_stats(table):
                 "writes_req_s": parse_float(row[5]),
                 "writes_data_s": parse_size_mb(row[6]),
                 "waits_count": parse_count(row[7]),
-                "avg_time": parse_wait_ms(row[8]) if normalize_cell(row[8]) else None,
+                "avg_time": round(parse_wait_ms(row[8]), 6) if normalize_cell(row[8]) else None,
             }
     return result
 
@@ -1507,15 +1675,16 @@ def parse_text_wait_events(lines):
         if len(line) < 45 or line.strip().startswith("-"):
             continue
         event = line[:28].strip()
-        waits = parse_int(line[29:41] if len(line) > 41 else "")
-        if not event or not waits or is_idle_event(event):
+        raw_waits = line[29:41].strip() if len(line) > 41 else ""
+        if not event or not re.fullmatch(r"[\d,]+", raw_waits) or is_idle_event(event):
             continue
+        waits = parse_int(raw_waits)
         result.append({
             "event": event,
             "waits": waits,
             "total_wait_time_s": parse_float(line[46:57] if len(line) > 57 else ""),
             "avg_wait": parse_wait_ms(line[57:64] if len(line) > 64 else ""),
-            "pct_dbtime": parse_float(line[73:80] if len(line) > 80 else ""),
+            "pct_dbtime": parse_float(line[73:80] if len(line) >= 80 else ""),
             "waitevent_histogram_ms": {},
         })
     return result
@@ -1523,7 +1692,8 @@ def parse_text_wait_events(lines):
 
 def is_statspack_sql_row(fields):
     """Reject wrapped SQL text that happens to contain seven whitespace fields."""
-    if len(fields) != 7 or not is_oracle_sql_id(fields[6]):
+    sql_key = normalize_sql_id(fields[6]) if len(fields) == 7 else ""
+    if len(fields) != 7 or not (5 <= len(sql_key) <= 20 and sql_key.isalnum()):
         return False
 
     # A real TOP SQL row has six numeric metrics before its Oracle SQL_ID.
@@ -1600,20 +1770,444 @@ def parse_text_sql_section(lines, kind):
     return items
 
 
+def parse_text_instance_efficiency(lines):
+    """Read both percentage pairs and stop before Shared Pool statistics."""
+    start = next((idx for idx, line in enumerate(lines) if "Instance Efficiency" in line), None)
+    if start is None:
+        return []
+
+    result = []
+    pair = re.compile(r"([^:]+):\s*(\S+)")
+    for raw_line in lines[start + 1:]:
+        line = raw_line.strip()
+        if not line:
+            if result:
+                break
+            continue
+        if line.startswith("Shared Pool") or line.startswith("Top "):
+            break
+        for match in pair.finditer(line):
+            value = parse_float(match.group(2), None)
+            result.append({
+                "eff_stat": normalize_cell(match.group(1)),
+                "eff_pct": value if value is None or value >= 0 else None,
+            })
+    return result
+
+
+def parse_text_host_cpu(lines):
+    """Parse the Host CPU header and the first numeric data row below it."""
+    result = default_awr("")["host_cpu"]
+    section = find_text_section(lines, "Host CPU", ["Instance CPU"])
+    header = next((line for line in lines if "Host CPU" in line), "")
+    match = re.search(r"CPUs:\s*(\d+)\s*Cores:\s*(\d+)\s*Sockets:\s*(\d+)", header)
+    if match:
+        result["cpus"], result["cores"], result["sockets"] = map(int, match.groups())
+
+    for line in section:
+        columns = line.split()
+        if len(columns) >= 6 and all(re.fullmatch(r"[\d.,]+", value) for value in columns[:6]):
+            result.update({
+                "load_avg_begin": parse_float(columns[0]),
+                "load_avg_end": parse_float(columns[1]),
+                "pct_user": parse_float(columns[2]),
+                "pct_system": parse_float(columns[3]),
+                "pct_idle": parse_float(columns[4]),
+                "pct_wio": parse_float(columns[5]),
+            })
+            break
+    return result
+
+
+def parse_text_redo_log(lines):
+    """Extract the derived log-switch rate from the load-profile area."""
+    for line in lines:
+        if "log switches (derived)" in line:
+            values = line.split()
+            return {
+                "stat_name": "log switches (derived)",
+                "per_hour": parse_float(values[-1]) if values else 0.0,
+            }
+    return default_awr("")["redo_log"]
+
+
+def parse_text_time_model(lines):
+    """Read the fixed-width Time Model rows used by STATSPACK."""
+    result = []
+    for line in lines:
+        if len(line) < 56:
+            continue
+        stat_name = line[:35].strip()
+        raw_time = line[35:56].strip()
+        if not stat_name or stat_name.startswith("-") or not re.fullmatch(r"[\d,.]+", raw_time):
+            continue
+        result.append({
+            "stat_name": stat_name,
+            "time_s": parse_float(raw_time),
+            "pct_dbtime": parse_float(line[56:66]) if len(line) >= 66 else 0.0,
+        })
+    return result
+
+
+def parse_text_instance_stats(lines):
+    """Read fixed-width instance counters while discarding page headers."""
+    result = []
+    for line in lines:
+        if len(line) < 52:
+            continue
+        stat_name = line[:35].strip()
+        raw_total = line[35:52].strip()
+        if stat_name and re.fullmatch(r"[\d,]+", raw_total):
+            result.append({"statname": stat_name, "total": parse_int(raw_total)})
+    return result
+
+
+def parse_text_dictionary_cache(lines):
+    """Read dictionary-cache request and final-usage counters by column."""
+    result = []
+    for line in lines:
+        if len(line) < 77:
+            continue
+        raw_gets = line[26:38].strip()
+        raw_usage = line[69:79].strip()
+        if re.fullmatch(r"[\d,]+", raw_gets) and re.fullmatch(r"[\d,]+", raw_usage):
+            result.append({
+                "statname": line[:25].strip(),
+                "get_requests": parse_int(raw_gets),
+                "final_usage": parse_int(raw_usage),
+            })
+    return result
+
+
+def parse_text_library_cache(lines):
+    """Join each namespace row with its wrapped continuation row."""
+    data_lines = []
+    header_words = {"Get", "Pct", "Pin", "Requests", "Miss", "Reloads", "DB/Inst:"}
+    for line in lines:
+        trimmed = line.strip()
+        tokens = trimmed.split()
+        if (not trimmed or trimmed.startswith("---") or trimmed.startswith("Library Cache")
+                or trimmed.startswith("->") or "Namespace" in trimmed
+                or "Invali-" in trimmed or "dations" in trimmed
+                or (tokens and all(token in header_words for token in tokens))):
+            continue
+        data_lines.append(line)
+
+    result = []
+    idx = 0
+    while idx < len(data_lines):
+        first = data_lines[idx]
+        if first and not first[0].isspace():
+            boundary = re.search(r"\s{2,}(?=[\d-])", first)
+            if boundary:
+                values = first[boundary.end():].split()
+                if idx + 1 < len(data_lines) and data_lines[idx + 1][:1].isspace():
+                    idx += 1
+                    values.extend(data_lines[idx].split())
+                if len(values) >= 2:
+                    result.append({
+                        "statname": first[:boundary.start()].strip(),
+                        "get_requests": parse_int(values[0]),
+                        "get_pct_miss": parse_float(values[1]),
+                        "pin_requests": parse_int(values[2]) if len(values) > 2 else 0,
+                    })
+        idx += 1
+    return result
+
+
+def parse_text_latch_activity(lines):
+    """Read latch activity using the same stable columns as awr.rs."""
+    result = []
+    for line in lines:
+        if len(line) < 72 or line.startswith(" "):
+            continue
+        raw_gets = line[25:39].strip()
+        raw_miss = line[40:46].strip()
+        raw_wait = line[54:60].strip()
+        if (re.fullmatch(r"[\d,]+", raw_gets)
+                and re.fullmatch(r"[\d,.]+", raw_miss)
+                and re.fullmatch(r"[\d,.]+", raw_wait)):
+            result.append({
+                "statname": line[:24].strip(),
+                "get_requests": parse_int(raw_gets),
+                "get_pct_miss": parse_float(raw_miss),
+                "wait_time": parse_float(raw_wait),
+            })
+    return result
+
+
+def parse_text_io_stats(lines):
+    """Parse STATSPACK I/O summary tokens, including K/M/G/T/P suffixes."""
+    result = {}
+    in_data = False
+
+    def is_numeric_or_volume(value):
+        if value in ("", "."):
+            return True
+        number = value[:-1] if value[-1:].isalpha() else value
+        try:
+            float(number)
+            return True
+        except ValueError:
+            return False
+
+    def text_data_size(value):
+        value = value.strip().replace(",", ".")
+        if not value or value == ".":
+            return 0.0
+        unit = value[-1]
+        try:
+            number = float(value[:-1])
+        except ValueError:
+            return 0.0
+        return number * {"K": 1 / 1024.0, "M": 1.0, "G": 1024.0,
+                         "T": 1024.0 * 1024.0}.get(unit, 1.0)
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("->") or line.startswith("IO Stat"):
+            continue
+        if "Function" in line and "Volume" in line:
+            in_data = True
+            continue
+        if line.startswith(("---", "===")) or "-----" in line or not in_data:
+            continue
+
+        parts = line.split()
+        data_start = next((idx for idx, value in enumerate(parts) if is_numeric_or_volume(value)), len(parts))
+        name = " ".join(parts[:data_start])
+        if name == "Buffer Cache Re":
+            name = "Buffer Cache Reads"
+        values = parts[data_start:]
+        values.extend([""] * (8 - len(values)))
+        if not name or name == "TOTAL:":
+            continue
+        avg_time = None if values[7] in ("", ".") else round(parse_wait_ms(values[7]), 6)
+        result[name] = {
+            "reads_data": text_data_size(values[0]),
+            "reads_req_s": parse_float(values[1].replace(",", ".")),
+            "reads_data_s": text_data_size(values[2]),
+            "writes_data": text_data_size(values[3]),
+            "writes_req_s": parse_float(values[4].replace(",", ".")),
+            "writes_data_s": text_data_size(values[5]),
+            "waits_count": parse_count(values[6]),
+            "avg_time": avg_time,
+        }
+    return result
+
+
+def parse_text_wait_histogram(lines, event_names):
+    """Attach fixed-width histogram percentages to full wait-event names."""
+    result = {}
+    name_map = {(name[:26] if len(name) >= 26 else name): name for name in event_names}
+    bucket_names = ("1: <1ms", "2: <2ms", "3: <4ms", "4: <8ms",
+                    "5: <16ms", "6: <32ms", "7: <=1s", "8: >1s")
+    for line in lines:
+        if len(line) <= 26:
+            continue
+        short_name = line[:26].strip()
+        if short_name not in name_map:
+            continue
+        values = {}
+        for idx, start in enumerate(range(33, 81, 6)):
+            values[bucket_names[idx]] = parse_float(line[start:start + 5])
+        result[name_map[short_name]] = values
+    return result
+
+
+def parse_text_sql_text(lines):
+    """Collect wrapped SQL text and ignore repeated STATSPACK page headers."""
+    result = {}
+    current_key = ""
+    current_sql = []
+    collecting = False
+    sql_start = re.compile(r"^(SELECT|INSERT|UPDATE|DELETE|MERGE|DECLARE|BEGIN)\b", re.I)
+
+    def flush():
+        if current_key and current_sql:
+            value = "\n".join(current_sql)
+            if len(value) > len(result.get(current_key, "")):
+                result[current_key] = value
+
+    def page_header(line):
+        stripped = line.strip()
+        return (not stripped or stripped.startswith((
+            "SQL ordered by ", "-> ", "------", "CPU ", "Time (s)",
+            "Elapsed", "Elap per", "Buffer Gets", "Physical Rds",
+            "Executions", "Parse Calls", "Max", "Cluster", "Memory (KB)",
+            "Version", "%Total", "% Total", "Sharable", "CPU per", "Old",
+        )) or "Hash Value" in stripped or "DB/Inst:" in stripped or "Snaps:" in stripped)
+
+    for line in lines:
+        stripped = line.strip()
+        if page_header(line):
+            continue
+        fields = stripped.split()
+        if len(fields) >= 7:
+            candidate = fields[-1]
+            first_is_number = bool(re.fullmatch(r"[\d,.]+", fields[0]))
+            if 5 <= len(candidate) <= 20 and candidate.isalnum() and first_is_number:
+                flush()
+                current_key = normalize_sql_id(candidate)
+                current_sql = []
+                collecting = False
+                continue
+        if stripped.startswith("Module:"):
+            continue
+        if current_key and not collecting and sql_start.match(stripped):
+            collecting = True
+            current_sql = []
+        if collecting and stripped:
+            current_sql.append(stripped)
+    flush()
+    return result
+
+
+def parse_text_initialization_parameters(lines):
+    """Join wrapped begin/end values from the fixed-width parameter table."""
+    result = {}
+    current_name = None
+    begin_value = ""
+    end_value = ""
+    has_end_value = False
+
+    def append_wrapped(value, continuation):
+        continuation = continuation.strip()
+        if not continuation:
+            return value
+        no_space = (value and value[-1] in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,./:+-_()"
+                    and continuation[0] in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,./:+-_()")
+        return value + ("" if no_space else " ") + continuation
+
+    def finish():
+        if current_name is not None:
+            result.setdefault(current_name, end_value.strip() if has_end_value and end_value.strip()
+                              else begin_value.strip())
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if (not line or line.startswith("Parameter Name") or line.strip().startswith("----")
+                or "init.ora Parameters" in line or "End value" in line):
+            continue
+        continuation = not raw_line or raw_line[0].isspace()
+        if not continuation:
+            finish()
+            current_name = line[:29].strip()
+            begin_value = line[30:63].strip()
+            raw_end = line[64:].strip() if len(line) > 64 else ""
+            end_value = ""
+            has_end_value = False
+            if raw_end:
+                if len(line) > 63:
+                    begin_value = append_wrapped(begin_value, raw_end)
+                else:
+                    end_value = raw_end
+                    has_end_value = True
+        elif current_name is not None:
+            begin_part = raw_line[30:63].strip() if len(raw_line) > 30 else ""
+            end_part = raw_line[64:].strip() if len(raw_line) > 64 else ""
+            if has_end_value:
+                end_value = append_wrapped(end_value, end_part or begin_part)
+            else:
+                begin_value = append_wrapped(begin_value, begin_part)
+                begin_value = append_wrapped(begin_value, end_part)
+    finish()
+    return result
+
+
+def parse_text_db_instance(lines):
+    """Read database, host and block-size metadata from a STATSPACK header."""
+    result = default_db_instance()
+    database_line = ""
+    host_line = ""
+    for idx, line in enumerate(lines):
+        if "Database" in line and "DB Id" in line:
+            database_line = next((candidate for candidate in lines[idx + 1:]
+                                  if re.match(r"\s*\d+\s+\S+\s+\d+\s+", candidate)), "")
+        if (line.lstrip().startswith("Host") and "Platform" in line) or line.strip() == "Host":
+            host_line = next((candidate for candidate in lines[idx + 1:]
+                              if re.search(r"\s\d+\s+\d+\s+\d+\s+[\d.]+\s*$", candidate)), "")
+        if line.startswith("db_block_size"):
+            result["db_block_size"] = parse_int(line.split()[-1], 8192)
+
+    db_values = database_line.split()
+    if len(db_values) >= 7:
+        result.update({
+            "db_id": parse_int(db_values[0]),
+            "instance_num": parse_int(db_values[2]),
+            "startup_time": "{} {}".format(db_values[3], db_values[4]),
+            "release": db_values[5],
+            "rac": db_values[6],
+        })
+    host_values = host_line.split()
+    if len(host_values) >= 8:
+        result.update({
+            "platform": " ".join(host_values[1:4]),
+            "cpus": parse_int(host_values[4]),
+            "cores": parse_int(host_values[5]),
+            "sockets": parse_int(host_values[6]),
+            "memory": int(round(parse_float(host_values[7]))),
+        })
+    if not result["db_block_size"]:
+        result["db_block_size"] = 8192
+    return result
+
+
 def parse_text_report(path, security_level):
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     awr = default_awr(path.name)
     awr["snap_info"] = parse_text_snap_info(path, lines)
     awr["load_profile"] = parse_text_load_profile(find_text_section(lines, "Load Profile", ["Instance Efficiency", "Instance Efficiency Percentages"]))
-    awr["foreground_wait_events"] = parse_text_wait_events(find_text_section(lines, "Foreground Wait Events", ["Background Wait Events"]))
-    awr["background_wait_events"] = parse_text_wait_events(find_text_section(lines, "Background Wait Events", ["Wait Events", "SQL ordered by"]))
-    awr["sql_elapsed_time"] = parse_text_sql_section(find_text_section(lines, "SQL ordered by Elapsed", ["SQL ordered by Gets", "SQL ordered by CPU", "SQL ordered by Reads"]), "elapsed")
-    awr["sql_cpu_time"] = parse_text_sql_section(find_text_section(lines, "SQL ordered by CPU", ["SQL ordered by Elapsed", "SQL ordered by Gets"]), "cpu")
-    awr["sql_gets"] = parse_text_sql_section(find_text_section(lines, "SQL ordered by Gets", ["SQL ordered by Reads", "SQL ordered by Executions"]), "gets")
-    awr["sql_reads"] = parse_text_sql_section(find_text_section(lines, "SQL ordered by Reads", ["SQL ordered by Executions", "SQL ordered by Parse"]), "reads")
-    db_instance = default_db_instance()
+    awr["instance_efficiency"] = parse_text_instance_efficiency(lines)
+    awr["redo_log"] = parse_text_redo_log(lines)
+    awr["host_cpu"] = parse_text_host_cpu(lines)
+    awr["time_model_stats"] = parse_text_time_model(
+        find_text_section(lines, "Time Model", ["Foreground Wait Events"]))
+
+    foreground = find_text_section(lines, "Foreground Wait Events", ["Background Wait Events"])
+    background = find_text_section(lines, "Background Wait Events", ["Wait Events (fg and bg)", "SQL ordered by"])
+    awr["foreground_wait_events"] = parse_text_wait_events(foreground)
+    awr["background_wait_events"] = parse_text_wait_events(background)
+
+    elapsed_sql = find_text_section(lines, "SQL ordered by Elapsed", ["SQL ordered by Gets", "SQL ordered by CPU", "SQL ordered by Reads"])
+    cpu_sql = find_text_section(lines, "SQL ordered by CPU", ["SQL ordered by Elapsed", "SQL ordered by Gets"])
+    gets_sql = find_text_section(lines, "SQL ordered by Gets", ["SQL ordered by Reads", "SQL ordered by Executions"])
+    reads_sql = find_text_section(lines, "SQL ordered by Reads", ["SQL ordered by Executions", "SQL ordered by Parse"])
+    awr["sql_elapsed_time"] = parse_text_sql_section(elapsed_sql, "elapsed")
+    awr["sql_cpu_time"] = parse_text_sql_section(cpu_sql, "cpu")
+    awr["sql_gets"] = parse_text_sql_section(gets_sql, "gets")
+    awr["sql_reads"] = parse_text_sql_section(reads_sql, "reads")
+
+    instance_lines = find_text_section(
+        lines, "Instance Activity Stats", ["workarea executions - optimal"])
+    final_instance_line = next(
+        (line for line in lines if line[:35].strip() == "workarea executions - optimal"), None)
+    if final_instance_line:
+        # awr.rs includes this boundary row because it is also a real counter.
+        instance_lines.append(final_instance_line)
+    awr["instance_stats"] = parse_text_instance_stats(instance_lines)
+    awr["io_stats_byfunc"] = parse_text_io_stats(
+        find_text_section(lines, "IO Stat by Function - summary", ["IO Stat by Function - detail"]))
+    awr["dictionary_cache"] = parse_text_dictionary_cache(
+        find_text_section(lines, "Dictionary Cache Stats", ["Library Cache Activity"]))
+    awr["library_cache"] = parse_text_library_cache(
+        find_text_section(lines, "Library Cache Activity", ["Rule Sets", "Rule Set", "Shared Pool Advisory", "Latch Activity"]))
+    awr["latch_activity"] = parse_text_latch_activity(
+        find_text_section(lines, "Latch Activity", ["Latch Sleep breakdown"]))
+
+    histogram_lines = find_text_section(lines, "Wait Event Histogram", ["SQL ordered by"])
+    histogram = parse_text_wait_histogram(
+        histogram_lines,
+        [event["event"] for event in awr["foreground_wait_events"] + awr["background_wait_events"]],
+    )
+    apply_wait_histogram(awr, histogram)
+
+    parameter_lines = find_text_section(lines, "init.ora Parameters", ["End of Report"])
+    parameters = parse_text_initialization_parameters(parameter_lines)
+    sql_text = parse_text_sql_text(cpu_sql + elapsed_sql + gets_sql + reads_sql) if security_level >= 2 else {}
+    db_instance = parse_text_db_instance(lines)
     mark_data_availability(awr)
-    return awr, {}, {}, db_instance
+    return awr, sql_text, parameters, db_instance
 
 
 def parse_reports_to_json(reports, output_dir, stem, security_level):
