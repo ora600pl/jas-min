@@ -762,6 +762,14 @@ treated as a statement identifier. Collector `0.1.13` transfers
 XML in Python. This avoids release-specific SQL parser failures while preserving
 the existing child-cursor attachment format and evidence.
 
+Collector `0.1.14` brings its report parser in line with `jas-min -d`. STATSPACK
+JSON now includes instance efficiency, host CPU, time model, wait histograms,
+instance and I/O statistics, dictionary/library cache, latch activity, SQL text,
+initialization parameters and database metadata. Numeric `OLD_HASH_VALUE` keys
+from older STATSPACK releases remain supported without accepting wrapped SQL as
+a statement row. AWR parsing uses the same idle-event classification as the Rust
+parser and accepts decimal commas in SQL buffer-get percentages.
+
 #### AWR and STATSPACK startup selection
 
 After START and END are entered, the collector checks the recorded startups
