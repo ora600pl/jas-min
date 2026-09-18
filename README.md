@@ -948,10 +948,14 @@ In every mode, requested alert-log and OS-statistics attachments, available exec
 
 ## Authors
 
-- Kamil Stawiarski - [kamil@ora-600.pl](mailto:kamil@ora-600.pl) - [blog.ora-600.pl](https://blog.ora-600.pl)
-- Radoslaw Kut - [radek@ora-600.pl](mailto:radek@ora-600.pl) - [blog.struktuur.pl](https://blog.struktuur.pl)
+- Kamil Stawiarski - [blog](https://blog.ora-600.pl)
+- Radoslaw Kut - [blog](https://blog.struktuur.pl)
 
 Built by [ORA-600 | Database Whisperers](https://www.ora-600.pl/en/).
+
+## Contact
+
+jas-min(at)ora-600.pl
 
 ## License
 
