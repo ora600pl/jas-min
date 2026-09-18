@@ -770,6 +770,12 @@ from older STATSPACK releases remain supported without accepting wrapped SQL as
 a statement row. AWR parsing uses the same idle-event classification as the Rust
 parser and accepts decimal commas in SQL buffer-get percentages.
 
+Both HTML parsers retain empty initialization parameter values as empty strings
+and skip rows without a parameter name. Hidden names in continuation rows are
+read as text; multiple nonempty values for the same parameter within a table
+are joined with `, ` in report order. Parameter tables are combined, with a
+later table replacing an earlier value only when the parameter name is repeated.
+
 #### AWR and STATSPACK startup selection
 
 After START and END are entered, the collector checks the recorded startups
