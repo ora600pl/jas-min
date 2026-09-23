@@ -53,7 +53,7 @@ const MAX_AIX_RECURSION_DEPTH: usize = 4;
 ///
 /// Keep descriptions explicit: the model uses them as its routing table. Yes,
 /// apparently we now write documentation for probabilistic parrots. Here we are.
-pub fn tools_schema(stem: &str) -> Value {
+pub fn tools_schema(stem: &str, include_nmon: bool) -> Value {
     debug_note!("Building AI tool schema for stem '{}'", stem);
     let mut tools = json!([
         {"type":"function","function":{
@@ -673,11 +673,71 @@ pub fn tools_schema(stem: &str) -> Value {
 
         println!("✅ Found AIX OS attachments in {}", aix_dir.display());
     }
+    if include_nmon {
+        let nmon_tools = json!([
+            {"type":"function","function":{
+                "name":"get_host_configuration",
+                "description":"Returns prepared NMON host, AIX/LPAR, memory and capture metadata plus bounded import diagnostics. Start here for host-capacity questions. This never reparses raw NMON files.",
+                "parameters":{"type":"object","properties":{}}
+            }},
+            {"type":"function","function":{
+                "name":"get_host_overview",
+                "description":"Returns a compact prepared NMON overview: capture coverage, LPAR metadata, devices/interfaces and selected CPU, entitlement, run-queue and paging summaries.",
+                "parameters":{"type":"object","properties":{}}
+            }},
+            {"type":"function","function":{
+                "name":"list_host_metrics",
+                "description":"Lists prepared NMON metrics and precomputed statistics. Filter by domain, entity or original NMON section before requesting time-series detail.",
+                "parameters":{"type":"object","properties":{
+                    "domain":{"type":"string","description":"Optional domain such as cpu_all, lpar, memory, vm, process, disk, network."},
+                    "entity":{"type":"string","description":"Optional exact device, interface or CPU entity, for example hdisk2 or en0."},
+                    "section":{"type":"string","description":"Optional original NMON section such as DISKREAD or DISKWAIT."},
+                    "offset":{"type":"integer","minimum":0},
+                    "limit":{"type":"integer","minimum":1,"maximum":1000}
+                }}
+            }},
+            {"type":"function","function":{
+                "name":"get_host_metric_summary",
+                "description":"Returns metadata, unit, observed/derived identity and precomputed statistics for one NMON metric key.",
+                "parameters":{"type":"object","properties":{"metric_key":{"type":"string"}},"required":["metric_key"]}
+            }},
+            {"type":"function","function":{
+                "name":"get_host_peak_periods",
+                "description":"Returns precomputed sustained NMON peak buckets. Optionally filter by metric and duration (300, 900 or 3600 seconds).",
+                "parameters":{"type":"object","properties":{
+                    "metric_key":{"type":"string"},
+                    "duration_seconds":{"type":"integer","enum":[300,900,3600]},
+                    "limit":{"type":"integer","minimum":1,"maximum":1000}
+                }}
+            }},
+            {"type":"function","function":{
+                "name":"get_host_metric_time_series",
+                "description":"Returns a bounded prepared NMON series. Prefer 5m/15m/1h aggregates; use raw only for a narrow time range. Timestamps have no invented timezone.",
+                "parameters":{"type":"object","properties":{
+                    "metric_key":{"type":"string"},
+                    "from":{"type":"string","description":"Inclusive ISO local timestamp, e.g. 2026-09-10T14:00:00."},
+                    "to":{"type":"string","description":"Inclusive ISO local timestamp."},
+                    "resolution":{"type":"string","enum":["raw","5m","15m","1h"],"default":"15m"},
+                    "limit":{"type":"integer","minimum":1,"maximum":1000}
+                },"required":["metric_key"]}
+            }},
+            {"type":"function","function":{
+                "name":"get_nmon_disk_validation",
+                "description":"Returns compact per-device statistics using original NMON section names and units for comparison with NMONVisualizer. Does not infer an Oracle role from an hdisk name.",
+                "parameters":{"type":"object","properties":{"device":{"type":"string","description":"Optional exact disk device, e.g. hdisk2."}}}
+            }}
+        ]);
+        tools
+            .as_array_mut()
+            .expect("tools must be a JSON array")
+            .extend(nmon_tools.as_array().cloned().unwrap_or_default());
+    }
     debug_note!(
-        "AI tool schema ready: stem='{}', tool_count={}, aix_attachments={}",
+        "AI tool schema ready: stem='{}', tool_count={}, aix_attachments={}, nmon={}",
         stem,
         tools.as_array().map_or(0, Vec::len),
-        aix_dir.is_dir()
+        aix_dir.is_dir(),
+        include_nmon
     );
     tools
 }
@@ -685,6 +745,67 @@ pub fn tools_schema(stem: &str) -> Value {
 // ----------------------------------------------------------------------------
 // Dispatcher
 // ----------------------------------------------------------------------------
+
+fn with_nmon(
+    collection: &AWRSCollection,
+    query: fn(&crate::nmon::NmonDataset) -> Value,
+) -> Value {
+    collection.nmon.as_ref().map_or_else(
+        || {
+            json!({
+                "error": "this JAS-MIN dataset does not contain NMON data; regenerate it with --nmon <directory>",
+                "error_code": "NMON_NOT_LOADED"
+            })
+        },
+        query,
+    )
+}
+
+fn with_nmon_args(
+    collection: &AWRSCollection,
+    args: &Value,
+    query: fn(&crate::nmon::NmonDataset, &Value) -> Value,
+) -> Value {
+    collection.nmon.as_ref().map_or_else(
+        || {
+            json!({
+                "error": "this JAS-MIN dataset does not contain NMON data; regenerate it with --nmon <directory>",
+                "error_code": "NMON_NOT_LOADED"
+            })
+        },
+        |dataset| query(dataset, args),
+    )
+}
+
+fn tool_get_prepared_cpu_entitlement_summary(dataset: &crate::nmon::NmonDataset) -> Value {
+    let summaries = dataset
+        .summaries
+        .iter()
+        .filter(|(key, _)| {
+            matches!(
+                key.as_str(),
+                "cpu_all.user_pct"
+                    | "cpu_all.sys_pct"
+                    | "cpu_all.wait_pct"
+                    | "cpu_all.idle_pct"
+                    | "cpu_all.busy"
+                    | "lpar.physicalcpu"
+                    | "lpar.entitled"
+                    | "lpar.entitlement_utilization_pct"
+                    | "process.runnable"
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    json!({
+        "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
+        "source": "prepared_nmon_dataset",
+        "host": dataset.metadata.host,
+        "lpar": dataset.metadata.lpar,
+        "capture": dataset.capture,
+        "summaries": summaries,
+        "note": "Statistics were precomputed during dataset generation; the MCP/tool call did not reparse raw NMON files."
+    })
+}
 
 /// Routes a tool call to the matching implementation and returns structured JSON.
 ///
@@ -736,7 +857,25 @@ pub fn dispatch_tool_call_value(
         "get_alertlog_errors" => tool_get_alertlog_errors(args, stem),
         "list_aix_os_attachments" => tool_list_aix_os_attachments(args, stem),
         "get_aix_os_attachment" => tool_get_aix_os_attachment(args, stem),
-        "get_aix_cpu_entitlement_summary" => tool_get_aix_cpu_entitlement_summary(args, stem),
+        "get_aix_cpu_entitlement_summary" => collection.nmon.as_ref().map_or_else(
+            || tool_get_aix_cpu_entitlement_summary(args, stem),
+            tool_get_prepared_cpu_entitlement_summary,
+        ),
+        "get_host_configuration" => with_nmon(collection, crate::nmon::query::configuration),
+        "get_host_overview" => with_nmon(collection, crate::nmon::query::overview),
+        "list_host_metrics" => with_nmon_args(collection, args, crate::nmon::query::list_metrics),
+        "get_host_metric_summary" => {
+            with_nmon_args(collection, args, crate::nmon::query::metric_summary)
+        }
+        "get_host_peak_periods" => {
+            with_nmon_args(collection, args, crate::nmon::query::peak_periods)
+        }
+        "get_host_metric_time_series" => {
+            with_nmon_args(collection, args, crate::nmon::query::time_series)
+        }
+        "get_nmon_disk_validation" => {
+            with_nmon_args(collection, args, crate::nmon::query::disk_validation)
+        }
 
         // Aggregations
         "list_snapshots" | "list_snapshots_in_range" => tool_list_snapshots(args, collection),
@@ -5151,7 +5290,7 @@ LPAR,T0001,9.115,10,40,28,10.00,172,0.00,18.99,32.55,1,0,52.48,4.56,1.19,32.93,5
         .expect("write child cursor reason fixture");
         let stem = stem.to_string_lossy().to_string();
 
-        let schema = tools_schema(&stem);
+        let schema = tools_schema(&stem, false);
         let names = schema
             .as_array()
             .expect("tool schema array")
@@ -5160,6 +5299,17 @@ LPAR,T0001,9.115,10,40,28,10.00,172,0.00,18.99,32.55,1,0,52.48,4.56,1.19,32.93,5
             .collect::<HashSet<_>>();
         assert!(names.contains("list_available_child_cursor_reasons"));
         assert!(names.contains("get_child_cursor_reasons"));
+
+        let nmon_schema = tools_schema(&stem, true);
+        let nmon_names = nmon_schema
+            .as_array()
+            .expect("tool schema array")
+            .iter()
+            .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
+            .collect::<HashSet<_>>();
+        assert!(nmon_names.contains("get_host_configuration"));
+        assert!(nmon_names.contains("get_host_metric_time_series"));
+        assert!(nmon_names.contains("get_nmon_disk_validation"));
 
         let listed = tool_list_available_child_cursor_reasons(&json!({}), &stem);
         assert_eq!(listed["total_matches"], 1);

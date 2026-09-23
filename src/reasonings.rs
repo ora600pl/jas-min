@@ -1587,7 +1587,10 @@ pub async fn gemini(
     };
 
     let tools = if tools_mode {
-        tools_schema_for_gemini(stem)
+        tools_schema_for_gemini(
+            stem,
+            collection.as_ref().is_some_and(|value| value.nmon.is_some()),
+        )
     } else {
         json!([])
     };
@@ -2019,7 +2022,7 @@ pub async fn openrouter(
     };
 
     let tools = if tools_mode {
-        tools_schema(stem)
+        tools_schema(stem, collection.as_ref().is_some_and(|value| value.nmon.is_some()))
     } else {
         json!([])
     };
@@ -2328,8 +2331,8 @@ pub async fn openrouter(
     Ok(())
 }
 
-fn tools_schema_for_openai_responses(stem: &str) -> Value {
-    let tools = tools_schema(stem);
+fn tools_schema_for_openai_responses(stem: &str, include_nmon: bool) -> Value {
+    let tools = tools_schema(stem, include_nmon);
 
     let Some(arr) = tools.as_array() else {
         return json!([]);
@@ -2364,8 +2367,8 @@ fn tools_schema_for_openai_responses(stem: &str) -> Value {
     json!(converted)
 }
 
-fn tools_schema_for_gemini(stem: &str) -> Value {
-    let tools = tools_schema(stem);
+fn tools_schema_for_gemini(stem: &str, include_nmon: bool) -> Value {
+    let tools = tools_schema(stem, include_nmon);
 
     let Some(arr) = tools.as_array() else {
         return json!([]);
@@ -2508,7 +2511,10 @@ pub async fn openai_gpt(
     };
 
     let tools = if tools_mode {
-        tools_schema_for_openai_responses(stem)
+        tools_schema_for_openai_responses(
+            stem,
+            collection.as_ref().is_some_and(|value| value.nmon.is_some()),
+        )
     } else {
         json!([])
     };

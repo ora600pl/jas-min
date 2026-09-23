@@ -4,6 +4,7 @@ import io
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -46,7 +47,7 @@ class CollectorIdentityTests(unittest.TestCase):
             env=env, capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "jas-min-collector 0.1.14")
+        self.assertEqual(result.stdout.strip(), "jas-min-collector 0.1.15")
 
     def test_json_provenance_preserves_legacy_payload(self):
         # Metadata is additive: removing it leaves the original collection shape.
@@ -234,6 +235,7 @@ class CollectorCliTests(unittest.TestCase):
         self.assertIn("--end", help_text)
         self.assertIn("--include-alert-log", help_text)
         self.assertIn("--execution-plans", help_text)
+        self.assertIn("--execution-plan-timeout", help_text)
         self.assertIn("--package-content", help_text)
         self.assertIn("--security-level", help_text)
         self.assertIn("--include-os-stats", help_text)
@@ -269,6 +271,25 @@ class CollectorCliTests(unittest.TestCase):
         self.assertEqual(args.manual_sql_ids, ["abc123", "def456"])
         self.assertEqual(args.package_mode, collector.PACKAGE_JSON)
         self.assertEqual(args.security_level, 2)
+        self.assertEqual(
+            args.execution_plan_timeout,
+            collector.DEFAULT_XPLAN_TIMEOUT_SECONDS,
+        )
+
+    def test_execution_plan_timeout_must_be_positive(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as exc:
+                collector.parse_collector_args(["--execution-plan-timeout", "0"])
+
+        self.assertNotEqual(exc.exception.code, 0)
+
+    def test_execution_plan_timeout_can_be_overridden(self):
+        args = collector.parse_collector_args(
+            ["--execution-plan-timeout", "45"]
+        )
+
+        self.assertEqual(args.execution_plan_timeout, 45)
 
     def test_os_stats_dir_argument_implies_os_stats_collection(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -329,6 +350,81 @@ class CollectorCliTests(unittest.TestCase):
                 {"sql_id": "def456", "child_count": 2},
             ],
         )
+
+    def test_execution_plan_cursor_discovery_selects_one_concrete_child(self):
+        sql = collector.execution_plan_cursors_sql(["ABC123", "def456"])
+
+        self.assertIn("from v$sql", sql)
+        self.assertIn("is_shareable = 'Y'", sql)
+        self.assertIn("last_active_time desc nulls last", sql)
+        with mock.patch.object(
+            collector,
+            "run_sqlplus",
+            return_value="abc123|7|3\ndef456|2|1\n",
+        ) as run:
+            rows = collector.discover_execution_plan_cursors(
+                {"sqlplus": "unused"}, ["abc123", "def456"], 45
+            )
+
+        self.assertEqual(
+            rows,
+            [
+                {"sql_id": "abc123", "child_number": 7, "child_count": 3},
+                {"sql_id": "def456", "child_number": 2, "child_count": 1},
+            ],
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 45)
+
+    def test_xplan_uses_concrete_child_cursor(self):
+        sql = collector.xplan_sql("abc123", "abc123.xplan", 7)
+
+        self.assertIn("display_cursor('abc123',7,'TYPICAL')", sql)
+        self.assertNotIn("display_cursor('abc123',null)", sql.lower())
+
+    def test_run_sqlplus_converts_timeout_to_collector_error(self):
+        timeout = subprocess.TimeoutExpired(
+            cmd=["sqlplus"], timeout=12, output=b"partial output\n"
+        )
+        with mock.patch.object(collector.subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(
+                collector.CollectorError,
+                "(?s)timed out after 12 second.*partial output",
+            ):
+                collector.run_sqlplus(
+                    {"sqlplus": "/oracle/bin/sqlplus", "env": {}},
+                    "select 1 from dual;",
+                    timeout=12,
+                )
+
+    def test_plan_timeout_removes_partial_file_and_continues(self):
+        def fake_run(_ctx, script, cwd=None, timeout=None, **_kwargs):
+            filename = re.search(r"^spool ([^\n]+)", script, re.MULTILINE).group(1)
+            target = Path(cwd) / filename
+            if filename == "abc123.xplan":
+                target.write_text("partial\n", encoding="utf-8")
+                raise collector.CollectorError(
+                    "sqlplus timed out after {} second(s)".format(timeout)
+                )
+            target.write_text("complete plan\n", encoding="utf-8")
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_dir = Path(tmpdir)
+            with mock.patch.object(collector, "run_sqlplus", side_effect=fake_run):
+                files, failures = collector.collect_sql_execution_plans(
+                    {"sqlplus": "unused"},
+                    target_dir,
+                    ["abc123", "def456"],
+                    {"abc123": 7, "def456": 2},
+                    timeout=30,
+                )
+
+            self.assertFalse((target_dir / "abc123.xplan").exists())
+            self.assertTrue((target_dir / "def456.xplan").is_file())
+
+        self.assertEqual([path.name for path in files], ["def456.xplan"])
+        self.assertEqual(failures[0][0], "abc123")
+        self.assertIn("timed out after 30", failures[0][1])
 
     def test_shared_cursor_reason_sql_transports_clob_without_with_clause(self):
         sql = collector.shared_cursor_reasons_sql("AbC123")
