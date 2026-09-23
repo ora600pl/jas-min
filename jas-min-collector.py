@@ -1551,8 +1551,13 @@ def parse_sql_text(table):
 def parse_initialization_parameters(table):
     result = {}
     for row in data_rows(table):
-        if len(row) >= 2:
-            result[row[0]] = row[1]
+        if len(row) < 2 or not row[0].strip():
+            continue
+        name, value = row[0].strip(), row[1].strip()
+        # Preserve ordered multi-valued rows in the existing string schema.
+        previous = result.setdefault(name, "")
+        if value:
+            result[name] = previous + ", " + value if previous else value
     return result
 
 

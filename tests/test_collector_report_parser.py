@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -83,6 +85,18 @@ class CollectorStatspackParserTests(unittest.TestCase):
 
 
 class CollectorAwrParserTests(unittest.TestCase):
+    def test_initialization_parameters_html_report_regressions(self):
+        cases = json.loads(
+            (ROOT / "tests/fixtures/initialization_parameters.json").read_text()
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "parameters.html"
+            for case in cases:
+                with self.subTest(case=case["name"]):
+                    report.write_text(case["html"], encoding="utf-8")
+                    _, _, parameters, _ = collector.parse_html_report(report, 2)
+                    self.assertEqual(parameters, case["expected"])
+
     def test_all_awr_samples_keep_core_sections(self):
         # Parse every supplied 19c AWR report to guard the shared output schema.
         reports = sorted((ROOT / "tests/test_awrs_19").glob("*.html"))

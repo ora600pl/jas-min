@@ -1,0 +1,42 @@
+[
+  {
+    "name": "empty_cells",
+    "html": "<table summary=\"This table displays name and value of the modified initialization parameters\"><tr><th>Parameter</th><th>Begin value</th><th>End value</th></tr><tr><td>empty</td><td></td></tr><tr><td>markup_empty</td><td><div></div></td></tr><tr><td>blank</td><td>&nbsp;</td></tr><tr><td></td><td>orphan</td></tr><tr><td> </td><td>orphan</td></tr><tr><td>short_row</td></tr><tr><td>valid</td><td>8192</td><td>16384</td></tr></table>",
+    "expected": {
+      "empty": "",
+      "markup_empty": "",
+      "blank": "",
+      "valid": "8192"
+    }
+  },
+  {
+    "name": "hidden_and_nested_text",
+    "html": "<table summary=\"This table displays name and value of the modified initialization parameters\"><tr><th>Parameter</th><th>Begin value</th><th>End value</th></tr><tr><td>\n <div class=\"hidden\">_dbmsumf$$1x</div>\n </td><td><span>first</span>&amp;<b>second</b></td></tr><tr><td>control_files</td><td><span>/data/</span>control01.ctl</td></tr></table>",
+    "expected": {
+      "_dbmsumf$$1x": "first&second",
+      "control_files": "/data/control01.ctl"
+    }
+  },
+  {
+    "name": "multiple_values",
+    "html": "<table summary=\"This table displays name and value of the modified initialization parameters\"><tr><th>Parameter</th><th>Begin value</th><th>End value</th></tr><tr><td>_dbmsumf$$1x</td><td>first</td></tr><tr><td><div class=\"hidden\">_dbmsumf$$1x</div></td><td>second</td></tr><tr><td>\n <div class=\"hidden\">_dbmsumf$$1x</div>\n</td><td>third</td></tr><tr><td>_dbmsumf$$1x</td><td></td></tr></table>",
+    "expected": {
+      "_dbmsumf$$1x": "first, second, third"
+    }
+  },
+  {
+    "name": "empty_then_populated",
+    "html": "<table summary=\"This table displays name and value of the modified initialization parameters\"><tr><th>Parameter</th><th>Begin value</th><th>End value</th></tr><tr><td>p</td><td></td></tr><tr><td>p</td><td>value</td></tr><tr><td>p</td><td>value</td></tr></table>",
+    "expected": {
+      "p": "value, value"
+    }
+  },
+  {
+    "name": "multiple_tables",
+    "html": "<table summary=\"This table displays name and value of the modified initialization parameters\"><tr><th>Parameter</th><th>Begin value</th><th>End value</th></tr><tr><td>db_block_size</td><td>8192</td></tr></table><table summary=\"This table displays name and value of init.ora parameters\"><tr><th>Parameter</th><th>Begin value</th><th>End value</th></tr><tr><td>control_files</td><td>/data/a.ctl</td></tr><tr><td>control_files</td><td>/data/b.ctl</td></tr></table><table summary=\"This table displays name and value of the initialization parametersmodified by the current container\"><tr><th>Parameter</th><th>Begin value</th><th>End value</th></tr></table>",
+    "expected": {
+      "db_block_size": "8192",
+      "control_files": "/data/a.ctl, /data/b.ctl"
+    }
+  }
+]

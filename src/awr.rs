@@ -658,13 +658,23 @@ fn initialization_parameters(table: ElementRef) -> HashMap<String, String> {
     for row in table.select(&row_selector) {
         let columns: Vec<ElementRef> = row.select(&column_selector).collect::<Vec<_>>();
         if columns.len() > 1 {
-            let pname: Vec<&str> = columns[0].text().collect::<Vec<_>>();
-            let pname = pname[0].trim().to_string();
+            // Continuation rows may put the name inside a hidden div, preceded
+            // by whitespace. Empty cells have no text nodes at all.
+            let pname = columns[0].text().collect::<String>().trim().to_string();
+            if pname.is_empty() {
+                continue;
+            }
+            let pvalue = columns[1].text().collect::<String>().trim().to_string();
 
-            let pvalue: Vec<&str> = columns[1].text().collect::<Vec<_>>();
-            let pvalue = pvalue[0].trim().to_string();
-
-            params.entry(pname).or_insert(pvalue);
+            // Keep the existing string-valued schema while preserving every
+            // nonempty value of a multi-valued parameter in report order.
+            let value = params.entry(pname).or_default();
+            if !pvalue.is_empty() {
+                if !value.is_empty() {
+                    value.push_str(", ");
+                }
+                value.push_str(&pvalue);
+            }
         }
     }
     params
@@ -2958,7 +2968,7 @@ fn parse_awr_report_internal(
 			} else if element.value().attr("summary").unwrap().starts_with("This table displays name and value of the modified initialization parameters") 
 			       || element.value().attr("summary").unwrap().starts_with("This table displays name and value of init.ora parameters")
 				   || element.value().attr("summary").unwrap().starts_with("This table displays name and value of the initialization parametersmodified by the current container"){
-				 parameters = initialization_parameters(element);
+					 parameters.extend(initialization_parameters(element));
 			} else if element.value().attr("summary").unwrap() == "This table displays the Top SQL by Top Wait Events" {
 				awr.top_sql_with_top_events = top_sql_with_top_events(element);
 			} else if element.value().attr("summary").unwrap() == "This table displays total number of waits, and information about total wait time, for each wait event" {
@@ -3659,6 +3669,38 @@ pub fn prarse_json_file(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn initialization_parameters_html_report_regressions() {
+        use clap::Parser;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/initialization_parameters.json"
+        ))
+        .unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "jas-min-init-parameters-{}-{nonce}.html",
+            std::process::id()
+        ));
+        let args = Args::parse_from(["jas-min", "--security-level", "2"]);
+        for case in cases.as_array().unwrap() {
+            fs::write(&path, case["html"].as_str().unwrap()).unwrap();
+            // Exercise report table dispatch as well as individual cell parsing.
+            let (_, _, parameters) = parse_awr_report_internal(path.to_str().unwrap(), &args);
+            assert_eq!(
+                serde_json::to_value(parameters).unwrap(),
+                case["expected"],
+                "{}",
+                case["name"]
+            );
+        }
+        fs::remove_file(path).unwrap();
+    }
 
     // Compare every supplied report section with independently extracted name/value pairs.
     #[test]

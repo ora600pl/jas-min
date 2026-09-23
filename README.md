@@ -35,7 +35,6 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Correlation | Computes Pearson correlations between DB Time and wait events, SQL elapsed time, and instance statistics. |
 | Gradient analysis | Runs Ridge, Elastic Net, Huber, and Quantile-95 regression models over DB Time and DB CPU drivers. |
 | Performance hints | **HINTS** separates scan, SQL-read and row-continuation work growth from CPU/elapsed support. Cards show observed history, latest supplied state, scoped context and material segment candidates; physical causes remain unconfirmed. HTML, classic AI and MCP share the same result. See [policy, coverage and interpretation](docs/performance-hints.md). |
-| Interactive regression course | Local, offline mathematics course in [Polish](docs/regression-course/index.html#pl/start) and [English](docs/regression-course/index.html#en/start): a continuous brewhouse-to-database story, worked derivations, Gaussian elimination, four regression models, quizzes and local data experiments. See [course instructions](docs/regression-course/README.md). |
 | Custom gradient | Builds extra gradient pages for a selected SQL ID or wait event with `--gradient-custom`. |
 | AI reports | Supports OpenAI, Google Gemini, OpenRouter, and a two-session local agent served by LM Studio. |
 | Analytical report atlas | Linked active/peak bubble plots, four-model selection matrices, per-instance synthesis and scoped anomaly windows in MCP/API reports. See [the report atlas guide](docs/report-signal-atlas.md). |
@@ -784,6 +783,12 @@ the collection indefinitely. It selects a concrete current child cursor from
 `V$SQL`, applies a configurable per-plan timeout, removes partial plan files,
 records the failure, and continues with the remaining SQL IDs.
 
+Both HTML parsers retain empty initialization parameter values as empty strings
+and skip rows without a parameter name. Hidden names in continuation rows are
+read as text; multiple nonempty values for the same parameter within a table
+are joined with `, ` in report order. Parameter tables are combined, with a
+later table replacing an earlier value only when the parameter name is repeated.
+
 #### AWR and STATSPACK startup selection
 
 After START and END are entered, the collector checks the recorded startups
@@ -973,8 +978,8 @@ In every mode, requested alert-log and OS-statistics attachments, available exec
 
 ## Authors
 
-- Kamil Stawiarski - [blog.ora-600.pl](https://blog.ora-600.pl)
-- Radoslaw Kut - [blog.struktuur.pl](https://blog.struktuur.pl)
+- Kamil Stawiarski - [blog](https://blog.ora-600.pl)
+- Radoslaw Kut - [blog](https://blog.struktuur.pl)
 
 Built by [ORA-600 | Database Whisperers](https://www.ora-600.pl/en/).  
 
