@@ -11,9 +11,8 @@
 *.sln.docstates
 *.txt 
 *.html
-# Public, self-contained regression course and its authored template.
-!/docs/regression-course/index.html
-!/docs/regression-course/src/index.html
+# Offline course with retained measurements stays local unless publication is authorized.
+/docs/oracle-performance-course/
 !/tests/fixtures/empty_calories/segment_scope.html
 *.pyc
 *.swp
