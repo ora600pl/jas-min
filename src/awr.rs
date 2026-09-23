@@ -299,6 +299,8 @@ pub struct AWRSCollection {
     pub initialization_parameters: HashMap<String, String>,
     pub awrs: Vec<AWR>,
     pub sql_text: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nmon: Option<crate::nmon::NmonDataset>,
 }
 
 /// Keeps the detailed collection and its compact AI summary together.
@@ -3379,7 +3381,7 @@ pub fn parse_awr_dir(
     args: Args,
     events_sqls: &mut HashMap<&str, HashSet<String>>,
     file: &str,
-) -> ParsedAnalysis {
+) -> Result<ParsedAnalysis, String> {
     debug_note!(
         "Starting directory parse: directory='{}', output_json='{}', security_level={}",
         args.directory(),
@@ -3514,12 +3516,21 @@ pub fn parse_awr_dir(
 
     /* ************************* */
 
-    let collection = AWRSCollection {
+    let mut collection = AWRSCollection {
         db_instance_information: is_instance_info.unwrap_or_default(),
         initialization_parameters: parameters_final,
         awrs: awr_vec,
         sql_text: sql_txt_final,
+        nmon: None,
     };
+
+    if let Some(nmon_directory) = args.nmon.as_ref() {
+        debug_note!(
+            "Loading optional NMON dataset from '{}'",
+            nmon_directory.display()
+        );
+        collection.nmon = Some(crate::nmon::load_directory(nmon_directory, args.quiet)?);
+    }
 
     let json_str = serde_json::to_string_pretty(&collection).unwrap();
     let mut f = fs::File::create(file).unwrap();
@@ -3537,10 +3548,10 @@ pub fn parse_awr_dir(
         "Directory analysis completed: directory='{}'",
         args.directory()
     );
-    ParsedAnalysis {
+    Ok(ParsedAnalysis {
         collection,
         report_for_ai,
-    }
+    })
 }
 
 pub fn parse_awr_report(
@@ -3579,7 +3590,7 @@ pub fn parse_awr_report(
 pub fn prarse_json_file(
     args: Args,
     events_sqls: &mut HashMap<&str, HashSet<String>>,
-) -> ParsedAnalysis {
+) -> Result<ParsedAnalysis, String> {
     debug_note!(
         "Starting AWRSCollection JSON analysis: file='{}'",
         args.json_file()
@@ -3589,6 +3600,13 @@ pub fn prarse_json_file(
     let json_file = fs::read_to_string(args.json_file())
         .unwrap_or_else(|_| panic!("Something wrong with a file {} ", args.json_file()));
     let mut collection: AWRSCollection = load_awrs_collection_from_json_str(&json_file).expect("\nJAS-MIN JSON format not known\nConsider running jasmin -d <DIR> before using -j json\n\n");
+    if let Some(nmon_directory) = args.nmon.as_ref() {
+        debug_note!(
+            "Loading optional NMON dataset from '{}'",
+            nmon_directory.display()
+        );
+        collection.nmon = Some(crate::nmon::load_directory(nmon_directory, args.quiet)?);
+    }
     collection
         .awrs
         .clone()
@@ -3631,10 +3649,10 @@ pub fn prarse_json_file(
         "AWRSCollection JSON analysis completed: file='{}'",
         args.json_file()
     );
-    ParsedAnalysis {
+    Ok(ParsedAnalysis {
         collection,
         report_for_ai,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -3795,5 +3813,7 @@ mod tests {
 
         assert_eq!(collection.awrs[0].library_cache[0].pin_requests, 0);
         assert_eq!(collection.awrs[0].instance_stats[0].total, 0);
+        assert!(collection.nmon.is_none());
+        assert!(serde_json::to_value(&collection).unwrap().get("nmon").is_none());
     }
 }

@@ -2941,7 +2941,7 @@ pub async fn run_mcp_server(runtime: AnalysisRuntime, endpoint: McpEndpoint) -> 
 fn build_mcp_tools(runtime: &AnalysisRuntime) -> Vec<Tool> {
     let mut evidence_definitions = BTreeMap::new();
     for project in runtime.projects.values() {
-        for definition in tools_schema(project.stem.as_str())
+        for definition in tools_schema(project.stem.as_str(), project.collection.nmon.is_some())
             .as_array()
             .into_iter()
             .flatten()
@@ -7999,6 +7999,7 @@ mod tests {
             initialization_parameters: HashMap::new(),
             awrs: vec![awr],
             sql_text: HashMap::new(),
+            nmon: None,
         };
         let mut runtime = AnalysisRuntime::new(
             collection,
@@ -8053,6 +8054,7 @@ mod tests {
                 initialization_parameters: HashMap::new(),
                 awrs,
                 sql_text: HashMap::new(),
+                nmon: None,
             },
             ReportForAI::default(),
             format!("nonexistent-{project_id}"),
@@ -8720,6 +8722,7 @@ mod tests {
                 initialization_parameters: HashMap::new(),
                 awrs: Vec::new(),
                 sql_text: HashMap::new(),
+                nmon: None,
             },
             ReportForAI::default(),
             stem.to_string_lossy().to_string(),
@@ -8891,6 +8894,7 @@ mod tests {
                 initialization_parameters: HashMap::new(),
                 awrs: Vec::new(),
                 sql_text: HashMap::new(),
+                nmon: None,
             },
             ReportForAI::default(),
             stem.to_string_lossy().to_string(),
@@ -9009,6 +9013,7 @@ mod tests {
                 initialization_parameters: HashMap::new(),
                 awrs: Vec::new(),
                 sql_text: HashMap::new(),
+                nmon: None,
             },
             report,
             "analytic-contract".to_string(),
@@ -9305,6 +9310,7 @@ mod tests {
                 initialization_parameters: HashMap::new(),
                 awrs: Vec::new(),
                 sql_text: HashMap::from([(sql_id.to_string(), "select 1 from dual".to_string())]),
+                nmon: None,
             }),
             report: Arc::new(ReportForAI {
                 top_sqls_by_elapsed_time: vec![TopSQLsByElapsedTime {
@@ -9550,6 +9556,7 @@ mod tests {
                         initialization_parameters: HashMap::new(),
                         awrs: Vec::new(),
                         sql_text: HashMap::new(),
+                        nmon: None,
                     }),
                     report: Arc::new(ReportForAI::default()),
                     stem: Arc::new(root.join(project_id).to_string_lossy().to_string()),
@@ -10244,6 +10251,7 @@ mod tests {
                 initialization_parameters: HashMap::new(),
                 awrs: Vec::new(),
                 sql_text: HashMap::new(),
+                nmon: None,
             },
             ReportForAI::default(),
             stem.to_string_lossy().to_string(),
