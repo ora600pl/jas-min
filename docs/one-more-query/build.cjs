@@ -1,0 +1,12 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const base=__dirname,read=p=>fs.readFileSync(path.join(base,p),'utf8');
+if(process.argv.length>2)throw Error('This standalone build takes no arguments and uses only the approved sample.json.');
+const D=JSON.parse(read('sample.json'));
+if(D.y.length!==D.x.length||D.x.some(r=>r.length!==4)||D.features.length!==4)throw Error('Invalid measurement matrix');
+let html=read('src/template.html').replace('<!-- STYLE -->',()=>'<style>'+read('src/style.css')+'</style>');
+const source='window.SAMPLE='+JSON.stringify(D)+';\n'+read('src/model.js')+'\n'+read('src/explainers.js')+'\n'+read('src/lessons.js')+'\n'+read('src/story.js')+'\n'+read('src/app.js');
+new vm.Script(source);
+html=html.replace('<!-- APP -->',()=>'<script>'+source.replace(/<\/script/gi,'<\\/script')+'</script>');
+fs.writeFileSync(path.join(base,'index.html'),html);
+console.log(JSON.stringify({observations:D.y.length,features:D.features.length,bytes:Buffer.byteLength(html),output:'docs/one-more-query/index.html'}));

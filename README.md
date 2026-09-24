@@ -20,6 +20,12 @@ JAS-MIN is a Rust command-line tool for mining Oracle AWR and STATSPACK performa
 
 The tool can also send a compact `ReportForAI` representation to supported AI providers and convert the resulting Markdown analysis to linked HTML.
 
+## Learn the regression models — ONE MORE QUERY
+
+[Open the interactive PL/EN course](https://ora600pl.github.io/jas-min/) · [Source, offline build and upload package](docs/one-more-query/README.md)
+
+Five interactive chapters take you from Oracle performance charts through Ridge, Elastic Net, Huber and Q95 to a focused evidence request. Includes worked calculations, beer-shaped explainers, percentile comparisons and step-by-step Gaussian elimination. Authentic anonymized measurements; no accounts, data uploads or live AI/Oracle calls. The course distinguishes fitted associations from causes and explicitly retains data-quality limitations.
+
 ## Current Capabilities
 
 | Area | What JAS-MIN does |
