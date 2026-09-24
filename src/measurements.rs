@@ -388,6 +388,7 @@ mod tests {
             db_instance_information: Default::default(),
             initialization_parameters: Default::default(),
             sql_text: Default::default(),
+            nmon: None,
         };
         let y = db_load_series(&collection, &(0, u64::MAX), DbLoadMetric::DbTime);
         assert_eq!(y.len(), 3);
@@ -472,6 +473,7 @@ pub(crate) mod replay_tests {
             db_instance_information: Default::default(),
             initialization_parameters: Default::default(),
             sql_text: Default::default(),
+            nmon: None,
         }
     }
 

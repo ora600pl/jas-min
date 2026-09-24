@@ -27,7 +27,7 @@ from pathlib import Path
 
 
 # Version the standalone collector independently from the Rust application.
-COLLECTOR_VERSION = "0.1.14"
+COLLECTOR_VERSION = "0.1.15"
 COLLECTOR_NAME = "jas-min-collector"
 
 DATE_FORMAT = "%Y-%m-%d %H:%M"
@@ -40,6 +40,7 @@ PACKAGE_BOTH = "both"
 SQL_ID_RE = re.compile(r"^[A-Za-z0-9]{1,30}$")
 ORACLE_SQL_ID_RE = re.compile(r"^[0-9a-z]{13}$", re.IGNORECASE)
 SHARED_CURSOR_REASON_SUFFIX = ".shared_cursor_reasons"
+DEFAULT_XPLAN_TIMEOUT_SECONDS = 120
 
 
 class CollectorError(Exception):
@@ -388,6 +389,16 @@ def parse_security_level_arg(value):
     return level
 
 
+def parse_positive_int_arg(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("Expected a positive integer.")
+    if number <= 0:
+        raise argparse.ArgumentTypeError("Expected a positive integer.")
+    return number
+
+
 def build_arg_parser():
     examples = """examples:
   python3 jas-min-collector.py --report-type awr --start "2026-06-14 00:00" --end "2026-06-15 14:00"
@@ -466,6 +477,14 @@ def build_arg_parser():
         action="append",
         type=parse_sql_ids_arg,
         help="additional SQL_IDs for execution-plan collection; may be repeated",
+    )
+    parser.add_argument(
+        "--execution-plan-timeout",
+        dest="execution_plan_timeout",
+        metavar="SECONDS",
+        type=parse_positive_int_arg,
+        default=DEFAULT_XPLAN_TIMEOUT_SECONDS,
+        help="maximum time for cursor discovery or one execution plan (default: %(default)s seconds)",
     )
     parser.add_argument(
         "-p",
@@ -563,17 +582,31 @@ def require_oracle_context():
     }
 
 
-def run_sqlplus(ctx, script, cwd=None, check_output_errors=True):
+def run_sqlplus(ctx, script, cwd=None, check_output_errors=True, timeout=None):
     command = [str(ctx["sqlplus"]), "-S", "/ as sysdba"]
-    proc = subprocess.run(
-        command,
-        input=script,
-        universal_newlines=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=str(cwd) if cwd else None,
-        env=ctx["env"],
-    )
+    try:
+        proc = subprocess.run(
+            command,
+            input=script,
+            universal_newlines=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(cwd) if cwd else None,
+            env=ctx["env"],
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output_parts = []
+        for value in (exc.stdout, exc.stderr):
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="replace")
+            if value:
+                output_parts.append(value)
+        output = "".join(output_parts)
+        detail = "\n{}".format(tail(output).strip()) if output.strip() else ""
+        raise CollectorError(
+            "sqlplus timed out after {} second(s){}".format(timeout, detail)
+        )
     output = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         raise CollectorError("sqlplus failed:\n{}".format(tail(output).strip()))
@@ -2309,7 +2342,58 @@ def sql_literal(value):
     return value.replace("'", "''")
 
 
-def xplan_sql(sql_id, filename):
+def execution_plan_cursors_sql(sql_ids):
+    literals = ", ".join("'{}'".format(sql_literal(sql_id)) for sql_id in sql_ids)
+    return """
+whenever oserror exit failure
+whenever sqlerror exit failure
+set heading off feedback off verify off echo off pagesize 0 linesize 32767 trimspool on trimout on tab off
+with ranked_cursors as (
+    select lower(sql_id) as sql_id,
+           child_number,
+           count(*) over (partition by sql_id) as child_count,
+           row_number() over (
+               partition by sql_id
+               order by case when is_shareable = 'Y' then 0 else 1 end,
+                        last_active_time desc nulls last,
+                        executions desc nulls last,
+                        child_number desc
+           ) as cursor_rank
+      from v$sql
+     where sql_id in ({sql_ids})
+)
+select sql_id || '|' || child_number || '|' || child_count
+  from ranked_cursors
+ where cursor_rank = 1
+ order by sql_id;
+exit
+""".format(sql_ids=literals)
+
+
+def discover_execution_plan_cursors(ctx, sql_ids, timeout):
+    if not sql_ids:
+        return []
+    output = run_sqlplus(
+        ctx,
+        execution_plan_cursors_sql(sql_ids),
+        timeout=timeout,
+    )
+    rows = []
+    for sql_id, child_number, child_count in parse_delimited_rows(output, 3):
+        try:
+            rows.append(
+                {
+                    "sql_id": sql_id.lower(),
+                    "child_number": int(child_number),
+                    "child_count": int(child_count),
+                }
+            )
+        except ValueError:
+            continue
+    return rows
+
+
+def xplan_sql(sql_id, filename, child_number=0):
     return """
 whenever oserror exit failure
 whenever sqlerror exit failure
@@ -2317,13 +2401,14 @@ set heading off feedback off verify off echo off pagesize 50000 linesize 32767 t
 set long 100000000 longchunksize 10000000
 set termout off
 spool {filename}
-select * from table(dbms_xplan.display_cursor('{sql_id}',null));
+select * from table(dbms_xplan.display_cursor('{sql_id}',{child_number},'TYPICAL'));
 spool off
 set termout on
 exit
 """.format(
         filename=filename,
         sql_id=sql_literal(sql_id),
+        child_number=int(child_number),
     )
 
 
@@ -2838,20 +2923,50 @@ def collect_shared_cursor_reasons(ctx, target_dir, multi_child_sqls):
     return generated, failures
 
 
-def collect_sql_execution_plans(ctx, target_dir, sql_ids):
+def collect_sql_execution_plans(
+    ctx, target_dir, sql_ids, selected_cursors=None,
+    timeout=DEFAULT_XPLAN_TIMEOUT_SECONDS,
+):
     target_dir.mkdir(parents=True, exist_ok=True)
     generated = []
     failures = []
+    selected_cursors = selected_cursors or {}
 
     for idx, sql_id in enumerate(sql_ids, start=1):
         filename = "{}.xplan".format(sql_id)
         target = target_dir / filename
-        print("Collecting execution plan {}/{}: {}".format(idx, len(sql_ids), filename))
+        child_number = selected_cursors.get(sql_id)
+        if child_number is None:
+            message = "No current child cursor found in V$SQL"
+            failures.append((sql_id, message))
+            print(
+                "WARNING: Could not collect execution plan for {}: {}".format(
+                    sql_id, message
+                )
+            )
+            continue
+        print(
+            "Collecting execution plan {}/{}: {} (child {})".format(
+                idx, len(sql_ids), filename, child_number
+            )
+        )
         try:
-            run_sqlplus(ctx, xplan_sql(sql_id, filename), cwd=target_dir)
+            run_sqlplus(
+                ctx,
+                xplan_sql(sql_id, filename, child_number),
+                cwd=target_dir,
+                timeout=timeout,
+            )
             ensure_generated(target)
             generated.append(target)
-        except CollectorError as exc:
+        except (CollectorError, OSError) as exc:
+            try:
+                if target.exists():
+                    target.unlink()
+            except OSError as cleanup_exc:
+                exc = CollectorError(
+                    "{}; could not remove partial file: {}".format(exc, cleanup_exc)
+                )
             failures.append((sql_id, str(exc)))
             print("WARNING: Could not collect execution plan for {}: {}".format(sql_id, exc))
 
@@ -3534,6 +3649,22 @@ def write_manifest(
                     ", ".join(manual_sql_ids) if manual_sql_ids else "none"
                 )
             )
+            fh.write(
+                "  per-plan timeout: {} second(s)\n".format(
+                    xplan_info.get(
+                        "execution_plan_timeout", DEFAULT_XPLAN_TIMEOUT_SECONDS
+                    )
+                )
+            )
+
+            selected_child_cursors = xplan_info.get("selected_child_cursors", [])
+            if selected_child_cursors:
+                fh.write("  selected current child cursors:\n")
+                for item in selected_child_cursors:
+                    fh.write(
+                        "    {sql_id} - child_number={child_number}, "
+                        "child_count={child_count}\n".format(**item)
+                    )
 
             files = xplan_info.get("files", [])
             if files:
@@ -3716,6 +3847,8 @@ def main(argv=None):
             "sql_ids": [],
             "files": [],
             "failures": [],
+            "selected_child_cursors": [],
+            "execution_plan_timeout": args.execution_plan_timeout,
             "multi_child_sqls": [],
             "child_cursor_reason_files": [],
             "child_cursor_reason_failures": [],
@@ -3742,24 +3875,45 @@ def main(argv=None):
 
             if plan_sql_ids:
                 xplan_target_dir = json_attachments_dir(output_dir, json_path)
-                xplan_files, xplan_failures = collect_sql_execution_plans(ctx, xplan_target_dir, plan_sql_ids)
-                xplan_info["files"] = xplan_files
-                xplan_info["failures"] = xplan_failures
-                print("Execution plan attachment(s): {}".format(len(xplan_files)))
-
-                top_sql_ids = [item["sql_id"] for item in top_sqls]
                 try:
-                    multi_child_sqls = discover_multi_child_cursor_sqls(
-                        ctx, top_sql_ids
+                    cursor_rows = discover_execution_plan_cursors(
+                        ctx, plan_sql_ids, args.execution_plan_timeout
                     )
+                    xplan_info["selected_child_cursors"] = cursor_rows
+                    selected_cursors = {
+                        item["sql_id"]: item["child_number"]
+                        for item in cursor_rows
+                    }
+                    top_sql_id_set = {item["sql_id"] for item in top_sqls}
+                    multi_child_sqls = [
+                        {
+                            "sql_id": item["sql_id"],
+                            "child_count": item["child_count"],
+                        }
+                        for item in cursor_rows
+                        if item["sql_id"] in top_sql_id_set
+                        and item["child_count"] > 1
+                    ]
                     xplan_info["multi_child_sqls"] = multi_child_sqls
                 except CollectorError as exc:
                     xplan_info["child_cursor_discovery_failure"] = str(exc)
+                    selected_cursors = {sql_id: 0 for sql_id in plan_sql_ids}
                     multi_child_sqls = []
                     print(
-                        "WARNING: Could not discover TOP SQL_IDs with multiple "
-                        "child cursors: {}".format(exc)
+                        "WARNING: Could not select current child cursors; "
+                        "falling back to child 0: {}".format(exc)
                     )
+
+                xplan_files, xplan_failures = collect_sql_execution_plans(
+                    ctx,
+                    xplan_target_dir,
+                    plan_sql_ids,
+                    selected_cursors,
+                    args.execution_plan_timeout,
+                )
+                xplan_info["files"] = xplan_files
+                xplan_info["failures"] = xplan_failures
+                print("Execution plan attachment(s): {}".format(len(xplan_files)))
 
                 if multi_child_sqls:
                     print("TOP SQL_IDs with multiple current child cursors:")

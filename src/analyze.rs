@@ -6138,6 +6138,16 @@ pub fn main_report_builder(
     let mut plotly_html: String =
         fs::read_to_string(&fname).expect("Failed to read jasmin-html file");
 
+    let mut nmon_button = String::new();
+    if let Some(nmon) = collection.nmon.as_ref() {
+        match crate::nmon::render::write_overview(nmon, Path::new(&html_dir)) {
+            Ok(()) => {
+                nmon_button = "<a href=\"nmon/nmon_overview.html\" target=\"_blank\"><button class=\"button-JASMIN\" role=\"button\"><span class=\"text\">NMON Host</span><span>NMON Host</span></button></a>".to_string();
+            }
+            Err(error) => eprintln!("⚠️ Failed to build NMON HTML overview: {error}"),
+        }
+    }
+
     const STYLE_CSS: &str = include_str!("../src/style.css");
     plotly_html = plotly_html.replace(
         "<head>",
@@ -6147,7 +6157,7 @@ pub fn main_report_builder(
     // Inject Buttons and Tables into Main HTML
     plotly_html = plotly_html.replace(
         "<body>",
-        &format!("<body>\n{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t",
+        &format!("<body>\n{}\n\t{}\n\t<div class=\"jasmin-primary-actions\">\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t</div>\n\t{}\n\t{}\n\t{}\n\t{}\n\t{}\n\t",
             jasmin_logo,
             db_instance_info_html,
             "<button id=\"show-events-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">TOP Wait Events</span><span>TOP Wait Events</span></button>",
@@ -6168,8 +6178,10 @@ pub fn main_report_builder(
                     <button id=\"show-hints-button\" class=\"button-JASMIN\" role=\"button\"><span class=\"text\">HINTS</span><span>HINTS</span></button>
                 </a>
                 {}
+                {}
                 {}",
                 db_time_degradation_button,
+                nmon_button,
                 if !args.gradient_custom.is_empty() {
                     format!(
                         "<a href=\"stats/gradient_sqlid.html\" target=\"_blank\" style=\"text-decoration: none;\">

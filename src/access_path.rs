@@ -720,6 +720,7 @@ mod tests {
             initialization_parameters: Default::default(),
             awrs,
             sql_text: Default::default(),
+            nmon: None,
         }
     }
     fn report(c: &AWRSCollection) -> AccessPathReport {
