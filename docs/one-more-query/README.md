@@ -14,7 +14,14 @@ Jeden samowystarczalny plik HTML, działający także offline. Bez kont, kluczy 
 4. **Sygnał:** rzeczywiste lokalne przeliczenie Ridge; P90/P99/MAX; sześć kroków pochodzenia wyniku; sześć eliminacji Gaussa i cztery podstawienia wsteczne.
 5. **Jeszcze jedno:** sprawdzalna hipoteza i szablon żądania MCP, quiz o brakach, podgląd dokładnego JSON-u i eksporty.
 
-Mini-laboratoria pokazują osobno błąd i karę L2, dlaczego L1 może wyzerować współczynnik, pochodzenie progu Hubera i jego wpływ na koszt, oraz dlaczego Q95 nie zawsze wybiera maksimum. Jawnie ilustracyjne przykłady nie zmieniają rzeczywistych danych.
+Wyjaśnienia zaczynają się od problemu, który można samemu zobaczyć:
+
+- **Ridge:** dwa przepisy identycznie pasują do historii. Rozsuń dwa oczekiwania i porównaj nowe przewidywania.
+- **Elastic Net:** sprawdź, co dodatkowe oczekiwanie wnosi ponad pozostałe; wyłącz regułę L1 i zobacz, jak znika przedział zerowego mnożnika.
+- **Huber:** zwiększ jeden z pięciu pomiarów. Porównaj przesunięcie prognozy i błędy przy pozostałych pomiarach, bez usuwania dużego skoku.
+- **Q95:** te same sytuacje, ale pytanie o wysoki wzrost. Zmień częstość skoku z raz na pięć na raz na 21 — maksimum pozostanie to samo, odpowiedź się zmieni.
+
+Dopiero rozwinięcie „Policz to krok po kroku” wprowadza wzory. Wszystkie miniatury są jawnie ilustracyjne i nie zmieniają autentycznych danych. Pochodzenie rzeczywistego progu Hubera, współczynników i rankingów nadal można prześledzić. Początkowe λ = 0,05 jest ustawieniem, **nie wynikiem pokazanej walidacji**; kurs wyjaśnia sprawdzian na późniejszych oknach, ale go nie wykonuje.
 
 To kurs wprowadzający i interaktywny materiał po prelekcji, nie pełny podręcznik statystyki ani diagnoza trwającej awarii. Pubowa historia jest fikcyjna. Nie wykonujemy operacji Oracle, wywołań LLM ani MCP.
 
@@ -74,7 +81,7 @@ Przy bazowym Ridge λ = 0,05 liderem P90 jest PX (4,004093 AAS), a P99 — curso
 
 ## Testy i recenzja
 
-[VALIDATION.md](VALIDATION.md) odróżnia wykonane testy od ograniczeń; [REVIEW.md](REVIEW.md) opisuje dwie krytyczne rundy konsultacji z Claude Opus 5.5 i odrzucone uproszczenia.
+[VALIDATION.md](VALIDATION.md) odróżnia wykonane testy od ograniczeń; [REVIEW.md](REVIEW.md) opisuje trzy rundy aktualizacji dydaktycznej z Claude Opus 5.5 z 25 września oraz wcześniejsze recenzje i odrzucone uproszczenia.
 
 Opcjonalny samodzielny test przeglądarkowy wymaga zainstalowanego Playwright oraz Chromium/Chrome:
 

@@ -1,4 +1,16 @@
-# Validation — 2026-09-24
+# Validation
+
+## 2026-09-25 — problem-first model explanations
+
+- Three actual read-only Claude Opus 5.5 review rounds, with `modelUsage` confirming `claude-opus-5-5` each time. The third accepted the teaching structure and made publication conditional on normalizing Elastic Net's negative zero and passing browser checks. Both conditions were completed. The reviewer did not run the UI; decisions are in [REVIEW.md](REVIEW.md).
+- `node docs/one-more-query/package.cjs`: **42 numerical/static/content checks passed**, ZIP integrity and exact allowlist passed, zipped HTML matched the built HTML. Original observations, four-feature fits, source caveats, current-Ridge handoff and Q95 exclusion remain covered by regression tests.
+- `browser-test.cjs`, using installed Chrome with a separate test profile: **237 checks passed**, no JavaScript exceptions, no external requests, direct `file://` launch passed. Tested both languages, all five chapters at 320/390/900/1440 px; model dialogs at 320/390/1440 px; keyboard focus return; primary and advanced sliders; the L1 toggle; Q95 frequencies and fractional means; actual-data invariance; Gaussian elimination; exports and reduced motion. Native iOS Safari was not tested.
+- Visually inspected desktop and phone-width captures of the primary Ridge, Elastic Net and Huber experiments. Signed bars now have a zero reference; the small Elastic Net difference has its own scale. Mathematics remains collapsed until requested, and separate exercises disclose their independent settings.
+- New numerical checks cover Ridge candidate sensitivity, the exact L1 zero interval and positive-zero formatting, the Huber constant-fit optimum over a range of jump sizes, its raw-MAD floor, two Q95 frequency optima, the real Huber preset within its slider range, and text branches on both sides of the Huber threshold.
+- Final HTML: **212,588 bytes**, SHA-256 `36fcef0d22cb219bee5b3320afd6829a0d2f1a64135317e3eb762139e99a0160`. Upload ZIP: 80,117 bytes, SHA-256 `adfd6929d14bb2de13b063c02669a3a39aba6070e3a7959cf4a624dfdec6a039`. The generated manifest holds these checksums.
+- No model-selection validation was run. Lambda 0.05 is explicitly an initial setting, not a demonstrated best value. Illustrations are not new Oracle observations. Teaching effectiveness has not yet been tested with learners. The company website was not modified; the refreshed ZIP is for a separate upload.
+
+## Historical validation — 2026-09-24
 
 ## Publication build — standalone upload and GitHub Pages
 
