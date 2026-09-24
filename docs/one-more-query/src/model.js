@@ -39,12 +39,11 @@ function evidence(D,P,fit){
 }
 function budget(mb,bytesPerToken,context){if(![mb,bytesPerToken,context].every(v=>Number.isFinite(v)&&v>0))throw Error('Invalid estimate inputs');const bytes=mb*1e6,tokens=bytes/bytesPerToken,available=context*.8;return {bytes,tokens,available,ratio:tokens/available,lowerBoundChunks:Math.ceil(tokens/available)};}
 // Isolated teaching experiments: these never overwrite retained fits or observations.
-function ridgeToy(lambda){const beta=2/(1+lambda),error=(2-beta)**2/2,penalty=lambda*beta**2/2;return {beta,error,penalty,total:error+penalty,unshrunkTotal:2*lambda};}
-function elasticToy(c,l1=.8,l2=.4){const beta=Math.sign(c)*Math.max(Math.abs(c)-l1,0)/(1+l2),error=(beta-c)**2/2,penalty=l1*Math.abs(beta)+l2*beta**2/2;return {beta,error,penalty,total:error+penalty};}
+function elasticToy(c,l1=.8,l2=.4){const beta=Math.abs(c)<=l1?0:Math.sign(c)*(Math.abs(c)-l1)/(1+l2),error=(beta-c)**2/2,penalty=l1*Math.abs(beta)+l2*beta**2/2;return {beta,error,penalty,total:error+penalty};}
 function huberPoint(residual,delta){const a=Math.abs(residual);return {squared:a*a/2,loss:a<=delta?a*a/2:delta*(a-delta/2),weight:a<=delta?1:delta/a,pressure:Math.min(a,delta)};}
 function huberThreshold(P){const median=quantile(P.dy,.5),mad=quantile(P.dy.map(v=>Math.abs(v-median)),.5);return {median,mad,delta:Math.max(1e-6,1.345*mad)};}
 function quantileToy(prediction,routineCount=4){const observations=[...Array(routineCount).fill(10),30],costs=observations.map(y=>y>=prediction?.95*(y-prediction):.05*(prediction-y));return {observations,costs,total:sum(costs)};}
 function percentileTrace(values,p){const sorted=values.slice().sort((a,b)=>a-b),index=(sorted.length-1)*p,lo=Math.floor(index),hi=Math.ceil(index),fraction=index-lo;return {count:sorted.length,position:index+1,lowerPosition:lo+1,upperPosition:hi+1,lower:sorted[lo],upper:sorted[hi],fraction,value:sorted[lo]+fraction*(sorted[hi]-sorted[lo])};}
-const api={sum,mean,dot,quantile,solve,prepare,ridge,ranking,handoff,sourceData,lambdaFromSlider,evidence,budget,ridgeToy,elasticToy,huberPoint,huberThreshold,quantileToy,percentileTrace};
+const api={sum,mean,dot,quantile,solve,prepare,ridge,ranking,handoff,sourceData,lambdaFromSlider,evidence,budget,elasticToy,huberPoint,huberThreshold,quantileToy,percentileTrace};
 if(typeof module!=='undefined')module.exports=api;root.DistilleryMath=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

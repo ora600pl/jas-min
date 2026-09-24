@@ -1,4 +1,33 @@
-# Wersja do recenzji 1 — końcowa dyskusja z Opusem
+# Recenzje dydaktyczne ONE MORE QUERY
+
+## Aktualizacja 25 września 2026: problem przed regułą
+
+Po uwagach autora wykonano **trzy kolejne rzeczywiste rundy konsultacji z Claude Opus 5.5**. Metryki każdego wywołania potwierdziły `claude-opus-5-5`. Recenzent otrzymał wyłącznie publiczne źródła i opis zmian, bez raportów źródłowych ani narzędzi. Recenzował tekst i matematykę; nie uruchamiał przeglądarki. Testy oraz publikację wykonano osobno.
+
+### Uzgodniona konstrukcja
+
+Każdy model zaczyna od sytuacji w bazie i widocznej konsekwencji. Czytelnik zmienia liczby, obserwuje prognozę w AAS, otrzymuje krótkie podsumowanie i wraca do zachowanych pomiarów. Wzory znajdują się w domyślnie zamkniętej sekcji. AAS i różnica między zmianą a końcowym poziomem są zdefiniowane na początku każdego dymka. Piwna anegdota wprowadza temat, ale go nie zastępuje.
+
+| Model | Nowe doświadczenie |
+| --- | --- |
+| Ridge | Dwa przepisy idealnie pasują do historii współzmiennych oczekiwań. Rozsunięcie wejść ujawnia różnicę prognoz. Brak nowego pomiaru oznacza brak rozstrzygnięcia, kto ma rację. Dopiero potem pojawiają się najmniejsza suma kwadratów, lambda oraz sprawdzian na późniejszych oknach. |
+| Elastic Net | Inne oczekiwania przewidują +10 AAS, pomiar to +10,6. Suwak zmienia niewyjaśnioną różnicę, przełącznik L1 pokazuje powstanie i znikanie przedziału zerowego mnożnika. Osobny wykres różnicy uwidacznia mały efekt. |
+| Huber | Cztery zmiany +10 i jedna +30 AAS. Przesunięcie ostatniej do +40 zmienia średnią z 14 na 16, podczas gdy Huber z umownym progiem 3 pozostaje przy 10,75. Pokazano zarówno poprawę przy czterech pomiarach, jak i większy błąd przy piątym. |
+| Q95 | Te same sytuacje, ale pytanie o wysoki wzrost. Częstość 1/5 kontra 1/21 zmienia odpowiedź z 30 na 10 przy tym samym maksimum. Średnia, Huber i Q95 są pokazane obok siebie jako odpowiedzi na różne pytania. |
+
+### Krytyczne ustalenia i granice
+
+- Wycofano jednoobserwacyjny pokaz Ridge `β = 2 / (1 + λ)`. Pokazywał mechanizm dodatku, nie powód jego użycia. Nowy rachunek porównuje dwóch kandydatów i nie nazywa żadnego dokładnym minimum całego Ridge. Nie dodano kolejnego, wymagającego osobnego założenia o wyrazie wolnym wzoru na współczynnik 0,495; Opus zaakceptował tę decyzję.
+- Nie wdrożono doboru lambdy przez walidację. Opisano ocenianie błędów na późniejszych oknach, oddzielnie od funkcji dopasowania. Bazowe 0,05 nie jest przedstawiane jako potwierdzone optimum.
+- Jedno okno w Elastic Net wyjaśnia rachunek, ale samo nie uzasadnia odrzucenia wejścia. Potrzeba sprawdzenia na dalszych danych jest jawna. Zachowano oznaczenie `c` dla brakującej zmiany w tej miniaturze, zamiast mieszać je z resztą `r` Hubera.
+- Huber nie ocenia ważności incydentu. Wybrano porównanie błędów przy zwykłych i odległym pomiarze zamiast sumowania zmian AAS jako rzekomego całkowitego obciążenia. Próg 3 jest ilustracyjny: reguła MAD zastosowana do pięciu wartości dałaby dolne ograniczenie. Rzeczywisty próg 3,228 i końcowa waga około 0,761 są nadal odtwarzane.
+- Główne Q95 ma dwa warianty częstości; graniczny płaski wynik 1/20 pozostaje w rachunku. Warstwy ćwiczeń mają osobne, oznaczone ustawienia. Nie przeliczają niezbieżnego Q95.
+- Usunięto polemiki z prywatną rozmową, m.in. „magicznie daje zero”, i ujednolicono słownictwo oczekiwań. Poprawiono ujemne słupki, tekst Hubera po obu stronach progu oraz ułamkową średnią Q95.
+- Ostatnia uwaga Opusa dotyczyła `-0` w Elastic Net. Wynik normalizuje teraz dokładne zero, a osobny test sprawdza `Object.is` i oba języki. Potwierdzono także dokładne zero zachowanego współczynnika i rzeczywisty błąd Hubera mieszczący się w zakresie suwaka.
+
+Po usunięciu ostatniej uwagi Opus nie wskazał dalszych przeszkód do publikacji. To uzgodnienie redakcyjne i matematyczne, nie badanie skuteczności nauczania z kursantami. Liczby źródłowe, parametry prawdziwych modeli i wykluczenie Q95 nie zostały zmienione. Wyniki sprawdzeń: [VALIDATION.md](VALIDATION.md).
+
+## Archiwum: wersja do recenzji 1
 
 24 września 2026. Zakres: cała pięcioetapowa próbka ONE MORE QUERY, oba języki, opowieść, modele, mini-laboratoria, pochodzenie liczb, Gauss, finał i eksporty. To gotowa wersja do oceny przez autora, nie deklaracja ukończenia wielogodzinnego kursu ani diagnoza rzeczywistej awarii.
 
