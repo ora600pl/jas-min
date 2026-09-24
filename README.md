@@ -27,6 +27,7 @@ The tool can also send a compact `ReportForAI` representation to supported AI pr
 | Parsing | Parses a single report with `--file`, or a directory of `.html` and `.txt` reports with `--directory`. |
 | Collection helper | Uses `jas-min-collector.py` to generate AWR/STATSPACK reports from a local Oracle environment and package reports, JSON, alert logs, optional SQL execution plans, child-cursor diagnostics, and prepared AIX/Linux statistics. |
 | Cached analysis | Re-analyzes an existing JAS-MIN JSON file with `--json-file`. |
+| Optional NMON | With `--nmon DIRECTORY`, parses and merges AIX/Linux `*.nmon` captures into the same dataset, precomputing raw series, statistics, 5/15/60-minute aggregates and sustained peak periods for HTML and MCP. |
 | HTML dashboard | Generates `<input>.html_reports/jasmin_main.html` and detail pages for waits, SQL IDs, statistics, I/O, latches, segments, anomalies, and gradients. |
 | Peak detection | Marks snapshots where `DB CPU / DB Time` is below `--time-cpu-ratio`, optionally requiring DB Time above `--filter-db-time`. |
 | Snap filtering | Limits analysis to a snapshot range with `--snap-range BEGIN-END`. |
@@ -110,6 +111,14 @@ This parses all non-hidden `.html` and `.txt` files in `./awr_reports`, writes `
 ```bash
 jas-min -j awr_reports.json
 ```
+
+### Add optional AIX/Linux NMON host data
+
+```bash
+jas-min -d ./statspack_reports --nmon ./nmon/oraprod
+```
+
+`--nmon` is optional. When omitted, parsing and output remain compatible with existing JAS-MIN datasets. The directory is scanned deterministically for `*.nmon` files; timestamps come from `ZZZZ` records rather than filenames. Prepared NMON data is embedded in the generated JSON, exposed through bounded MCP drill-down tools, and rendered at `./statspack_reports.html_reports/nmon/nmon_overview.html`.
 
 ### Parse one report to JSON on stdout
 
@@ -769,6 +778,11 @@ from older STATSPACK releases remain supported without accepting wrapped SQL as
 a statement row. AWR parsing uses the same idle-event classification as the Rust
 parser and accepts decimal commas in SQL buffer-get percentages.
 
+Collector `0.1.15` prevents one `DBMS_XPLAN.DISPLAY_CURSOR` call from blocking
+the collection indefinitely. It selects a concrete current child cursor from
+`V$SQL`, applies a configurable per-plan timeout, removes partial plan files,
+records the failure, and continues with the remaining SQL IDs.
+
 Both HTML parsers retain empty initialization parameter values as empty strings
 and skip rows without a parameter name. Hidden names in continuation rows are
 read as text; multiple nonempty values for the same parameter within a table
@@ -846,6 +860,7 @@ Run `python3 jas-min-collector.py --help` for the generated CLI help. The comple
 | `--include-execution-plans`, `--execution-plans` | Attach current cursor plans for the automatically selected top elapsed SQL IDs and any IDs supplied with `--sql-id`. Mutually exclusive with `--no-execution-plans`. |
 | `--no-execution-plans` | Do not collect SQL execution plans. |
 | `--sql-id SQL_ID[,SQL_ID...]`, `--sql-ids SQL_ID[,SQL_ID...]` | Add one or more SQL IDs; the option may be repeated. It implies `--execution-plans` and cannot be combined with `--no-execution-plans`. Values are normalized to lowercase and duplicates are removed. |
+| `--execution-plan-timeout SECONDS` | Limit current-child discovery and each `DBMS_XPLAN.DISPLAY_CURSOR` call. The default is 120 seconds. A timed-out plan is recorded as a failure and collection continues with the next SQL ID. |
 | `-p`, `--package-content {both,json,reports}`, `--package-mode {both,json,reports}` | Select ZIP content. `both` is the interactive default; `b`, `j`, `r`, `report`, `awr`, and `full` are accepted input aliases. Prompts when omitted. |
 | `-S`, `--security-level {0,1,2}` | Set the [JSON security level](#security-levels). Prompts when JSON is requested or must be generated for execution-plan selection. |
 | `--include-os-stats`, `--os-stats` | Include prepared operating-system statistics. Prompts for their source directory unless `--os-stats-dir` is also supplied. Mutually exclusive with `--no-os-stats`. |
@@ -909,22 +924,38 @@ OS statistics are attachments, not telemetry collected by this script. On AIX th
 
 When execution plans are requested, the collector parses the generated reports to JAS-MIN JSON even if the ZIP package was set to reports-only. It counts SQL IDs found in `SQLs Ordered by Elapsed time`, selects the top 10 by appearance count, allows extra comma-separated SQL IDs, and writes plans to `<collection_stem>_attachments/<sql_id>.xplan`.
 
-For the automatically selected TOP SQL_IDs (not the manually added IDs), the collector also checks:
+Before fetching plans, the collector selects one concrete current child cursor for
+each SQL ID. It prefers a shareable cursor, then the most recently active cursor,
+and records the selected child number and current child count in the manifest.
+For the automatically selected TOP SQL_IDs (not the manually added IDs), the
+child count is also used to decide whether cursor-sharing reasons should be
+collected.
 
 ```sql
-select sql_id, count(distinct child_number)
-from v$sql
-where sql_id in (...)
-group by sql_id
-having count(distinct child_number) > 1;
+select lower(sql_id), child_number, child_count
+from (
+  select sql_id,
+         child_number,
+         count(*) over (partition by sql_id) child_count,
+         row_number() over (
+           partition by sql_id
+           order by case when is_shareable = 'Y' then 0 else 1 end,
+                    last_active_time desc nulls last,
+                    executions desc nulls last,
+                    child_number desc
+         ) cursor_rank
+  from v$sql
+  where sql_id in (...)
+)
+where cursor_rank = 1;
 ```
 
-Each match is decoded from `V$SQL_SHARED_CURSOR.REASON` into `<collection_stem>_attachments/<sql_id>.shared_cursor_reasons`. The collector transports each CLOB as validated, ordered UTF-8 hex chunks so SQL*Plus line wrapping cannot corrupt XML element names, then preserves every `ChildNode`, repeated reason, payload field and comparison value while formatting the attachment in Python. Collection is best-effort: a missing/evicted cursor, malformed or incomplete transport, invalid XML, or an unavailable view does not prevent execution plans and the remaining package from being created; the manifest records discovery or per-SQL failures.
+Each multi-child match is decoded from `V$SQL_SHARED_CURSOR.REASON` into `<collection_stem>_attachments/<sql_id>.shared_cursor_reasons`. The collector transports each CLOB as validated, ordered UTF-8 hex chunks so SQL*Plus line wrapping cannot corrupt XML element names, then preserves every `ChildNode`, repeated reason, payload field and comparison value while formatting the attachment in Python. Collection is best-effort: a missing/evicted cursor, malformed or incomplete transport, invalid XML, unavailable view, or execution-plan timeout does not prevent the remaining package from being created; the manifest records discovery or per-SQL failures. A partial `.xplan` created before a timeout or SQL error is removed.
 
 Execution plans are fetched with:
 
 ```sql
-select * from table(dbms_xplan.display_cursor('sqlid',null));
+select * from table(dbms_xplan.display_cursor('sqlid',child_number,'TYPICAL'));
 ```
 
 The collector creates `jasmin_collect_<collection_stem>/` in the current directory, adding `_2`, `_3`, and so on instead of overwriting an existing collection. The directory contains the generated reports, optional JSON and attachment directory, `manifest.txt`, and `jasmin_package_<collection_stem>.zip`.
@@ -950,7 +981,7 @@ In every mode, requested alert-log and OS-statistics attachments, available exec
 - Kamil Stawiarski - [blog](https://blog.ora-600.pl)
 - Radoslaw Kut - [blog](https://blog.struktuur.pl)
 
-Built by [ORA-600 | Database Whisperers](https://www.ora-600.pl/en/).
+Built by [ORA-600 | Database Whisperers](https://www.ora-600.pl/en/).  
 
 ## Contact
 

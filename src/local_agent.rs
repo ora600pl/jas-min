@@ -735,7 +735,11 @@ pub async fn analyze_report_local_agent(
     let seed = build_case_seed(report);
     let guidance_library = GuidanceLibrary::load();
     let guidance_catalog = guidance_library.prompt_notice();
-    let tools = local_tools_schema(&stem, guidance_library.is_available());
+    let tools = local_tools_schema(
+        &stem,
+        guidance_library.is_available(),
+        collection.nmon.is_some(),
+    );
     let preflight_client = LocalChatClient::new(cfg.clone());
     debug_note!(
         "Starting local agent analysis: report='{}', model='{}', language='{}', snapshots={}, configured_context={}, max_tool_iterations={}",
@@ -1950,8 +1954,8 @@ fn degradation_query(report: &ReportForAI, args: &Value) -> Value {
     value
 }
 
-fn local_tools_schema(stem: &str, guidance_available: bool) -> Value {
-    let mut schema = tools_schema(stem);
+fn local_tools_schema(stem: &str, guidance_available: bool, include_nmon: bool) -> Value {
+    let mut schema = tools_schema(stem, include_nmon);
     if let Some(tools) = schema.as_array_mut() {
         tools.push(json!({
             "type": "function",
@@ -2709,7 +2713,7 @@ mod tests {
 
     #[test]
     fn tool_catalog_expands_by_investigation_round() {
-        let full = local_tools_schema("test", true);
+        let full = local_tools_schema("test", true, false);
         let triage = tools_for_round(&full, 0);
         let investigation = tools_for_round(&full, 1);
         assert!(triage.as_array().unwrap().len() < investigation.as_array().unwrap().len());
@@ -2824,8 +2828,8 @@ TRIGGER: user logons and connection creation spike.
 
     #[test]
     fn guidance_tool_is_only_advertised_when_library_exists() {
-        let with_guidance = local_tools_schema("test", true);
-        let without_guidance = local_tools_schema("test", false);
+        let with_guidance = local_tools_schema("test", true, false);
+        let without_guidance = local_tools_schema("test", false, false);
         let has_tool = |schema: &Value| {
             schema.as_array().is_some_and(|tools| {
                 tools.iter().any(|tool| {
@@ -2849,6 +2853,7 @@ TRIGGER: user logons and connection creation spike.
             initialization_parameters: HashMap::new(),
             awrs: Vec::new(),
             sql_text: HashMap::new(),
+            nmon: None,
         };
         let mut store = EvidenceStore::default();
         let output = store.execute(
@@ -2877,6 +2882,7 @@ TRIGGER: user logons and connection creation spike.
             initialization_parameters: HashMap::new(),
             awrs: Vec::new(),
             sql_text: HashMap::new(),
+            nmon: None,
         };
         let mut store = EvidenceStore::default();
         let first = store.execute(
@@ -2953,6 +2959,7 @@ TRIGGER: user logons and connection creation spike.
             )]),
             awrs: Vec::new(),
             sql_text: HashMap::new(),
+            nmon: None,
         };
         let mut store = EvidenceStore::default();
         store.records.push(EvidenceRecord {
@@ -3024,6 +3031,7 @@ TRIGGER: user logons and connection creation spike.
             )]),
             awrs: Vec::new(),
             sql_text: HashMap::from([("abc".to_string(), "select 1".to_string())]),
+            nmon: None,
         };
         let coverage = build_coverage_summary(1, &EvidenceStore::default(), &collection);
         assert_eq!(
@@ -3165,7 +3173,7 @@ TRIGGER: user logons and connection creation spike.
         assert!(seed.get("access_path_diagnostics").is_none());
         assert!(seed.get("gradients").is_some());
         assert!(seed.get("db_time_degradation").is_some());
-        let schema = local_tools_schema("unused", false);
+        let schema = local_tools_schema("unused", false, false);
         let precomputed = schema
             .as_array()
             .unwrap()
