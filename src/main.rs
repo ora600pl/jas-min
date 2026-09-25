@@ -84,8 +84,8 @@ struct Args {
     #[clap(short, long, value_name = "JSON_FILE")]
     json_file: Vec<String>,
 
-    ///Filter snapshots, based on SNAP IDs in format BEGIN_ID- END_ID
-    #[clap(short, long, default_value = "0-666666666")]
+    ///Filter snapshots by SNAP IDs in format BEGIN_ID-END_ID; 0-0 includes all snapshots (no filter)
+    #[clap(short, long, default_value = "0-0")]
     snap_range: String,
 
     ///Optional JSON policy for deterministic HINTS (thresholds and explicit baseline).

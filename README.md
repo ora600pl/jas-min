@@ -36,7 +36,7 @@ Five interactive chapters take you from Oracle performance charts through Ridge,
 | Optional NMON | With `--nmon DIRECTORY`, parses and merges AIX/Linux `*.nmon` captures into the same dataset, precomputing raw series, statistics, 5/15/60-minute aggregates and sustained peak periods for HTML and MCP. |
 | HTML dashboard | Generates `<input>.html_reports/jasmin_main.html` and detail pages for waits, SQL IDs, statistics, I/O, latches, segments, anomalies, and gradients. |
 | Peak detection | Marks snapshots where `DB CPU / DB Time` is below `--time-cpu-ratio`, optionally requiring DB Time above `--filter-db-time`. |
-| Snap filtering | Limits analysis to a snapshot range with `--snap-range BEGIN-END`. |
+| Snap filtering | Limits analysis to a snapshot range with `--snap-range BEGIN-END`. The default `0-0` includes all snapshots (no range filter). |
 | Anomalies | Uses MAD-based anomaly detection with configurable threshold, sliding-window percentage, and optional trimming to the largest anomaly clusters. |
 | Correlation | Computes Pearson correlations between DB Time and wait events, SQL elapsed time, and instance statistics. |
 | Gradient analysis | Runs Ridge, Elastic Net, Huber, and Quantile-95 regression models over DB Time and DB CPU drivers. |
@@ -683,7 +683,7 @@ Options:
   -f, --filter-db-time <FILTER_DB_TIME>      Ignore peaks below this DB Time [default: 0]
   -i, --id-sqls <ID_SQLS>                    Include comma-separated SQL_IDs in TOP SQL
   -j, --json-file <JSON_FILE>                Analyze a JSON file. Repeat with --mcp to load multiple projects
-  -s, --snap-range <SNAP_RANGE>              Snapshot filter BEGIN-END [default: 0-666666666]
+  -s, --snap-range <SNAP_RANGE>              Snapshot filter BEGIN-END; 0-0 includes all snapshots (no filter) [default: 0-0]
   -q, --quiet                                Suppress terminal output, still write log
   -a, --ai <AI>                              AI mode: VENDOR:MODEL:LANG
   -m, --mad-top <MAD_TOP>                   TOPn for retaining anomalies detected using MAD [default: 10]

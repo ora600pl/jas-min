@@ -93,6 +93,11 @@ fn parse_snap_range(snap_range: &str) -> Result<(u64, u64), String> {
         .parse::<u64>()
         .map_err(|_| format!("Invalid number for END_ID in '{}'", snap_range))?;
 
+    // Normalize the no-filter sentinel to the full snapshot ID domain.
+    if begin == 0 && end == 0 {
+        return Ok((0, u64::MAX));
+    }
+
     if begin >= end {
         return Err(format!(
             "BEGIN_ID ({}) must be less than END_ID ({})",
