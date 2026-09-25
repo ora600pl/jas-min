@@ -5,7 +5,7 @@ use crate::awr::{
 
 pub(super) fn native() -> AWRSCollection {
     serde_json::from_str(include_str!(
-        "../tests/fixtures/empty_calories/hints_native.json"
+        "../../tests/fixtures/empty_calories/hints_native.json"
     ))
     .unwrap()
 }
@@ -626,7 +626,7 @@ fn partial_cpu_history_uses_observed_cost_windows() {
 #[test]
 fn same_counterexamples_have_same_physical_interpretation() {
     let cases: Vec<Value> = serde_json::from_str(include_str!(
-        "../tests/fixtures/empty_calories/scan_counterexamples.json"
+        "../../tests/fixtures/empty_calories/scan_counterexamples.json"
     ))
     .unwrap();
     for repeat in 1..=3 {
@@ -948,7 +948,7 @@ fn latest_status_and_limits_describe_their_own_period() {
 #[test]
 fn recorded_counterexamples_reach_detector_without_claiming_physical_cause() {
     let cases: Vec<Value> = serde_json::from_str(include_str!(
-        "../tests/fixtures/empty_calories/scan_counterexamples.json"
+        "../../tests/fixtures/empty_calories/scan_counterexamples.json"
     ))
     .unwrap();
     let make = |before: &str, after: &str| {

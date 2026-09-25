@@ -1344,7 +1344,7 @@ only the listening port:
 
 To expose a new measurement tool:
 
-1. Add its OpenAI-compatible schema to `tools_schema` in `src/ai_tools.rs`.
+1. Add its OpenAI-compatible schema to `tools_schema` in `src/ai/ai_tools.rs`.
 2. Add its structured implementation to `dispatch_tool_call_value`.
 3. Keep output bounded and return structured errors instead of panicking.
 4. Add unit tests for schema validation, dispatch, path handling, and output
@@ -1355,7 +1355,7 @@ To expose a new measurement tool:
 
 To add an MCP-only workflow tool:
 
-1. Add its schema to `mcp_control_definitions` in `src/mcp_server.rs`.
+1. Add its schema to `mcp_control_definitions` in `src/ai/mcp_server.rs`.
 2. Route it in `AnalysisRuntime::call_tool`.
 3. Decide whether it reads or mutates analysis state and set annotations
    consistently in `build_mcp_tools`.

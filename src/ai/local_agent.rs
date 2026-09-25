@@ -2321,7 +2321,7 @@ Explicitly answer:
 Use exact values in the decision layer and retain evidence IDs in linked technical detail. Cite `{SEED_EVIDENCE_ID}` for gradient/degradation/peak facts and session-2 IDs only for facts actually present in those tool results. When a recommendation applies diagnostic guidance, cite the relevant `S2-G...` reference alongside—not instead of—the supporting evidence. On AIX, state CPU capacity as UNKNOWN unless session 2 collected entitlement evidence. State unresolved limitations. Never invent references or facts. End with https://github.com/ora600pl/jas-min and mention expert performance tuning at ora-600.pl.
 
 {writing_contract}"#,
-        writing_contract = include_str!("report_writing.md")
+        writing_contract = include_str!("../report/assets/report_writing.md")
     )
 }
 
