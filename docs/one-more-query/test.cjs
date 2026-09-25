@@ -39,7 +39,7 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname,'src/story.js'),'utf8'),c
 test('story panels cover both languages, all guesses and all ten actual Gaussian steps',()=>{for(const lang of ['pl','en']){assert.match(S.units(lang),/30 \/ 10 = 3/);assert.ok(S.onboarding(lang).length>300);for(const lambda of [.001,.05,1,10]){const f=M.ridge(P,lambda);assert.ok(S.gaussIntro(lang,D,P,f).includes('N = 1338'));for(let k=0;k<=10;k++){const html=S.gaussStep(lang,f,k);assert.ok(html.length>100);assert.ok(!/NaN|undefined|Infinity/.test(html));}for(const guess of [null,0,1,2,3]){const html=S.prediction(lang,D,P,f,guess);assert.ok(!/NaN|undefined|Infinity/.test(html));if(guess!==null)assert.ok(html.includes(D.features[guess]));}}}});
 test('MAX quiz has actual three-model agreement at baseline, not a fabricated outlier',()=>{for(const key of ['ridge','elastic','huber']){const f=key==='ridge'?fit:D.models[key],rows=M.ranking(D,P,f,'max');assert.equal(rows[1].j,3);assert.ok(rows[1].impact>M.ranking(D,P,f,'p99').find(r=>r.j===3).impact);}close(M.ranking(D,P,fit,'max').find(r=>r.j===3).magnitude,33272);});
 test('MCP handoff is an explicitly unbound session template, not a fabricated live request',()=>{const request=M.evidence(D,P,fit).nextRequest;assert.match(request.arguments.analysis_id,/^<.*start_performance_analysis.*>$/);assert.equal(request.arguments.project_id,'<selected project_id>');assert.match(request.status,/replace session\/project placeholders/);});
-test('build includes all current sources verbatim, including intuition panels',()=>{const html=fs.readFileSync(path.join(__dirname,'index.html'),'utf8');for(const file of ['model','explainers','lessons','intuition','story','app'])assert.ok(html.includes(fs.readFileSync(path.join(__dirname,'src',file+'.js'),'utf8').replace(/<\/script/gi,'<\\/script')),file+' requires rebuild');});
+test('build includes all current sources verbatim, including intuition panels',()=>{const html=fs.readFileSync(path.join(__dirname,'index.html'),'utf8');for(const file of ['model','explainers','lessons','intuition','story','operations','app'])assert.ok(html.includes(fs.readFileSync(path.join(__dirname,'src',file+'.js'),'utf8').replace(/<\/script/gi,'<\\/script')),file+' requires rebuild');});
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'src/intuition.js'),'utf8'),context);const I=context.ModelIntuition;
 test('Ridge sensitivity compares candidates, not fabricated observations or an optimum',()=>{for(const x of [1,2,3]){close(10*x-9*x,x);close(.5*x+.5*x,x);}close(I.ridgeSensitivity(1).opposing,1);close(I.ridgeSensitivity(1).balanced,1);close(I.ridgeSensitivity(1.1).opposing,2);close(I.ridgeSensitivity(1.1).balanced,1.05);for(const lang of ['pl','en']){assert.ok(!/undefined|NaN/.test(I.result('ridge',1.1,lang)));assert.ok(!/ridgeToy|2 \/ \(1 \+/.test(L.lab('ridge',lang,D,P)));}assert.match(I.panel('ridge','en'),/can win that test too/);});
 test('EN lambda changes only the model; observations and alpha remain fixed',()=>{for(const lambda of [0,.5,1,2.95,3,4]){const r=M.elasticSettingsToy(lambda);close(r.observed,10.6);close(r.baseline,10);close(r.c,.6);close(r.alpha,.2);close(r.prediction,10+r.beta);close(r.l1,.2*lambda);close(r.l2,.8*lambda);assert.ok(lambda<3?r.beta>0:Object.is(r.beta,0));for(let b=-1;b<=1;b+=.005)assert.ok(r.total<=(.6-b)**2/2+r.l1*Math.abs(b)+r.l2*b*b/2+1e-10);for(const lang of ['pl','en'])assert.match(I.result('elastic',lambda,lang),lang==='pl'?/POMIAR: \+10,6/:/OBSERVATION: \+10.6/);}close(M.elasticSettingsToy(0).beta,.6);close(M.elasticSettingsToy(1).beta,2/9);close(M.elasticSettingsToy(4).total,.18);});
@@ -111,5 +111,42 @@ test('general Elastic formula completes the square and provenance expands cross-
   const q=L.provenance(lang,D,P,D.models.quantile,'quantile','p99',M.ranking(D,P,D.models.quantile,'p99')[0]);
   assert.ok((q.match(/Q95/g)||[]).length>=3);
  }
+});
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,'src/operations.js'),'utf8'),context);const O=context.OperationalPanels;
+test('operational scores reproduce full-fit P90 shares and raw MAD impacts',()=>{
+ const s=O.scores(D,P,fit);close(s.total,5.945548840294129);close(M.sum(s.rows.map(r=>r.share)),100);
+ close(s.rows[1].share,31.21940702059795);close(s.rows[1].mad,5);close(s.rows[1].typical,.007547227340245044);
+ close(s.rows[0].median,-53);close(s.rows[0].mad,732.5);close(s.rows[3].mad,0);
+ for(const metric of ['p90','p99','max'])for(const row of M.ranking(D,P,fit,metric)){close(s.rows[row.j][metric],row.impact);assert.equal(s.rows[row.j].ranks[metric],row.impact>0?M.ranking(D,P,fit,metric).findIndex(r=>r.j===row.j)+1:null);}
+});
+test('Share excludes nonpositive coefficients and handles a zero denominator',()=>{
+ const f={beta:[fit.beta[0],-fit.beta[1],0,0]},s=O.scores(D,P,f);close(s.rows[0].share,100);s.rows.slice(1).forEach(r=>close(r.share,0));assert.ok(s.rows[1].typical>0);
+ const zero=O.scores(D,P,{beta:[0,0,0,0]});close(zero.total,0);zero.rows.forEach(r=>close(r.share,0));
+ for(const lang of ['pl','en']){const html=O.columns(lang,D,P,{beta:[0,0,0,0]});assert.doesNotMatch(html,/NaN|Infinity/);assert.match(html,lang==='pl'?/udział jest nieokreślony/:/the share is undefined/);}
+});
+test('MAD uses distances from median signed changes, not percentile or mean magnitude',()=>{
+ function toy(changes){const x=[0];changes.forEach(v=>x.push(x.at(-1)+v));const d={x:x.map(v=>[v]),y:x.map(()=>0),features:['example'],missingCounts:[0]},p=M.prepare(d);return O.scores(d,p,{beta:[p.sd[0]*2]}).rows[0];}
+ const a=toy([-2,-1,0,1,100]);close(a.median,0);close(a.mad,1);close(a.typical,2);
+ const drift=toy([99,100,101]);close(drift.median,100);close(drift.mad,1);close(drift.typical,2);
+});
+test('working threshold selects by magnitude without altering ranks, fits or evidence',()=>{
+ const before=JSON.stringify({D,fit,packet:M.evidence(D,P,fit)}),rows=O.scores(D,P,fit).rows;
+ assert.equal(rows.filter(r=>O.priority(r,'p90',10,true)).length,0);assert.equal(rows.filter(r=>O.priority(r,'p99',10,true)).length,2);assert.equal(rows.filter(r=>O.priority(r,'max',10,true)).length,3);
+ const r=rows[1];assert.equal(O.priority(r,'p99',r.p99,true),false);assert.equal(O.priority(r,'p99',r.p99-.001,true),true);assert.equal(O.priority(r,'max',0,false),false);
+ for(const t of [0,3,10,20,50,100])O.results('en',D,P,fit,'ridge','p99',t);
+ assert.equal(JSON.stringify({D,fit,packet:M.evidence(D,P,fit)}),before);
+});
+test('operational guidance is bilingual, context-specific and keeps Q95 excluded',()=>{
+ for(const lang of ['pl','en'])for(const model of ['ridge','elastic','huber','quantile'])for(const metric of ['p90','p99','max']){
+  const f=model==='ridge'?fit:D.models[model],html=O.results(lang,D,P,f,model,metric,10),columns=O.columns(lang,D,P,f);
+  assert.equal((html.match(/data-triage-event=/g)||[]).length,4);assert.doesNotMatch(html+columns,/undefined|NaN|Infinity/);
+  assert.match(columns,/Share %/);assert.match(columns,/MAD/);assert.match(columns,/99, 100, 101/);
+  if(model==='quantile')assert.equal((html.match(/class="triage-card above-threshold"/g)||[]).length,0);
+ }assert.match(O.shell('en',10),/not a standard or a default JAS-MIN alarm/);assert.match(O.shell('pl',10),/nie są trzema niezależnymi/);
+});
+test('report-column explanations match current Rust share and raw-MAD contracts',()=>{
+ const g=fs.readFileSync(path.join(__dirname,'../../src/analysis/gradient.rs'),'utf8'),tools=fs.readFileSync(path.join(__dirname,'../../src/common/tools.rs'),'utf8');
+ assert.match(g,/impact: abs_raw_scale_coef \* mad_val/);assert.match(g,/impact_share = r\.impact_active \/ total_positive_active/);assert.match(g,/filter\(\|r\| r\.gradient_coef > 0\.0\)/);
+ assert.match(tools,/pub fn mad\(data: &\[f64\]\) -> f64 \{[^]*?let med = median\(data\);[^]*?median\(&deviations\)/);
 });
 console.log(`${checks} checks passed`);

@@ -1,5 +1,13 @@
 # Validation
 
+## 2026-09-25 — operational triage, Share % and Typical Impact
+
+- Added bilingual operational guidance to Signal: magnitude before rank, P99 as a starting point for large incidents, MAX for isolated extremes and P90 for context. The working threshold is explicitly a teaching control, not a JAS-MIN default or a universal severity threshold.
+- **57 numerical/static/source-contract checks passed.** New checks reproduce the complete four-feature P90 denominator, positive-coefficient filtering, zero-denominator handling, raw signed-delta MAD, negative/zero coefficients, metric ranks, strict threshold comparison and Q95 exclusion. A constant-drift example distinguishes MAD from absolute change magnitude. Fits, observations and exported evidence are unchanged by the threshold.
+- **468 browser checks passed** in the expanded runner: both languages, all existing model experiments and scene layouts, operational thresholds 0/10/30/100 for P90/P99/MAX, preserved rankings, language-state retention, keyboard entry, dynamic Share/MAD, model switching and ineligible Q95. Direct file launch passed; no JavaScript exceptions or outbound data requests. Browser testing uses installed Chrome in a separate profile, not native iOS Safari.
+- Share/MAD definitions were checked against `build_ranking` and `compute_mad_by_event` in `src/analysis/gradient.rs`, and raw `mad` in `src/common/tools.rs`. Share uses all positive active magnitudes, not only displayed TOP rows. Typical uses the absolute raw coefficient times raw MAD; no Gaussian consistency factor is introduced.
+- The screenshot from a separate report was not imported into the measurement matrix. New numerical cards use only the existing approved sample and selected fit. No Rust engine, selection policy, model eligibility, original data or MCP export was changed. No new Opus review was performed for this extension; earlier review entries describe their own versions.
+
 ## 2026-09-25 — standalone model lessons and chapter 04 Signal
 
 - Fifteen actual read-only Claude Opus 5.5 consultations: three independent sessions per model, two for Signal and one final adjudication. No private conversation history was supplied. Model telemetry confirmed `claude-opus-5-5`. The final verdict was **GO**, with prior mathematical/pedagogical blockers resolved and no new mathematical errors found. The reviewer did not execute the UI; scope and decisions are recorded in [REVIEW.md](REVIEW.md).

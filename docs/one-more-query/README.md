@@ -14,6 +14,17 @@ Jeden samowystarczalny plik HTML, działający także offline. Bez kont, kluczy 
 4. **Sygnał:** dwa osobne wybory — model i wielkość zmiany P90/P99/MAX; rzeczywiste lokalne przeliczenie Ridge; sześć rozwijanych kroków pochodzenia wyniku; sześć eliminacji Gaussa i cztery podstawienia wsteczne. Wyjaśnienie wybranego modelu można otworzyć bez opuszczania rankingu.
 5. **Jeszcze jedno:** sprawdzalna hipoteza i szablon żądania MCP, quiz o brakach, podgląd dokładnego JSON-u i eksporty.
 
+### Wnioski operacyjne: wielkość wyniku przed miejscem w rankingu
+
+W „04 Sygnał” przycisk pod porównaniem P90/P99 prowadzi do lekcji **„Złoty medal za mały problem?”**:
+
+- Przy badaniu dużych incydentów zacznij od dużych wartości P99, sprawdź też MAX, a P90 wykorzystaj jako kontekst mniej skrajnych zmian. P90 nie oznacza „niegroźne”; trzy miary jednego dopasowania nie są niezależnymi potwierdzeniami.
+- Suwak roboczego progu AAS wyróżnia pasujące tropy w wybranym modelu i rankingu. Początkowe 10 AAS to przykład dydaktyczny, nie domyślny alarm JAS-MIN ani próg uniwersalny. Cztery karty pokazują równocześnie P90, P99, MAX, pozycje, Share % i Typical Impact. Q95 pozostaje niedopuszczony.
+- **Share %** dzieli wynik P90 przez sumę dodatnich wyników P90 całego dopasowania. To udział w punktacji, nie DB Time. Mianownik i przykład udziału cursor pin są obliczane z bieżącego modelu.
+- **Typical Impact** to wielkość współczynnika w jednostkach źródłowych razy surowy MAD różnic z zachowanym znakiem. Rachunek na pięciu wymyślonych zmianach poprzedza przykład z prawdziwych danych. MAD mierzy rozrzut wokół mediany, nie średni rozmiar zmiany ani regularność.
+
+Próg nie zmienia dopasowań, kwalifikacji modeli ani pakietu JSON. Zachowane pomiary pozostają niezmienione. Kolejnym krokiem diagnostycznym jest weryfikacja konkretnych okien, kierunku zmian, braków, SQL i sesji. Liczby tej lekcji pochodzą wyłącznie z czterocechowego zbioru kursu, a nie z innego raportu czy zrzutu ekranu.
+
 Wyjaśnienia zaczynają się od problemu, który można samemu zobaczyć:
 
 - **Ridge:** dwa przepisy identycznie pasują do historii. Rozsuń dwa oczekiwania i porównaj nowe przewidywania.

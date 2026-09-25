@@ -75,6 +75,31 @@ let browser;
  }
  await page.locator('#model-select').selectOption('ridge');await page.locator('#metric-select').selectOption('p99');
  await page.locator('.provenance').scrollIntoViewIfNeeded();await page.screenshot({path:path.join(artifacts,'signal-expanded.png')});
+ await page.locator('#open-operations').click();check(await page.locator('#operational-title').evaluate(e=>e===document.activeElement),'operational lesson has keyboard-focus entry');
+ const beforeTriage=JSON.stringify(await page.evaluate(()=>({fit:window.OneMoreQuery.getFit(),packet:window.OneMoreQuery.getEvidence()})));
+ for(const lang of ['pl','en']){
+  if(await page.locator('html').getAttribute('lang')!==lang)await page.locator('#language').click();
+  for(const metric of ['p90','p99','max']){
+   await page.locator('#metric-select').selectOption(metric);
+   const originalRanks=await page.locator('.rank-row').allTextContents();
+   for(const threshold of ['0','10','30','100']){
+    await page.locator('#triage-threshold').fill(threshold);await page.locator('#triage-threshold').dispatchEvent('input');
+    const expected=await page.evaluate(({metric,threshold})=>window.DistilleryMath.ranking(window.SAMPLE,window.OneMoreQuery.prepared,window.OneMoreQuery.getFit(),metric).filter(r=>r.impact>Number(threshold)).length,{metric,threshold});
+    check(await page.locator('.triage-card.above-threshold').count()===expected,lang+' '+metric+' threshold '+threshold+' selects by magnitude');
+    check(JSON.stringify(await page.locator('.rank-row').allTextContents())===JSON.stringify(originalRanks),lang+' threshold preserves ranks');
+   }
+  }
+  await page.locator('#triage-threshold').fill('10');await page.locator('#triage-threshold').dispatchEvent('input');await page.locator('#metric-select').selectOption('p99');
+  if(await page.locator('#report-columns').getAttribute('open')===null)await page.locator('#report-columns > summary').click();
+  check((await page.locator('#report-columns-content').innerText()).includes(lang==='pl'?'31,22%':'31.22%'),lang+' real Share is calculated from the full four-feature fit');
+  check((await page.locator('#report-columns-content').innerText()).includes(lang==='pl'?'0,007547':'0.007547'),lang+' real raw MAD impact rendered');
+  for(const width of [320,390,1440]){await page.setViewportSize({width,height:950});await page.locator('#operational-title').scrollIntoViewIfNeeded();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),lang+' operational lesson fits '+width);if(width!==390)await page.screenshot({path:path.join(artifacts,lang+'-operations-'+width+'.png')});}
+  await page.locator('#report-columns').scrollIntoViewIfNeeded();await page.screenshot({path:path.join(artifacts,lang+'-report-columns.png')});
+  await page.locator('#language').click();check(await page.locator('#triage-threshold').inputValue()==='10','language change preserves threshold');await page.locator('#language').click();
+ }
+ check(beforeTriage===JSON.stringify(await page.evaluate(()=>({fit:window.OneMoreQuery.getFit(),packet:window.OneMoreQuery.getEvidence()}))),'threshold leaves fit and evidence packet unchanged');
+ for(const model of ['elastic','huber','quantile']){await page.locator('#model-select').selectOption(model);check((await page.locator('.triage-selection').innerText()).includes(model==='elastic'?'Elastic Net':model==='huber'?'Huber':'Q95'),'operational cards follow model '+model);check(await page.locator('.triage-card').count()===4,'all rows kept for '+model);if(model==='quantile')check(await page.locator('.triage-card.above-threshold').count()===0,'nonconverged Q95 cannot enter operational selection');}
+ await page.locator('#model-select').selectOption('ridge');
  await page.locator('#metric-select').selectOption('p90');check((await page.locator('.rank-name').first().innerText()).includes('PX'),'P90 first');
  const before=await page.evaluate(()=>window.OneMoreQuery.getFit().beta);await page.locator('#lambda').fill('0');await page.locator('#lambda').dispatchEvent('input');const after=await page.evaluate(()=>window.OneMoreQuery.getFit().beta);check(JSON.stringify(before)!==JSON.stringify(after),'live local Ridge');
  await page.locator('#ridge-details > summary').click();await page.locator('#gauss-step').fill('6');await page.locator('#gauss-step').dispatchEvent('input');check((await page.locator('#gauss-state').innerText()).includes('R4'),'Gaussian elimination controls');await page.locator('#gauss-step').press('End');check((await page.locator('#gauss-state').innerText()).includes('Back substitution: β1'),'final back substitution');
