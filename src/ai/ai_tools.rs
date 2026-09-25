@@ -746,10 +746,7 @@ pub fn tools_schema(stem: &str, include_nmon: bool) -> Value {
 // Dispatcher
 // ----------------------------------------------------------------------------
 
-fn with_nmon(
-    collection: &AWRSCollection,
-    query: fn(&crate::nmon::NmonDataset) -> Value,
-) -> Value {
+fn with_nmon(collection: &AWRSCollection, query: fn(&crate::nmon::NmonDataset) -> Value) -> Value {
     collection.nmon.as_ref().map_or_else(
         || {
             json!({

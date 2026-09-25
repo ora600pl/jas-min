@@ -352,7 +352,7 @@ fn chart(panel: &SignalPanel, featured: &BTreeSet<usize>) -> String {
 }
 
 #[cfg(test)]
-#[path = "report_signals_tests.rs"]
+#[path = "signals_tests.rs"]
 pub(crate) mod tests;
 
 fn matrix(panel: &SignalPanel, indices: &[usize], linked: bool) -> String {

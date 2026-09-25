@@ -4,7 +4,7 @@ use super::*;
 use crate::report_signals::{SignalAtlas, SignalBrief, SignalMoment, SignalPanel, SignalPoint};
 
 #[cfg(test)]
-#[path = "report_signal_replay_tests.rs"]
+#[path = "signal_replay_tests.rs"]
 mod replay_tests;
 
 fn cell<'a>(row: &'a ReportTableRow, key: &str) -> &'a str {
