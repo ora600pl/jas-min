@@ -13,8 +13,11 @@
 *.html
 # Offline course with retained measurements stays local unless publication is authorized.
 /docs/oracle-performance-course/
-# Local test suite and test datasets.
-/tests/
+
+# Approved generic measurements in the standalone educational course.
+!/docs/one-more-query/index.html
+!/docs/one-more-query/src/template.html
+/docs/one-more-query/dist/
 *.pyc
 *.swp
 .rustc_info.json
@@ -420,3 +423,6 @@ FodyWeavers.xsd
 Cargo.lock
 .env
 .DS_Store
+
+# Keep local test data outside Git history.
+/tests/
