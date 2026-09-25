@@ -1,5 +1,28 @@
 # Recenzje dydaktyczne ONE MORE QUERY
 
+## Aktualizacja 25 września 2026: samodzielne wyjaśnienia i „04 Sygnał”
+
+Wykonano **15 rzeczywistych konsultacji Claude Opus 5.5**: po trzy osobne recenzje Ridge, Elastic Net, Hubera i Q95, dwie recenzje „04 Sygnał” oraz końcowy przegląd usunięcia zastrzeżeń. Każde wywołanie miało nową sesję, osobny katalog, wyłączone narzędzia i konfiguracje użytkownika, bez historii rozmów z autorem. Recenzent otrzymał publiczne teksty PL/EN, fragmenty interaktywnych objaśnień i potrzebne fakty implementacyjne — nie raporty klienta. Tożsamość `claude-opus-5-5` potwierdziły metryki wszystkich wywołań.
+
+Pierwsze recenzje wskazywały konkretne luki; nie potraktowano ich jako automatycznej akceptacji. Końcowy recenzent otrzymał pięć najnowszych raportów i poprawione lekcje. Wydał **GO**: wcześniejsze blokady zostały usunięte, a w ponownie przeliczonych przykładach nie znalazł nowych błędów matematycznych. Sprawdzał tekst i rachunki, nie uruchamiał przeglądarki. Testy wykonano osobno.
+
+### Przyjęte poprawki
+
+- **Ridge:** samodzielne wprowadzenie AAS i dwóch pasujących do historii wzorów, wyjaśnienie wrażliwości dużych przeciwnych mnożników oraz rozdzielenie porównania kandydatów od wyboru λ. Niższa ocena jest preferowana przy tej samej λ. JAS-MIN ma domyślne λ = 0,05, a nie automatyczny dobór Ridge.
+- **Elastic Net:** tabela pokazuje prognozę, pomyłkę w AAS, punkty za pomyłkę, L1, L2 i sumę. Różnice 0,055 i 0,096 są jawnie odejmowane/dodawane; 0,2 i 2,1 wynikają z rozwinięcia tego samego wzoru. Dalsze rozwinięcie wyprowadza próg i mianownik dla dowolnej λ. Główny eksperyment zachowuje pomiar +10,6 AAS i zsynchronizowane suwaki.
+- **Huber:** najpierw pomiary i kompromis, następnie próg i liczbowe porównanie tempa wzrostu punktów. „Nacisk” jest zdefiniowany przed użyciem. Pokazano pochodzenie rzeczywistego δ = 3,228 oraz wagę δ/|r| i jej działanie. Nie mylimy dużego obciążenia z dużą pomyłką prognozy.
+- **Q95:** główna ilustracja to 100 wyników przy takich samych wejściach. Licznik i siatka pokazują, co oznacza poziom obejmujący około 95% wyników. Dopiero potem pojawiają się wagi 0,95/0,05, ich stosunek 19 i pełna suma. Wyjaśniono płaskie minimum przykładu i zależność od częstości; Q95 nie jest przedstawiane jako detektor rzadkich wait eventów ani jako prognoza momentu wystąpienia incydentu.
+- **04 Sygnał:** rozdzielono pytanie do modelu od wybranej wielkości zmiany wejścia. Wyjaśnienia modeli są dostępne bezpośrednio z rankingu. Krótki rachunek słupka poprzedza sześć rozwijanych kroków, od par obserwacji przez skalę i β do percentyla. Rozpisano składniki z pozostałych trzech współczynników oraz dzielnik równania Ridge; opisano symbole w eliminacji Gaussa. Dla Q95 konsekwentnie mowa o zmianie szacowanego poziomu Q95, nie o zmianie średniej.
+- **Samodzielność tekstu:** usunięto polemiki z nieznanymi czytelnikowi uwagami, przypomnienia o „nadal stałych danych” i powtarzane zaprzeczenia dotyczące kosztów bazy. Skróty, symbole i sens porównań mają wprowadzenie w lekcji, która ich używa.
+
+### Granice i odrzucone nadinterpretacje
+
+Nie przyjęto uproszczenia, że zwiększenie λ musi zmniejszać każdy pojedynczy β. Dla Hubera zachowano faktyczny kod: 1,345 × surowy MAD zmian celu przed dopasowaniem, z dolnym ograniczeniem; nie dopisano niepotwierdzonego uzasadnienia historycznego ani gwarancji statystycznej. Zbieżność nie stała się certyfikatem jakości danych. Liczba potencjalnie dotkniętych różnic przy brakach jest górną granicą, nie odtworzoną maską wierszy. Zachowany Q95 nadal nie jest dopuszczony do końcowej kwalifikacji.
+
+Nie zmieniono obserwacji, zapisanych współczynników, algorytmów dopasowania ani kodu Rust. Weryfikację ustawień odniesiono do aktualnych ścieżek `src/cli.rs`, `src/analysis/gradient.rs` i `src/analysis/quantile.rs`. Konsultacje nie są badaniem skuteczności nauczania z kursantami. Wyniki testów: [VALIDATION.md](VALIDATION.md).
+
+Poniższe wpisy opisują wcześniejsze wersje i ich ówczesne eksperymenty.
+
 ## Aktualizacja 25 września 2026: pomiary stałe, ustawienia jawne
 
 Po kolejnych uwagach autora przeprowadzono **dwie rzeczywiste rundy z Claude Opus 5.5**, potwierdzone `modelUsage`. Przekazano publiczne źródła kursu i opis zweryfikowanej implementacji, bez raportów klienta i bez narzędzi. Recenzent oceniał tekst i matematykę; nie uruchamiał kodu ani przeglądarki.

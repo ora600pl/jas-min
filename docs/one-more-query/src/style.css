@@ -44,5 +44,12 @@ dialog.beer-dialog{background:transparent;border:0;border-radius:0;max-width:690
 .beer-body>button{width:100%;color:#fff4dc;background:#483015;border:1px solid #483015;font-weight:600;min-height:46px}.beer-body>button:hover{background:#62431b}
 .beer-dialog :focus-visible{outline:3px solid #315e5a;outline-offset:3px}
 .intuition-bartrack{height:23px}.intuition-bars .bar-zero:after{content:'0';position:absolute;top:14px;left:-3px;font:9px/1 var(--mono);color:#342610}
+.quantile-dots{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:4px;margin:15px 0}
+.ranking-guide{padding:16px 0 22px;border-bottom:1px solid var(--line);margin-bottom:24px}.ranking-guide h3{font-size:19px}.ranking-guide p{font-size:15px;line-height:1.6}.ranking-guide button{min-height:44px}.rank-name small:not(.warning-symbol){display:block;color:var(--muted);font-size:12px;line-height:1.5;margin-top:6px}.provenance-steps>summary{line-height:1.5}
+.quantile-dots span{display:grid;place-items:center;min-height:28px;font:12px var(--mono);border-radius:4px;border:1px solid #714219;color:#4f2b13;background:#fff4dc}
+.quantile-dots .covered{background:#22574c;color:#fff9e8;border-color:#22574c}
+.beer-body .quantile-legend{font-size:12px;line-height:1.5}.quantile-count strong{font:650 26px var(--mono)}
+.en-arithmetic{table-layout:fixed;width:100%}.en-arithmetic th,.en-arithmetic td{white-space:normal;overflow-wrap:anywhere;vertical-align:top}
+@media(max-width:540px){.quantile-dots{gap:2px}.quantile-dots span{min-height:24px;font-size:10px}.en-arithmetic th,.en-arithmetic td{font-size:12px;padding:8px 4px}}
 @media(max-width:1100px){body[data-scene="3"] .layout{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:540px){dialog.beer-dialog{width:calc(100% - 12px);padding:18px 22px 20px 3px}.beer-shell{max-height:calc(100dvh - 58px);border-width:2px}.beer-handle{right:0;top:120px;width:45px;height:115px;border-width:8px}.beer-foam{padding:17px 13px 16px;gap:8px}.beer-foam h2{font-size:22px}.beer-foam p{font-size:10px;letter-spacing:.6px}.beer-body{padding:19px 17px 22px}.beer-body p{font-size:15px}.beer-quote{font-size:20px}.beer-example{padding:13px}.beer-example .beer-equation{font-size:17px}.beer-body .beer-kicker{font-size:9px;letter-spacing:.3px}}

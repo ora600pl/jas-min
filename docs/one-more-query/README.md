@@ -11,21 +11,21 @@ Jeden samowystarczalny plik HTML, działający także offline. Bez kont, kluczy 
 1. **Hałas:** wszystkie 1 339 obserwacji na wykresach; wspólna i osobne osie, wprowadzenie do AAS i wybór pierwszego tropu.
 2. **Kontekst:** ilustracja ograniczeń wielkich załączników, edytowalne założenia budżetu tokenów i porównanie z małym, celowo wybranym zbiorem.
 3. **Destylacja:** sześć zaworów — jakość danych, różnice, skala, modele, zbieżność i etykieta wyniku. Cztery piwne dymki objaśniają Ridge, Elastic Net, Huber i Q95.
-4. **Sygnał:** rzeczywiste lokalne przeliczenie Ridge; P90/P99/MAX; sześć kroków pochodzenia wyniku; sześć eliminacji Gaussa i cztery podstawienia wsteczne.
+4. **Sygnał:** dwa osobne wybory — model i wielkość zmiany P90/P99/MAX; rzeczywiste lokalne przeliczenie Ridge; sześć rozwijanych kroków pochodzenia wyniku; sześć eliminacji Gaussa i cztery podstawienia wsteczne. Wyjaśnienie wybranego modelu można otworzyć bez opuszczania rankingu.
 5. **Jeszcze jedno:** sprawdzalna hipoteza i szablon żądania MCP, quiz o brakach, podgląd dokładnego JSON-u i eksporty.
 
 Wyjaśnienia zaczynają się od problemu, który można samemu zobaczyć:
 
 - **Ridge:** dwa przepisy identycznie pasują do historii. Rozsuń dwa oczekiwania i porównaj nowe przewidywania.
-- **Elastic Net:** pomiar +10,6 AAS pozostaje stały. Zwiększ λ i obserwuj prognozę, błąd oraz dokładne zero mnożnika. Oba suwaki tego samego ćwiczenia są zsynchronizowane.
+- **Elastic Net:** pomiar +10,6 AAS pozostaje stały. Zwiększ λ i obserwuj prognozę, błąd oraz dokładne zero mnożnika. Tabela oddziela pomyłkę w AAS od punktów za tę pomyłkę i od dodatków L1/L2. Wszystkie różnice oraz liczby 0,2 i 2,1 są wyprowadzone. Oba suwaki tego samego ćwiczenia są zsynchronizowane.
 - **Huber:** wszystkie pięć pomiarów pozostaje stałych. Zmieniaj próg błędu i obserwuj przesunięcie prognozy oraz kompromis między błędami przy czterech zwykłych pomiarach i przy dużym skoku.
-- **Q95:** te same sytuacje, ale pytanie o wysoki wzrost. Zmień częstość skoku z raz na pięć na raz na 21 — maksimum pozostanie to samo, odpowiedź się zmieni.
+- **Q95:** 100 widocznych wyników przy takich samych wejściach. Przesuwaj prognozę i licz, ile wyników zostaje nad nią; porównaj średnią, poziom Q95 i maksimum. Osobne rozwinięcie pokazuje znaczenie częstości skoku, a „Sygnał” wyjaśnia różnicę między Q95 a Ridge × P99.
 
 Dopiero rozwinięcie „Policz to krok po kroku” wprowadza wzory. Wszystkie miniatury są jawnie ilustracyjne i nie zmieniają autentycznych danych. Pochodzenie rzeczywistego progu Hubera, współczynników i rankingów nadal można prześledzić. Przy tej samej λ **niższa ocena dopasowania jest preferowana**; dobór λ wymaga innego porównania — błędów na późniejszych danych, bez dodatków regularyzacyjnych.
 
 ### Skąd parametry w JAS-MIN?
 
-Każdy dymek ma widoczną sekcję o ustawieniach, sprawdzoną względem `src/main.rs`, `src/gradient.rs` i `src/quantile.rs`:
+Każdy dymek ma widoczną sekcję o ustawieniach, sprawdzoną względem `src/cli.rs`, `src/analysis/gradient.rs` i `src/analysis/quantile.rs`:
 
 | Model | Ustawione | Wyliczane z danych |
 | --- | --- | --- |
@@ -96,7 +96,7 @@ Przy bazowym Ridge λ = 0,05 liderem P90 jest PX (4,004093 AAS), a P99 — curso
 
 ## Testy i recenzja
 
-[VALIDATION.md](VALIDATION.md) odróżnia wykonane testy od ograniczeń; [REVIEW.md](REVIEW.md) opisuje dwie najnowsze rundy z Claude Opus 5.5 dotyczące stałych pomiarów i pochodzenia parametrów, poprzednią trzyrundową aktualizację oraz wcześniejsze recenzje i odrzucone uproszczenia.
+[VALIDATION.md](VALIDATION.md) odróżnia wykonane testy od ograniczeń. Najnowszy wpis w [REVIEW.md](REVIEW.md) dokumentuje osobne recenzje każdego modelu i „04 Sygnał” przez Claude Opus 5.5, bez historii rozmowy z autorem, oraz końcową akceptację poprawek. Starsze wpisy zachowują historię wcześniejszych wersji.
 
 Opcjonalny samodzielny test przeglądarkowy wymaga zainstalowanego Playwright oraz Chromium/Chrome:
 

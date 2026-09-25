@@ -1,5 +1,17 @@
 # Validation
 
+## 2026-09-25 — standalone model lessons and chapter 04 Signal
+
+- Fifteen actual read-only Claude Opus 5.5 consultations: three independent sessions per model, two for Signal and one final adjudication. No private conversation history was supplied. Model telemetry confirmed `claude-opus-5-5`. The final verdict was **GO**, with prior mathematical/pedagogical blockers resolved and no new mathematical errors found. The reviewer did not execute the UI; scope and decisions are recorded in [REVIEW.md](REVIEW.md).
+- `node docs/one-more-query/package.cjs`: **51 numerical/static/content/source-contract checks passed**. ZIP integrity, exact four-entry allowlist and byte-for-byte HTML identity passed. Source contracts use the current Rust module paths. Original observations, retained model coefficients and the fitting engine were not modified.
+- Final `browser-test.cjs`: **399 checks passed**, no uncaught JavaScript errors, localhost-only network requests, direct `file://` launch passed. Both languages, all five chapters at 320/390/900/1440 px, all four dialogs at 320/390/1440 px, and all 24 language/model/percentile combinations in Signal were exercised. Tests cover the fixed-data EN controls, expanded EN arithmetic, Huber threshold, 100-cell Q95 lab, accessible model explanations from Signal, six provenance steps, Gaussian elimination, exports and reduced motion.
+- Visually inspected the 320 px Elastic Net arithmetic table, desktop Q95's numbered grid and expanded Signal provenance. Browser checks assert no horizontal overflow in the tested dialog/provenance layouts. Native iOS Safari was not tested.
+- New numerical checks include EN's full arithmetic and complete-square identity, the Q95 100-observation objective and flat minimum, a Q95-below-mean counterexample, Huber's illustrative loss, Signal's zero-filled-entry bounds, matrix diagonal and other-coefficient contributions. Input data and retained fits remain identical; only Ridge is refitted interactively.
+- HTML: **254,372 bytes**, SHA-256 `9fca2f34136da90bfd29a0902eed2f8d5eb9f52d392899324ba3d40cffe89230`. The regenerated ZIP and its checksum are recorded in `dist/manifest.json`; ZIP timestamps may change its checksum without changing the HTML.
+- The course performs no Oracle, LLM or MCP calls and sends no observations off-device. Opus review was a separate authoring activity. No missing row mask or window duration was reconstructed. No learner study, fresh out-of-sample model benchmark or company-hosting upload was performed.
+
+Entries below are historical results for earlier builds, not additional checks on the latest build.
+
 ## 2026-09-25 — fixed observations and parameter provenance
 
 - Two additional actual read-only Claude Opus 5.5 consultations, confirmed by `modelUsage`. The second made publication conditional on correcting the synchronized-lab intro, aligning Ridge PL/EN copy, and verifying three implementation details. Those conditions were completed. The reviewer did not run tests; [REVIEW.md](REVIEW.md) records the critique and decisions.
