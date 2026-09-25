@@ -13,7 +13,8 @@
 *.html
 # Offline course with retained measurements stays local unless publication is authorized.
 /docs/oracle-performance-course/
-!/tests/fixtures/empty_calories/segment_scope.html
+# Local test suite and test datasets.
+/tests/
 *.pyc
 *.swp
 .rustc_info.json
