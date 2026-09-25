@@ -1,5 +1,15 @@
 # Validation
 
+## 2026-09-25 — fixed observations and parameter provenance
+
+- Two additional actual read-only Claude Opus 5.5 consultations, confirmed by `modelUsage`. The second made publication conditional on correcting the synchronized-lab intro, aligning Ridge PL/EN copy, and verifying three implementation details. Those conditions were completed. The reviewer did not run tests; [REVIEW.md](REVIEW.md) records the critique and decisions.
+- `node docs/one-more-query/package.cjs`: **46 numerical/static/content/source-contract checks passed**. ZIP integrity, exact four-entry allowlist and byte-for-byte HTML identity passed. Source-contract checks cover CLI defaults, automatic EN configuration, soft thresholding, final target unscaling, Huber's delta floor and Q95 regularization. No Rust algorithm or retained observation/coefficient was changed.
+- Final `browser-test.cjs` run: **275 checks passed**, no JavaScript exceptions, localhost-only requests, direct `file://` launch passed. Both languages, all chapters at 320/390/900/1440 px and model dialogs at 320/390/1440 px were tested. Added assertions keep the EN observation fixed at four lambda values, synchronize both EN controls in both directions, keep all five Huber observations fixed at three thresholds, expose per-model parameter provenance and check expanded EN mathematics/settings at phone width.
+- Visually inspected phone-width Elastic Net and desktop Huber: fixed-measurement labels, predictions, zoomed EN contribution/error bars and the Huber threshold control. Native iOS Safari was not tested.
+- Numerical tests verify the fixed-data EN optimum, exact positive zero at lambda >= 3, candidate-card deduplication, Huber optima over varying thresholds, the actual 4.240123 residual within its slider range, median/MAD example values and real-fit invariance. PL/EN checks reject the removed database-cost/resource-consumption rebuttals.
+- HTML: **224,780 bytes**, SHA-256 `f1eacbd9f59bdb06f393c1df3fa1cbc0af522b27b45631c13ddf497048dc932c`. ZIP: **84,306 bytes**, SHA-256 `7340b81efa7a27b24fc7eebe98de863e844a7f9bd2d7db79311503923d29f0ac`. The generated manifest identifies the packaged files.
+- The course explains current JAS-MIN automatic EN lambda selection; it does not rerun that selection or invent missing candidate scores. Ridge lambda 0.05 is configured, not automatically selected. The company-hosting upload remains separate; no Oracle, LLM or MCP calls were added to the course. Teaching effectiveness has not been tested with learners.
+
 ## 2026-09-25 — problem-first model explanations
 
 - Three actual read-only Claude Opus 5.5 review rounds, with `modelUsage` confirming `claude-opus-5-5` each time. The third accepted the teaching structure and made publication conditional on normalizing Elastic Net's negative zero and passing browser checks. Both conditions were completed. The reviewer did not run the UI; decisions are in [REVIEW.md](REVIEW.md).

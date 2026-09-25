@@ -17,11 +17,26 @@ Jeden samowystarczalny plik HTML, działający także offline. Bez kont, kluczy 
 Wyjaśnienia zaczynają się od problemu, który można samemu zobaczyć:
 
 - **Ridge:** dwa przepisy identycznie pasują do historii. Rozsuń dwa oczekiwania i porównaj nowe przewidywania.
-- **Elastic Net:** sprawdź, co dodatkowe oczekiwanie wnosi ponad pozostałe; wyłącz regułę L1 i zobacz, jak znika przedział zerowego mnożnika.
-- **Huber:** zwiększ jeden z pięciu pomiarów. Porównaj przesunięcie prognozy i błędy przy pozostałych pomiarach, bez usuwania dużego skoku.
+- **Elastic Net:** pomiar +10,6 AAS pozostaje stały. Zwiększ λ i obserwuj prognozę, błąd oraz dokładne zero mnożnika. Oba suwaki tego samego ćwiczenia są zsynchronizowane.
+- **Huber:** wszystkie pięć pomiarów pozostaje stałych. Zmieniaj próg błędu i obserwuj przesunięcie prognozy oraz kompromis między błędami przy czterech zwykłych pomiarach i przy dużym skoku.
 - **Q95:** te same sytuacje, ale pytanie o wysoki wzrost. Zmień częstość skoku z raz na pięć na raz na 21 — maksimum pozostanie to samo, odpowiedź się zmieni.
 
-Dopiero rozwinięcie „Policz to krok po kroku” wprowadza wzory. Wszystkie miniatury są jawnie ilustracyjne i nie zmieniają autentycznych danych. Pochodzenie rzeczywistego progu Hubera, współczynników i rankingów nadal można prześledzić. Początkowe λ = 0,05 jest ustawieniem, **nie wynikiem pokazanej walidacji**; kurs wyjaśnia sprawdzian na późniejszych oknach, ale go nie wykonuje.
+Dopiero rozwinięcie „Policz to krok po kroku” wprowadza wzory. Wszystkie miniatury są jawnie ilustracyjne i nie zmieniają autentycznych danych. Pochodzenie rzeczywistego progu Hubera, współczynników i rankingów nadal można prześledzić. Przy tej samej λ **niższa ocena dopasowania jest preferowana**; dobór λ wymaga innego porównania — błędów na późniejszych danych, bez dodatków regularyzacyjnych.
+
+### Skąd parametry w JAS-MIN?
+
+Każdy dymek ma widoczną sekcję o ustawieniach, sprawdzoną względem `src/main.rs`, `src/gradient.rs` i `src/quantile.rs`:
+
+| Model | Ustawione | Wyliczane z danych |
+| --- | --- | --- |
+| Ridge | λ = 0,05 domyślnie; `--ridge-lambda` zmienia wartość. Brak automatycznego doboru λ. | Mnożniki β przy wybranej λ. |
+| Elastic Net | α = 0,2 domyślnie (`--en-alpha`). Opcjonalne `--en-lambda` narzuca stałą λ. | Domyślnie dobór λ przez sprawdziany na późniejszych oknach; następnie β. λ i α są stałe podczas końcowego dopasowania. |
+| Huber | Reguła 1,345 × surowy MAD, minimum 0,000001; dodatek używa λ Ridge. | Próg δ raz przed dopasowaniem; potem β i wagi. Zachowany δ = 3,228 AAS. |
+| Q95 | τ = 0,95 oraz λ = 0,0005 są stałymi implementacji. | β i wyraz wolny; niezbieżny wynik nie jest dopuszczony. |
+
+Automatyczny Elastic Net sprawdza 40 proporcji λ względem maksimum wyliczanego z danych treningowych każdego podziału. Do pięciu chronologicznych sprawdzianów używa skalowania wyznaczonego wyłącznie na wcześniejszych danych. Porównuje średni kwadrat błędu przeskalowanego celu. Reguła one-standard-error wybiera najsilniejsze upraszczanie w granicy najlepszego średniego błędu plus jeden błąd standardowy tej średniej. Końcowa λ to wybrana proporcja razy maksimum policzone na całym zbiorze. Brak wystarczających sprawdzianów uruchamia wartość zastępczą 0,05 × maksimum; stały cel lub zerowy sygnał wszystkich wejść daje λ = 0.
+
+Kurs **nie powtarza tego doboru**: zachowany ślad zawiera pięć podziałów, λ ≈ 0,870544 i α = 0,2, ale nie komplet ocen kandydatów. Początkowa λ Ridge = 0,05 pozostaje wartością domyślną, nie potwierdzonym optimum. Suwak „Sygnału” przelicza tylko Ridge; zachowane Huber/EN/Q95 nie zmieniają parametrów ani współczynników.
 
 To kurs wprowadzający i interaktywny materiał po prelekcji, nie pełny podręcznik statystyki ani diagnoza trwającej awarii. Pubowa historia jest fikcyjna. Nie wykonujemy operacji Oracle, wywołań LLM ani MCP.
 
@@ -81,7 +96,7 @@ Przy bazowym Ridge λ = 0,05 liderem P90 jest PX (4,004093 AAS), a P99 — curso
 
 ## Testy i recenzja
 
-[VALIDATION.md](VALIDATION.md) odróżnia wykonane testy od ograniczeń; [REVIEW.md](REVIEW.md) opisuje trzy rundy aktualizacji dydaktycznej z Claude Opus 5.5 z 25 września oraz wcześniejsze recenzje i odrzucone uproszczenia.
+[VALIDATION.md](VALIDATION.md) odróżnia wykonane testy od ograniczeń; [REVIEW.md](REVIEW.md) opisuje dwie najnowsze rundy z Claude Opus 5.5 dotyczące stałych pomiarów i pochodzenia parametrów, poprzednią trzyrundową aktualizację oraz wcześniejsze recenzje i odrzucone uproszczenia.
 
 Opcjonalny samodzielny test przeglądarkowy wymaga zainstalowanego Playwright oraz Chromium/Chrome:
 

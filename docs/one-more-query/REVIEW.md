@@ -1,5 +1,28 @@
 # Recenzje dydaktyczne ONE MORE QUERY
 
+## Aktualizacja 25 września 2026: pomiary stałe, ustawienia jawne
+
+Po kolejnych uwagach autora przeprowadzono **dwie rzeczywiste rundy z Claude Opus 5.5**, potwierdzone `modelUsage`. Przekazano publiczne źródła kursu i opis zweryfikowanej implementacji, bez raportów klienta i bez narzędzi. Recenzent oceniał tekst i matematykę; nie uruchamiał kodu ani przeglądarki.
+
+Uzgodnione poprawki:
+
+- Ridge mówi wprost: **przy tej samej λ niższa łączna ocena jest preferowana**. Wybór λ to osobne zadanie: porównanie błędów na późniejszych oknach, bez składnika regularyzacji. Nie sugerujemy, że samo zmniejszenie λ i wynikającej z niej punktacji daje lepszy model.
+- Nowe sekcje „A jak ustawia to JAS-MIN?” odróżniają ustawienia od wyników. Kod potwierdza: Ridge ma domyślne 0,05 i ręczne nadpisanie; Elastic Net domyślnie automatycznie dobiera λ przez chronologiczną walidację, z konfigurowaną α = 0,2; Huber oblicza δ raz z danych; Q95 ma stałe τ i λ. Zapisany wynik nie jest ponownie dobierany przez przeglądarkę.
+- Elastic Net nie zmienia już pomiaru. Stałe +10,6 AAS, bazowa prognoza +10 i wejście 1 pozwalają obserwować skutki zmiany λ. Oba suwaki są zsynchronizowane. Powiększony wykres pokazuje wkład mnożnika i pozostałe 0,6 AAS różnicy. L2-only jest osobnym, statycznym porównaniem.
+- Dokładne zero pokazano wprost: przy λ = 4 mnożnik 0 ma ocenę 0,18, a 0,1 — ocenę 0,221. Każdy dodatni ruch zwiększa ocenę o 0,2β + 2,1β²; ruch ujemny dodatkowo oddala prognozę od pomiaru. Opis pełnego algorytmu wprowadza sygnał ze wszystkich par, test progu, przypisanie dokładnego zera i kolejne obiegi przy stałych λ/α.
+- Huber ma pięć stałych pomiarów i suwak progu błędu. Prognoza przechodzi od 10,75 przy δ = 3 do średniej 14 przy δ ≥ 16. Q95 wyraźnie odróżnia suwak proponowanej prognozy od wyboru innego wymyślonego zbioru.
+- Usunięto zdania polemizujące z niepostawionymi przez czytelnika tezami o kosztach bazy i zużyciu zasobów. Zachowano ostrzeżenia związane z rzeczywistymi granicami interpretacji, nie powielając ich w każdym kroku.
+
+### Krytyczna druga runda
+
+Opus wstrzymał akceptację, wskazując stary nagłówek o niezależnych ćwiczeniach sprzeczny z synchronizacją Elastic Net oraz nierównoważny tekst PL/EN o dwóch kandydatach Ridge. Obie uwagi poprawiono. Doprecyzowano, że pełny Ridge przy dodatniej λ może zejść poniżej oceny pary (0,5; 0,5), a suwak porównujący dwóch kandydatów nie szuka tego minimum. Usunięto zdublowane karty identycznego kandydata Elastic Net; zwycięska karta jest oznaczona.
+
+Warunki dodatkowe sprawdzono w źródle i testach: dolne ograniczenie dotyczy całego δ po mnożeniu przez 1,345; końcowy Elastic Net skaluje cel i przelicza β z powrotem; rzeczywista reszta Hubera ≈ 4,240123 mieści się w zakresie 0–12. Etykieta pary wynika teraz z `focus`. Testy potwierdzają także medianę −0,4 i MAD = 2,4 użyte w przykładzie.
+
+Nie przyjęto sugestii przypisania stałej 1,345 gwarantowanego podręcznikowego uzasadnienia: kod dowodzi użycia surowego MAD, a nie intencji autora czy konkretnego poziomu efektywności. Opus zaakceptował opis granic bez takiej nadinterpretacji. Po usunięciu dwóch blokad i wykonaniu wskazanych kontroli druga recenzja zezwalała na publikację. Nie jest to badanie skuteczności nauczania.
+
+Liczby źródłowe, zachowane dopasowania i kod modeli Rust pozostały bez zmian. Szczegóły automatycznego doboru opisano, a nie zaimplementowano od nowa. Aktualne wyniki testów i pakowania: [VALIDATION.md](VALIDATION.md).
+
 ## Aktualizacja 25 września 2026: problem przed regułą
 
 Po uwagach autora wykonano **trzy kolejne rzeczywiste rundy konsultacji z Claude Opus 5.5**. Metryki każdego wywołania potwierdziły `claude-opus-5-5`. Recenzent otrzymał wyłącznie publiczne źródła i opis zmian, bez raportów źródłowych ani narzędzi. Recenzował tekst i matematykę; nie uruchamiał przeglądarki. Testy oraz publikację wykonano osobno.
