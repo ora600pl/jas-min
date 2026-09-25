@@ -10,7 +10,7 @@ use crate::reasonings::{
     TopSQLsByElapsedTime, VifDiagnostic, WaitEventsFromASH, WaitEventsWithStrongCorrelation,
 };
 use crate::Args;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::tools::*;
 use colored::*;
@@ -1325,8 +1325,9 @@ pub fn compute_grouped_impacts(
         return vec![];
     }
 
-    // Greedy correlation-based clustering
-    let mut groups: Vec<HashSet<String>> = Vec::new();
+    // Greedy clustering against the first (lexically smallest) member. Keep both
+    // representative selection and floating-point summation independent of hash seeds.
+    let mut groups: Vec<BTreeSet<String>> = Vec::new();
 
     for event in &high_vif {
         let series_a = match event_delta_standardized.get(event) {
@@ -1372,7 +1373,7 @@ pub fn compute_grouped_impacts(
         }
 
         if !found_group {
-            let mut new_group = HashSet::new();
+            let mut new_group = BTreeSet::new();
             new_group.insert(event.clone());
             groups.push(new_group);
         }
@@ -1415,7 +1416,7 @@ pub fn compute_grouped_impacts(
         results.push((names, group_impact, group_coef));
     }
 
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     results
 }
 
@@ -2039,9 +2040,11 @@ pub fn build_db_time_gradient_section(
             }
         })
         .collect();
-    section
-        .vif_diagnostics
-        .sort_by(|a, b| b.vif.partial_cmp(&a.vif).unwrap());
+    section.vif_diagnostics.sort_by(|a, b| {
+        b.vif
+            .total_cmp(&a.vif)
+            .then_with(|| a.event_name.cmp(&b.event_name))
+    });
     section.vif_diagnostics = section
         .vif_diagnostics
         .iter()
@@ -3196,6 +3199,47 @@ mod tests {
         assert_close(
             result.elastic_net_selection.lambda_ratio,
             ELASTIC_NET_FALLBACK_LAMBDA_RATIO,
+        );
+    }
+}
+
+#[cfg(test)]
+mod grouping_regression_tests {
+    use super::*;
+    #[test]
+    fn refactor_audit_grouping_must_be_repeatable() {
+        let a = vec![1., -1., 1., -1., 1., -1., 1., -1.];
+        let z = vec![1., 1., -1., -1., 1., 1., -1., -1.];
+        let mut x = EventSeriesMap::new();
+        for (name, degrees) in [("a", 0.0_f64), ("b", 20.0_f64), ("c", 40.0_f64)] {
+            let angle = degrees.to_radians();
+            x.insert(
+                name.into(),
+                a.iter()
+                    .zip(&z)
+                    .map(|(a, z)| angle.cos() * a + angle.sin() * z)
+                    .collect(),
+            );
+        }
+        let vif = x.keys().map(|k| (k.clone(), 100.0)).collect();
+        let mut variants = std::collections::BTreeSet::new();
+        for _ in 0..100 {
+            let groups = compute_grouped_impacts(&x, &x, &a, &vif, 10.0, 0.9);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].0, vec!["a", "b"]);
+            assert!((groups[0].2 - 0.5).abs() < 1e-12);
+            variants.insert(
+                groups
+                    .iter()
+                    .map(|g| g.0.join(","))
+                    .collect::<Vec<_>>()
+                    .join(";"),
+            );
+        }
+        assert_eq!(
+            variants.len(),
+            1,
+            "identical input yielded different group membership: {variants:?}"
         );
     }
 }

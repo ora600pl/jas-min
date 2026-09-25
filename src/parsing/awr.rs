@@ -3406,7 +3406,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let cases: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/initialization_parameters.json"
+            "../../test_support/fixtures/initialization_parameters.json"
         ))
         .unwrap();
         let nonce = SystemTime::now()
@@ -3436,7 +3436,7 @@ mod tests {
     #[test]
     fn instance_efficiency_report_fixtures() {
         let cases: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/instance_efficiency.json"
+            "../../test_support/fixtures/instance_efficiency.json"
         ))
         .unwrap();
         for case in cases.as_array().unwrap() {
@@ -3496,7 +3496,7 @@ mod tests {
         use clap::Parser;
         let args = Args::parse_from(["jas-min", "--security-level", "1"]);
         let html = Html::parse_document(include_str!(
-            "../../tests/fixtures/empty_calories/segment_scope.html"
+            "../../test_support/fixtures/empty_calories/segment_scope.html"
         ));
         let selector = Selector::parse("table").unwrap();
         let tables: Vec<_> = html.select(&selector).collect();

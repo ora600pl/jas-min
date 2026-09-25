@@ -1,0 +1,14 @@
+[package]
+name = "toon"
+version = "0.1.2"
+edition = "2021"
+authors = ["Jad Jabbour <jabbourj.87@gmail.com>"]
+description = "Token-Oriented Object Notation – a token-efficient JSON alternative for LLM prompts"
+license = "MIT"
+repository = "https://github.com/JadJabbour/toon-rs"
+keywords = ["llm", "json", "serialization", "encoding"]
+categories = ["encoding", "text-processing"]
+
+[dependencies]
+serde_json = "1.0"
+regex = "1.10"

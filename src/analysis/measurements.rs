@@ -454,7 +454,7 @@ pub(crate) mod replay_tests {
             data_availability: std::collections::HashMap<String, bool>,
         }
         let windows: Vec<Window> = serde_json::from_str(include_str!(
-            "../../tests/fixtures/empty_calories/native_scan_targets.json"
+            "../../test_support/fixtures/empty_calories/native_scan_targets.json"
         ))
         .unwrap();
         AWRSCollection {
@@ -568,7 +568,7 @@ pub(crate) mod replay_tests {
     #[test]
     fn equal_rates_survive_unequal_windows_and_missing_stats_are_excluded() {
         let mut c = load_awrs_collection_from_json_str(include_str!(
-            "../../tests/fixtures/empty_calories/scan_degradation.json"
+            "../../test_support/fixtures/empty_calories/scan_degradation.json"
         ))
         .unwrap();
         c.awrs.truncate(2);
@@ -617,11 +617,11 @@ pub(crate) mod replay_tests {
         for (name, data) in [
             (
                 "scan",
-                include_str!("../../tests/fixtures/empty_calories/scan_degradation.json"),
+                include_str!("../../test_support/fixtures/empty_calories/scan_degradation.json"),
             ),
             (
                 "migr",
-                include_str!("../../tests/fixtures/empty_calories/migr_degradation.json"),
+                include_str!("../../test_support/fixtures/empty_calories/migr_degradation.json"),
             ),
         ] {
             let c = load_awrs_collection_from_json_str(data).unwrap();

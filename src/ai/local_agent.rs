@@ -1982,7 +1982,7 @@ fn local_tools_schema(stem: &str, guidance_available: bool, include_nmon: bool) 
                         "domain": {"type":"string","description":"db_time_degradation only: exact domain filter; limit and offset apply per domain"},
                         "contributor": {"type": "string", "description": "full_gradients only: exact SQL_ID/event/statistic lookup across full fitted rankings"},
                         "ranking": {"type": "string", "enum": ["selection", "active", "peak", "extreme"]},
-                        "offset": {"type": "integer", "minimum": 0},
+                        "offset": {"type": "integer", "minimum": 0, "description": "Skip rows in list sections; per model/domain for gradients/degradation"},
                         "limit": {
                             "type": "integer",
                             "description": "Maximum rows per list, default 20, max 100"
@@ -2095,32 +2095,16 @@ pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) 
         .and_then(Value::as_u64)
         .unwrap_or(20)
         .clamp(1, 100) as usize;
+    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     let value = match section {
-        "foreground_waits" => json!(report
-            .top_foreground_wait_events
-            .iter()
-            .take(limit)
-            .collect::<Vec<_>>()),
-        "background_waits" => json!(report
-            .top_background_wait_events
-            .iter()
-            .take(limit)
-            .collect::<Vec<_>>()),
-        "top_sqls" => json!(report
-            .top_sqls_by_elapsed_time
-            .iter()
-            .take(limit)
-            .collect::<Vec<_>>()),
+        "foreground_waits" => json!(report.top_foreground_wait_events.iter().collect::<Vec<_>>()),
+        "background_waits" => json!(report.top_background_wait_events.iter().collect::<Vec<_>>()),
+        "top_sqls" => json!(report.top_sqls_by_elapsed_time.iter().collect::<Vec<_>>()),
         "io_summary" => json!(report
             .io_stats_by_function_summary
             .iter()
-            .take(limit)
             .collect::<Vec<_>>()),
-        "latches" => json!(report
-            .latch_activity_summary
-            .iter()
-            .take(limit)
-            .collect::<Vec<_>>()),
+        "latches" => json!(report.latch_activity_summary.iter().collect::<Vec<_>>()),
         "segment_hotspots" => json!({
             "row_lock_waits": report.top_10_segments_by_row_lock_waits,
             "physical_writes": report.top_10_segments_by_physical_writes,
@@ -2134,23 +2118,19 @@ pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) 
         "instance_stat_correlations" => json!(report
             .instance_stats_pearson_correlation
             .iter()
-            .take(limit)
             .collect::<Vec<_>>()),
-        "load_profile_anomalies" => json!(report
-            .load_profile_anomalies
-            .iter()
-            .take(limit)
-            .collect::<Vec<_>>()),
-        "anomaly_clusters" => json!(report
-            .anomaly_clusters
-            .iter()
-            .take(limit)
-            .collect::<Vec<_>>()),
+        "load_profile_anomalies" => {
+            let mut rows = report.load_profile_anomalies.iter().collect::<Vec<_>>();
+            rows.sort_by(|a, b| crate::reasonings::LoadProfileAnomalies::compare_severity(a, b));
+            json!(rows)
+        }
+        "anomaly_clusters" => json!(report.anomaly_clusters.iter().collect::<Vec<_>>()),
         "initialization_parameters" => {
             let mut parameters = report.initialization_parameters.iter().collect::<Vec<_>>();
             parameters.sort_by(|a, b| a.0.cmp(b.0));
             json!(parameters
                 .into_iter()
+                .skip(offset)
                 .take(limit)
                 .collect::<HashMap<_, _>>())
         }
@@ -2171,11 +2151,7 @@ pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) 
         "performance_hints" => {
             crate::performance_hints::query(report.performance_hints.as_ref(), args)
         }
-        "performance_peaks" => json!(report
-            .top_spikes_marked
-            .iter()
-            .take(limit)
-            .collect::<Vec<_>>()),
+        "performance_peaks" => json!(report.top_spikes_marked.iter().collect::<Vec<_>>()),
         _ => {
             return json!({
                 "error": "unknown precomputed section",
@@ -2183,6 +2159,21 @@ pub(crate) fn dispatch_precomputed_analysis(args: &Value, report: &ReportForAI) 
             })
         }
     };
+    if let Value::Array(rows) = value {
+        let total = rows.len();
+        let page = rows
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let returned = page.len();
+        return json!({
+            "schema_version": LOCAL_AGENT_SCHEMA_VERSION,
+            "section": section, "limit": limit, "data": page,
+            "pagination": {"total": total, "offset": offset, "returned": returned,
+                "next_offset": (offset.saturating_add(returned) < total).then(|| offset + returned)}
+        });
+    }
     json!({
         "schema_version": LOCAL_AGENT_SCHEMA_VERSION,
         "section": section,
@@ -3218,5 +3209,54 @@ TRIGGER: user logons and connection creation spike.
                 .len(),
             7
         );
+    }
+}
+
+#[cfg(test)]
+mod list_pagination_regression_tests {
+    use super::*;
+    use crate::reasonings::LoadProfileAnomalies;
+
+    #[test]
+    fn anomalies_are_ranked_before_pagination_independently_of_input_order() {
+        let row = |name: &str, date: &str, score| LoadProfileAnomalies {
+            load_profile_stat_name: name.into(),
+            anomaly_date: date.into(),
+            mad_score: score,
+            ..Default::default()
+        };
+        let mut report = ReportForAI {
+            load_profile_anomalies: vec![
+                row("z", "02", 9.0),
+                row("a", "02", 10.0),
+                row("a", "01", 10.0),
+            ],
+            ..Default::default()
+        };
+        let mut prior = None;
+        for _ in 0..3 {
+            report.load_profile_anomalies.rotate_left(1);
+            let pages = (0..4)
+                .map(|offset| {
+                    dispatch_precomputed_analysis(
+                        &json!({"section":"load_profile_anomalies", "limit":1,"offset":offset}),
+                        &report,
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(pages[0]["data"][0]["anomaly_date"], "01");
+            assert_eq!(pages[1]["data"][0]["anomaly_date"], "02");
+            assert_eq!(pages[2]["data"][0]["load_profile_stat_name"], "z");
+            assert_eq!(
+                pages[0]["pagination"],
+                json!({"total":3,"offset":0,"returned":1,"next_offset":1})
+            );
+            assert_eq!(pages[2]["pagination"]["next_offset"], Value::Null);
+            assert_eq!(pages[3]["data"], json!([]));
+            if let Some(prior) = &prior {
+                assert_eq!(&pages, prior);
+            }
+            prior = Some(pages);
+        }
     }
 }

@@ -2206,7 +2206,7 @@ fn tool_get_database_load_summary(args: &Value, c: &AWRSCollection) -> Value {
     snapshots.sort_by(|a, b| {
         let av = a["db_time_s"].as_f64().unwrap_or(0.0);
         let bv = b["db_time_s"].as_f64().unwrap_or(0.0);
-        cmp_desc(av, bv)
+        cmp_desc(av, bv).then_with(|| a["snap_id"].as_u64().cmp(&b["snap_id"].as_u64()))
     });
 
     let total_db_time_s: f64 = c.awrs.iter().map(db_time_of).sum();
@@ -2235,7 +2235,7 @@ fn tool_get_database_load_summary(args: &Value, c: &AWRSCollection) -> Value {
     wait_rows.sort_by(|a, b| {
         let av = a["total_wait_time_s"].as_f64().unwrap_or(0.0);
         let bv = b["total_wait_time_s"].as_f64().unwrap_or(0.0);
-        cmp_desc(av, bv)
+        cmp_desc(av, bv).then_with(|| a["event"].as_str().cmp(&b["event"].as_str()))
     });
     wait_rows.truncate(top_n);
 
@@ -2276,10 +2276,13 @@ fn tool_get_snapshot_summary(args: &Value, c: &AWRSCollection) -> Value {
     };
 
     let mut top_waits = awr.foreground_wait_events.clone();
-    top_waits.sort_by(|a, b| cmp_desc(a.pct_dbtime, b.pct_dbtime));
+    top_waits
+        .sort_by(|a, b| cmp_desc(a.pct_dbtime, b.pct_dbtime).then_with(|| a.event.cmp(&b.event)));
 
     let mut top_sql_elapsed = awr.sql_elapsed_time.clone();
-    top_sql_elapsed.sort_by(|a, b| cmp_desc(a.elapsed_time_s, b.elapsed_time_s));
+    top_sql_elapsed.sort_by(|a, b| {
+        cmp_desc(a.elapsed_time_s, b.elapsed_time_s).then_with(|| a.sql_id.cmp(&b.sql_id))
+    });
 
     json!({
         "schema_version": JASMIN_TOOLS_SCHEMA_VERSION,
@@ -3795,27 +3798,37 @@ fn tool_top_sqls_in_snapshot(args: &Value, c: &AWRSCollection) -> Value {
     let items: Vec<Value> = match metric {
         "elapsed_time" => {
             let mut v = awr.sql_elapsed_time.clone();
-            v.sort_by(|a, b| cmp_desc(a.elapsed_time_s, b.elapsed_time_s));
+            v.sort_by(|a, b| {
+                cmp_desc(a.elapsed_time_s, b.elapsed_time_s).then_with(|| a.sql_id.cmp(&b.sql_id))
+            });
             v.into_iter().take(top_n).map(|s| json!(s)).collect()
         }
         "cpu_time" => {
             let mut v: Vec<_> = awr.sql_cpu_time.values().cloned().collect();
-            v.sort_by(|a, b| cmp_desc(a.cpu_time_s, b.cpu_time_s));
+            v.sort_by(|a, b| {
+                cmp_desc(a.cpu_time_s, b.cpu_time_s).then_with(|| a.sql_id.cmp(&b.sql_id))
+            });
             v.into_iter().take(top_n).map(|s| json!(s)).collect()
         }
         "io_time" => {
             let mut v: Vec<_> = awr.sql_io_time.values().cloned().collect();
-            v.sort_by(|a, b| cmp_desc(a.io_time_s, b.io_time_s));
+            v.sort_by(|a, b| {
+                cmp_desc(a.io_time_s, b.io_time_s).then_with(|| a.sql_id.cmp(&b.sql_id))
+            });
             v.into_iter().take(top_n).map(|s| json!(s)).collect()
         }
         "buffer_gets" => {
             let mut v: Vec<_> = awr.sql_gets.values().cloned().collect();
-            v.sort_by(|a, b| cmp_desc(a.buffer_gets, b.buffer_gets));
+            v.sort_by(|a, b| {
+                cmp_desc(a.buffer_gets, b.buffer_gets).then_with(|| a.sql_id.cmp(&b.sql_id))
+            });
             v.into_iter().take(top_n).map(|s| json!(s)).collect()
         }
         "physical_reads" => {
             let mut v: Vec<_> = awr.sql_reads.values().cloned().collect();
-            v.sort_by(|a, b| cmp_desc(a.physical_reads, b.physical_reads));
+            v.sort_by(|a, b| {
+                cmp_desc(a.physical_reads, b.physical_reads).then_with(|| a.sql_id.cmp(&b.sql_id))
+            });
             v.into_iter().take(top_n).map(|s| json!(s)).collect()
         }
         other => {
@@ -3867,7 +3880,7 @@ fn tool_top_wait_events(args: &Value, c: &AWRSCollection) -> Value {
             "waits" => (a.waits as f64, b.waits as f64),
             _ => (a.pct_dbtime, b.pct_dbtime),
         };
-        cmp_desc(x, y)
+        cmp_desc(x, y).then_with(|| a.event.cmp(&b.event))
     });
 
     json!({
@@ -3946,7 +3959,7 @@ fn tool_top_latches(args: &Value, c: &AWRSCollection) -> Value {
             "get_requests" => (a.get_requests as f64, b.get_requests as f64),
             _ => (a.wait_time, b.wait_time),
         };
-        cmp_desc(x, y)
+        cmp_desc(x, y).then_with(|| a.statname.cmp(&b.statname))
     });
 
     json!({
@@ -5372,5 +5385,113 @@ LPAR,T0001,9.115,10,40,28,10.00,172,0.00,18.99,32.55,1,0,52.48,4.56,1.19,32.93,5
                 > 98.0,
             "expected Entc% from topas fixture: {topas_result}"
         );
+    }
+}
+
+#[cfg(test)]
+mod summary_order_regression_tests {
+    use super::*;
+
+    #[test]
+    fn raw_sql_top_lists_resolve_ties_by_sql_id() {
+        for _ in 0..32 {
+            let mut awr = crate::awr::AWR::default();
+            awr.snap_info.begin_snap_id = 1;
+            for id in ["z", "a", "b"] {
+                awr.sql_elapsed_time.push(crate::awr::SQLElapsedTime {
+                    sql_id: id.into(),
+                    elapsed_time_s: 0.1,
+                    ..Default::default()
+                });
+                awr.sql_cpu_time.insert(
+                    id.into(),
+                    crate::awr::SQLCPUTime {
+                        sql_id: id.into(),
+                        cpu_time_s: 0.1,
+                        ..Default::default()
+                    },
+                );
+                awr.sql_io_time.insert(
+                    id.into(),
+                    crate::awr::SQLIOTime {
+                        sql_id: id.into(),
+                        io_time_s: 0.1,
+                        ..Default::default()
+                    },
+                );
+                awr.sql_gets.insert(
+                    id.into(),
+                    crate::awr::SQLGets {
+                        sql_id: id.into(),
+                        buffer_gets: 1.0,
+                        ..Default::default()
+                    },
+                );
+                awr.sql_reads.insert(
+                    id.into(),
+                    crate::awr::SQLReads {
+                        sql_id: id.into(),
+                        physical_reads: 1.0,
+                        ..Default::default()
+                    },
+                );
+            }
+            let c = AWRSCollection {
+                db_instance_information: Default::default(),
+                initialization_parameters: Default::default(),
+                awrs: vec![awr],
+                sql_text: Default::default(),
+                nmon: None,
+            };
+            for metric in [
+                "elapsed_time",
+                "cpu_time",
+                "io_time",
+                "buffer_gets",
+                "physical_reads",
+            ] {
+                let result =
+                    tool_top_sqls_in_snapshot(&json!({"snap_id":1,"metric":metric,"top_n":2}), &c);
+                let ids = result["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| r["sql_id"].as_str().unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(ids, vec!["a", "b"], "{metric}");
+            }
+        }
+    }
+
+    #[test]
+    fn summary_top_waits_resolve_zero_time_ties_before_limiting() {
+        let mut c = AWRSCollection {
+            db_instance_information: Default::default(),
+            initialization_parameters: Default::default(),
+            awrs: vec![],
+            sql_text: Default::default(),
+            nmon: None,
+        };
+        let mut a = crate::awr::AWR::default();
+        a.foreground_wait_events = ["z", "a", "b"]
+            .into_iter()
+            .map(|event| crate::awr::WaitEvents {
+                event: event.into(),
+                ..Default::default()
+            })
+            .collect();
+        c.awrs.push(a);
+        for _ in 0..32 {
+            let result = tool_get_database_load_summary(&json!({"top_n":2}), &c);
+            let rows = result["top_foreground_waits_by_total_time"]
+                .as_array()
+                .unwrap();
+            assert_eq!(
+                rows.iter()
+                    .map(|r| r["event"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                vec!["a", "b"]
+            );
+        }
     }
 }

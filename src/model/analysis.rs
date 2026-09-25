@@ -164,6 +164,15 @@ pub struct LoadProfileAnomalies {
     pub avg_value_per_second: f64,
 }
 
+impl LoadProfileAnomalies {
+    pub(crate) fn compare_severity(a: &Self, b: &Self) -> std::cmp::Ordering {
+        b.mad_score
+            .total_cmp(&a.mad_score)
+            .then_with(|| a.load_profile_stat_name.cmp(&b.load_profile_stat_name))
+            .then_with(|| a.anomaly_date.cmp(&b.anomaly_date))
+    }
+}
+
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct AnomalyDescription {
     pub area_of_anomaly: String,

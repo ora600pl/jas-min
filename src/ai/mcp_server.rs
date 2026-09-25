@@ -3104,7 +3104,7 @@ fn mcp_control_definitions() -> Vec<Value> {
                     "domain": {"type":"string","description":"db_time_degradation only: exact domain filter; limit and offset apply per domain"},
                     "contributor": {"type": "string", "description": "full_gradients only: exact SQL_ID/event/statistic lookup in full fits, including zero/negative coefficients"},
                     "ranking": {"type": "string", "enum": ["selection", "active", "peak", "extreme"], "default": "selection"},
-                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Skip rows in list sections; per model/domain for gradients/degradation"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
                 },
                 "required": ["section"]
@@ -8211,7 +8211,7 @@ mod tests {
     #[test]
     fn performance_hints_share_classic_local_and_registered_mcp_evidence() {
         let native: AWRSCollection = serde_json::from_str(include_str!(
-            "../../tests/fixtures/empty_calories/hints_native.json"
+            "../../test_support/fixtures/empty_calories/hints_native.json"
         ))
         .unwrap();
         for collection in [
@@ -8275,12 +8275,12 @@ mod tests {
         for (name, data, signal) in [
             (
                 "scan",
-                include_str!("../../tests/fixtures/empty_calories/scan_degradation.json"),
+                include_str!("../../test_support/fixtures/empty_calories/scan_degradation.json"),
                 "table scan blocks gotten",
             ),
             (
                 "migration",
-                include_str!("../../tests/fixtures/empty_calories/migr_degradation.json"),
+                include_str!("../../test_support/fixtures/empty_calories/migr_degradation.json"),
                 "table fetch continued row",
             ),
         ] {

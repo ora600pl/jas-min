@@ -1,0 +1,7 @@
+{
+  "hourly_lab/data/awr_native.json": "f8447b60ce6d189834fa69971ed15eddd2d54b29cfa51bfb245a7f6764be84ed",
+  "jasmin_only/native_scan_prefix.json": "8e437783c97bbcb341cea23d5a3e944db35f12e5b9768156db7e614acc97d1b1",
+  "jasmin_only/evidence/calibration.json": "12e9c37e90d25744074cdac6e85e1da08efb05aefed5b01fcae2008dc64bed3e",
+  "data/scan_degradation.json": "d9d3409115336dee571a8956f8fc5bbbb43bf553a9b6d498b0739f4a72ca63b6",
+  "data/migr_degradation.json": "46f6168c1ee04468169ab9c36b72b40e02b4bfd67ce0ef1681cef2325d871160"
+}

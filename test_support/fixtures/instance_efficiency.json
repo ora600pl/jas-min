@@ -1,0 +1,40 @@
+[
+  {
+    "kind": "html",
+    "source": "Synthetic: paired HTML cells and nested label markup",
+    "input": "<table><tr><td><b>Buffer Hit %:</b></td><td>99.91</td><td>Soft Parse %:</td><td>88.50</td></tr><tr><td>Redo NoWait %:</td><td>0.00</td></tr></table>",
+    "expected": [
+      [
+        "Buffer Hit %",
+        99.91
+      ],
+      [
+        "Soft Parse %",
+        88.5
+      ],
+      [
+        "Redo NoWait %",
+        0
+      ]
+    ]
+  },
+  {
+    "kind": "text",
+    "source": "Synthetic: STATSPACK-style paired metrics and section boundary",
+    "input": "Instance Efficiency Indicators\n~~~~\n\nBuffer Hit %: 99.91 Soft Parse %: 88.50\nRedo NoWait %: 0.00\n\nShared Pool Statistics\nMemory Usage %: 99.0",
+    "expected": [
+      [
+        "Buffer Hit %",
+        99.91
+      ],
+      [
+        "Soft Parse %",
+        88.5
+      ],
+      [
+        "Redo NoWait %",
+        0
+      ]
+    ]
+  }
+]

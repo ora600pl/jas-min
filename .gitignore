@@ -426,3 +426,6 @@ Cargo.lock
 
 # Keep local test data outside Git history.
 /tests/
+
+# Small, reviewed parser fixtures are part of the reproducible test suite.
+!/test_support/fixtures/empty_calories/segment_scope.html

@@ -216,6 +216,26 @@ Comparison tools resolve both project IDs inside the same analysis, calculate
 bounded distribution summaries, and register the complete comparison as one
 evidence record. Missing samples remain missing rather than becoming zeros.
 
+### Paging precomputed lists
+
+For `get_precomputed_analysis`, `offset` and `limit` also apply to list sections:
+`foreground_waits`, `background_waits`, `top_sqls`, `io_summary`, `latches`,
+`instance_stat_correlations`, `load_profile_anomalies`, `anomaly_clusters`, and
+`performance_peaks`. The existing `result.data` array is preserved. A sibling
+`result.pagination` object reports `total`, `offset`, `returned`, and
+`next_offset` (`null` on the last page). Request successive offsets within the
+same analysis/project to recover the complete list; the maximum limit is 100.
+
+Load-profile anomalies are ordered by MAD score descending, then statistic name
+and anomaly date ascending, before pagination. Equal category MAD scores are
+resolved by statistic name before the report's anomaly cap. Wait/SQL Top-N tools
+also break equal measurement values by event name/SQL ID. This keeps repeated
+processes and CLI/local-agent/MCP views consistent.
+
+Gradient and degradation sections retain their existing per-model/per-domain
+pagination contracts. Initialization parameters remain an alphabetically paged
+object rather than a list.
+
 ## Transport lifecycle
 
 The endpoint uses MCP over Streamable HTTP. Clients negotiating a legacy

@@ -21,7 +21,7 @@ use plotly::layout::{
 };
 use plotly::{BoxPlot, HeatMap, Histogram, Plot, Scatter};
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::format;
 use std::fs;
 use std::fs::OpenOptions;
@@ -209,62 +209,45 @@ fn find_top_stats(
 
                 let mut events: Vec<WaitEvents> = awr.foreground_wait_events.clone();
                 let mut bgevents: Vec<WaitEvents> = awr.background_wait_events.clone();
-                //I'm sorting events by total wait time, to get the longest waits at the end
-                events.sort_by_key(|e| e.total_wait_time_s as i64);
-                bgevents.sort_by_key(|e| e.total_wait_time_s as i64);
-                let fg_length: usize = events.len();
-                let bg_length: usize = bgevents.len();
-                //We are registering only TOP10 from each snap
-                if fg_length > 10 {
-                    for i in 1..11 {
-                        event_names
-                            .entry(events[fg_length - i].event.clone())
-                            .or_insert(1);
-                    }
+                // Preserve fractional seconds and break ties by identity before taking Top-N.
+                let by_wait = |a: &WaitEvents, b: &WaitEvents| {
+                    b.total_wait_time_s
+                        .total_cmp(&a.total_wait_time_s)
+                        .then_with(|| a.event.cmp(&b.event))
+                };
+                events.sort_by(by_wait);
+                bgevents.sort_by(by_wait);
+                for event in events.iter().take(10) {
+                    event_names.entry(event.event.clone()).or_insert(1);
                 }
-                if bg_length > 10 {
-                    for i in 1..11 {
-                        bgevent_names
-                            .entry(bgevents[bg_length - i].event.clone())
-                            .or_insert(1);
-                    }
+                for event in bgevents.iter().take(10) {
+                    bgevent_names.entry(event.event.clone()).or_insert(1);
                 }
-                //And the same with SQLs
                 let mut sqls: Vec<crate::awr::SQLElapsedTime> = awr.sql_elapsed_time.clone();
-                sqls.sort_by_key(|s| s.elapsed_time_s as i64);
-                let l: usize = sqls.len();
-                if l > 5 {
-                    for i in 1..6 {
-                        sql_ids
-                            .entry(sqls[l - i].sql_id.clone())
-                            .or_insert(sqls[l - i].sql_module.clone());
-                    }
-                } else if l > 1 && l <= 5 {
-                    for i in 0..=l - 1 {
-                        sql_ids
-                            .entry(sqls[i].sql_id.clone())
-                            .or_insert(sqls[i].sql_module.clone());
-                    }
+                sqls.sort_by(|a, b| {
+                    b.elapsed_time_s
+                        .total_cmp(&a.elapsed_time_s)
+                        .then_with(|| a.sql_id.cmp(&b.sql_id))
+                });
+                for sql in sqls.iter().take(5) {
+                    sql_ids
+                        .entry(sql.sql_id.clone())
+                        .or_insert(sql.sql_module.clone());
                 }
 
                 //And the same with SQLs by CPU
                 let mut sqls_cpu: Vec<crate::awr::SQLCPUTime> =
                     awr.sql_cpu_time.iter().map(|s| s.1.clone()).collect();
 
-                sqls_cpu.sort_by_key(|s| s.cpu_time_s as i64);
-                let l: usize = sqls_cpu.len();
-                if l > 5 {
-                    for i in 1..6 {
-                        sql_ids_cpu
-                            .entry(sqls_cpu[l - i].sql_id.clone())
-                            .or_insert(sqls_cpu[l - i].sql_module.clone());
-                    }
-                } else if l > 1 && l <= 5 {
-                    for i in 0..=l - 1 {
-                        sql_ids_cpu
-                            .entry(sqls_cpu[i].sql_id.clone())
-                            .or_insert(sqls_cpu[i].sql_module.clone());
-                    }
+                sqls_cpu.sort_by(|a, b| {
+                    b.cpu_time_s
+                        .total_cmp(&a.cpu_time_s)
+                        .then_with(|| a.sql_id.cmp(&b.sql_id))
+                });
+                for sql in sqls_cpu.iter().take(5) {
+                    sql_ids_cpu
+                        .entry(sql.sql_id.clone())
+                        .or_insert(sql.sql_module.clone());
                 }
             }
             for stats in &awr.instance_stats {
@@ -2787,7 +2770,7 @@ pub fn main_report_builder(
             }
         }
 
-        let mut ash_events: HashMap<String, Vec<f64>> = HashMap::new();
+        let mut ash_events: BTreeMap<String, Vec<f64>> = BTreeMap::new();
         collection
             .awrs
             .iter()
@@ -3230,7 +3213,7 @@ pub fn main_report_builder(
 
     /* Add information about Dictionary Cache anomalies to the summary */
     let stat_anomalies = detect_dc_anomalies_mad(&collection.awrs, &args);
-    let all_stats: HashSet<String> = collection
+    let all_stats: BTreeSet<String> = collection
         .awrs
         .iter()
         .flat_map(|a| a.dictionary_cache.clone())
@@ -3261,7 +3244,7 @@ pub fn main_report_builder(
 
     /* Add information about Library Cache anomalies to the summary */
     let stat_anomalies = detect_libcache_anomalies_mad(&collection.awrs, &args);
-    let all_stats: HashSet<String> = collection
+    let all_stats: BTreeSet<String> = collection
         .awrs
         .iter()
         .flat_map(|a| a.library_cache.clone())
@@ -3293,7 +3276,7 @@ pub fn main_report_builder(
 
     /* Add information about Latch Activity anomalies to the summary */
     let stat_anomalies = detect_latch_activity_anomalies_mad(&collection.awrs, &args);
-    let all_stats: HashSet<String> = collection
+    let all_stats: BTreeSet<String> = collection
         .awrs
         .iter()
         .flat_map(|a| a.latch_activity.clone())
@@ -3325,7 +3308,7 @@ pub fn main_report_builder(
 
     /* Add information about Time Model anomalies to the summary */
     let stat_anomalies = detect_time_model_anomalies_mad(&collection.awrs, &args);
-    let all_stats: HashSet<String> = collection
+    let all_stats: BTreeSet<String> = collection
         .awrs
         .iter()
         .flat_map(|a| a.time_model_stats.clone())
@@ -3371,7 +3354,7 @@ pub fn main_report_builder(
         args.mad_top
     );
 
-    let all_loadprofile: HashSet<String> = collection
+    let all_loadprofile: BTreeSet<String> = collection
         .awrs
         .iter()
         .flat_map(|awr| &awr.load_profile)
@@ -4678,6 +4661,9 @@ pub fn main_report_builder(
     strip_gradient_descriptions(&mut report_for_ai);
     /* ***************************************************** */
 
+    report_for_ai
+        .load_profile_anomalies
+        .sort_by(LoadProfileAnomalies::compare_severity);
     report_for_ai.initialization_parameters = collection.initialization_parameters.clone();
     debug_note!(
         "Main report build completed: snapshots={}, serialized_report_bytes={}",
@@ -4716,3 +4702,7 @@ mod instance_efficiency_tests {
         assert!(!generate_instance_efficiency_plot(&Vec::new(), &(0, 4), "").is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "analyze_tests.rs"]
+mod selection_regression_tests;

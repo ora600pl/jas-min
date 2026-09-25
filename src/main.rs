@@ -28,8 +28,8 @@ pub(crate) use analysis::{
     access_path, analyze, anomalies, degradation, gradient, measurements, performance_hints,
     quantile,
 };
-pub(crate) use common::{staticdata, tools};
 pub(crate) use cli::Args;
+pub(crate) use common::{staticdata, tools};
 pub(crate) use parsing::awr;
 pub(crate) use report::{issues as report_issues, signals as report_signals};
 
@@ -97,8 +97,7 @@ fn validate_cli_inputs(args: &Args) -> Result<(), String> {
         }
         if project_source_count != 1 || !args.file.is_empty() {
             return Err(
-                "--nmon requires exactly one --directory or --json-file project source"
-                    .to_string(),
+                "--nmon requires exactly one --directory or --json-file project source".to_string(),
             );
         }
     }
@@ -480,12 +479,11 @@ fn main() {
                 fname = args.outfile.clone();
             }
             debug_note!("Starting to parse directory: {}", args.directory());
-            let parsed = awr::parse_awr_dir(args.clone(), events_sqls, &fname).unwrap_or_else(
-                |error| {
+            let parsed =
+                awr::parse_awr_dir(args.clone(), events_sqls, &fname).unwrap_or_else(|error| {
                     eprintln!("ERROR: {error}");
                     std::process::exit(2);
-                },
-            );
+                });
             report_for_ai = parsed.report_for_ai;
         } else {
             eprintln!("ERROR: Directory: '{}' does not exists!", args.directory());
@@ -494,12 +492,10 @@ fn main() {
     } else if !args.json_file().is_empty() {
         debug_note!("Entering JSON analysis mode: file='{}'", args.json_file());
         if PathBuf::from(args.json_file()).exists() {
-            let parsed = awr::prarse_json_file(args.clone(), events_sqls).unwrap_or_else(
-                |error| {
-                    eprintln!("ERROR: {error}");
-                    std::process::exit(2);
-                },
-            );
+            let parsed = awr::prarse_json_file(args.clone(), events_sqls).unwrap_or_else(|error| {
+                eprintln!("ERROR: {error}");
+                std::process::exit(2);
+            });
             report_for_ai = parsed.report_for_ai;
             //let file_and_ext: Vec<&str> = args.json_file.split('.').collect();
             reportfile = match PathBuf::from(args.json_file()).file_stem() {
@@ -707,6 +703,55 @@ mod cli_tests {
         assert_eq!(
             unique_project_id("/other/Before AWR.json", &mut used),
             "before-awr-2"
+        );
+    }
+}
+
+#[cfg(test)]
+mod toon_regression_tests {
+    use serde_json::json;
+
+    #[test]
+    fn optimized_toon_is_byte_compatible_with_upstream() {
+        let strings = [
+            "",
+            " ",
+            "true",
+            "false",
+            "null",
+            "0",
+            "05",
+            "-3.14",
+            "1e-6",
+            "1E6",
+            "a,b",
+            "a:b",
+            "a.b",
+            "[x]",
+            "{x}",
+            "- item",
+            "a\"b",
+            "a\\b",
+            "a\nb\rc\td",
+            "Żółć",
+            "abc",
+            "a東京",
+            "１２",
+            "١٢",
+        ];
+        let mut objects = Vec::new();
+        for (i, text) in strings.iter().enumerate() {
+            let value = json!({*text: text, "number": i as f64 / 1000.0, "flag": i % 2 == 0, "missing": null, "nested": {"key": text}});
+            assert_eq!(
+                toon::encode(&value, None),
+                toon_reference::encode(&value, None)
+            );
+            objects.push(value);
+        }
+        let report = json!({"hints": objects, "rows": [{"x":0,"y":"hello"},{"x":1,"y":"05"}], "strings":strings,"mixed":[null,{},[],1,true,"abc"],"empty":[],"large":1e20});
+        assert_eq!(
+            toon::encode(&report, None),
+            toon_reference::encode(&report, None)
         );
     }
 }

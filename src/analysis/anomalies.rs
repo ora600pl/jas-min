@@ -341,6 +341,7 @@ fn detect_anomalies_mad_sliding(
     }
 
     let top_n = args.mad_top;
+
     let len = awrs.len();
     if len == 0 {
         return anomalies;
@@ -824,6 +825,18 @@ pub fn trim_anomalies_summary(
     */
     let top_n = args.mad_top;
 
+    // Equal MAD scores are common (including capped outliers). Resolve ties before
+    // truncating so HashMap iteration cannot change which anomalies survive.
+    for categories in anomalies_summary.values_mut() {
+        for anomalies in categories.values_mut() {
+            anomalies.sort_by(|a, b| {
+                b.mad_score
+                    .total_cmp(&a.mad_score)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+        }
+    }
+
     if top_n == 0 {
         debug_note!(
             "Anomaly trimming disabled: clusters={}, anomaly_points={}",
@@ -835,13 +848,6 @@ pub fn trim_anomalies_summary(
 
     for (_snap_key, anomalies_by_category) in anomalies_summary.iter_mut() {
         for (_category, anomalies) in anomalies_by_category.iter_mut() {
-            anomalies.sort_by(|left, right| {
-                right
-                    .mad_score
-                    .partial_cmp(&left.mad_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
             anomalies.truncate(top_n);
         }
 
@@ -964,5 +970,46 @@ mod tests {
         assert_eq!(event_anomalies.len(), 1);
         assert_eq!(event_anomalies[0].0, "snap-004");
         assert!(event_anomalies[0].1.is_finite());
+    }
+}
+
+#[cfg(test)]
+mod ordering_regression_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn capped_and_unlimited_anomalies_have_stable_ties() {
+        for top in [0, 2] {
+            let args = Args::parse_from(["jas-min", "--mad-top", &top.to_string()]);
+            for names in [["c", "a", "b"], ["b", "c", "a"], ["a", "b", "c"]] {
+                let mut summary = BTreeMap::from([(
+                    (1, "date".into()),
+                    BTreeMap::from([(
+                        "category".into(),
+                        names
+                            .into_iter()
+                            .map(|name| AnomalySummaryItem {
+                                name: name.into(),
+                                mad_score: 100.0,
+                            })
+                            .collect(),
+                    )]),
+                )]);
+                trim_anomalies_summary(&mut summary, &args);
+                let actual = summary.values().next().unwrap()["category"]
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    actual,
+                    if top == 0 {
+                        vec!["a", "b", "c"]
+                    } else {
+                        vec!["a", "b"]
+                    }
+                );
+            }
+        }
     }
 }

@@ -71,6 +71,19 @@ diagnostics in older files mean an unverified legacy fit.
 
 ## AWR source coverage
 
+Peak-source selection uses full-precision seconds: up to five SQLs by elapsed
+time and by CPU time, and up to ten foreground/background waits per eligible
+snapshot. Equal values are resolved by SQL ID or event name ascending before
+truncation. Sections with fewer rows retain all their rows, including a single
+SQL. MAD-detected SQLs/events can additionally enter the existing source union.
+
+Collinear groups use deterministic greedy clustering in name order. A candidate
+is compared with the group's first (lexically smallest) member; passing the
+absolute-correlation threshold adds it to the first qualifying group. This is
+representative-based grouping, not a claim that every pair within a group passes
+the threshold. Raw deltas are summed in name order before the group's univariate
+fit. Neither group membership nor floating-point summation depends on hash seeds.
+
 SQL plotting/model inputs remain a zero-filled **retained-work proxy**. An
 absent AWR TOP row is not a measured zero. A mask separate from numeric values
 records actual elapsed-list/CPU-list membership in each snapshot.
