@@ -1,16 +1,18 @@
 # ONE MORE QUERY — The Evidence Distillery
 
-Pięcioetapowy, interaktywny kurs PL/EN do prelekcji **“Stop being DBA. Stop being DEV. Performance tuning is math!”**.
+Komiksowe „00 Intro” oraz pięcioetapowy, interaktywny kurs PL/EN do prelekcji **“Stop being DBA. Stop being DEV. Performance tuning is math!”**.
 
 **[Otwórz kurs / Open the course](https://ora600pl.github.io/jas-min/)**
 
 Jeden samowystarczalny plik HTML, działający także offline. Bez kont, kluczy API, CDN, instalacji i przesyłania danych do AI. Język można zmieniać bez utraty etapu, wyborów ani ustawień. Ruch respektuje ustawienia dostępności i można go ograniczyć ręcznie.
 
-## Pięć etapów
+## Intro i pięć etapów
+
+**00 Intro** (`#pl/intro`, `#en/intro`) otwiera kurs sześcioma ilustrowanymi kadrami: tysiące metryk, chaos, dwa tygodnie raportów AWR, rozmiar HTML, lokalna destylacja i cztery modele. Liczby katalogowe oraz szacowany wolumen raportów mają rozwijane objaśnienie założeń i odnośniki do Oracle. Ilustracje są kodem SVG, a tekst jest tłumaczony, zaznaczalny i dostępny offline. Intro jest stroną startową; dotychczasowe adresy `#pl/0`–`#pl/4` i ich wersje EN zachowują znaczenie.
 
 1. **Hałas:** wszystkie 1 339 obserwacji na wykresach; wspólna i osobne osie, wprowadzenie do AAS i wybór pierwszego tropu.
 2. **Kontekst:** ilustracja ograniczeń wielkich załączników, edytowalne założenia budżetu tokenów i porównanie z małym, celowo wybranym zbiorem.
-3. **Destylacja:** sześć zaworów — jakość danych, różnice, skala, modele, zbieżność i etykieta wyniku. Cztery piwne dymki objaśniają Ridge, Elastic Net, Huber i Q95.
+3. **Destylacja:** prowadzona ścieżka sześciu kroków — sprawdź dane, policz zmiany, porównaj skale, poznaj modele, sprawdź wyniki i zapakuj wynik. „Dalej” odblokowuje kolejny krok; można wracać do odwiedzonych. Każdy krok wyjaśnia wejście, działanie i wyjście. Schemat rozdziela dopływ do wszystkich czterech modeli, a status niezbieżnego Q95 pojawia się dopiero przy sprawdzaniu wyników. Cztery opcjonalne piwne dymki objaśniają modele. Ustawienia i postęp pozostają zachowane przy zmianie języka; restart ścieżki resetuje tylko jej postęp.
 4. **Sygnał:** dwa osobne wybory — model i wielkość zmiany P90/P99/MAX; rzeczywiste lokalne przeliczenie Ridge; sześć rozwijanych kroków pochodzenia wyniku; sześć eliminacji Gaussa i cztery podstawienia wsteczne. Wyjaśnienie wybranego modelu można otworzyć bez opuszczania rankingu.
 5. **Jeszcze jedno:** sprawdzalna hipoteza i szablon żądania MCP, quiz o brakach, podgląd dokładnego JSON-u i eksporty.
 

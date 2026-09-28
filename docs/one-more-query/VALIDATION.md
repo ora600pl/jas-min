@@ -1,5 +1,27 @@
 # Validation
 
+## 2026-09-28 — release verification after publication approval
+
+- User approved publishing Intro, Context and guided Distil to GitHub Pages after local review. Earlier local-only notes below describe the previous review boundary.
+- Rebuilt and packaged the standalone page: **59 checks passed**, ZIP allowlist/integrity and byte identity passed. Repeated the complete Chrome suite on the final build: **619 checks passed**, no browser exceptions, localhost-only requests, direct file launch passed.
+- HTML: **297,229 bytes**, SHA-256 `0450aa91c61f919be92f9e8ee0688e8eae875c399339ed602af353173e6e332e`. Pages publishes only `index.html` and `.nojekyll` through the existing workflow. No hosting configuration or original measurement data changed.
+
+## 2026-09-28 — guided Distil and Context rationale, local only
+
+- Context now explicitly connects large AWR uploads to token costs and context clutter, without claiming a measured accuracy loss.
+- Replaced the freely selectable Distil valves with six sequentially unlocked steps, back/revisit controls, a restart, step-specific input/output explanations and a final handoff to Signal. Language changes preserve progress. Optional model dialogs remain available within the model step.
+- Both diagram layouts now have four separate branches, readable regression-model captions and no unexplained STOP marker. Q95's nonconvergence/exclusion is introduced at the checking step; it is still shown receiving data. Pipe animation is labelled as an illustration, not live fitting, and respects reduced motion.
+- **59 numerical/static/source-contract checks and 619 browser checks passed.** Added sequential lock, back/revisit/restart, focus, language-state, final handoff, four-pipe and delayed-Q95 checks. Every stage was checked in PL/EN at 320/390/900/1440 px. Existing calculations and dialogs still pass; no exceptions or external requests. Visually inspected desktop model-stage and mobile checking-stage screenshots. Native Safari was not tested.
+- No original data, coefficients, model eligibility or Rust analysis logic changed. Local preview only; no commit, push, deployment, or upload ZIP replacement.
+
+## 2026-09-28 — 00 Intro, local preview only
+
+- Added a six-panel PL/EN comic before the five existing chapters. Default entry and the brand link open Intro; all previous numeric chapter hashes retain their meaning. The comic is native SVG with selectable bilingual HTML text, no remote assets or additional dependencies.
+- **58 numerical/static/source-contract checks passed; 501 browser checks passed.** Chrome exercised all six pages in both languages at 320/390/900/1440 px, Intro-to-Noise and back, brand navigation, language switching, reduced motion, and all existing model/operational interactions. No JavaScript exceptions or external requests; existing direct-file launch passed.
+- Inspected full-page Polish desktop and mobile renders. The phone layout stacks the comic and uses two navigation rows. Native iOS Safari was not tested.
+- Oracle catalogue counts are presented as scenario values, not guaranteed counts for every 19c installation. Linked Oracle reference documents identify the relevant views and explain statistics variability. Report counts and HTML size have explicit illustrative arithmetic; bytes are not equated to extracted-text tokens.
+- Original measurements, regression calculations and eligibility rules are unchanged. No Opus consultation was performed for this introductory addition. **Local changes only: no commit, push, deployment or replacement of the upload ZIP.**
+
 ## 2026-09-25 — operational triage, Share % and Typical Impact
 
 - Added bilingual operational guidance to Signal: magnitude before rank, P99 as a starting point for large incidents, MAX for isolated extremes and P90 for context. The working threshold is explicitly a teaching control, not a JAS-MIN default or a universal severity threshold.

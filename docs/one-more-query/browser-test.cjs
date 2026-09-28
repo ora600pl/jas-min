@@ -11,13 +11,25 @@ let browser;
  const check=(condition,label)=>{assert.ok(condition,label);checks++;};
  for(const lang of ['pl','en'])for(const width of [320,390,900,1440]){
   await page.setViewportSize({width,height:1050});
-  for(let scene=0;scene<5;scene++){
+  for(const scene of ['intro',0,1,2,3,4]){
    await page.goto(url+'#'+lang+'/'+scene);await page.waitForFunction(()=>!!window.OneMoreQuery);
    check(await page.locator('h1').isVisible(),`${lang} ${width} scene ${scene} heading`);
    const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);
    check(!overflow,`${lang} ${width} scene ${scene} overflow`);
   }
  }
+ for(const lang of ['pl','en']){
+  await page.goto(url+'#'+lang+'/intro');check(await page.locator('.comic-panel').count()===6,lang+' six comic panels');check(await page.locator('#chapters button').count()===6,lang+' six chapter buttons');
+  check(await page.locator('button[data-scene="intro"]').getAttribute('aria-current')==='step',lang+' Intro current chapter');
+  for(const width of [320,390,1440]){await page.setViewportSize({width,height:1050});await page.screenshot({path:path.join(artifacts,lang+'-intro-'+width+'.png'),fullPage:true});}
+  await page.locator('.intro-assumptions > summary').click();check((await page.locator('.intro-assumptions').innerText()).includes(lang==='pl'?'6,2 GB':'6.2 GB'),lang+' size arithmetic disclosed');
+  await page.locator('[data-next]').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)===0,lang+' Intro leads to Noise');
+  await page.locator('[data-back]').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)==='intro',lang+' Noise returns to Intro');
+  await page.locator('#language').click();check(await page.locator('html').getAttribute('lang')!==lang,lang+' Intro language switches');
+ }
+ await page.goto(url);await page.reload();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)==='intro','fresh URL opens Intro');
+ await page.locator('[data-scene="3"]').click();await page.locator('.brand').click();await page.locator('.intro-comic').waitFor({state:'visible'});check(await page.locator('.intro-comic').isVisible(),'brand opens Intro');
+ check(await page.locator('.comic-flow').evaluate(e=>getComputedStyle(e).animationName)==='none','Intro respects reduced motion');
  await page.setViewportSize({width:1440,height:1050});await page.goto(url+'#pl/0');
  await page.locator('#separate').click();check(await page.locator('#separate').getAttribute('aria-pressed')==='true','separate scales');
  await page.locator('[data-guess="1"]').click();check((await page.locator('#guess-feedback').innerText()).includes('cursor: pin S wait on X'),'recorded prediction');check(await page.locator('[data-guess="1"]').evaluate(e=>document.activeElement===e),'prediction retains keyboard focus');
@@ -26,7 +38,34 @@ let browser;
  await page.locator('[data-scene="1"]').click();await page.locator('#volume').fill('1000');await page.locator('#volume').dispatchEvent('input');check((await page.locator('#token-estimate').innerText()).includes('250'),'context slider');
  await page.locator('#local-route').click();check((await page.locator('#route-feedback').innerText()).includes('entry points'),'local-route feedback');check(await page.locator('#local-route').getAttribute('aria-pressed')==='true','local route visibly selected');
  await page.locator('[data-scene="2"]').click();
- for(let k=0;k<6;k++){await page.locator('[data-stage="'+k+'"]').click();check((await page.locator('#calc-content').innerText()).length>100,'calculation stage '+k);}
+ for(let k=0;k<6;k++){
+  check(await page.evaluate(()=>window.OneMoreQuery.getState().stage)===k,'guided step '+k);
+  check((await page.locator('#calc-content').innerText()).length>100,'calculation stage '+k);
+  for(let future=k+1;future<6;future++)check(await page.locator('[data-stage="'+future+'"]').isDisabled(),'future step '+future+' locked at '+k);
+  check(await page.locator('#apparatus [data-model-branch]').count()===4,'four independent pipes at '+k);
+  check((await page.locator('#apparatus').textContent()).includes('not eligible')===(k>=4),'Q95 status appears at check step '+k);
+  if(k<5)await page.locator('#journey-next').click();
+ }
+ await page.locator('#journey-next').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)===3,'guided finish opens Signal');
+ await page.locator('button[data-scene="2"]').click();
+ for(const lang of ['pl','en']){
+  if(await page.locator('html').getAttribute('lang')!==lang)await page.locator('#language').click();
+  const savedFit=JSON.stringify(await page.evaluate(()=>window.OneMoreQuery.getFit()));
+  await page.locator('#restart-journey').click();check(await page.locator('[data-stage="1"]').isDisabled(),lang+' restart locks future steps');
+  for(let k=0;k<6;k++){
+   check(await page.locator('#journey-back').isDisabled()===(k===0),lang+' previous-step boundary '+k);
+   check(await page.locator('#journey-heading').evaluate(e=>document.activeElement===e),lang+' heading receives focus '+k);
+   for(const width of [320,390,900,1440]){
+    await page.setViewportSize({width,height:1050});
+    check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),lang+' journey '+k+' fits '+width);
+    if([0,3,4].includes(k)&&[390,1440].includes(width))await page.screenshot({path:path.join(artifacts,lang+'-journey-'+k+'-'+width+'.png'),fullPage:true});
+   }
+   if(k===3){await page.locator('#language').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().stage)===3,lang+' language preserves current step');check(await page.locator('[data-stage="4"]').isDisabled(),lang+' language preserves lock');await page.locator('#language').click();}
+   if(k<5)await page.locator('#journey-next').click();
+  }
+  await page.locator('#journey-back').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().stage)===4,lang+' previous step works');await page.locator('[data-stage="5"]').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().stage)===5,lang+' visited step can reopen');
+  check(savedFit===JSON.stringify(await page.evaluate(()=>window.OneMoreQuery.getFit())),lang+' journey does not change fitting');
+ }
  await page.screenshot({path:path.join(artifacts,'distillery.png'),fullPage:true});
  await page.locator('[data-stage="3"]').click();
  for(const lang of ['pl','en']){
