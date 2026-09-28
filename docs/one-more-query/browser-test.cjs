@@ -23,13 +23,33 @@ let browser;
   check(await page.locator('button[data-scene="intro"]').getAttribute('aria-current')==='step',lang+' Intro current chapter');
   for(const width of [320,390,1440]){await page.setViewportSize({width,height:1050});await page.screenshot({path:path.join(artifacts,lang+'-intro-'+width+'.png'),fullPage:true});}
   await page.locator('.intro-assumptions > summary').click();check((await page.locator('.intro-assumptions').innerText()).includes(lang==='pl'?'6,2 GB':'6.2 GB'),lang+' size arithmetic disclosed');
-  await page.locator('[data-next]').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)===0,lang+' Intro leads to Noise');
-  await page.locator('[data-back]').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)==='intro',lang+' Noise returns to Intro');
+  await page.locator('[data-next]').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)===1,lang+' Intro leads to Context');
+  await page.locator('[data-back]').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)==='intro',lang+' Context returns to Intro');
   await page.locator('#language').click();check(await page.locator('html').getAttribute('lang')!==lang,lang+' Intro language switches');
  }
  await page.goto(url);await page.reload();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)==='intro','fresh URL opens Intro');
  await page.locator('[data-scene="3"]').click();await page.locator('.brand').click();await page.locator('.intro-comic').waitFor({state:'visible'});check(await page.locator('.intro-comic').isVisible(),'brand opens Intro');
  check(await page.locator('.comic-flow').evaluate(e=>getComputedStyle(e).animationName)==='none','Intro respects reduced motion');
+ for(const lang of ['pl','en']){
+  await page.goto(url+'#'+lang+'/intro');
+  check(JSON.stringify(await page.locator('#chapters button').evaluateAll(es=>es.map(e=>e.dataset.scene)))===JSON.stringify(['intro','1','0','2','3','4']),lang+' chapter order');
+  for(const scene of [1,0,2]){await page.locator('[data-next]').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)===scene,lang+' forward route '+scene);}
+  for(const scene of [0,1,'intro']){await page.locator('[data-back]').click();check(await page.evaluate(()=>window.OneMoreQuery.getState().scene)===scene,lang+' backward route '+scene);}
+  await page.locator('button[data-scene="1"]').click();
+  await page.locator('#volume').fill('100');await page.locator('#volume').dispatchEvent('input');
+  const rates=await page.evaluate(()=>window.CoursePricing.presets());
+  for(const rate of rates){await page.locator('#price-preset').selectOption(rate.id);check(Number(await page.locator('#input-price').inputValue())===rate.input,lang+' preset '+rate.id);check((await page.locator('#cost-equation').innerText()).endsWith(new Intl.NumberFormat(lang==='pl'?'pl-PL':'en-GB',{maximumFractionDigits:4}).format(25*rate.input)+' USD'),lang+' cost '+rate.id);}
+  await page.locator('#input-price').fill('2.5');check(await page.locator('#price-preset').inputValue()==='custom',lang+' editing selects custom');
+  check((await page.locator('#cost-equation').innerText()).includes(lang==='pl'?'62,5':'62.5'),lang+' fractional rate');
+  await page.locator('#language').click();check(await page.locator('#input-price').inputValue()==='2.5',lang+' custom rate persists through translation');await page.locator('#language').click();
+  for(const value of ['', '-1','1000001']){await page.locator('#input-price').fill(value);check(await page.locator('#input-price').getAttribute('aria-invalid')==='true',lang+' rejects rate '+value);check(await page.locator('#input-cost').innerText()==='—',lang+' no stale invalid cost');}
+  await page.locator('#input-price').fill('0');check(await page.locator('#input-price').getAttribute('aria-invalid')==='false',lang+' zero accepted');
+  await page.locator('#price-preset').selectOption('anthropic/claude-opus-5.5@base');
+  await page.locator('#volume').fill('1000');await page.locator('#volume').dispatchEvent('input');check((await page.locator('#cost-equation').innerText()).endsWith(new Intl.NumberFormat(lang==='pl'?'pl-PL':'en-GB').format(1000)+' USD'),lang+' volume changes cost');
+  check(await page.locator('.pricing-panel time').getAttribute('datetime')==='2026-09-28',lang+' dated price snapshot');
+  await page.locator('.pricing-panel details > summary').click();
+  for(const width of [320,390,900,1440]){await page.setViewportSize({width,height:1050});check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),lang+' expanded pricing fits '+width);if([390,1440].includes(width))await page.screenshot({path:path.join(artifacts,lang+'-pricing-'+width+'.png'),fullPage:true});}
+ }
  await page.setViewportSize({width:1440,height:1050});await page.goto(url+'#pl/0');
  await page.locator('#separate').click();check(await page.locator('#separate').getAttribute('aria-pressed')==='true','separate scales');
  await page.locator('[data-guess="1"]').click();check((await page.locator('#guess-feedback').innerText()).includes('cursor: pin S wait on X'),'recorded prediction');check(await page.locator('[data-guess="1"]').evaluate(e=>document.activeElement===e),'prediction retains keyboard focus');

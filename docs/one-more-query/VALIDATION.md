@@ -1,5 +1,12 @@
 # Validation
 
+## 2026-09-28 — Context before Noise and dated input pricing
+
+- Navigation, next/back controls, chapter numbers and Intro handoff now follow Intro → Context → Noise → Distil → Signal → One more query. Numeric hashes retain their existing semantic targets.
+- Added editable USD/1M input pricing and a static OpenRouter snapshot from 2026-09-28, fetched from the public models API. Four model families and seven explicit base/long-request rate presets; output prices are comparison-only. Rates are converted from per-token API values, not guessed. Request-size thresholds are not applied to aggregate report volume. No runtime network fetch was added.
+- **60 numerical/static/source-contract checks and 693 browser checks passed.** Added forward/back route checks, seven preset calculations per language, custom decimals, zero/invalid/empty/range handling, language retention, volume updates, dated source and expanded pricing at 320/390/900/1440 px. No browser exceptions or external requests. Visually inspected expanded Polish desktop and English phone layouts. Native Safari was not tested.
+- Original data, regression fitting and export contracts remain unchanged. Publication approved after local review. Release packaging repeated all 60 checks and passed ZIP integrity, allowlist and HTML byte-identity checks. HTML: 305,518 bytes, SHA-256 `fb2925734e9fd115c4f7c26cf1e8d460f7da9e25186133d604227a31efd5d344`.
+
 ## 2026-09-28 — release verification after publication approval
 
 - User approved publishing Intro, Context and guided Distil to GitHub Pages after local review. Earlier local-only notes below describe the previous review boundary.

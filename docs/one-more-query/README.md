@@ -10,13 +10,15 @@ Jeden samowystarczalny plik HTML, działający także offline. Bez kont, kluczy 
 
 **00 Intro** (`#pl/intro`, `#en/intro`) otwiera kurs sześcioma ilustrowanymi kadrami: tysiące metryk, chaos, dwa tygodnie raportów AWR, rozmiar HTML, lokalna destylacja i cztery modele. Liczby katalogowe oraz szacowany wolumen raportów mają rozwijane objaśnienie założeń i odnośniki do Oracle. Ilustracje są kodem SVG, a tekst jest tłumaczony, zaznaczalny i dostępny offline. Intro jest stroną startową; dotychczasowe adresy `#pl/0`–`#pl/4` i ich wersje EN zachowują znaczenie.
 
-1. **Hałas:** wszystkie 1 339 obserwacji na wykresach; wspólna i osobne osie, wprowadzenie do AAS i wybór pierwszego tropu.
-2. **Kontekst:** ilustracja ograniczeń wielkich załączników, edytowalne założenia budżetu tokenów i porównanie z małym, celowo wybranym zbiorem.
+1. **Kontekst:** ilustracja ograniczeń wielkich załączników, edytowalne założenia budżetu tokenów i kosztu wejścia. Własna cena USD/1M tokenów lub stawka z datowanego cennika OpenRouter (2026-09-28): Claude Opus 5.5, GPT-6 Astra, Gemini 3.1 Pro Preview i Grok 4.7. Osobne warianty dla długich zapytań, rozwijane porównanie cen wejścia/wyjścia. Kalkulator nie wlicza odpowiedzi, cache, narzędzi, podatków ani powtórnego przesyłania danych.
+2. **Hałas:** wszystkie 1 339 obserwacji na wykresach; wspólna i osobne osie, wprowadzenie do AAS i wybór pierwszego tropu.
 3. **Destylacja:** prowadzona ścieżka sześciu kroków — sprawdź dane, policz zmiany, porównaj skale, poznaj modele, sprawdź wyniki i zapakuj wynik. „Dalej” odblokowuje kolejny krok; można wracać do odwiedzonych. Każdy krok wyjaśnia wejście, działanie i wyjście. Schemat rozdziela dopływ do wszystkich czterech modeli, a status niezbieżnego Q95 pojawia się dopiero przy sprawdzaniu wyników. Cztery opcjonalne piwne dymki objaśniają modele. Ustawienia i postęp pozostają zachowane przy zmianie języka; restart ścieżki resetuje tylko jej postęp.
 4. **Sygnał:** dwa osobne wybory — model i wielkość zmiany P90/P99/MAX; rzeczywiste lokalne przeliczenie Ridge; sześć rozwijanych kroków pochodzenia wyniku; sześć eliminacji Gaussa i cztery podstawienia wsteczne. Wyjaśnienie wybranego modelu można otworzyć bez opuszczania rankingu.
 5. **Jeszcze jedno:** sprawdzalna hipoteza i szablon żądania MCP, quiz o brakach, podgląd dokładnego JSON-u i eksporty.
 
 ### Wnioski operacyjne: wielkość wyniku przed miejscem w rankingu
+
+Kolejność ekranów to Intro → Kontekst → Hałas → Destylacja → Sygnał → Jeszcze jedno. Historyczne adresy pozostają stabilne: `#pl/1` nadal otwiera Kontekst, `#pl/0` Hałas (tak samo w EN). Numer w zakładce oznacza miejsce w historii, nie identyfikator trasy. `openrouter-prices.json` zawiera wyciąg API wraz z datą pobrania; build osadza go w HTML. Odświeżenie cennika jest operacją autorską, nie połączeniem sieciowym podczas korzystania z kursu. Stawki bazowe i progi są wybierane jawnie, niezależnie od całkowitego wolumenu tekstu.
 
 W „04 Sygnał” przycisk pod porównaniem P90/P99 prowadzi do lekcji **„Złoty medal za mały problem?”**:
 
