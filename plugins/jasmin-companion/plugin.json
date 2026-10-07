@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "jasmin-companion", "version": "0.1.0",
+  "description": "Rozmawiaj o wydajności Oracle w Codex i oglądaj dowody z JAS-MIN na panelu z awatarem.",
+  "author": { "name": "ORA-600" },
+  "extensions": { "com.openai": { "interface": {
+    "displayName": "JAS-MIN Companion",
+    "shortDescription": "Głos Codex, awatar i wykresy Oracle",
+    "longDescription": "Lokalny panel diagnostyczny sterowany narzędziami MCP. Korzysta z natywnej rozmowy Codex; nie wymaga klucza OpenAI API. Zawiera tryb demo i połączenie z lokalnym serwerem JAS-MIN.",
+    "developerName": "ORA-600", "category": "Developer Tools",
+    "brandColor": "#70D8BE", "logo": "./assets/avatar.png",
+    "defaultPrompt": ["Otwórz JAS-MIN Companion w trybie demo i pokaż obciążenie bazy."]
+  } } }
+}
