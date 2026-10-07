@@ -17,11 +17,12 @@ node plugins/jasmin-companion/install.mjs
 ```
 
 Instalator rejestruje repo jako marketplace `jasmin-local`, instaluje i włącza
-`jasmin-companion@jasmin-local`. Zapisuje lokalne ścieżki Node i serwera w
-ignorowanych przez Git plikach `mcp.json` i `.mcp.json`. Dzięki temu działa również,
-gdy desktop ma inny PATH niż terminal. Ścieżki wskazują zainstalowaną kopię w cache,
-nie pliki serwera w bieżącym branchu. Po zmianie kodu uruchom instalator ponownie.
-Opcjonalnie `CODEX_CLI` wskazuje konkretny plik wykonywalny CLI.
+`jasmin-companion@jasmin-local`. Format przenośny `mcp.json` uruchamia zawarty
+w paczce `./launch.sh`, który znajduje serwer niezależnie od katalogu projektu.
+Node 22+ musi być dostępny w PATH procesu desktop. Dla starszego CLI instalator
+generuje także ignorowany przez Git `.mcp.json` z lokalnymi ścieżkami Node i serwera.
+Po zmianie kodu uruchom instalator ponownie. Na macOS domyślnie używa silnika
+z aplikacji ChatGPT desktop; `CODEX_CLI` pozwala wskazać inny plik wykonywalny.
 
 **Przeładuj Codex, aby załadować nowy skill i narzędzia MCP.** Następnie wpisz:
 
@@ -55,6 +56,8 @@ analizy, automatycznie dopisuje `analysis_id` i `project_id`, zachowuje identyfi
 dowodów. Obsługuje 13 narzędzi do odczytu; nie wystawia narzędzi zapisu raportów.
 Adres MCP musi być lokalny; dla zdalnego serwera można użyć tunelu SSH.
 Tryb live nie przełącza się sam na dane syntetyczne po błędzie połączenia.
+Skill pobiera dokładne nazwy metryk przez `list_available_metrics`: starszy serwer
+DNV zwraca serię dla `DB Time(s)`, ale pustą serię dla skrótu `DBTime`.
 
 ## Architektura i granice
 
@@ -77,11 +80,11 @@ Nie korzysta ze zdarzeń mikrofonu ani natywnego głosu. Panel działa jako loka
 strona w przeglądarce Codex, bez zależności od obsługi osadzonych MCP Apps.
 
 Nowy format `plugin.json` ma także manifest zgodności `.codex-plugin/plugin.json`.
-Na zainstalowanym CLI 0.144.5 dopiero manifest zgodności wykrywa metadane/MCP.
-Ta wersja nie rozwija `${CLAUDE_PLUGIN_ROOT}` w argumentach MCP, więc instalator
-generuje dokładne ścieżki. Pliki źródłowe bez uruchomienia instalatora nie są jeszcze
-gotowym archiwum instalacyjnym. To lokalna paczka developerska, nie publikacja
-w publicznym katalogu.
+Starszy CLI 0.144.5 używa manifestu zgodności i wygenerowanego `.mcp.json`.
+Desktop 0.160.1 używa formatu przenośnego i odrzuca absolutne ścieżki w polu
+`mcp.json` → `command`. Z tego powodu konfiguracje transportu są celowo różne.
+Obie uruchamiają ten sam serwer w zainstalowanej kopii paczki. To lokalna paczka
+developerska, nie publikacja w publicznym katalogu.
 
 Grafika awatara została wygenerowana w tej rozmowie; to oryginalna zakapturzona
 postać inspirowana ogólnym kierunkiem wizualnym, nie kopia logotypu POUG.
@@ -99,16 +102,21 @@ Jest osobnym panelem testowym; rozmowa z zainstalowaną wtyczką otworzy swoją 
 
 Sprawdzone 2026-10-07:
 
-- 4 testy integracyjne: rzeczywisty transport stdio; cykl HTTP/SSE i DELETE
+- 4 testy integracyjne: uruchomienie przez przenośny launcher z obcego katalogu
+  i rzeczywisty transport stdio; cykl HTTP/SSE i DELETE
   z kontrolowanym serwerem MCP; routing projektu, izolacja sesji, wybór SQL/snapshotu,
   limity, ochrona panelu i zachowanie zer/braków danych.
 - Instalacja przez CLI; `plugin/read` widzi skill i MCP; `mcpServerStatus/list`
-  uruchamia zainstalowany serwer i odczytuje wszystkie 8 narzędzi.
+  w silniku desktop 0.160.1 uruchomionym z katalogu DNV odczytuje wszystkie
+  8 narzędzi zainstalowanej wtyczki.
+- Test live z katalogu DNV: zainstalowany launcher → MCP stdio wtyczki → lokalny
+  JAS-MIN → projekt CEBSOFPR1 → dokładna nazwa `DB Time(s)` → 1339 pomiarów
+  i widok dowodu w stanie panelu. Bez zapisu raportu i bez zapytań do Oracle.
 - Panel obejrzany w przeglądarce Codex; wykres, historia i wybór punktu działają.
 
-Rozmowa głosowa z mikrofonem użytkownika oraz połączenie tej wersji wtyczki
-z rzeczywistym zestawem danych JAS-MIN nie były jeszcze testowane. Test integracji
-upstream używa serwera kontrolnego, nie żywej bazy Oracle.
+Rozmowa głosowa z mikrofonem użytkownika nie była jeszcze testowana.
+Automatyczne testy upstream używają serwera kontrolnego; osobno wykonano opisany
+wyżej test z działającym JAS-MIN na rzeczywistej kolekcji DNV.
 
 Usunięcie instalacji (zachowuje kod w repo):
 

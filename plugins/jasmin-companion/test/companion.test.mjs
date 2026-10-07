@@ -4,11 +4,16 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { createServer } from '../server.mjs';
 import { localEndpoint } from '../companion.mjs';
 
-test('MCP panel: real stdio lifecycle, demo evidence, selection and shutdown', async t => {
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../server.mjs', import.meta.url))], { stdio: ['pipe', 'pipe', 'pipe'] });
+test('Portable launcher from a different project: stdio lifecycle, evidence, selection and shutdown', async t => {
+  const manifest = JSON.parse(await readFile(new URL('../mcp.json', import.meta.url), 'utf8'));
+  const { command, args } = manifest.mcpServers.companion;
+  assert.ok(command.startsWith('./'), 'Portable command must be a contained package launcher');
+  const child = spawn(fileURLToPath(new URL('../' + command, import.meta.url)), args, { cwd: tmpdir(), stdio: ['pipe', 'pipe', 'pipe'] });
   t.after(() => child.kill());
   let seq = 0; const pending = new Map();
   createInterface({ input: child.stdout }).on('line', line => { const r = JSON.parse(line); pending.get(r.id)?.(r); pending.delete(r.id); });
