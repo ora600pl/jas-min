@@ -75,7 +75,10 @@ przechowywana w pamięci. URL panelu daje dostęp do danych tej sesji — nie pu
 Dane zwrócone narzędziami trafiają do rozmowy Codex zgodnie z jej ustawieniami;
 „lokalny panel” nie oznacza, że analiza przez Codex jest offline.
 
-Awatar oddycha w stanie bezczynności i rozświetla się podczas pracy narzędzi.
+Awatar ma łagodną, kobiecą twarz i pulsującą turkusową poświatę, która nasila się
+podczas pracy narzędzi. Ustawienie ograniczonego ruchu wyłącza animacje.
+Interfejs, podpisy i notatki modelu w panelu są po angielsku, także podczas rozmowy
+po polsku. Surowe dowody MCP, SQL i identyfikatory zachowują treść źródłową.
 Nie korzysta ze zdarzeń mikrofonu ani natywnego głosu. Panel działa jako lokalna
 strona w przeglądarce Codex, bez zależności od obsługi osadzonych MCP Apps.
 

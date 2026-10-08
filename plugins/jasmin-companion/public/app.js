@@ -1,6 +1,6 @@
 import { renderChart } from './charts.js';
 const $ = id => document.getElementById(id);
-const names = { get_metric_time_series: 'Obciążenie bazy', top_wait_events_in_snapshot: 'Na co czeka baza?', top_sqls_in_snapshot: 'SQL pod lupą', get_database_load_summary: 'Podsumowanie obciążenia', list_snapshots: 'Snapshoty' };
+const names = { get_metric_time_series: 'Database load', top_wait_events_in_snapshot: 'What is the database waiting for?', top_sqls_in_snapshot: 'SQL in focus', get_database_load_summary: 'Load summary', list_snapshots: 'Snapshots' };
 let revision = -1;
 async function action(route, args) {
   try {
@@ -10,12 +10,12 @@ async function action(route, args) {
 }
 function render(state) {
   document.body.classList.toggle('working', state.status === 'working');
-  $('activity').textContent = state.status === 'working' ? 'Sprawdzam dane…' : 'Gotowy do pracy';
-  $('mode').textContent = state.mode === 'demo' ? 'DEMO · DANE SYNTETYCZNE' : state.mode === 'live' ? 'JAS-MIN · MCP' : 'OCZEKIWANIE NA CODEX';
+  $('activity').textContent = state.status === 'working' ? 'Checking the data…' : 'Ready when you are';
+  $('mode').textContent = state.mode === 'demo' ? 'DEMO · SYNTHETIC DATA' : state.mode === 'live' ? 'JAS-MIN · MCP' : 'WAITING FOR CODEX';
   $('project').textContent = state.project || '';
   const view = state.views.find(v => v.id === state.current);
   const selection = state.selection;
-  $('selection').textContent = selection.sql_id ? `SQL ${selection.sql_id} · #${selection.snap_id}` : selection.snap_id != null ? `Snapshot #${selection.snap_id}` : 'Wybierz punkt na wykresie';
+  $('selection').textContent = selection.sql_id ? `SQL ${selection.sql_id} · #${selection.snap_id}` : selection.snap_id != null ? `Snapshot #${selection.snap_id}` : 'Select a chart point';
   $('history').replaceChildren();
   for (const item of [...state.views].reverse()) {
     const b = document.createElement('button');
@@ -26,22 +26,22 @@ function render(state) {
   }
   if (view) {
     $('title').textContent = view.args.name || names[view.tool] || view.tool;
-    $('evidence').textContent = view.data.evidence_id || 'Odpowiedź MCP';
+    $('evidence').textContent = view.data.evidence_id || 'MCP response';
     renderChart($('chart'), view, point => action('selection', { snap_id: point.snap_id, ...(point.sql_id ? { sql_id: point.sql_id } : {}) }));
     for (const p of document.querySelectorAll('.point')) p.classList.toggle('selected', p.dataset.snapId === String(selection.snap_id));
     $('raw').textContent = JSON.stringify(view.data, null, 2);
   } else {
-    $('title').textContent = 'Czekam na pierwsze pytanie'; $('chart').textContent = 'Powiedz w Codex: „Pokaż obciążenie bazy”.'; $('evidence').textContent = ''; $('raw').textContent = '{}';
+    $('title').textContent = 'Waiting for your first question'; $('chart').textContent = 'Say in Codex: “Show database load.”'; $('evidence').textContent = ''; $('raw').textContent = '{}';
   }
   $('note').textContent = state.note;
 }
 async function poll() {
   try {
-    const response = await fetch('state'); if (!response.ok) throw new Error('Panel niedostępny. Otwórz ponownie przez companion_open.');
+    const response = await fetch('state'); if (!response.ok) throw new Error('Panel unavailable. Reopen it with companion_open.');
     const state = await response.json();
     if (state.revision !== revision) { render(state); revision = state.revision; }
     $('error').textContent = '';
-  } catch (e) { $('error').textContent = e.message; $('activity').textContent = 'Utracono połączenie z panelem'; }
+  } catch (e) { $('error').textContent = e.message; $('activity').textContent = 'Panel connection lost'; }
   setTimeout(poll, 1000);
 }
 poll();

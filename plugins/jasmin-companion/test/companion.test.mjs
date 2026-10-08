@@ -32,8 +32,8 @@ test('Portable launcher from a different project: stdio lifecycle, evidence, sel
   const select = await fetch(url + 'selection', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Companion-Client': 'panel' }, body: JSON.stringify({ snap_id: 107 }) });
   assert.equal(select.status, 200);
   assert.equal((await call('companion_context')).structuredContent.selection.snap_id, 107);
-  await call('companion_note', { text: 'Hipoteza na podstawie DEMO.' });
-  assert.equal((await (await fetch(url + 'state')).json()).note, 'Hipoteza na podstawie DEMO.');
+  await call('companion_note', { text: 'Hypothesis based on DEMO.' });
+  assert.equal((await (await fetch(url + 'state')).json()).note, 'Hypothesis based on DEMO.');
   assert.equal((await call('companion_query', { tool: 'get_sql_text', arguments: { project_id: 'other' } })).isError, true);
   assert.equal((await call('companion_query', { tool: 'write_report' })).isError, true);
   assert.equal((await call('companion_query', { tool: 'list_snapshots', arguments: { limit: 101 } })).isError, true);
@@ -45,7 +45,7 @@ test('panel is isolated, origin guarded, rejects unknown selection; project swit
   const a = await createServer(), b = await createServer(); t.after(async () => { await a.close(); await b.close(); });
   for (const app of [a,b]) { await app.call('companion_open', { mode: 'demo' }); await app.call('companion_select_project', { project_id: 'demo' }); }
   const view = await a.call('companion_query', { tool: 'top_sqls_in_snapshot', arguments: { snap_id: 107 } });
-  await assert.rejects(b.call('companion_show', { view_id: view.view_id }), /Nieznany/);
+  await assert.rejects(b.call('companion_show', { view_id: view.view_id }), /Unknown view/);
   assert.equal((await fetch(new URL('/', a.panel_url))).status, 404);
   assert.equal((await fetch(a.panel_url + 'state', { headers: { Origin: 'https://example.org' } })).status, 403);
   assert.equal((await fetch(a.panel_url + 'selection', { method: 'POST', body: '{}' })).status, 403);

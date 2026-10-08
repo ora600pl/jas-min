@@ -15,7 +15,7 @@ export class McpClient {
       method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(45000),
       body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }),
     });
-    if (!response.ok) throw new Error(`MCP HTTP ${response.status}. Sprawdź serwer i sesję.`);
+    if (!response.ok) throw new Error(`MCP HTTP ${response.status}. Check the server and session.`);
     this.session = response.headers.get('mcp-session-id') || this.session;
     if (notification) { await response.body?.cancel(); return; }
     let message;
@@ -28,7 +28,7 @@ export class McpClient {
           const { value, done } = await reader.read();
           if (done) break;
           bytes += value.length;
-          if (bytes > 8 * 1024 * 1024) throw new Error('Wynik MCP przekroczył limit 8 MB. Zawęź zapytanie.');
+          if (bytes > 8 * 1024 * 1024) throw new Error('MCP response exceeded the 8 MB limit. Narrow the query.');
           buffer += decoder.decode(value, { stream: true });
           let match;
           while ((match = /\r?\n\r?\n/.exec(buffer))) {
@@ -43,11 +43,11 @@ export class McpClient {
       } finally { await reader.cancel(); }
     } else {
       const text = await response.text();
-      if (text.length > 8 * 1024 * 1024) throw new Error('Wynik MCP za duży.');
+      if (text.length > 8 * 1024 * 1024) throw new Error('MCP response is too large.');
       message = JSON.parse(text);
     }
-    if (!message || message.id !== id) throw new Error('Brak pasującej odpowiedzi MCP.');
-    if (message.error) throw new Error(message.error.message || 'Błąd MCP');
+    if (!message || message.id !== id) throw new Error('No matching MCP response.');
+    if (message.error) throw new Error(message.error.message || 'MCP error');
     return message.result;
   }
   async initialize() {

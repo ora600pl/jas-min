@@ -7,7 +7,7 @@ export const ALLOWED = new Set(['get_database_load_summary', 'list_snapshots', '
 export function localEndpoint(value) {
   const u = new URL(value);
   if (u.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname) || u.username || u.password || u.hash)
-    throw new Error('Użyj lokalnego MCP: http://127.0.0.1:PORT/mcp (ewentualnie tunel SSH).');
+    throw new Error('Use a local MCP endpoint: http://127.0.0.1:PORT/mcp (or an SSH tunnel).');
   return u.href;
 }
 export class Companion {
@@ -17,7 +17,7 @@ export class Companion {
   }
   update(patch) { Object.assign(this.state, patch); this.state.revision++; }
   async open({ mode = 'live', endpoint = 'http://127.0.0.1:4242/mcp' } = {}) {
-    if (!['demo', 'live'].includes(mode)) throw new Error('mode: demo lub live');
+    if (!['demo', 'live'].includes(mode)) throw new Error('mode must be demo or live');
     if (mode === 'live') endpoint = localEndpoint(endpoint);
     if (this.client && mode === this.state.mode && (mode === 'demo' || endpoint === this.endpoint)) return;
     const client = mode === 'demo' ? new DemoClient() : new McpClient(endpoint);
@@ -26,14 +26,14 @@ export class Companion {
     this.client = client; this.endpoint = endpoint; this.analysis = null; this.schemas = [];
     this.update({ mode, project: null, selection: {}, views: [], current: null, note: '' });
   }
-  requireClient() { if (!this.client) throw new Error('Najpierw companion_open.'); }
+  requireClient() { if (!this.client) throw new Error('Call companion_open first.'); }
   async projects() { this.requireClient(); return this.client.call('list_performance_projects'); }
   async select(project_id) {
     this.requireClient();
     const projects = await this.projects();
-    if (!projects.projects?.some(p => p.project_id === project_id)) throw new Error('Nieznany projekt. Użyj companion_projects.');
+    if (!projects.projects?.some(p => p.project_id === project_id)) throw new Error('Unknown project. Use companion_projects.');
     const result = await this.client.call('start_performance_analysis', { project_id });
-    if (!result.analysis_id) throw new Error('MCP nie zwrócił analysis_id.');
+    if (!result.analysis_id) throw new Error('MCP did not return an analysis_id.');
     this.analysis = result.analysis_id;
     this.update({ project: project_id, selection: {}, views: [], current: null, note: '' });
     return { project_id, analysis_id: this.analysis };
@@ -50,16 +50,16 @@ export class Companion {
   }
   async query(tool, args = {}) {
     this.requireClient();
-    if (!this.analysis) throw new Error('Najpierw companion_select_project.');
-    if (!ALLOWED.has(tool)) throw new Error('Narzędzie nie jest dozwolone w panelu odczytu.');
-    if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('arguments musi być obiektem.');
-    if ('project_id' in args || 'analysis_id' in args) throw new Error('Projekt wybieraj przez companion_select_project.');
+    if (!this.analysis) throw new Error('Call companion_select_project first.');
+    if (!ALLOWED.has(tool)) throw new Error('Tool not allowed in the read-only panel.');
+    if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('arguments must be an object.');
+    if ('project_id' in args || 'analysis_id' in args) throw new Error('Select the project with companion_select_project.');
     const bounded = { ...args };
-    for (const key of ['limit', 'top_n']) if (key in bounded && (!Number.isInteger(bounded[key]) || bounded[key] < 1 || bounded[key] > 100)) throw new Error(`${key}: zakres 1–100.`);
+    for (const key of ['limit', 'top_n']) if (key in bounded && (!Number.isInteger(bounded[key]) || bounded[key] < 1 || bounded[key] > 100)) throw new Error(`${key}: must be between 1 and 100.`);
     if (!this.schemas.length) await this.tools();
     const schema = this.schemas.find(t => t.name === tool)?.inputSchema;
-    if (!schema) throw new Error('Narzędzie niedostępne na tym serwerze.');
-    for (const key of schema.required || []) if (!(key in bounded)) throw new Error(`Brak argumentu: ${key}`);
+    if (!schema) throw new Error('Tool unavailable on this server.');
+    for (const key of schema.required || []) if (!(key in bounded)) throw new Error(`Missing argument: ${key}`);
     for (const key of ['limit', 'top_n']) if (schema.properties?.[key] && !(key in bounded)) bounded[key] = 20;
     const data = await this.client.call(tool, { ...bounded, analysis_id: this.analysis, project_id: this.state.project });
     const view = { id: crypto.randomUUID(), tool, args: bounded, data, time: new Date().toISOString() };
@@ -67,7 +67,7 @@ export class Companion {
     return { view_id: view.id, ...data };
   }
   show(view_id) {
-    if (!this.state.views.some(v => v.id === view_id)) throw new Error('Nieznany widok w tej sesji.');
+    if (!this.state.views.some(v => v.id === view_id)) throw new Error('Unknown view in this session.');
     this.update({ current: view_id, note: '' }); return { view_id };
   }
   selectPoint(selection) {
@@ -76,8 +76,8 @@ export class Companion {
     const snap = selection.snap_id;
     const sql = selection.sql_id;
     if (sql) {
-      if (view?.tool !== 'top_sqls_in_snapshot' || !data?.items?.some(x => x.sql_id === sql) || snap !== data.snap_id) throw new Error('SQL spoza widoku.');
-    } else if (!data?.series?.some(x => x.snap_id === snap)) throw new Error('Snapshot spoza widoku.');
+      if (view?.tool !== 'top_sqls_in_snapshot' || !data?.items?.some(x => x.sql_id === sql) || snap !== data.snap_id) throw new Error('SQL statement is outside the current view.');
+    } else if (!data?.series?.some(x => x.snap_id === snap)) throw new Error('Snapshot is outside the current view.');
     this.update({ selection: { snap_id: snap, ...(sql ? { sql_id: sql } : {}) } });
   }
   async close() { await this.client?.close(); this.client = null; }

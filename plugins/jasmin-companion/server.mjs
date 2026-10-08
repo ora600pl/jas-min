@@ -16,7 +16,7 @@ export const TOOLS = [
   definition('companion_query', 'Query JAS-MIN and show evidence as chart/table. Read companion_tools first. Session routing is automatic.', { tool: str, arguments: { type: 'object' } }, ['tool']),
   definition('companion_context', 'Read current project, view and snapshot/SQL selection made by the user.'),
   definition('companion_show', 'Display a previously returned view_id from this chat.', { view_id: str }, ['view_id']),
-  definition('companion_note', 'Display your short interpretation next to the evidence. Does not synthesize audio.', { text: { type: 'string', maxLength: 2000 } }, ['text']),
+  definition('companion_note', 'Display your short interpretation next to the evidence. Always write the note in English, even when the conversation is in another language. Preserve source identifiers. Does not synthesize audio.', { text: { type: 'string', description: 'Concise panel interpretation in English.', maxLength: 2000 } }, ['text']),
 ];
 
 export async function createServer({ port = 0 } = {}) {
@@ -149,7 +149,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     await app.call('companion_query', { tool: 'top_wait_events_in_snapshot', arguments: { snap_id: 107 } });
     await app.call('companion_query', { tool: 'top_sqls_in_snapshot', arguments: { snap_id: 107 } });
     await app.call('companion_query', { tool: 'get_metric_time_series', arguments: { kind: 'load_profile', name: 'DBTime' } });
-    await app.call('companion_note', { text: 'W danych demonstracyjnych obciążenie osiąga 24,6 aktywnych sesji przy snapshocie 107. Kliknij punkt, żeby wskazać przedział do rozmowy.' });
+    await app.call('companion_note', { text: 'In this synthetic demo, load peaks at 24.6 average active sessions at snapshot 107. Select a point to focus the conversation.' });
     console.error(app.panel_url);
   } else {
     try { await serveStdio(app); } finally { await app.close(); }

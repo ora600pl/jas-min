@@ -15,7 +15,7 @@ export class DemoClient {
     schema('get_database_load_summary'),
   ]; }
   async call(name, args = {}) {
-    if (name === 'list_performance_projects') return { projects: [{ project_id: 'demo', db_name: 'DEMO · dane syntetyczne', date_from: snapshots[0].begin_snap_time, date_to: snapshots.at(-1).end_snap_time }] };
+    if (name === 'list_performance_projects') return { projects: [{ project_id: 'demo', db_name: 'DEMO · synthetic data', date_from: snapshots[0].begin_snap_time, date_to: snapshots.at(-1).end_snap_time }] };
     if (name === 'start_performance_analysis') return { analysis_id: 'demo-analysis', dataset_manifest: { project_id: 'demo' } };
     let result;
     if (name === 'get_metric_time_series') {
@@ -34,8 +34,8 @@ export class DemoClient {
       { sql_id: 'demo_sql_002', elapsed_time_s: 6120, executions: 24, module: 'DEMO · reporting' },
       { sql_id: 'demo_sql_003', elapsed_time_s: 2840, executions: 8200, module: 'DEMO · inventory' },
     ] };
-    else if (name === 'get_database_load_summary') result = { source: 'SYNTHETIC DEMO', snapshots: snapshots.length, note: 'To fikcyjny scenariusz, nie diagnoza bazy.' };
-    else throw new Error('Narzędzie niedostępne w demo.');
+    else if (name === 'get_database_load_summary') result = { source: 'SYNTHETIC DEMO', snapshots: snapshots.length, note: 'This is a fictional scenario, not a database diagnosis.' };
+    else throw new Error('Tool unavailable in demo mode.');
     return { analysis_id: 'demo-analysis', project_id: 'demo', evidence_id: `DEMO-${name}`, tool_name: name, result };
   }
 }
