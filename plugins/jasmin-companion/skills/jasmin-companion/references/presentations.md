@@ -1,8 +1,8 @@
 # Composing an analytical board
 
-`companion_present` accepts `title`, `takeaway`, optional `view_ids` and optional `panels`. Combined output is limited to six panels. Boards remain visible while more evidence is collected. Read the returned validation error and correct the payload rather than falling back to raw JSON.
+`companion_present` accepts `title`, `takeaway`, optional `view_ids`, optional `panels`, and `language` (`pl` or `en`). Combined output is limited to six panels. Boards remain visible while more evidence is collected. Read the returned validation error and correct the payload rather than falling back to raw JSON.
 
-Every custom panel needs `type`, `title`, `classification` (`measured`, `hypothesis`, `explanation`) and `source` (exact evidence ID or artifact and extraction description). Add `note` for limitations. All copy is English.
+Every custom panel needs `type`, `title`, `classification` (`measured`, `hypothesis`, `explanation`) and `source` (exact evidence ID or artifact and extraction description). Add `note` for limitations. Write authored copy in the current dialogue language. Keep source identifiers and Oracle metric/wait names verbatim. Use `companion_set_language` and its pending text fields to translate an existing board without changing its measurements.
 
 - `line`: `unit`, `x_label`, `series: [{name, points: [{x, label, value, snap_id?, instance?}]}]`. `x` is an increasing numeric timestamp (milliseconds, with labels preserving database wall-clock time) or ordered index. One series per verified instance/metric, one unit per panel. `value:null` preserves missing observations. Include missing intervals explicitly; do not interpolate gaps. A point's optional `instance` and `snap_id` support selection. Maximum six series, 3000 points each; narrow the time window when needed.
 - `bar`: `unit`, `items:[{label,value}]`. Up to 30 nonnegative measurements; unknown is null.

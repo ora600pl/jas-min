@@ -7,18 +7,20 @@ import { presentationProperties } from './presentation.mjs';
 
 const definition = (name, description, properties = {}, required = []) => ({ name, description,
   inputSchema: { type: 'object', properties, required, additionalProperties: false },
-  annotations: { readOnlyHint: !['companion_present', 'companion_note', 'companion_show', 'companion_select_project', 'companion_open'].includes(name), destructiveHint: false, openWorldHint: false } });
+  annotations: { readOnlyHint: !['companion_set_language', 'companion_present', 'companion_note', 'companion_show', 'companion_select_project', 'companion_open'].includes(name), destructiveHint: false, openWorldHint: false } });
 const str = { type: 'string' };
+const language = { type: 'string', enum: ['en', 'pl'], description: 'Language of the current user dialogue: pl for Polish, en for English. Follow prose, not SQL or quoted source text.' };
 export const TOOLS = [
-  definition('companion_open', 'Start the local avatar panel. Returns panel_url to open in Codex browser. Live is default; demo is synthetic.', { mode: { enum: ['live', 'demo'], type: 'string' }, endpoint: str }),
+  definition('companion_open', 'Start the local avatar panel. Returns panel_url to open in Codex browser. Live is default; demo is synthetic.', { mode: { enum: ['live', 'demo'], type: 'string' }, endpoint: str, language }),
+  definition('companion_set_language', 'Follow the main conversation language without clearing evidence or selection. Returns pending authored text fields to translate. If pending is nonempty, translate each text (preserve SQL, identifiers and Oracle metric names), then call again with the returned view_id and translations. Originals and measurements stay unchanged; switching back reuses translations.', { language, view_id: str, translations: { type: 'array', items: { type: 'object', properties: { path: str, text: str }, required: ['path','text'], additionalProperties: false } } }, ['language']),
   definition('companion_projects', 'List actual JAS-MIN project IDs.'),
   definition('companion_select_project', 'Start an analysis for a project. Clears previous panel evidence.', { project_id: str }, ['project_id']),
   definition('companion_tools', 'Read schemas of available read-only JAS-MIN evidence tools.'),
   definition('companion_query', 'Collect evidence from JAS-MIN. Supported results become charts; an active presentation stays visible. Use companion_present to compose or replace the analytical board. Read companion_tools first.', { tool: str, arguments: { type: 'object' }, display: { type: 'boolean', description: 'False collects evidence without changing the visible view.' } }, ['tool']),
-  definition('companion_present', 'Compose the side panel to support your explanation: related charts, baseline comparisons, tables and labelled mechanism flows. Keep all copy in English. Use source-verified numbers, units and instance identity; missing values are null. The board stays visible during subsequent queries. For line panels x is a numeric timestamp or ordered index, points strictly increasing per series. Separate different units into separate panels.', presentationProperties, ['title', 'takeaway']),
+  definition('companion_present', 'Compose the side panel to support your explanation: related charts, baseline comparisons, tables and labelled mechanism flows. Match all authored copy to the current conversation language; pass language. Preserve source identifiers. Use source-verified numbers, units and instance identity; missing values are null. The board stays visible during subsequent queries. For line panels x is a numeric timestamp or ordered index, points strictly increasing per series. Separate different units into separate panels.', {...presentationProperties, language}, ['title', 'takeaway']),
   definition('companion_context', 'Read current project, view and snapshot/SQL selection made by the user.'),
   definition('companion_show', 'Display a previously returned view_id from this chat.', { view_id: str }, ['view_id']),
-  definition('companion_note', 'Display your short interpretation next to the evidence. Always write the note in English, even when the conversation is in another language. Preserve source identifiers. Does not synthesize audio.', { text: { type: 'string', description: 'Concise panel interpretation in English.', maxLength: 2000 } }, ['text']),
+  definition('companion_note', 'Display your short interpretation next to the evidence. Write the note in the current conversation language and pass language. Preserve source identifiers. Does not synthesize audio.', { text: { type: 'string', description: 'Concise panel interpretation in the dialogue language.', maxLength: 2000 }, language }, ['text']),
 ];
 
 export async function createServer({ port = 0 } = {}) {
@@ -73,18 +75,19 @@ export async function createServer({ port = 0 } = {}) {
     companion.update({ status: 'working' });
     try {
       switch (name) {
-        case 'companion_open': await companion.open(args); return { panel_url, mode: companion.state.mode, voice: 'Use native Codex voice; panel has no microphone.' };
+        case 'companion_open': await companion.open(args); return { panel_url, mode: companion.state.mode, ...companion.languageContext(), voice: 'Use native Codex voice; panel has no microphone.' };
+        case 'companion_set_language': return companion.setLanguage(args);
         case 'companion_projects': return await companion.projects();
         case 'companion_select_project': return await companion.select(args.project_id);
         case 'companion_tools': return await companion.tools();
         case 'companion_query': return await companion.query(args.tool, args.arguments, args.display);
         case 'companion_present': return companion.present(args);
-        case 'companion_context': return { project_id: companion.state.project, mode: companion.state.mode, selection: companion.state.selection, current_view_id: companion.state.current,
+        case 'companion_context': return { project_id: companion.state.project, mode: companion.state.mode, selection: companion.state.selection, current_view_id: companion.state.current, ...companion.languageContext(),
           views: companion.state.views.map(v => ({ view_id: v.id, tool: v.tool, args: v.args, evidence_id: v.data.evidence_id, title: v.presentation?.title, presentation: !!v.presentation })) };
         case 'companion_show': return companion.show(args.view_id);
         case 'companion_note':
           if (args.text.length > 2000) throw new Error('Maximum note length is 2000.');
-          companion.note(args.text); return { displayed: true };
+          companion.note(args.text, args.language); return { displayed: true };
       }
     } finally { companion.update({ status: 'idle' }); }
   }

@@ -36,8 +36,8 @@ export function validatePresentation(board) {
 }
 const text={type:'string'};
 export const presentationProperties = {
-  title:{type:'string',description:'English question or finding addressed by the board.'},
-  takeaway:{type:'string',description:'Short English conclusion; distinguish evidence from hypothesis.'},
+  title:{type:'string',description:'Question or finding in the current dialogue language addressed by the board.'},
+  takeaway:{type:'string',description:'Short conclusion in the current dialogue language; distinguish evidence from hypothesis.'},
   view_ids:{type:'array',items:text,description:'Optional existing view IDs to render together using automatic adapters. Up to 6 panels in total.'},
   panels:{type:'array',description:'Optional custom visual panels from verified evidence or a clearly labelled mechanism. No HTML or scripts.',items:{type:'object',properties:{
     type:{type:'string',enum:['line','bar','table','flow']},title:text,classification:{type:'string',enum:['measured','hypothesis','explanation']},source:{type:'string',description:'Evidence IDs or exact local artifact and extraction/derivation description. Required.'},note:text,unit:text,x_label:text,

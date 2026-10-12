@@ -2,7 +2,7 @@
 
 A local Codex plugin that supports Oracle performance investigations with a persistent side panel: evidence charts, baseline comparisons, SQL tables, and mechanism diagrams, accompanied by a hooded avatar.
 
-Discuss the investigation in text or through the host's native voice interface. Panel labels and interpretations are in English; the conversation can use another language. The plugin does not capture audio, synthesize speech, or call the OpenAI API, and requires no OpenAI API key.
+Discuss the investigation in text or through the host's native voice interface. Panel labels and interpretations follow the conversation: Polish for Polish dialogue, English for English dialogue. Codex passes the detected language to the plugin; the panel does not read the main chat itself. SQL, source identifiers and raw evidence stay verbatim. The plugin does not capture audio, synthesize speech, or call the OpenAI API, and requires no OpenAI API key.
 
 ## Requirements
 
@@ -70,6 +70,7 @@ Metric names come from `list_available_metrics`. Use the exact returned name: so
 ## How the panel supports the investigation
 
 - `companion_query` collects evidence and automatically renders supported load summaries, metric/wait/SQL timelines, SQL text, and comparison tables.
+- `companion_set_language` switches between `pl` and `en` while preserving evidence, selection and history. The interface and automatic chart captions switch immediately. Codex translates any pending authored descriptions through the same tool; translations are cached per view. No external translation service or API key is used. New authored boards and notes receive the dialogue language directly. For example: “Przejdźmy na polski” or “Let’s continue in English.”
 - `companion_present` composes up to six related charts, tables, or mechanism cards. Each custom panel includes its source and an explicit `measured`, `hypothesis`, or `explanation` label. See the [presentation schema and example](skills/jasmin-companion/references/presentations.md).
 - An active presentation stays visible while further queries collect evidence. `display:false` also prevents a query from changing an ordinary evidence view.
 - Use the chart's time-window selector to inspect the peak. Select a point or SQL row, then ask Codex to investigate that selection. `companion_context` supplies the selected snapshot, SQL, and instance when available. Clicking does not send a chat message by itself.
@@ -106,7 +107,7 @@ Uninstalling the plugin leaves this repository intact.
 | Live connection fails | Check that JAS-MIN is still running and that the loopback host, port, and `/mcp` path match. |
 | A metric chart has no observations | Discover the exact metric name and inspect data availability. An empty result is not a measured zero. |
 | The panel URL stops working | Its MCP process has ended. Ask Codex to reopen Companion; the old session URL cannot restore in-memory state. |
-| The new presentation tool is missing | Reinstall, then reload Codex. The current package exposes nine Companion tools, including `companion_present`. |
+| The new presentation tool is missing | Reinstall, then reload Codex. The current package exposes ten Companion tools, including `companion_present` and `companion_set_language`. |
 
 ## Runtime and data handling
 

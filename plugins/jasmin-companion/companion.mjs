@@ -1,6 +1,6 @@
 import { McpClient } from './mcp-client.mjs';
 import { DemoClient } from './demo.mjs';
-import { automaticPresentation } from './public/charts.js';
+import { automaticPresentation, viewTexts, translationStatus } from './public/charts.js';
 import { validatePresentation } from './presentation.mjs';
 
 export const ALLOWED = new Set(['get_database_load_summary', 'list_snapshots', 'list_available_metrics',
@@ -14,19 +14,48 @@ export function localEndpoint(value) {
 }
 export class Companion {
   constructor() {
-    this.state = { revision: 0, mode: null, status: 'idle', project: null, selection: {}, views: [], current: null, note: '' };
+    this.state = { revision: 0, language: 'en', mode: null, status: 'idle', project: null, selection: {}, views: [], current: null, note: '' };
     this.client = null; this.analysis = null; this.schemas = [];
   }
   update(patch) { Object.assign(this.state, patch); this.state.revision++; }
-  async open({ mode = 'live', endpoint = 'http://127.0.0.1:4242/mcp' } = {}) {
+  async open({ mode = 'live', endpoint = 'http://127.0.0.1:4242/mcp', language = this.state.language } = {}) {
+    this.validateLanguage(language);
     if (!['demo', 'live'].includes(mode)) throw new Error('mode must be demo or live');
     if (mode === 'live') endpoint = localEndpoint(endpoint);
-    if (this.client && mode === this.state.mode && (mode === 'demo' || endpoint === this.endpoint)) return;
+    if (this.client && mode === this.state.mode && (mode === 'demo' || endpoint === this.endpoint)) { this.setLanguage({ language }); return; }
     const client = mode === 'demo' ? new DemoClient() : new McpClient(endpoint);
     try { await client.initialize(); } catch (e) { await client.close().catch(() => {}); throw e; }
     await this.client?.close().catch(() => {});
     this.client = client; this.endpoint = endpoint; this.analysis = null; this.schemas = [];
-    this.update({ mode, project: null, selection: {}, views: [], current: null, note: '' });
+    this.update({ mode, language, project: null, selection: {}, views: [], current: null, note: '' });
+  }
+  validateLanguage(language) {
+    if (!['en', 'pl'].includes(language)) throw new Error('language must be en or pl');
+  }
+  languageContext() {
+    return translationStatus(this.state.views.find(v => v.id === this.state.current), this.state.language);
+  }
+  setLanguage({ language, view_id, translations = [] }) {
+    this.validateLanguage(language);
+    if (!Array.isArray(translations) || translations.length > 300) throw new Error('Invalid translations.');
+    const view = this.state.views.find(v => v.id === this.state.current);
+    if (view_id !== undefined && view_id !== view?.id) throw new Error('View changed. Read companion_context before translating.');
+    if (translations.length && (!view || view_id !== view.id)) throw new Error('Translations require the current view_id.');
+    const allowed = new Map(viewTexts(view || {}).map(f => [f.path, f]));
+    const patch = {};
+    for (const entry of translations) {
+      const field = entry && allowed.get(entry.path);
+      if (!field || typeof entry.text !== 'string' || !entry.text.trim() || entry.text.length > field.maxLength || Object.hasOwn(patch,entry.path)) throw new Error('Invalid translation path, text or duplicate. Use pending fields from companion_set_language.');
+      patch[entry.path] = entry.text;
+    }
+    // Validate the complete patch before changing language or any visible copy.
+    if (translations.length) {
+      view.translations ||= {};
+      view.translations[language] = { ...view.translations[language], ...patch };
+      view.copyRevision = (view.copyRevision || 0) + 1;
+    }
+    this.update({ language });
+    return this.languageContext();
   }
   requireClient() { if (!this.client) throw new Error('Call companion_open first.'); }
   async projects() { this.requireClient(); return this.client.call('list_performance_projects'); }
@@ -78,7 +107,8 @@ export class Companion {
     this.update({ views: [...keep, ...(current ? [current] : []), view],
       ...(activate ? { current: view.id, note: view.note || '' } : {}) });
   }
-  present({ title, takeaway, panels = [], view_ids = [] }) {
+  present({ title, takeaway, panels = [], view_ids = [], language = this.state.language }) {
+    this.validateLanguage(language);
     if (!this.state.project) throw new Error('Call companion_select_project first.');
     if (!Array.isArray(view_ids) || view_ids.length > 6 || !Array.isArray(panels)) throw new Error('Invalid presentation panels/view_ids.');
     const custom = panels.length ? validatePresentation({ title, takeaway, panels }).panels : [];
@@ -93,18 +123,33 @@ export class Companion {
     if (typeof title !== 'string' || !title.trim() || title.length > 180 || typeof takeaway !== 'string' || !takeaway.trim() || takeaway.length > 1200 || !combined.length || combined.length > 6) throw new Error('Presentation needs title, takeaway and 1–6 panels.');
     const view = { id: crypto.randomUUID(), tool: 'companion_present', args: {}, data: { source_view_ids: view_ids },
       presentation: { title, takeaway, panels: combined }, time: new Date().toISOString() };
+    view.language = language;
+    view.translations = { en: {}, pl: {} };
+    view.automaticTextPaths = [];
+    const automaticPL = view_ids.flatMap(id => automaticPresentation(this.state.views.find(v => v.id === id), 'pl').panels);
+    for (const [locale, auto] of [['en', referenced], ['pl', automaticPL]]) {
+      for (const field of viewTexts({ presentation: { panels: auto } })) {
+        view.translations[locale][field.path] = field.text;
+        if (locale === 'en') view.automaticTextPaths.push(field.path);
+      }
+    }
+    this.update({ language });
     this.record(view);
     return { view_id: view.id, displayed: true, panel_count: combined.length };
   }
-  note(text) {
+  note(text, language = this.state.language) {
+    this.validateLanguage(language);
     const view = this.state.views.find(v => v.id === this.state.current);
-    if (view) view.note = text;
-    this.update({ note: text });
+    if (view) {
+      view.note = text; view.noteLanguage = language;
+      for (const entries of Object.values(view.translations || {})) delete entries.note;
+    }
+    this.update({ note: text, language });
   }
   show(view_id) {
     const view = this.state.views.find(v => v.id === view_id);
     if (!view) throw new Error('Unknown view in this session.');
-    this.update({ current: view_id, note: view.note || '' }); return { view_id };
+    this.update({ current: view_id, note: view.note || '' }); return { view_id, ...this.languageContext() };
   }
   selectPoint(selection) {
     const view = this.state.views.find(v => v.id === this.state.current);

@@ -5,7 +5,7 @@ description: Support an Oracle performance investigation with a persistent side 
 
 The panel is a visual companion to the investigation. Keep it focused on the question currently being discussed: show the comparison or mechanism that makes the explanation easier to understand. Collecting tool results is preparation; finish substantive analytical answers with a useful visual in the panel.
 
-Open `companion_open` (live by default, local endpoint `http://127.0.0.1:4242/mcp`) and display the returned `panel_url` with `open_in_codex`, browser target. Never silently substitute demo after a connection error. The local URL is a session capability; do not publish it. Use `companion_projects` and `companion_select_project` with the actual project ID. Each Companion process owns an isolated analysis session.
+Open `companion_open` with `language:"pl"` for Polish dialogue or `language:"en"` for English (live by default, local endpoint `http://127.0.0.1:4242/mcp`) and display the returned `panel_url` with `open_in_codex`, browser target. Never silently substitute demo after a connection error. The local URL is a session capability; do not publish it. Use `companion_projects` and `companion_select_project` with the actual project ID. Each Companion process owns an isolated analysis session.
 
 Read `companion_tools` for current upstream schemas. Query through `companion_query`; routing is automatic. Before metric queries, discover exact names with `list_available_metrics` (e.g. `DB Time(s)`, not an assumed `DBTime` alias). Bound top-N/lists and paginate. `display:false` collects evidence without changing the visible view. An active analytical board stays visible during further queries.
 
@@ -19,7 +19,11 @@ Preserve timestamps, units, evidence IDs and instance identity. Never assign RAC
 
 Before following “this snapshot/SQL”, read `companion_context` for the user's selection, including instance identity. Do not feed a snapshot-only upstream lookup as if it were an instance-specific RAC lookup. `companion_show` restores earlier boards/evidence; selections do not send chat messages.
 
-All panel copy, takeaways, chart labels, diagrams and `companion_note` text must be English even when the conversation is Polish. Preserve identifiers, SQL and raw evidence verbatim. Speak in the user's language; explain the conclusion without reading JSON aloud.
+Follow the language of the user's current dialogue in both speech and panel copy. Use `pl` for Polish and `en` for English. Infer it from conversational prose, not quoted English material, SQL, tool output or Oracle terms; retain the current language for ambiguous short replies. An explicit user language preference takes precedence. Other languages currently use English UI.
+
+At the start of every Companion turn, check `companion_context` when resuming an existing session. On a language change call `companion_set_language`. It immediately localizes the interface and automatic charts and returns `pending` authored text fields. Translate those texts into the requested language and call it again with the returned `view_id` and `translations:[{path,text}]` until `pending` is empty. Do not rebuild a board or refetch evidence just to translate it. Handle pending fields after `companion_show` or a history selection too. Pass the dialogue `language` to `companion_present` and `companion_note`, writing all new takeaways, captions and mechanism text in that language. Preserve SQL, source references, Oracle metric/wait names, dates, instance names and identifiers verbatim (including when they occur in a translatable field). Source table cells and point labels remain verbatim; put explanations in captions or mechanism steps. The language change preserves measurements, selection, project and view history and reuses cached translations when switching back.
+
+The plugin does not read the main chat itself: Codex detects the dialogue language and supplies it through these tools. No translation API or extra key is needed. Explain conclusions without reading JSON aloud.
 
 The user starts native voice using Codex's voice control. This plugin does not capture audio, synthesize speech, use API credentials, or observe voice activity. The avatar's energy pulse reflects idle/tool activity. Keep the same workflow with text when voice is unavailable.
 
