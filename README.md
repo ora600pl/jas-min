@@ -20,6 +20,12 @@ JAS-MIN is a Rust command-line tool for mining Oracle AWR and STATSPACK performa
 
 The tool can also send a compact `ReportForAI` representation to supported AI providers and convert the resulting Markdown analysis to linked HTML.
 
+## JAS-MIN Companion for Codex
+
+Use the [Companion plugin](plugins/jasmin-companion/README.md) to keep evidence charts, baseline comparisons, SQL tables, and mechanism diagrams beside your investigation in Codex. Supports local JAS-MIN MCP data, a synthetic demo, and text or native voice conversations.
+
+[Installation and usage guide](plugins/jasmin-companion/README.md#install-the-plugin)
+
 ## Learn the regression models — ONE MORE QUERY
 
 [Open the interactive PL/EN course](https://ora600pl.github.io/jas-min/) · [Source, offline build and upload package](docs/one-more-query/README.md)

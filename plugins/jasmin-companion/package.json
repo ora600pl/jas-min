@@ -1,0 +1,5 @@
+{
+  "name": "jasmin-companion", "version": "0.1.0", "private": true,
+  "type": "module", "engines": { "node": ">=22" },
+  "scripts": { "start": "node server.mjs", "preview": "node server.mjs --preview", "test": "node --test --test-timeout=15000 test/*.test.mjs" }
+}
