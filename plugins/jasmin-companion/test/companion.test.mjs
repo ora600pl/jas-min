@@ -21,7 +21,7 @@ test('Portable launcher from a different project: stdio lifecycle, evidence, sel
   const call = async (name, args = {}) => (await rpc('tools/call', { name, arguments: args })).result;
   assert.equal((await rpc('initialize', { protocolVersion: '2025-06-18' })).result.serverInfo.name, 'jasmin-companion');
   child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
-  assert.equal((await rpc('tools/list')).result.tools.length, 8);
+  assert.equal((await rpc('tools/list')).result.tools.length, 9);
   const open = (await call('companion_open', { mode: 'demo' })).structuredContent;
   const url = open.panel_url;
   assert.equal((await fetch(url)).status, 200);
@@ -34,6 +34,9 @@ test('Portable launcher from a different project: stdio lifecycle, evidence, sel
   assert.equal((await call('companion_context')).structuredContent.selection.snap_id, 107);
   await call('companion_note', { text: 'Hypothesis based on DEMO.' });
   assert.equal((await (await fetch(url + 'state')).json()).note, 'Hypothesis based on DEMO.');
+  const board = (await call('companion_present', { title: 'Measured load', takeaway: 'Synthetic demonstration.', view_ids: [query.view_id] })).structuredContent;
+  assert.equal(board.panel_count, 1);
+  assert.equal((await call('companion_context')).structuredContent.current_view_id, board.view_id);
   assert.equal((await call('companion_query', { tool: 'get_sql_text', arguments: { project_id: 'other' } })).isError, true);
   assert.equal((await call('companion_query', { tool: 'write_report' })).isError, true);
   assert.equal((await call('companion_query', { tool: 'list_snapshots', arguments: { limit: 101 } })).isError, true);

@@ -3,17 +3,19 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Companion } from './companion.mjs';
+import { presentationProperties } from './presentation.mjs';
 
 const definition = (name, description, properties = {}, required = []) => ({ name, description,
   inputSchema: { type: 'object', properties, required, additionalProperties: false },
-  annotations: { readOnlyHint: !['companion_note', 'companion_show', 'companion_select_project', 'companion_open'].includes(name), destructiveHint: false, openWorldHint: false } });
+  annotations: { readOnlyHint: !['companion_present', 'companion_note', 'companion_show', 'companion_select_project', 'companion_open'].includes(name), destructiveHint: false, openWorldHint: false } });
 const str = { type: 'string' };
 export const TOOLS = [
   definition('companion_open', 'Start the local avatar panel. Returns panel_url to open in Codex browser. Live is default; demo is synthetic.', { mode: { enum: ['live', 'demo'], type: 'string' }, endpoint: str }),
   definition('companion_projects', 'List actual JAS-MIN project IDs.'),
   definition('companion_select_project', 'Start an analysis for a project. Clears previous panel evidence.', { project_id: str }, ['project_id']),
   definition('companion_tools', 'Read schemas of available read-only JAS-MIN evidence tools.'),
-  definition('companion_query', 'Query JAS-MIN and show evidence as chart/table. Read companion_tools first. Session routing is automatic.', { tool: str, arguments: { type: 'object' } }, ['tool']),
+  definition('companion_query', 'Collect evidence from JAS-MIN. Supported results become charts; an active presentation stays visible. Use companion_present to compose or replace the analytical board. Read companion_tools first.', { tool: str, arguments: { type: 'object' }, display: { type: 'boolean', description: 'False collects evidence without changing the visible view.' } }, ['tool']),
+  definition('companion_present', 'Compose the side panel to support your explanation: related charts, baseline comparisons, tables and labelled mechanism flows. Keep all copy in English. Use source-verified numbers, units and instance identity; missing values are null. The board stays visible during subsequent queries. For line panels x is a numeric timestamp or ordered index, points strictly increasing per series. Separate different units into separate panels.', presentationProperties, ['title', 'takeaway']),
   definition('companion_context', 'Read current project, view and snapshot/SQL selection made by the user.'),
   definition('companion_show', 'Display a previously returned view_id from this chat.', { view_id: str }, ['view_id']),
   definition('companion_note', 'Display your short interpretation next to the evidence. Always write the note in English, even when the conversation is in another language. Preserve source identifiers. Does not synthesize audio.', { text: { type: 'string', description: 'Concise panel interpretation in English.', maxLength: 2000 } }, ['text']),
@@ -66,7 +68,7 @@ export async function createServer({ port = 0 } = {}) {
     for (const key of def.inputSchema.required) if (!(key in args)) throw new Error(`Missing ${key}`);
     for (const [key, value] of Object.entries(args)) {
       const rule = def.inputSchema.properties[key];
-      if (!rule || (rule.type && typeof value !== rule.type) || (rule.enum && !rule.enum.includes(value))) throw new Error(`Invalid ${key}`);
+      if (!rule || (rule.type && (rule.type === 'array' ? !Array.isArray(value) : typeof value !== rule.type)) || (rule.enum && !rule.enum.includes(value))) throw new Error(`Invalid ${key}`);
     }
     companion.update({ status: 'working' });
     try {
@@ -75,13 +77,14 @@ export async function createServer({ port = 0 } = {}) {
         case 'companion_projects': return await companion.projects();
         case 'companion_select_project': return await companion.select(args.project_id);
         case 'companion_tools': return await companion.tools();
-        case 'companion_query': return await companion.query(args.tool, args.arguments);
+        case 'companion_query': return await companion.query(args.tool, args.arguments, args.display);
+        case 'companion_present': return companion.present(args);
         case 'companion_context': return { project_id: companion.state.project, mode: companion.state.mode, selection: companion.state.selection, current_view_id: companion.state.current,
-          views: companion.state.views.map(v => ({ view_id: v.id, tool: v.tool, args: v.args, evidence_id: v.data.evidence_id })) };
+          views: companion.state.views.map(v => ({ view_id: v.id, tool: v.tool, args: v.args, evidence_id: v.data.evidence_id, title: v.presentation?.title, presentation: !!v.presentation })) };
         case 'companion_show': return companion.show(args.view_id);
         case 'companion_note':
           if (args.text.length > 2000) throw new Error('Maximum note length is 2000.');
-          companion.update({ note: args.text }); return { displayed: true };
+          companion.note(args.text); return { displayed: true };
       }
     } finally { companion.update({ status: 'idle' }); }
   }

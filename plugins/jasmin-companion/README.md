@@ -38,6 +38,25 @@ zapytanie dodaje dowód do historii. Kliknij punkt lub SQL, a następnie powiedz
 „przeanalizuj ten snapshot / ten SQL”. Skill odczytuje wybór przez
 `companion_context`. Samo kliknięcie nie wysyła wiadomości do modelu.
 
+## Panel wspierający analizę
+
+`companion_query` zbiera dowody. `companion_present` układa z nich trwały widok:
+wykresy SQL i waitów, porównania baseline/incydent, tabele oraz schematy mechanizmu.
+Wspiera do sześciu kart, jawne jednostki, źródła oraz oznaczenie `measured`,
+`hypothesis` lub `explanation`. Model może użyć `view_ids` albo przekazać własne
+serie wyprowadzone z potwierdzonych danych. Schemat i przykład są w skillu.
+
+Kolejne zapytania nie zastępują aktywnej prezentacji; `display:false` pozwala
+zbierać dowody w tle także bez prezentacji. Dane techniczne są zwinięte, a
+nieobsługiwane odpowiedzi nie trafiają jako JSON na główną powierzchnię panelu.
+Historia przywraca poprzednie wykresy i notatki. Wykresy mają wybór zakresu wokół
+peaku, odczyt punktów i kontekst snapshotu wraz z potwierdzoną instancją.
+
+MCP może zwracać rekordy RAC bez tożsamości instancji. Powtórzone czasy są wtedy
+punktami bez łączącej linii, z ostrzeżeniem. Model musi potwierdzić instancje
+w źródłowych raportach przed przygotowaniem porównania węzłów. Braki pozostają
+brakami, nie zerami. Diagram mechanizmu nie jest dowodem łańcucha blockerów.
+
 ## Rzeczywiste dane
 
 Uruchom istniejący JAS-MIN z wybranym plikiem kolekcji, np.:
@@ -53,7 +72,7 @@ W Codex:
 
 Wtyczka pobiera listę projektów i schematy narzędzi z serwera. Tworzy własną sesję
 analizy, automatycznie dopisuje `analysis_id` i `project_id`, zachowuje identyfikatory
-dowodów. Obsługuje 13 narzędzi do odczytu; nie wystawia narzędzi zapisu raportów.
+dowodów. Obsługuje 12 narzędzi do odczytu; nie wystawia narzędzi zapisu raportów.
 Adres MCP musi być lokalny; dla zdalnego serwera można użyć tunelu SSH.
 Tryb live nie przełącza się sam na dane syntetyczne po błędzie połączenia.
 Skill pobiera dokładne nazwy metryk przez `list_available_metrics`: starszy serwer
@@ -103,15 +122,27 @@ npm run preview
 Podgląd wypisuje lokalny URL, pokazuje fikcyjne dane i działa do Ctrl+C.
 Jest osobnym panelem testowym; rozmowa z zainstalowaną wtyczką otworzy swoją sesję.
 
-Sprawdzone 2026-10-07:
+Sprawdzone 2026-10-12:
 
-- 4 testy integracyjne: uruchomienie przez przenośny launcher z obcego katalogu
+- 8 testów obejmuje także rzeczywiste kształty odpowiedzi timeline, brakujące
+  pomiary SQL, niejednoznaczne rekordy RAC, walidację prezentacji, zachowanie
+  aktywnego widoku i wybór instancji.
+- Zainstalowany launcher uruchomiony z SU_KRAKOW udostępnia 9 narzędzi;
+  live MCP zwrócił 1224 punkty waitów. Czterokartowa prezentacja oparta na
+  oryginalnych AWR pozostała aktywna po kolejnym zapytaniu.
+- W przeglądarce sprawdzone: SQL i wait timeline bez JSON w głównej karcie,
+  przybliżenie peaku, wybór snapshotu z instancją oraz przywracanie prezentacji.
+  Dane klienta i lokalny podgląd nie są częścią repozytorium.
+
+Wcześniejsze sprawdzenia 2026-10-07:
+
+- Testy integracyjne i regresyjne: uruchomienie przez przenośny launcher z obcego katalogu
   i rzeczywisty transport stdio; cykl HTTP/SSE i DELETE
   z kontrolowanym serwerem MCP; routing projektu, izolacja sesji, wybór SQL/snapshotu,
   limity, ochrona panelu i zachowanie zer/braków danych.
 - Instalacja przez CLI; `plugin/read` widzi skill i MCP; `mcpServerStatus/list`
   w silniku desktop 0.160.1 uruchomionym z katalogu DNV odczytuje wszystkie
-  8 narzędzi zainstalowanej wtyczki.
+  narzędzia zainstalowanej wtyczki (pierwotnie 8; obecnie 9 z `companion_present`).
 - Test live z katalogu DNV: zainstalowany launcher → MCP stdio wtyczki → lokalny
   JAS-MIN → projekt CEBSOFPR1 → dokładna nazwa `DB Time(s)` → 1339 pomiarów
   i widok dowodu w stanie panelu. Bez zapisu raportu i bez zapytań do Oracle.
