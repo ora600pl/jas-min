@@ -1,117 +1,130 @@
 # JAS-MIN Companion
 
-Lokalna wtyczka Codex: zakapturzony awatar, wykresy i tabele z JAS-MIN MCP,
-sterowane w rozmowie tekstowej lub natywnym głosem Codex. Bez klucza OpenAI API,
-osobnego modelu, Realtime API, nagrywania mikrofonu i syntezy mowy w panelu.
-Natywny głos i praca Codex zużywają limity planu użytkownika.
+A local Codex plugin that supports Oracle performance investigations with a persistent side panel: evidence charts, baseline comparisons, SQL tables, and mechanism diagrams, accompanied by a hooded avatar.
 
-## Instalacja
+Discuss the investigation in text or through the host's native voice interface. Panel labels and interpretations are in English; the conversation can use another language. The plugin does not capture audio, synthesize speech, or call the OpenAI API, and requires no OpenAI API key.
 
-Wymagania: lokalny Codex desktop, CLI `codex`, Node.js 22+ (sprawdzone na 24.18.0).
-Nie trzeba uruchamiać `npm install` — paczka nie ma zależności.
+## Requirements
 
-Z głównego katalogu repozytorium:
+- Codex desktop with support for local plugins and the `codex plugin` CLI commands.
+- Node.js **22 or newer**, available on the desktop application's `PATH`.
+- Git to clone this repository.
+- For live analysis: a running JAS-MIN MCP server with an AWR/STATSPACK collection loaded. Demo mode needs no database or JAS-MIN server.
+
+The launcher uses a POSIX shell. Installation and desktop integration have been tested on macOS with Node.js 24.18.0. Windows installation has not been validated. The package has no npm dependencies; **do not run `npm install`**.
+
+## Install the plugin
+
+Clone the repository, or use your existing checkout:
 
 ```sh
+git clone https://github.com/ora600pl/jas-min.git
+cd jas-min
+node --version
 node plugins/jasmin-companion/install.mjs
 ```
 
-Instalator rejestruje repo jako marketplace `jasmin-local`, instaluje i włącza
-`jasmin-companion@jasmin-local`. Format przenośny `mcp.json` uruchamia zawarty
-w paczce `./launch.sh`, który znajduje serwer niezależnie od katalogu projektu.
-Node 22+ musi być dostępny w PATH procesu desktop. Dla starszego CLI instalator
-generuje także ignorowany przez Git `.mcp.json` z lokalnymi ścieżkami Node i serwera.
-Po zmianie kodu uruchom instalator ponownie. Na macOS domyślnie używa silnika
-z aplikacji ChatGPT desktop; `CODEX_CLI` pozwala wskazać inny plik wykonywalny.
+The installer registers this checkout as the local marketplace `jasmin-local`, installs `jasmin-companion@jasmin-local`, and prints the installed package location. Keep the checkout if you want to reinstall or update from it.
 
-**Przeładuj Codex, aby załadować nowy skill i narzędzia MCP.** Następnie wpisz:
-
-> Użyj JAS-MIN Companion. Otwórz demo, pokaż DBTime i opowiedz, co się dzieje.
-
-Możesz też wybrać skill `jasmin-companion` z selektora `$`.
-Włącz natywną rozmowę głosową w tym samym czacie. Powiedz np.:
-
-> Pokaż waity w szczycie obciążenia. A teraz najdroższe SQL-e z tego snapshotu.
-
-Codex otwiera panel w swojej przeglądarce i wywołuje narzędzia wtyczki. Każde
-zapytanie dodaje dowód do historii. Kliknij punkt lub SQL, a następnie powiedz
-„przeanalizuj ten snapshot / ten SQL”. Skill odczytuje wybór przez
-`companion_context`. Samo kliknięcie nie wysyła wiadomości do modelu.
-
-## Panel wspierający analizę
-
-`companion_query` zbiera dowody. `companion_present` układa z nich trwały widok:
-wykresy SQL i waitów, porównania baseline/incydent, tabele oraz schematy mechanizmu.
-Wspiera do sześciu kart, jawne jednostki, źródła oraz oznaczenie `measured`,
-`hypothesis` lub `explanation`. Model może użyć `view_ids` albo przekazać własne
-serie wyprowadzone z potwierdzonych danych. Schemat i przykład są w skillu.
-
-Kolejne zapytania nie zastępują aktywnej prezentacji; `display:false` pozwala
-zbierać dowody w tle także bez prezentacji. Dane techniczne są zwinięte, a
-nieobsługiwane odpowiedzi nie trafiają jako JSON na główną powierzchnię panelu.
-Historia przywraca poprzednie wykresy i notatki. Wykresy mają wybór zakresu wokół
-peaku, odczyt punktów i kontekst snapshotu wraz z potwierdzoną instancją.
-
-MCP może zwracać rekordy RAC bez tożsamości instancji. Powtórzone czasy są wtedy
-punktami bez łączącej linii, z ostrzeżeniem. Model musi potwierdzić instancje
-w źródłowych raportach przed przygotowaniem porównania węzłów. Braki pozostają
-brakami, nie zerami. Diagram mechanizmu nie jest dowodem łańcucha blockerów.
-
-## Rzeczywiste dane
-
-Uruchom istniejący JAS-MIN z wybranym plikiem kolekcji, np.:
+On macOS, the installer prefers the CLI bundled with `/Applications/ChatGPT.app` when present. Otherwise, it uses `codex` from `PATH`. To choose a specific compatible CLI:
 
 ```sh
-./target/release/jas-min -j "/pełna/ścieżka/kolekcja.json" --security-level 2 --mcp 127.0.0.1:4242/mcp
+CODEX_CLI="/absolute/path/to/codex" node plugins/jasmin-companion/install.mjs
 ```
 
-W Codex:
+**Reload Codex after installation** so that it loads the skill and MCP tools. Installation is not tied to the JAS-MIN repository: you can use Companion from another project chat.
 
-> Otwórz JAS-MIN Companion w trybie live. MCP jest pod http://127.0.0.1:4242/mcp.
-> Pokaż dostępne projekty i obciążenie wybranej bazy.
+### Try the demo
 
-Wtyczka pobiera listę projektów i schematy narzędzi z serwera. Tworzy własną sesję
-analizy, automatycznie dopisuje `analysis_id` i `project_id`, zachowuje identyfikatory
-dowodów. Obsługuje 12 narzędzi do odczytu; nie wystawia narzędzi zapisu raportów.
-Adres MCP musi być lokalny; dla zdalnego serwera można użyć tunelu SSH.
-Tryb live nie przełącza się sam na dane syntetyczne po błędzie połączenia.
-Skill pobiera dokładne nazwy metryk przez `list_available_metrics`: starszy serwer
-DNV zwraca serię dla `DB Time(s)`, ale pustą serię dla skrótu `DBTime`.
+In a Codex chat, select the `jasmin-companion` skill from the skill picker, or ask:
 
-## Architektura i granice
+> Use JAS-MIN Companion in demo mode. Show database load, waits at the peak, and the most expensive SQL statements. Present the related evidence together in the side panel.
+
+Demo data is synthetic and clearly labelled. Codex opens the panel in its browser and calls the plugin's tools to update it.
+
+If your host offers native voice, start it in the same chat. The plugin works with text when voice is unavailable. The avatar's pulse indicates idle/tool activity, not microphone or speaking state.
+
+## Connect to real data
+
+Build or install JAS-MIN using the [main repository instructions](../../README.md#installation). Then start its MCP server with your collection:
+
+```sh
+./target/release/jas-min \
+  -j "/absolute/path/to/collection.json" \
+  --security-level 2 \
+  --mcp 127.0.0.1:4242/mcp
+```
+
+Keep that process running. In your investigation chat, ask:
+
+> Open JAS-MIN Companion in live mode using http://127.0.0.1:4242/mcp. List the available projects, select my database, and show the most important workload evidence.
+
+For a focused investigation:
+
+> Compare the incident with a representative baseline. Show SQL activity and wait duration on aligned timelines, separate RAC instances, and illustrate the proposed mechanism. Clearly distinguish measurements from hypotheses.
+
+The plugin discovers project IDs and available tool schemas from JAS-MIN and creates its own analysis session. It allows 12 read-only upstream tools; it does not expose report-writing tools. Only local HTTP MCP endpoints are accepted. Use an SSH tunnel for a remote server. A failed live connection never silently switches to demo.
+
+Metric names come from `list_available_metrics`. Use the exact returned name: some servers expose `DB Time(s)` and return no measurements for the alias `DBTime`.
+
+## How the panel supports the investigation
+
+- `companion_query` collects evidence and automatically renders supported load summaries, metric/wait/SQL timelines, SQL text, and comparison tables.
+- `companion_present` composes up to six related charts, tables, or mechanism cards. Each custom panel includes its source and an explicit `measured`, `hypothesis`, or `explanation` label. See the [presentation schema and example](skills/jasmin-companion/references/presentations.md).
+- An active presentation stays visible while further queries collect evidence. `display:false` also prevents a query from changing an ordinary evidence view.
+- Use the chart's time-window selector to inspect the peak. Select a point or SQL row, then ask Codex to investigate that selection. `companion_context` supplies the selected snapshot, SQL, and instance when available. Clicking does not send a chat message by itself.
+- **Earlier views** restores previous charts and notes. Raw data is available in a collapsed technical section rather than replacing the main analytical view.
+
+Missing observations remain unknown, not zero. When MCP returns duplicate RAC timestamps without instance identity, the panel shows separate points and a warning instead of inventing an instance mapping. Instance-specific presentations require identity verified from source evidence. A mechanism diagram is an explanation or hypothesis, not proof of a blocker chain.
+
+## Update or uninstall
+
+From a checkout on `main`:
+
+```sh
+git pull --ff-only
+node plugins/jasmin-companion/install.mjs
+```
+
+Reload Codex to load updated server code, tools, and skill instructions. Editing the repository alone does not update the installed copy. Refreshing the browser reloads panel assets, but does not restart the MCP server.
+
+To uninstall, use a compatible Codex CLI (the same one used for installation):
+
+```sh
+codex plugin remove jasmin-companion@jasmin-local
+```
+
+Uninstalling the plugin leaves this repository intact.
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---|---|
+| The skill appears, but no `companion_*` tools are available | Check desktop plugin-loader diagnostics and the installed manifest. Confirm Node.js is on the desktop application's `PATH`. After fixing configuration, reload Codex. Repeated restarts alone do not fix a loader error. |
+| `Agent Plugins stdio command must be a bare executable name or a contained ./ path` | The portable `mcp.json` must use `./launch.sh`. Do not replace it with an absolute Node.js path. Reinstall from this checkout. |
+| Installation works in a terminal, but the desktop cannot load the plugin | Ensure the installer used the desktop-compatible CLI. A successful test with an older standalone CLI does not establish desktop compatibility. Use `CODEX_CLI` if needed. |
+| Live connection fails | Check that JAS-MIN is still running and that the loopback host, port, and `/mcp` path match. |
+| A metric chart has no observations | Discover the exact metric name and inspect data availability. An empty result is not a measured zero. |
+| The panel URL stops working | Its MCP process has ended. Ask Codex to reopen Companion; the old session URL cannot restore in-memory state. |
+| The new presentation tool is missing | Reinstall, then reload Codex. The current package exposes nine Companion tools, including `companion_present`. |
+
+## Runtime and data handling
 
 ```text
-Natywny głos / tekst Codex
-          │
-Skill → MCP stdio wtyczki → JAS-MIN MCP przez HTTP
-          │
-          └─ prywatny panel HTTP na 127.0.0.1, losowy port i URL sesji
+Codex conversation + Companion skill
+                  |
+          Companion stdio MCP
+            /             \
+   JAS-MIN HTTP MCP    local browser panel
 ```
 
-Każdy proces MCP ma własny panel i sesję. Po zakończeniu procesu panel przestaje
-działać; ponownie otwórz go przez `companion_open`. Historia do 20 widoków jest
-przechowywana w pamięci. URL panelu daje dostęp do danych tej sesji — nie publikuj go.
-Dane zwrócone narzędziami trafiają do rozmowy Codex zgodnie z jej ustawieniami;
-„lokalny panel” nie oznacza, że analiza przez Codex jest offline.
+Each MCP process owns an isolated panel and analysis session. The panel listens only on `127.0.0.1`, using a random port and a secret session URL. Its history of up to 20 views is held in memory. Treat the URL as access to that session's data; do not publish it.
 
-Awatar ma łagodną, kobiecą twarz i pulsującą turkusową poświatę, która nasila się
-podczas pracy narzędzi. Ustawienie ograniczonego ruchu wyłącza animacje.
-Interfejs, podpisy i notatki modelu w panelu są po angielsku, także podczas rozmowy
-po polsku. Surowe dowody MCP, SQL i identyfikatory zachowują treść źródłową.
-Nie korzysta ze zdarzeń mikrofonu ani natywnego głosu. Panel działa jako lokalna
-strona w przeglądarce Codex, bez zależności od obsługi osadzonych MCP Apps.
+Tool results enter the Codex conversation under its data settings. A local panel does not mean the AI conversation runs offline. Source SQL and identifiers are preserved verbatim. The plugin uses no separate model or paid Realtime integration.
 
-Nowy format `plugin.json` ma także manifest zgodności `.codex-plugin/plugin.json`.
-Starszy CLI 0.144.5 używa manifestu zgodności i wygenerowanego `.mcp.json`.
-Desktop 0.160.1 używa formatu przenośnego i odrzuca absolutne ścieżki w polu
-`mcp.json` → `command`. Z tego powodu konfiguracje transportu są celowo różne.
-Obie uruchamiają ten sam serwer w zainstalowanej kopii paczki. To lokalna paczka
-developerska, nie publikacja w publicznym katalogu.
+The portable manifest launches `./launch.sh`, which changes to its package directory before running the server. The installer also generates an ignored `.mcp.json` with absolute paths for older CLI compatibility. Do not commit that machine-specific file.
 
-Grafika awatara została wygenerowana w tej rozmowie; to oryginalna zakapturzona
-postać inspirowana ogólnym kierunkiem wizualnym, nie kopia logotypu POUG.
-
-## Podgląd i testy
+## Development and validation
 
 ```sh
 cd plugins/jasmin-companion
@@ -119,45 +132,13 @@ npm test
 npm run preview
 ```
 
-Podgląd wypisuje lokalny URL, pokazuje fikcyjne dane i działa do Ctrl+C.
-Jest osobnym panelem testowym; rozmowa z zainstalowaną wtyczką otworzy swoją sesję.
+The preview prints a local URL, loads synthetic data, and runs until Ctrl+C. It is separate from the panel session opened by the installed plugin.
 
-Sprawdzone 2026-10-12:
+Validation as of 12 October 2026:
 
-- 8 testów obejmuje także rzeczywiste kształty odpowiedzi timeline, brakujące
-  pomiary SQL, niejednoznaczne rekordy RAC, walidację prezentacji, zachowanie
-  aktywnego widoku i wybór instancji.
-- Zainstalowany launcher uruchomiony z SU_KRAKOW udostępnia 9 narzędzi;
-  live MCP zwrócił 1224 punkty waitów. Czterokartowa prezentacja oparta na
-  oryginalnych AWR pozostała aktywna po kolejnym zapytaniu.
-- W przeglądarce sprawdzone: SQL i wait timeline bez JSON w głównej karcie,
-  przybliżenie peaku, wybór snapshotu z instancją oraz przywracanie prezentacji.
-  Dane klienta i lokalny podgląd nie są częścią repozytorium.
+- Eight automated tests cover stdio startup from another project directory, HTTP/SSE lifecycle, session isolation, origin checks, selection, real timeline response shapes, missing values, RAC ambiguity, and presentation validation/retention.
+- The installed launcher was checked against a live local JAS-MIN collection: nine tools loaded, a wait timeline returned 1,224 records, and a four-card presentation survived another query.
+- Browser checks covered SQL/wait charts, peak zoom, instance-aware selection, and restoring an analytical presentation. Client datasets and local preview artifacts are not included in the repository.
+- A microphone conversation has not been validated end to end.
 
-Wcześniejsze sprawdzenia 2026-10-07:
-
-- Testy integracyjne i regresyjne: uruchomienie przez przenośny launcher z obcego katalogu
-  i rzeczywisty transport stdio; cykl HTTP/SSE i DELETE
-  z kontrolowanym serwerem MCP; routing projektu, izolacja sesji, wybór SQL/snapshotu,
-  limity, ochrona panelu i zachowanie zer/braków danych.
-- Instalacja przez CLI; `plugin/read` widzi skill i MCP; `mcpServerStatus/list`
-  w silniku desktop 0.160.1 uruchomionym z katalogu DNV odczytuje wszystkie
-  narzędzia zainstalowanej wtyczki (pierwotnie 8; obecnie 9 z `companion_present`).
-- Test live z katalogu DNV: zainstalowany launcher → MCP stdio wtyczki → lokalny
-  JAS-MIN → projekt CEBSOFPR1 → dokładna nazwa `DB Time(s)` → 1339 pomiarów
-  i widok dowodu w stanie panelu. Bez zapisu raportu i bez zapytań do Oracle.
-- Panel obejrzany w przeglądarce Codex; wykres, historia i wybór punktu działają.
-
-Rozmowa głosowa z mikrofonem użytkownika nie była jeszcze testowana.
-Automatyczne testy upstream używają serwera kontrolnego; osobno wykonano opisany
-wyżej test z działającym JAS-MIN na rzeczywistej kolekcji DNV.
-
-Usunięcie instalacji (zachowuje kod w repo):
-
-```sh
-codex plugin remove jasmin-companion@jasmin-local
-```
-
-Źródła formatu i natywnego głosu:
-[OpenAI — pakowanie wtyczek](https://developers.openai.com/plugins/build/plugins),
-[OpenAI — Voice](https://learn.chatgpt.com/docs/features/voice).
+The avatar is an original generated asset; its [provenance and prompt](assets/avatar.md) are included. Reduced-motion preferences disable its animation.
