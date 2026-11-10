@@ -9081,7 +9081,7 @@ mod tests {
 
     #[test]
     fn analytic_synthesis_rejects_activity_prose_and_accepts_reproduced_signals() {
-        let project_id = "dnv-instance-1";
+        let project_id = "project-instance-1";
         let mut state = AnalysisSession::new(
             json!({"source": "unit-test"}),
             ReportConfig::default(),
@@ -9633,17 +9633,17 @@ mod tests {
         let labels = BTreeMap::from([
             (
                 "node-1".to_string(),
-                "CEBSOFPR1 · Oracle instance 1".to_string(),
+                "DB1 · Oracle instance 1".to_string(),
             ),
             (
                 "node-2".to_string(),
-                "CEBSOFPR2 · Oracle instance 2".to_string(),
+                "DB2 · Oracle instance 2".to_string(),
             ),
         ]);
 
         let rendered = render_report_table(&table, &state, &labels, &ReportEntityLinks::default());
-        assert!(rendered.contains("#### CEBSOFPR1 · Oracle instance 1"));
-        assert!(rendered.contains("#### CEBSOFPR2 · Oracle instance 2"));
+        assert!(rendered.contains("#### DB1 · Oracle instance 1"));
+        assert!(rendered.contains("#### DB2 · Oracle instance 2"));
         assert!(rendered.contains("cpu_count"));
         assert!(rendered.contains("resource_manager_plan"));
         assert!(!rendered.contains("sga_target"));

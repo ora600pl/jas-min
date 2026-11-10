@@ -13,4 +13,4 @@ including nested objects, arrays, Unicode, numeric-looking strings and escapes.
 The registry dependency is test-only. Release builds use this local copy.
 
 Keep this patch until an upstream replacement passes the compatibility tests and
-the large DNV export replay. Do not silently change TOON format while updating it.
+the large external export replay. Do not silently change TOON format while updating it.

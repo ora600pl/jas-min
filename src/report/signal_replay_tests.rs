@@ -50,10 +50,11 @@ fn collect(value: &Value, analysis_id: &str, state: &mut AnalysisSession) {
 }
 
 #[test]
-#[ignore = "requires JASMIN_SIGNAL_FIXTURE, JASMIN_SIGNAL_ORIGINAL and a new JASMIN_SIGNAL_PREVIEW path"]
+#[ignore = "requires JASMIN_SIGNAL_FIXTURE, JASMIN_SIGNAL_ORIGINAL, JASMIN_SIGNAL_PROJECT_ID and a new JASMIN_SIGNAL_PREVIEW path"]
 fn replay_signal_atlas_from_archived_audit() {
     let fixture = PathBuf::from(std::env::var("JASMIN_SIGNAL_FIXTURE").unwrap());
     let original = PathBuf::from(std::env::var("JASMIN_SIGNAL_ORIGINAL").unwrap());
+    let project_id = std::env::var("JASMIN_SIGNAL_PROJECT_ID").unwrap();
     let output = PathBuf::from(std::env::var("JASMIN_SIGNAL_PREVIEW").unwrap());
     let base = output.parent().unwrap();
     let document: Value =
@@ -137,7 +138,7 @@ fn replay_signal_atlas_from_archived_audit() {
     let cursor = atlas
         .panels
         .iter()
-        .find(|p| p.project_label.contains("CEBSOFPR1") && p.family == "Foreground waits")
+        .find(|p| p.project_id == project_id && p.family == "Foreground waits")
         .unwrap()
         .points
         .iter()

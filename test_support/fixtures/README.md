@@ -1,7 +1,7 @@
 # Reproducible test fixtures
 
 These small fixtures are tracked separately from ignored, local customer data in
-`tests/` and `test_runs/`. No DNV or USK4 measurements are included here.
+`tests/` and `test_runs/`. They contain only controlled lab and synthetic cases.
 
 - `empty_calories/hints_native.json`: reduced 61-window Oracle EmptyCalories lab
   collection. Retains SQL `9paxwp1pabugh`, ERP_SPARSE/ERP_DENSE logical reads,

@@ -98,9 +98,13 @@ The optional `replay_signal_atlas_from_archived_audit` test takes:
 ```sh
 JASMIN_SIGNAL_FIXTURE=/path/to/audit_archive \
 JASMIN_SIGNAL_ORIGINAL=/path/to/original.md \
+JASMIN_SIGNAL_PROJECT_ID=project-1 \
 JASMIN_SIGNAL_PREVIEW=/path/to/new_visual.html \
 cargo test --offline replay_signal_atlas_from_archived_audit -- --ignored --nocapture
 ```
+
+Set `JASMIN_SIGNAL_PROJECT_ID` to the archived project ID whose foreground-wait
+panel contains the expected cursor-wait regression values.
 
 The external customer fixture is not committed. Replay reads `report.json` and
 the archived `evidence_*.json` envelopes, preserves delivered provenance and

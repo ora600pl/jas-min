@@ -2956,7 +2956,7 @@ mod tests {
                 "Gradient v2 replay",
                 "SQL elapsed → DB Time · gradient v2",
                 vec![GradientHtmlSection {
-                    heading: "Independent replay of original DNV inputs".into(),
+                    heading: "Independent replay of original external inputs".into(),
                     html,
                 }],
             ),

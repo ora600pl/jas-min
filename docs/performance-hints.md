@@ -199,8 +199,8 @@ counters and HEAD/full projection. Shared classic/local/registered MCP tests cov
 both work-only and time-supported signals and absolute observations.
 
 Optional read-only replays use `JASMIN_HINT_REPLAY_INPUT`,
-`JASMIN_HINT_REPLAY_OUTPUT`, `JASMIN_HINT_REPLAY_STEM` for szpital, and
+`JASMIN_HINT_REPLAY_OUTPUT`, `JASMIN_HINT_REPLAY_STEM` for an external capture, and
 `JASMIN_HINT_REVIEW_INPUT`, `JASMIN_HINT_REVIEW_OUTPUT` for the reviewed EmptyCalories
-hourly capture. Production data is not checked into the fixtures. The szpital
+hourly capture. Production data is not checked into the fixtures. The external
 capture has no weekend or labelled fragmentation ground truth: accuracy and
 weekend thresholds remain uncalibrated.

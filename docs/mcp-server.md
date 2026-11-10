@@ -1416,7 +1416,7 @@ supplied evidence after a hypothesis emerges.
 Degradation findings contain `unit`, `change_score` and `domain_rank` instead of
 `estimated_db_time_delta_share`; domain summaries use `max_change_score` instead of
 summing heterogeneous deltas. Regression interval features are normalized by wall seconds.
-See [the reasoning and optional evidence contract](access-path-diagnostics.md).
+See [the reasoning and optional evidence contract](../src/ai/access_path_reasoning.md).
 
 ### Precise DB-load targets (`2026-09-13.3`)
 

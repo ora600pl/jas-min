@@ -1030,4 +1030,4 @@ again. Classic APIs and the local reviewer use the same validated decision
 metadata and renderer. See [issue authoring and migration](docs/report-issues.md)
 for required fields, legacy compatibility and export validation.
 
-- [Scan and row-continuation reasoning](docs/access-path-diagnostics.md): AI hypotheses from existing gradients, degradation and SQL costs; optional confirmation evidence.
+- [Scan and row-continuation reasoning](docs/mcp-server.md#scan-and-row-continuation-reasoning-2026-09-132): AI hypotheses from existing gradients, degradation and SQL costs; optional confirmation evidence.
