@@ -1,0 +1,151 @@
+{
+  "description": "Neutral acceptance examples for report composition; not a complete analysis or a measurement of a running service.",
+  "findings": [
+    {
+      "finding_id": "F-remote-1",
+      "category": "sql",
+      "title": "Sprawdźmy, ile pracy wymaga pobranie danych strony",
+      "severity": "high",
+      "confidence": "medium",
+      "conclusion": "Plan wskazuje miejsca, w których warto zmierzyć pracę zdalną; nie określa rzeczywistego transferu.",
+      "mechanism": "Plan przewiduje pobranie danych materiałowych z remote_materials bez widocznego filtra i lokalne łączenie z remote_orders. Odrębne odwołanie do remote_batch_header znajduje się pod pętlą nested loops. To hipotezy nadmiarowego transferu i powtarzanych wywołań, a nie zmierzone przyczyny opóźnienia.",
+      "temporal_pattern": "Instance-1, okno 06.10.2026 09:00–10:00; załączony plan nie zawiera pomiarów wykonania.",
+      "affected_workload": "Project-1, zapytanie sql-remote-1 obsługujące stronę aplikacji.",
+      "evidence_limitations": "Nie znamy rzeczywistych Starts, liczby wierszy ani bajtów. Fragment zdalnego SQL dla operacji 71 jest ucięty. Liczba operacji planu nie mierzy kosztu ani liczby round-tripów.",
+      "evidence_summary": "Plan: 136 operacji, w tym 102 FAST DUAL i 8 REMOTE. Łączenie 61 następuje po operacjach 69 i 70; operacja 67 jest pod pętlą 63. Brak wartości wykonawczych Starts, A-Rows i bytes.",
+      "details": "W planie jest 136 operacji, w tym 102 FAST DUAL i 8 REMOTE. Te liczby opisują strukturę, nie zmierzony koszt.\n\nOperacja 70 odczytuje material_id i order_id z remote_materials bez WHERE. Operacja 69 filtruje remote_orders po plan_start IS NOT NULL i line_id = 'line-1'; wynik jest łączony lokalnie w 61. Wariant wspólnego złączenia i filtrowania w remote_source_1 wymaga zachowania LEFT JOIN, duplikatów i semantyki.\n\nOperacja 67 remote_batch_header jest pod nested loops 63. Pomiar Starts rozstrzygnie, czy występują liczne wywołania. Gałęzie 49/55 i rezerwacje 52 wymagają osobnego pomiaru przed propozycją zbiorczego pobrania.\n\nRanking <=3 jest po złączeniach 57/58. Jego przesunięcie wymaga dowodu równoważności wyników. Fragment 71 zawiera ROW_NUMBER i skorelowane LISTAGG DISTINCT, lecz jest ucięty; należy pozyskać pełny tekst.\n\nPole display_refresh_counter wpływa na prezentacyjny group_id. Oddzielenie zmiany wyglądu od pobrania danych jest propozycją do sprawdzenia, nie potwierdzonym źródłem oszczędności.",
+      "evidence_refs": ["E-plan-1"],
+      "guidance_refs": [],
+      "guidance_quotes": [],
+      "reader_brief": {
+        "observed": "W planie zapytania widać pobranie danych ze zdalnej bazy i lokalne łączenie wyników. Pokazany odczyt danych materiałowych nie ma widocznego filtra.",
+        "explanation": "Warto sprawdzić, czy przesyłamy dane, których strona nie potrzebuje. Jeśli pomiar to potwierdzi, można przetestować filtrowanie i łączenie danych po stronie zdalnej. Taki wariant musi zwracać identyczny wynik.",
+        "next_step": "DBA powinien zmierzyć jedno reprezentatywne wykonanie: liczbę przesłanych wierszy i bajtów oraz liczbę uruchomień zdalnych operacji.",
+        "boundary": "Sam plan nie pokazuje, ile danych rzeczywiście przesłano. Nie wiemy jeszcze, czy proponowana zmiana skróci wykonanie.",
+        "evidence_refs": ["E-plan-1"]
+      },
+      "recommendations": [
+        {
+          "kind": "evidence_capture",
+          "owner": "DBA",
+          "priority": "high",
+          "action": "Dla sql-remote-1 zebrać ALLSTATS LAST z REMOTE SQL, rzeczywiste Starts i A-Rows oraz delty SQL*Net bytes i roundtrips dla izolowanego wykonania. Pozyskać pełny tekst operacji 71.",
+          "action_summary": "Zmierz jedno wykonanie zapytania i ustal, gdzie powstaje praca zdalna.",
+          "steps": [
+            "Zapisz SQL, child cursor, plan, bindy oraz czas rozpoczęcia i zakończenia wykonania.",
+            "Zbierz Starts, A-Rows, zdalny SQL i delty bajtów oraz round-tripów.",
+            "Uzupełnij ucięty tekst operacji 71."
+          ],
+          "decision_rule": "Jeżeli pomiar potwierdzi dużą pracę w gałęziach zdalnych, przygotuj wariant do testu. Jeśli nie, szukaj kosztu w innych częściach wykonania.",
+          "rationale": "Struktura planu wskazuje kandydatów, ale nie pozwala przypisać im rzeczywistego kosztu.",
+          "success_criterion": "Jedno oznaczone wykonanie ma komplet danych o wierszach, bajtach, Starts i zdalnym SQL; dalszy test porównuje czas oraz identyczność wyników, LEFT JOIN i duplikatów."
+        }
+      ]
+    },
+    {
+      "finding_id": "F-cpu-1",
+      "category": "performance_profile",
+      "title": "Sprawdźmy, dlaczego rośnie koszt obsługi zadań",
+      "severity": "high",
+      "confidence": "medium",
+      "conclusion": "CPU dominuje w profilu bazy, a wybrane okno hosta ma mały zapas. Nie ustalono jeszcze, czy koszt pojedynczego zadania wzrósł.",
+      "mechanism": "Większy koszt lokalny może wynikać z większej liczby zadań, innego miksu pracy albo większej pracy na zadanie. Porównanie podobnych wykonań może rozdzielić te wyjaśnienia.",
+      "temporal_pattern": "CPU stanowi 73–78% DB Time w badanym okresie. Instance-1 ma 0,3% idle w oknie 06.10.2026 09:00–10:00; nie oznacza to stałego nasycenia.",
+      "affected_workload": "Project-1; wybrane zadania aplikacji i sql-local-1. Przypisanie statystyk continued row do SQL pozostaje nieznane.",
+      "evidence_limitations": "Brak porównywalnej miary pracy biznesowej oraz potwierdzonej mapy SQL–segment. Nie dowiedziono fragmentacji ani wspólnej przyczyny skanów i continued rows.",
+      "evidence_summary": "DB CPU/DB Time: 73–78%; host idle instance-1: 0,3% w oknie 06.10.2026 09:00–10:00. Modele i gets/wykonanie lokalizują kandydatów, lecz nie dowodzą przyczyny wzrostu kosztu.",
+      "details": "Najpierw porównaj wolne i referencyjne wykonanie sql-local-1 przy podobnej pracy biznesowej. Zachowaj child cursor, plan, bindy, executions, buffer gets, CPU, elapsed oraz miarę liczby obsłużonych zadań.\n\nJeżeli porównanie wskaże nadmiar pracy w skanie i potwierdzi się obiekt, osobno dopasuj scan plan do przestrzeni poniżej HWM. Ten krok nie oznacza rekomendacji przebudowy segmentu.\n\nContinued row należy osobno przypisać do SQL i sesji przed sprawdzaniem chained/migrated rows. Statystyka instancji nie dowodzi takiego mechanizmu w sql-local-1.",
+      "evidence_refs": ["E-cpu-1"],
+      "guidance_refs": [],
+      "guidance_quotes": [],
+      "reader_brief": {
+        "observed": "W badanym okresie procesor odpowiadał za 73–78% czasu pracy bazy. W jednym z porannych okien host instance-1 miał tylko 0,3% czasu bezczynnego.",
+        "explanation": "Trzeba ustalić, czy aplikacja wykonywała więcej zadań, czy każde zadanie wymagało więcej pracy. Sama wysoka zajętość procesora tego nie rozstrzyga.",
+        "next_step": "DBA powinien porównać wolne i referencyjne wykonanie wybranego zapytania przy podobnej liczbie obsłużonych zadań.",
+        "boundary": "Nie mamy jeszcze takiego porównania. Bez niego nie potrafimy wskazać zmiany, która ograniczy koszt obsługi zadań.",
+        "evidence_refs": ["E-cpu-1"]
+      },
+      "recommendations": [
+        {
+          "kind": "evidence_capture",
+          "owner": "DBA",
+          "priority": "high",
+          "action": "Dla sql-local-1 zebrać porównywalne wykonania wolne i referencyjne: child cursor, plan, bindy, executions, gets, CPU, elapsed oraz miarę pracy biznesowej.",
+          "action_summary": "Porównaj koszt dwóch wykonań obsługujących podobną liczbę zadań.",
+          "steps": [
+            "Zapisz identyfikatory wykonań, planów, bindów i przedziałów czasu.",
+            "Dla obu wykonań ustal liczbę obsłużonych zadań oraz gets, CPU i elapsed.",
+            "Porównaj pracę na zadanie, uwzględniając różnice danych i parametrów."
+          ],
+          "decision_rule": "Wzrost kosztu na porównywalne zadanie uzasadnia analizę droższych operacji. Wzrost samej liczby zadań kieruje dalszą analizę na wolumen i harmonogram.",
+          "rationale": "Pomiar rozdziela większą liczbę zadań od wzrostu kosztu obsługi jednego zadania.",
+          "success_criterion": "Oba wykonania mają porównywalną miarę pracy, pełne identyfikatory oraz koszt na zadanie z opisanymi różnicami."
+        },
+        {
+          "kind": "evidence_capture",
+          "owner": "DBA",
+          "priority": "medium",
+          "action": "Dopiero po potwierdzeniu nadmiaru pracy skanu i obiektu dopasować scan plan do przestrzeni poniżej HWM.",
+          "action_summary": "Jeśli skan okaże się nadmiernie kosztowny, sprawdź zakres czytanej przestrzeni.",
+          "steps": ["Potwierdź obiekt i operację rzeczywistego planu.", "Porównaj pracę skanu z przestrzenią poniżej HWM."],
+          "decision_rule": "Bez potwierdzonego obiektu i kosztu skanu nie wnioskuj o fragmentacji ani przebudowie segmentu.",
+          "rationale": "Pomiar struktury ma sens dopiero po powiązaniu go z konkretnym kosztownym dostępem.",
+          "success_criterion": "Ten sam obiekt i wykonanie łączą koszt operacji z pomiarem przestrzeni."
+        },
+        {
+          "kind": "evidence_capture",
+          "owner": "DBA",
+          "priority": "medium",
+          "action": "Oddzielnie przypisać continued row do SQL i sesji przed sprawdzaniem chained/migrated rows.",
+          "action_summary": "Ustal, które zapytanie odpowiada za odczyty kolejnych części wierszy.",
+          "steps": ["Zbierz delty statystyki dla oznaczonych sesji i wykonań.", "Dopiero po przypisaniu kosztu sprawdź właściwości wierszy badanego obiektu."],
+          "decision_rule": "Nie przypisuj statystyki całej instancji do sql-local-1 bez pomiaru sesji lub wykonania.",
+          "rationale": "Sygnał instancji nie identyfikuje samodzielnie SQL ani mechanizmu w badanym obiekcie.",
+          "success_criterion": "Delta continued row ma zgodny zakres czasu oraz identyfikację SQL i sesji."
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "E-plan-1",
+      "tool_name": "get_sql_execution_plan",
+      "project_id": "project-1",
+      "arguments": {"sql_id": "sql-remote-1"},
+      "result": {
+        "plan_operations": 136,
+        "fast_dual_operations": 102,
+        "remote_operations": 8,
+        "local_join_operation": 61,
+        "filtered_orders_operation": 69,
+        "unfiltered_materials_operation": 70,
+        "nested_loop_operation": 63,
+        "nested_remote_operation": 67,
+        "related_remote_operations": [49, 55],
+        "reservations_operation": 52,
+        "ranking_operations": [57, 58],
+        "ranking_limit": 3,
+        "truncated_remote_operation": 71,
+        "remote_text_complete": false,
+        "starts": null,
+        "actual_rows": null,
+        "actual_bytes": null
+      }
+    },
+    {
+      "evidence_id": "E-cpu-1",
+      "tool_name": "get_metric_time_series",
+      "project_id": "project-1",
+      "arguments": {"instance": "instance-1", "window": "2026-10-06T09:00:00/2026-10-06T10:00:00"},
+      "result": {
+        "db_cpu_pct_of_db_time_min": 73,
+        "db_cpu_pct_of_db_time_max": 78,
+        "host_idle_pct": 0.3,
+        "comparable_business_work": null,
+        "sql_to_segment_mapping": null,
+        "fragmentation_confirmed": false,
+        "continued_row_sql_attribution": null
+      }
+    }
+  ]
+}

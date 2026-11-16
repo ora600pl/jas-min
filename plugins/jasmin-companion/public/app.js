@@ -1,6 +1,7 @@
 import { renderChart, automaticPresentation, localizedView, translate } from './charts.js';
+import { renderAudit } from './audit.js';
 const $ = id => document.getElementById(id);
-let revision = -1, renderedView = null, actionError = '', language = 'en';
+let revision = -1, renderedView = null, renderedAudit = null, actionError = '', language = 'en';
 const t = text => translate(language, text);
 async function action(route, args) {
   try {
@@ -16,8 +17,10 @@ function render(state) {
   $('history').setAttribute('aria-label', t('Evidence history'));
   document.body.classList.toggle('working', state.status === 'working');
   $('activity').textContent = state.status === 'working' ? t('Checking the evidence…') : t('Ready when you are');
-  $('mode').textContent = state.mode === 'demo' ? t('DEMO · SYNTHETIC DATA') : state.mode === 'live' ? 'JAS-MIN · MCP' : t('WAITING FOR CODEX');
+  $('mode').textContent = state.mode === 'demo' ? t('DEMO · SYNTHETIC DATA') : state.mode === 'live' ? 'JAS-MIN · MCP' : t('WAITING FOR CONVERSATION');
   $('project').textContent = state.project || '';
+  const auditKey = `${state.analysis_id}:${state.project}:${state.audit?.revision}:${state.audit?.report_authorized}:${state.audit_support}:${language}`;
+  if (renderedAudit !== auditKey) { renderAudit($('audit'), state); renderedAudit = auditKey; }
   const sourceView = state.views.find(v => v.id === state.current), view = sourceView && localizedView(sourceView, language), selection = state.selection;
   $('selection').textContent = selection.snap_id != null ? `${selection.instance ? selection.instance+' · ' : ''}${selection.sql_id ? 'SQL '+selection.sql_id+' · ' : ''}Snapshot #${selection.snap_id}` : t('Select a point to focus the conversation');
   $('history').replaceChildren();

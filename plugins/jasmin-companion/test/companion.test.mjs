@@ -21,7 +21,7 @@ test('Portable launcher from a different project: stdio lifecycle, evidence, sel
   const call = async (name, args = {}) => (await rpc('tools/call', { name, arguments: args })).result;
   assert.equal((await rpc('initialize', { protocolVersion: '2025-06-18' })).result.serverInfo.name, 'jasmin-companion');
   child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
-  assert.equal((await rpc('tools/list')).result.tools.length, 10);
+  assert.equal((await rpc('tools/list')).result.tools.length, 18);
   const open = (await call('companion_open', { mode: 'demo' })).structuredContent;
   const url = open.panel_url;
   assert.equal((await fetch(url)).status, 200);
@@ -40,6 +40,11 @@ test('Portable launcher from a different project: stdio lifecycle, evidence, sel
   assert.equal((await call('companion_query', { tool: 'get_sql_text', arguments: { project_id: 'other' } })).isError, true);
   assert.equal((await call('companion_query', { tool: 'write_report' })).isError, true);
   assert.equal((await call('companion_query', { tool: 'list_snapshots', arguments: { limit: 101 } })).isError, true);
+  const largeRestore = await call('companion_restore_audit', { checkpoint: { padding: 'x'.repeat(1100000) } });
+  assert.equal(largeRestore.isError, true); assert.match(largeRestore.content[0].text, /unavailable/);
+  const largeNote = await rpc('tools/call', { name: 'companion_note', arguments: { text: 'x'.repeat(1100000) } });
+  assert.equal(largeNote.error.code, -32600);
+  assert.deepEqual((await rpc('ping')).result, {});
   const exited = new Promise(resolve => child.once('exit', resolve)); child.stdin.end();
   assert.equal(await exited, 0);
 });

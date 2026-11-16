@@ -7,12 +7,15 @@ export class McpClient {
     this.protocol = '2025-06-18';
   }
   async rpc(method, params = {}, notification = false) {
+    // Checkpoints include retained evidence and are returned in both MCP content forms.
+    const auditPayload = method === 'tools/call' && ['export_audit', 'get_audit_status', 'start_audit', 'record_audit_brief', 'advance_audit', 'authorize_report', 'restore_audit'].includes(params.name);
+    const maxResponseBytes = (auditPayload ? 192 : 8) * 1024 * 1024;
     const id = notification ? undefined : ++this.sequence;
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
     if (this.session) headers['Mcp-Session-Id'] = this.session;
     if (method !== 'initialize') headers['MCP-Protocol-Version'] = this.protocol;
     const response = await fetch(this.url, {
-      method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(45000),
+      method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(method === 'tools/call' && params.name === 'restore_audit' ? 120000 : 45000),
       body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }),
     });
     if (!response.ok) throw new Error(`MCP HTTP ${response.status}. Check the server and session.`);
@@ -28,7 +31,7 @@ export class McpClient {
           const { value, done } = await reader.read();
           if (done) break;
           bytes += value.length;
-          if (bytes > 8 * 1024 * 1024) throw new Error('MCP response exceeded the 8 MB limit. Narrow the query.');
+          if (bytes > maxResponseBytes) throw new Error(`MCP response exceeded the ${maxResponseBytes / 1024 / 1024} MiB limit. Narrow the query or export a smaller audit.`);
           buffer += decoder.decode(value, { stream: true });
           let match;
           while ((match = /\r?\n\r?\n/.exec(buffer))) {
@@ -43,7 +46,7 @@ export class McpClient {
       } finally { await reader.cancel(); }
     } else {
       const text = await response.text();
-      if (text.length > 8 * 1024 * 1024) throw new Error('MCP response is too large.');
+      if (Buffer.byteLength(text, 'utf8') > maxResponseBytes) throw new Error('MCP response is too large.');
       message = JSON.parse(text);
     }
     if (!message || message.id !== id) throw new Error('No matching MCP response.');

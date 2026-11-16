@@ -1,25 +1,27 @@
 // Progressive enhancement: the complete report is present without JavaScript.
 (() => {
+    const pl = document.documentElement.lang === 'pl';
+    const text = (en, translated) => pl ? translated : en;
     const toc = document.querySelector('.toc');
     if (toc) {
         toc.classList.add('compact-toc');
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = 'toc-toggle';
-        toggle.textContent = 'Show finding titles';
+        toggle.textContent = text('Show finding titles', 'Pokaż tytuły ustaleń');
         toggle.setAttribute('aria-expanded', 'false');
         toggle.addEventListener('click', () => {
             const compact = toc.classList.toggle('compact-toc');
             toggle.setAttribute('aria-expanded', String(!compact));
-            toggle.textContent = compact ? 'Show finding titles' : 'Sections only';
+            toggle.textContent = compact ? text('Show finding titles', 'Pokaż tytuły ustaleń') : text('Sections only', 'Tylko rozdziały');
         });
         toc.querySelector('h2').after(toggle);
     }
     const controls = document.createElement('div');
     controls.className = 'reader-controls';
     controls.setAttribute('role', 'group');
-    controls.setAttribute('aria-label', 'Report reading detail');
-    for (const [label, expanded] of [['Expand all evidence', true], ['Collapse evidence', false]]) {
+    controls.setAttribute('aria-label', text('Report reading detail', 'Poziom szczegółowości raportu'));
+    for (const [label, expanded] of [[text('Expand all evidence', 'Rozwiń wszystkie dowody'), true], [text('Collapse evidence', 'Zwiń dowody'), false]]) {
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = label;

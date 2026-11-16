@@ -1,6 +1,15 @@
 # JAS-MIN Companion
 
-A local Codex plugin that supports Oracle performance investigations with a persistent side panel: evidence charts, baseline comparisons, SQL tables, and mechanism diagrams, accompanied by a hooded avatar.
+A local plugin for Codex and Claude Code that supports Oracle performance investigations with a persistent panel: evidence charts, baseline comparisons, SQL tables, and mechanism diagrams, accompanied by a hooded avatar.
+
+For Claude Code Desktop (local Code sessions) and the terminal, see [Claude Code installation](README-claude.md). From the repository root, register this checkout and install with:
+
+```sh
+claude plugin marketplace add "$PWD"
+claude plugin install jasmin-companion@jasmin-local --scope user
+```
+
+The Codex instructions follow below. Both hosts use the same MCP server, panel and investigation skill. Claude uses its own manifest and opens the returned local panel URL in an available browser.
 
 Discuss the investigation in text or through the host's native voice interface. Panel labels and interpretations follow the conversation: Polish for Polish dialogue, English for English dialogue. Codex passes the detected language to the plugin; the panel does not read the main chat itself. SQL, source identifiers and raw evidence stay verbatim. The plugin does not capture audio, synthesize speech, or call the OpenAI API, and requires no OpenAI API key.
 
@@ -63,7 +72,7 @@ For a focused investigation:
 
 > Compare the incident with a representative baseline. Show SQL activity and wait duration on aligned timelines, separate RAC instances, and illustrate the proposed mechanism. Clearly distinguish measurements from hypotheses.
 
-The plugin discovers project IDs and available tool schemas from JAS-MIN and creates its own analysis session. It allows 12 read-only upstream tools; it does not expose report-writing tools. Only local HTTP MCP endpoints are accepted. Use an SSH tunnel for a remote server. A failed live connection never silently switches to demo.
+The plugin discovers project IDs and available tool schemas from JAS-MIN. Selecting a project creates an analysis and starts a guided audit when the server supports it. The evidence tool allowlist includes plans, child cursors, alert logs, segments, parameters and analytic signals, so each chapter can follow the actual evidence. Controlled audit tools save explanations and navigate chapters; arbitrary report-writing tools are not exposed through `companion_query`. Only local HTTP MCP endpoints are accepted. Use an SSH tunnel for a remote server. A failed live connection never silently switches to demo.
 
 Metric names come from `list_available_metrics`. Use the exact returned name: some servers expose `DB Time(s)` and return no measurements for the alias `DBTime`.
 
@@ -77,6 +86,31 @@ Metric names come from `list_available_metrics`. Use the exact returned name: so
 - **Earlier views** restores previous charts and notes. Raw data is available in a collapsed technical section rather than replacing the main analytical view.
 
 Missing observations remain unknown, not zero. When MCP returns duplicate RAC timestamps without instance identity, the panel shows separate points and a warning instead of inventing an instance mapping. Instance-specific presentations require identity verified from source evidence. A mechanism diagram is an explanation or hypothesis, not proof of a blocker chain.
+
+## Guided audit
+
+The audit proceeds through one discussion topic at a time. The panel shows the current question, chapter progress, next useful check and unresolved questions. Ask to revisit any chapter or correct an earlier explanation. Saving a brief means that the topic was discussed; it does not mean the user approved a diagnosis.
+
+`companion_record_brief` saves the question, explanation, conclusion, evidence boundary, next step and exact evidence references in the upstream analysis. Reusing a brief ID preserves its corrections as revisions. An optional `view_id` attaches a copy of the evidence board. These records are independent of the panel's 20-view display cache. The core validates evidence references; a custom chart's free-text source label alone is not proof of provenance.
+
+Only an explicit request to produce the final report permits `companion_authorize_report`. Finishing chapters, exporting the audit and saying “next” do not authorize a report. The request is recorded as provenance; the tool cannot independently authenticate what the user said. The report still requires the existing evidence coverage and finalization checks. A changed brief or chapter transition revokes the authorization. The report writer uses the same analysis identity and saved explanations, keeping the full technical evidence alongside the reader-facing narrative.
+
+The audit tools are:
+
+| Tool | Purpose |
+|---|---|
+| `companion_start_audit` | Start or continue guided discussion in the selected analysis |
+| `companion_audit_status` | Read chapters, saved explanations and report authorization |
+| `companion_record_brief` | Save an explanation or correction with evidence references |
+| `companion_advance_audit` | Move to or revisit a chapter |
+| `companion_authorize_report` | Record the user's explicit final-report request |
+| `companion_export_audit` | Return a checkpoint for saving to a local artifact |
+| `companion_resume_audit` | Reconnect to an existing analysis on the running server |
+| `companion_restore_audit` | Restore a saved checkpoint after server restart |
+
+To continue in a new panel while the server is still running, use `companion_resume_audit` with the existing `analysis_id`. To survive a server restart, export the checkpoint and save the returned package intact to a local artifact. Import it using `companion_restore_audit`; the core validates the source projects and evidence and returns a new analysis identity. An export response that has not been saved is still only in memory. Checkpoints contain investigation data and should be kept with the source collection, outside the repository.
+
+An older server, including the lightweight synthetic demo, explicitly reports that guided audit storage is unavailable. Ordinary charts and discussion remain usable; the panel does not pretend to save an audit. Update the server and installed plugin together to enable the guided workflow.
 
 ## Update or uninstall
 
@@ -106,8 +140,9 @@ Uninstalling the plugin leaves this repository intact.
 | Installation works in a terminal, but the desktop cannot load the plugin | Ensure the installer used the desktop-compatible CLI. A successful test with an older standalone CLI does not establish desktop compatibility. Use `CODEX_CLI` if needed. |
 | Live connection fails | Check that JAS-MIN is still running and that the loopback host, port, and `/mcp` path match. |
 | A metric chart has no observations | Discover the exact metric name and inspect data availability. An empty result is not a measured zero. |
-| The panel URL stops working | Its MCP process has ended. Ask Codex to reopen Companion; the old session URL cannot restore in-memory state. |
-| The new presentation tool is missing | Reinstall, then reload Codex. The current package exposes ten Companion tools, including `companion_present` and `companion_set_language`. |
+| The panel URL stops working | Reopen Companion, then resume the upstream analysis. If the server also restarted, restore a saved audit checkpoint. The old URL cannot restore the display cache. |
+| Guided audit is unavailable | Update both the JAS-MIN server and the installed plugin. Capability negotiation reports unsupported servers explicitly. |
+| A new tool is missing | Reinstall, then reload Codex. The current package exposes eighteen Companion tools, including eight controlled audit tools. |
 
 ## Runtime and data handling
 
@@ -119,7 +154,7 @@ Codex conversation + Companion skill
    JAS-MIN HTTP MCP    local browser panel
 ```
 
-Each MCP process owns an isolated panel and analysis session. The panel listens only on `127.0.0.1`, using a random port and a secret session URL. Its history of up to 20 views is held in memory. Treat the URL as access to that session's data; do not publish it.
+Each Companion process owns an isolated panel. A new project selection starts its own upstream analysis; explicitly resuming an analysis reconnects to that existing audit. The panel listens only on `127.0.0.1`, using a random port and a secret session URL. Its history of up to 20 views is held in memory. Audit explanations are stored separately in the upstream analysis and survive panel reconnection; saving an export is necessary to survive a server restart. Treat the URL as access to that session's data; do not publish it.
 
 Tool results enter the Codex conversation under its data settings. A local panel does not mean the AI conversation runs offline. Source SQL and identifiers are preserved verbatim. The plugin uses no separate model or paid Realtime integration.
 
@@ -135,11 +170,7 @@ npm run preview
 
 The preview prints a local URL, loads synthetic data, and runs until Ctrl+C. It is separate from the panel session opened by the installed plugin.
 
-Validation as of 12 October 2026:
-
-- Eight automated tests cover stdio startup from another project directory, HTTP/SSE lifecycle, session isolation, origin checks, selection, real timeline response shapes, missing values, RAC ambiguity, and presentation validation/retention.
-- The installed launcher was checked against a live local JAS-MIN collection: nine tools loaded, a wait timeline returned 1,224 records, and a four-card presentation survived another query.
-- Browser checks covered SQL/wait charts, peak zoom, instance-aware selection, and restoring an analytical presentation. Client datasets and local preview artifacts are not included in the repository.
+The automated suite covers stdio startup from another directory, HTTP/SSE lifecycle, session isolation, origin checks, selection, timeline response shapes, missing values, RAC ambiguity, presentation retention and language changes. Audit tests cover controlled routing, history eviction, revised hypotheses, project isolation, reconnect, checkpoint restoration, compatibility negotiation and the report authorization boundary. The in-process audit fixture tests the Companion contract; the core server tests validate checkpoint evidence and report completeness.
 - A microphone conversation has not been validated end to end.
 
 The avatar is an original generated asset; its [provenance and prompt](assets/avatar.md) are included. Reduced-motion preferences disable its animation.

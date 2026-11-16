@@ -1,5 +1,6 @@
 //! Shared decision contract for MCP authoring and Markdown returned by API models.
 //! Grouping is explicit; neither SQL IDs nor prose similarity establish identity.
+use crate::report::i18n::ReportLanguage;
 use html_escape::encode_text;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,12 @@ pub(crate) struct IssueAction {
     pub owner: String,
     pub priority: String,
     pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_rule: Option<String>,
     pub rationale: String,
     pub success_criterion: String,
 }
@@ -167,7 +174,37 @@ fn issue_actions<'a>(issue: &ReportIssue, actions: &'a [IssueAction]) -> Vec<&'a
     selected
 }
 
+pub(crate) fn render_action_lead(
+    owner: &str,
+    priority: &str,
+    kind: ActionKind,
+    action: &str,
+    language: &str,
+) -> String {
+    let l = ReportLanguage::new(language);
+    format!(
+        "**{}:** {}\n\n<p class=\"decision-meta\">{}: {} · {}: {} · {}: {}</p>\n\n",
+        l.text("Next action"),
+        encode_text(action),
+        l.choose("Owner", "Odpowiedzialny"),
+        encode_text(l.text(owner)),
+        l.choose("Priority", "Priorytet"),
+        l.text(&priority.to_ascii_uppercase()).to_lowercase(),
+        l.choose("Purpose", "Cel"),
+        l.text(kind.label())
+    )
+}
+
 pub(crate) fn render_issue_queue(issues: &[ReportIssue], actions: &[IssueAction]) -> String {
+    render_issue_queue_localized(issues, actions, "en")
+}
+
+pub(crate) fn render_issue_queue_localized(
+    issues: &[ReportIssue],
+    actions: &[IssueAction],
+    language: &str,
+) -> String {
+    let l = ReportLanguage::new(language);
     let mut ranked = issues.iter().collect::<Vec<_>>();
     ranked.sort_by_key(|issue| {
         (
@@ -178,7 +215,16 @@ pub(crate) fn render_issue_queue(issues: &[ReportIssue], actions: &[IssueAction]
             issue.issue_id.as_str(),
         )
     });
-    let mut output = format!("{} issues · [Complete action register](#action-register). Priorities describe actions; confidence describes the issue synthesis.\n\n", ranked.len());
+    let mut output = format!(
+        "{}: {} · [{}](#action-register). {}\n\n",
+        l.choose("Issues", "Liczba tematów"),
+        ranked.len(),
+        l.text("Complete action register"),
+        l.choose(
+            "Priorities describe actions; confidence describes the issue synthesis.",
+            "Priorytet dotyczy działania, a pewność — wniosku z analizy."
+        )
+    );
     for (index, issue) in ranked.into_iter().take(5).enumerate() {
         output.push_str(&format!(
             "<section class=\"decision-card\" id=\"{}\">\n\n### {}. {}\n\n{}\n\n",
@@ -188,29 +234,38 @@ pub(crate) fn render_issue_queue(issues: &[ReportIssue], actions: &[IssueAction]
             encode_text(&issue.decision_summary)
         ));
         if let Some(action) = issue_actions(issue, actions).first() {
-            output.push_str(&format!(
-                "**Next action — {} / {} / {}:** {}\n\n",
-                encode_text(&action.owner),
-                action.priority.to_ascii_uppercase(),
-                action.kind.label(),
-                encode_text(&action.action)
+            output.push_str(&render_action_lead(
+                &action.owner,
+                &action.priority,
+                action.kind,
+                action.action_summary.as_deref().unwrap_or(&action.action),
+                language,
             ));
         } else {
-            output.push_str("**Next action:** No action recorded; review the decision boundary before intervening.\n\n");
+            output.push_str(&format!(
+                "**{}:** {}\n\n",
+                l.text("Next action"),
+                l.text("No action recorded; review the decision boundary before intervening.")
+            ));
         }
-        output.push_str(&format!("<p class=\"decision-boundary\"><strong>Decision boundary:</strong> {}</p>\n\n<p class=\"decision-meta\">Scope: {} · Confidence: {} · <a href=\"#{}\">Canonical finding</a> · {} supporting finding(s)</p>\n\n</section>\n\n",
-            encode_text(&issue.decision_boundary), encode_text(&issue.scope), encode_text(&issue.confidence), finding_anchor(&issue.canonical_finding_id), issue.finding_ids.len()));
+        output.push_str(&format!("<p class=\"decision-boundary\"><strong>{}:</strong> {}</p>\n\n<p class=\"decision-meta\">{}: {} · {}: {} · <a href=\"#{}\">{}</a> · {}: {}</p>\n\n</section>\n\n", l.text("Decision boundary"), encode_text(&issue.decision_boundary), l.text("Scope"), encode_text(&issue.scope), l.text("Confidence"), l.text(&issue.confidence), finding_anchor(&issue.canonical_finding_id), l.text("Canonical finding"), l.text("Supporting findings"), issue.finding_ids.len()));
     }
     output
 }
 
 /// The complete registry also supplies targets for issues outside the first five.
 pub(crate) fn render_issue_register(issues: &[ReportIssue]) -> String {
-    let mut output = String::from("<details class=\"issue-register\"><summary>Issue register — scope and supporting findings</summary>\n\n");
+    render_issue_register_localized(issues, "en")
+}
+
+pub(crate) fn render_issue_register_localized(issues: &[ReportIssue], language: &str) -> String {
+    let l = ReportLanguage::new(language);
+    let mut output = format!(
+        "<details class=\"issue-register\"><summary>{}</summary>\n\n",
+        l.text("Issue register — scope and supporting findings")
+    );
     for issue in issues {
-        output.push_str(&format!("<a id=\"issue-detail-{}\"></a>\n\n#### {} — {}\n\n{}\n\n**Scope:** {}\n\n**Decision boundary:** {}\n\n**Why grouped:** {}\n\n**Supporting findings:** {}\n\n",
-            issue.issue_id.to_ascii_lowercase(), encode_text(&issue.issue_id), encode_text(&issue.title), encode_text(&issue.decision_summary), encode_text(&issue.scope), encode_text(&issue.decision_boundary), encode_text(&issue.grouping_rationale),
-            issue.finding_ids.iter().map(|id| format!("[{}](#{}){}", id, finding_anchor(id), if id.eq_ignore_ascii_case(&issue.canonical_finding_id) { " (canonical)" } else { "" })).collect::<Vec<_>>().join(", ")));
+        output.push_str(&format!("<a id=\"issue-detail-{}\"></a>\n\n#### {} — {}\n\n{}\n\n**{}:** {}\n\n**{}:** {}\n\n**{}:** {}\n\n**{}:** {}\n\n", issue.issue_id.to_ascii_lowercase(), encode_text(&issue.issue_id), encode_text(&issue.title), encode_text(&issue.decision_summary), l.text("Scope"), encode_text(&issue.scope), l.text("Decision boundary"), encode_text(&issue.decision_boundary), l.text("Why grouped"), encode_text(&issue.grouping_rationale), l.text("Supporting findings"), issue.finding_ids.iter().map(|id| format!("[{}](#{}){}", id, finding_anchor(id), if id.eq_ignore_ascii_case(&issue.canonical_finding_id) { l.choose(" (canonical)", " (główne)") } else { "" })).collect::<Vec<_>>().join(", ")));
     }
     output.push_str("</details>\n\n");
     output
@@ -220,7 +275,7 @@ pub(crate) fn issue_schema() -> Value {
     json!({"type":"object", "additionalProperties":false, "properties": {
         "issue_id":{"type":"string", "pattern":"^[A-Za-z0-9_-]{1,64}$", "description":"Stable explicit identity, e.g. I-0001; reuse it to replace the grouping."},
         "title":{"type":"string", "minLength":1,"maxLength":160},
-        "decision_summary":{"type":"string","minLength":1,"maxLength":800,"description":"Short decision brief with decisive impact; aim for 40-60 words. Do not copy the full finding."},
+        "decision_summary":{"type":"string","minLength":1,"maxLength":800,"description":"Explain the observed problem, its practical significance and the decision in connected sentences. Aim for 40-60 words, without compressing operation IDs or measurement recipes into this paragraph."},
         "decision_boundary":{"type":"string","minLength":1,"maxLength":800,"description":"The limitation that could change the decision; keep historical, live and lab evidence distinct."},
         "scope":{"type":"string","minLength":1,"maxLength":800,"description":"Explicit workload, instances and time windows; explain separately collected periods."},
         "grouping_rationale":{"type":"string","minLength":1,"maxLength":1600,"description":"Why these perspectives belong to one investigation. A shared SQL_ID alone is insufficient."},
@@ -231,6 +286,11 @@ pub(crate) fn issue_schema() -> Value {
 }
 
 pub(crate) fn render_action_register(actions: &[IssueAction]) -> String {
+    render_action_register_localized(actions, "en")
+}
+
+pub(crate) fn render_action_register_localized(actions: &[IssueAction], language: &str) -> String {
+    let l = ReportLanguage::new(language);
     let mut output = String::new();
     let mut ranked = actions.iter().collect::<Vec<_>>();
     ranked.sort_by_key(|a| {
@@ -241,39 +301,37 @@ pub(crate) fn render_action_register(actions: &[IssueAction]) -> String {
             a.action.as_str(),
         )
     });
+    let key = |action: &IssueAction| {
+        (
+            action.owner.clone(),
+            action.priority.clone(),
+            action.kind,
+            action.action.clone(),
+            action.rationale.clone(),
+            action.success_criterion.clone(),
+            action.action_summary.clone(),
+            action.steps.clone(),
+            action.decision_rule.clone(),
+        )
+    };
     let mut seen = BTreeSet::new();
     let mut priority = "";
     for action in &ranked {
-        let key = (
-            &action.owner,
-            &action.priority,
-            action.kind,
-            &action.action,
-            &action.rationale,
-            &action.success_criterion,
-        );
-        if !seen.insert(key) {
+        let action_key = key(action);
+        if !seen.insert(action_key.clone()) {
             continue;
         }
         if priority != action.priority {
             priority = &action.priority;
             output.push_str(&format!(
-                "### {} priority\n\n",
-                priority.to_ascii_uppercase()
+                "### {} {}\n\n",
+                l.text(&priority.to_ascii_uppercase()),
+                l.choose("priority", "priorytet")
             ));
         }
         let supports = ranked
             .iter()
-            .filter(|other| {
-                (
-                    &other.owner,
-                    &other.priority,
-                    other.kind,
-                    &other.action,
-                    &other.rationale,
-                    &other.success_criterion,
-                ) == key
-            })
+            .filter(|other| key(other) == action_key)
             .map(|other| {
                 format!(
                     "[{}](#{})",
@@ -285,7 +343,42 @@ pub(crate) fn render_action_register(actions: &[IssueAction]) -> String {
             .into_iter()
             .collect::<Vec<_>>()
             .join(", ");
-        output.push_str(&format!("- **{} / {} — {}**  \n  **Why:** {}  \n  **Success criterion:** {}  \n  *Supports: {}*\n\n", encode_text(&action.owner), action.kind.label(), encode_text(&action.action), encode_text(&action.rationale), encode_text(&action.success_criterion), supports));
+        output.push_str(&format!(
+            "- **{} / {} — {}**  \n  **{}:** {}  \n  **{}:** {}  \n  *{}: {}*\n\n",
+            l.text(&action.owner),
+            l.text(action.kind.label()),
+            encode_text(action.action_summary.as_deref().unwrap_or(&action.action)),
+            l.text("Why"),
+            encode_text(&action.rationale),
+            l.text("Success criterion"),
+            encode_text(&action.success_criterion),
+            l.text("Supports"),
+            supports
+        ));
+        if action.action_summary.is_some() {
+            output.push_str(&format!(
+                "  **{}:** {}\n\n",
+                l.text("Procedure"),
+                encode_text(&action.action)
+            ));
+        }
+        if !action.steps.is_empty() {
+            output.push_str(&format!(
+                "<div class=\"action-steps\"><strong>{}</strong><ol>",
+                l.text("Steps")
+            ));
+            for step in &action.steps {
+                output.push_str(&format!("<li>{}</li>", encode_text(step)));
+            }
+            output.push_str("</ol></div>\n\n");
+        }
+        if let Some(rule) = &action.decision_rule {
+            output.push_str(&format!(
+                "**{}:** {}\n\n",
+                l.text("Decision rule"),
+                encode_text(rule)
+            ));
+        }
     }
     output
 }
@@ -596,6 +689,9 @@ mod tests {
                 kind: ActionKind::EvidenceCapture,
                 owner: "DBA".into(),
                 priority: "immediate".into(),
+                action_summary: None,
+                steps: Vec::new(),
+                decision_rule: None,
                 action: "Capture the complete holder timeline.".into(),
                 rationale: "The initiating transition remains unknown.".into(),
                 success_criterion: "Aligned onset and recovery counters identify the same cursor."

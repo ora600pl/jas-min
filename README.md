@@ -1030,4 +1030,11 @@ again. Classic APIs and the local reviewer use the same validated decision
 metadata and renderer. See [issue authoring and migration](docs/report-issues.md)
 for required fields, legacy compatibility and export validation.
 
+Companion can now guide an audit chapter by chapter, retaining explanations,
+open questions, evidence and corrected conclusions outside its display history.
+An explicit final report request opens the authoring stage; linked reader briefs
+and a reviewed preview lead to publication without weakening evidence coverage.
+See [guided audits and readable reports](docs/guided-audit.md) for checkpoints,
+continuation, the two neutral acceptance examples and rollout instructions.
+
 - [Scan and row-continuation reasoning](docs/mcp-server.md#scan-and-row-continuation-reasoning-2026-09-132): AI hypotheses from existing gradients, degradation and SQL costs; optional confirmation evidence.

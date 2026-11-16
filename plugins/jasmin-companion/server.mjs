@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Companion } from './companion.mjs';
@@ -7,20 +7,32 @@ import { presentationProperties } from './presentation.mjs';
 
 const definition = (name, description, properties = {}, required = []) => ({ name, description,
   inputSchema: { type: 'object', properties, required, additionalProperties: false },
-  annotations: { readOnlyHint: !['companion_set_language', 'companion_present', 'companion_note', 'companion_show', 'companion_select_project', 'companion_open'].includes(name), destructiveHint: false, openWorldHint: false } });
+  annotations: { readOnlyHint: !['companion_set_language', 'companion_present', 'companion_note', 'companion_show', 'companion_select_project', 'companion_open', 'companion_start_audit', 'companion_record_brief', 'companion_advance_audit', 'companion_authorize_report', 'companion_resume_audit', 'companion_restore_audit'].includes(name), destructiveHint: false, openWorldHint: false } });
 const str = { type: 'string' };
 const language = { type: 'string', enum: ['en', 'pl'], description: 'Language of the current user dialogue: pl for Polish, en for English. Follow prose, not SQL or quoted source text.' };
 export const TOOLS = [
-  definition('companion_open', 'Start the local avatar panel. Returns panel_url to open in Codex browser. Live is default; demo is synthetic.', { mode: { enum: ['live', 'demo'], type: 'string' }, endpoint: str, language }),
+  definition('companion_open', 'Start the local avatar panel. Open the returned panel_url in the host browser or a local web browser. Live is default; demo is synthetic.', { mode: { enum: ['live', 'demo'], type: 'string' }, endpoint: str, language }),
   definition('companion_set_language', 'Follow the main conversation language without clearing evidence or selection. Returns pending authored text fields to translate. If pending is nonempty, translate each text (preserve SQL, identifiers and Oracle metric names), then call again with the returned view_id and translations. Originals and measurements stay unchanged; switching back reuses translations.', { language, view_id: str, translations: { type: 'array', items: { type: 'object', properties: { path: str, text: str }, required: ['path','text'], additionalProperties: false } } }, ['language']),
   definition('companion_projects', 'List actual JAS-MIN project IDs.'),
-  definition('companion_select_project', 'Start an analysis for a project. Clears previous panel evidence.', { project_id: str }, ['project_id']),
+  definition('companion_select_project', 'Start an analysis and a guided audit when supported. Clears previous panel evidence. Use companion_resume_audit to continue an existing audit instead.', { project_id: str, guided: { type: 'boolean', description: 'Default true; false starts an ordinary evidence discussion.' } }, ['project_id']),
   definition('companion_tools', 'Read schemas of available read-only JAS-MIN evidence tools.'),
   definition('companion_query', 'Collect evidence from JAS-MIN. Supported results become charts; an active presentation stays visible. Use companion_present to compose or replace the analytical board. Read companion_tools first.', { tool: str, arguments: { type: 'object' }, display: { type: 'boolean', description: 'False collects evidence without changing the visible view.' } }, ['tool']),
   definition('companion_present', 'Compose the side panel to support your explanation: related charts, baseline comparisons, tables and labelled mechanism flows. Match all authored copy to the current conversation language; pass language. Preserve source identifiers. Use source-verified numbers, units and instance identity; missing values are null. The board stays visible during subsequent queries. For line panels x is a numeric timestamp or ordered index, points strictly increasing per series. Separate different units into separate panels.', {...presentationProperties, language}, ['title', 'takeaway']),
   definition('companion_context', 'Read current project, view and snapshot/SQL selection made by the user.'),
   definition('companion_show', 'Display a previously returned view_id from this chat.', { view_id: str }, ['view_id']),
   definition('companion_note', 'Display your short interpretation next to the evidence. Write the note in the current conversation language and pass language. Preserve source identifiers. Does not synthesize audio.', { text: { type: 'string', description: 'Concise panel interpretation in the dialogue language.', maxLength: 2000 }, language }, ['text']),
+  definition('companion_start_audit', 'Start or continue a guided chapter-by-chapter audit in the selected analysis. Discuss one question at a time; this does not authorize a report.'),
+  definition('companion_audit_status', 'Read saved audit chapters, explanations, open questions and report authorization from the upstream analysis. Briefs survive display-history eviction.'),
+  definition('companion_record_brief', 'Save a human-readable explanation after a discussion or correction. Reuse brief_id to retain a revision history. Preserve uncertainty and exact evidence IDs. A saved chapter is discussed, not user-approved; changes revoke previous report authorization.', {
+    brief_id: str, chapter_id: str, question: str, explanation: str, conclusion: str, evidence_boundary: str, next_step: str,
+    open_questions: { type: 'array', items: str }, evidence_refs: { type: 'array', items: str },
+    view_id: { type: 'string', description: 'Optional current display-cache view to snapshot with the brief. The text and evidence references remain independently required.' },
+  }, ['chapter_id', 'question', 'explanation', 'conclusion', 'evidence_boundary', 'next_step', 'open_questions', 'evidence_refs']),
+  definition('companion_advance_audit', 'Move to or revisit an audit chapter following the discussion. Never automatically run all chapters. A change revokes report authorization; no per-chapter approval is needed.', { chapter_id: str, complete_current: { type: 'boolean' } }, ['chapter_id']),
+  definition('companion_authorize_report', 'Only after the user explicitly requests the final report: record their actual request. Never infer authorization from acknowledgements, finished chapters or an export request. Does not finalize or bypass report completeness checks.', { user_request: { type: 'string', description: 'Verbatim explicit request from the user to produce the report.' } }, ['user_request']),
+  definition('companion_export_audit', 'Export a checkpoint with the saved audit and its evidence for later continuation. Save the returned checkpoint intact to a local artifact; an in-memory response alone is not durable. Does not authorize a report.'),
+  definition('companion_resume_audit', 'Reconnect this panel to an existing analysis on the same running server. Restores the canonical audit state without creating another analysis. Pass project_id when the audit contains several projects.', { analysis_id: str, project_id: str }, ['analysis_id']),
+  definition('companion_restore_audit', 'Restore a saved checkpoint after server restart. The core validates source projects and evidence and returns a new analysis identity. Preserve the returned identity for later work.', { checkpoint: { type: 'object' }, project_id: str }, ['checkpoint']),
 ];
 
 export async function createServer({ port = 0 } = {}) {
@@ -29,6 +41,8 @@ export async function createServer({ port = 0 } = {}) {
   const files = new Map([
     ['', ['public/index.html', 'text/html']], ['app.js', ['public/app.js', 'text/javascript']],
     ['style.css', ['public/style.css', 'text/css']], ['charts.js', ['public/charts.js', 'text/javascript']],
+    ['audit.js', ['public/audit.js', 'text/javascript']],
+    ['audit.css', ['public/audit.css', 'text/css']],
     ['avatar.png', ['assets/avatar.png', 'image/png']],
   ]);
   let origin;
@@ -75,15 +89,25 @@ export async function createServer({ port = 0 } = {}) {
     companion.update({ status: 'working' });
     try {
       switch (name) {
-        case 'companion_open': await companion.open(args); return { panel_url, mode: companion.state.mode, ...companion.languageContext(), voice: 'Use native Codex voice; panel has no microphone.' };
+        case 'companion_open': await companion.open(args); return { panel_url, mode: companion.state.mode, ...companion.languageContext(), voice: 'Use text or the host native voice interface when available; panel has no microphone.' };
         case 'companion_set_language': return companion.setLanguage(args);
         case 'companion_projects': return await companion.projects();
-        case 'companion_select_project': return await companion.select(args.project_id);
+        case 'companion_select_project': return await companion.select(args.project_id, args);
         case 'companion_tools': return await companion.tools();
         case 'companion_query': return await companion.query(args.tool, args.arguments, args.display);
         case 'companion_present': return companion.present(args);
-        case 'companion_context': return { project_id: companion.state.project, mode: companion.state.mode, selection: companion.state.selection, current_view_id: companion.state.current, ...companion.languageContext(),
-          views: companion.state.views.map(v => ({ view_id: v.id, tool: v.tool, args: v.args, evidence_id: v.data.evidence_id, title: v.presentation?.title, presentation: !!v.presentation })) };
+        case 'companion_context':
+          if (companion.state.audit) await companion.auditStatus();
+          return { project_id: companion.state.project, analysis_id: companion.analysis, mode: companion.state.mode, audit_support: companion.state.audit_support, audit: companion.state.audit, selection: companion.state.selection, current_view_id: companion.state.current, ...companion.languageContext(),
+            views: companion.state.views.map(v => ({ view_id: v.id, tool: v.tool, args: v.args, evidence_id: v.data.evidence_id, title: v.presentation?.title, presentation: !!v.presentation })) };
+        case 'companion_start_audit': return await companion.startAudit();
+        case 'companion_audit_status': return await companion.auditStatus();
+        case 'companion_record_brief': return await companion.recordBrief(args);
+        case 'companion_advance_audit': return await companion.advanceAudit(args);
+        case 'companion_authorize_report': return await companion.authorizeReport(args);
+        case 'companion_export_audit': return await companion.exportAudit();
+        case 'companion_resume_audit': return await companion.resumeAudit(args);
+        case 'companion_restore_audit': return await companion.restoreAudit(args);
         case 'companion_show': return companion.show(args.view_id);
         case 'companion_note':
           if (args.text.length > 2000) throw new Error('Maximum note length is 2000.');
@@ -111,6 +135,9 @@ export async function serveStdio(app) {
     if (!request || Array.isArray(request) || request.jsonrpc !== '2.0' || typeof request.method !== 'string')
       return send({ jsonrpc: '2.0', id: request?.id ?? null, error: { code: -32600, message: 'Invalid Request' } });
     if (!('id' in request)) return;
+    const maxRequestBytes = (request.method === 'tools/call' && request.params?.name === 'companion_restore_audit' ? 65 : 1) * 1024 * 1024;
+    if (Buffer.byteLength(line, 'utf8') > maxRequestBytes)
+      return send({ jsonrpc: '2.0', id: request.id, error: { code: -32600, message: 'MCP request exceeds its size limit' } });
     const response = { jsonrpc: '2.0', id: request.id };
     try {
       switch (request.method) {
@@ -134,7 +161,7 @@ export async function serveStdio(app) {
   process.stdin.setEncoding('utf8');
   for await (const chunk of process.stdin) {
     buffer += chunk;
-    if (buffer.length > 1024 * 1024) throw new Error('MCP input too large');
+    if (buffer.length > 65 * 1024 * 1024) throw new Error('MCP input too large');
     let i;
     while ((i = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, i); buffer = buffer.slice(i + 1);
@@ -144,7 +171,9 @@ export async function serveStdio(app) {
   await pending;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// Plugin caches can be reached through symlinks; compare resolved entry paths.
+const isMain = process.argv[1] && await realpath(process.argv[1]).catch(() => null) === await realpath(fileURLToPath(import.meta.url));
+if (isMain) {
   const app = await createServer();
   let stopping = false;
   const stop = async () => { if (stopping) return; stopping = true; await app.close(); process.exit(0); };

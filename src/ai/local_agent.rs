@@ -160,6 +160,11 @@ pub(crate) struct GuidanceLibrary {
 }
 
 impl GuidanceLibrary {
+    #[cfg(test)]
+    pub(crate) fn test_from_text(content: &str) -> Self {
+        Self::from_text(PathBuf::from("synthetic-guidance.txt"), content)
+    }
+
     pub(crate) fn load() -> Self {
         let path = reasonings_path();
         match fs::read_to_string(&path) {

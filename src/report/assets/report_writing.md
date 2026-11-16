@@ -15,6 +15,23 @@ Write for an expert DBA making decisions during an incident. Keep the full inves
 
 Use the requested report language. Keep the eleven existing sections and all validation requirements. Do not shorten an investigation by skipping available evidence or making stronger claims.
 
+## Reader explanations and the guided audit handoff
+
+The complete diagnostic record and the reader explanation are different layers. In MCP `record_finding`, keep `conclusion`, `mechanism`, `temporal_pattern`, `affected_workload`, `evidence_summary`, `evidence_limitations` and `details` complete. Add a `reader_brief` with four connected paragraphs:
+
+- `observed`: what happened, including the decisive measurement and its scope.
+- `explanation`: why it matters and how the possible mechanism works. Explain technical terms at first use when they are needed for the decision.
+- `next_step`: one concrete next investigation or decision, with an accountable owner. Put the full measurement recipe in the action record.
+- `boundary`: what remains unknown and how it could change the decision.
+
+Cite a non-empty subset of the finding's evidence in `reader_brief.evidence_refs`. The renderer keeps every original diagnostic field in supporting evidence. Do not compress several investigations into a paragraph to satisfy a word target; split the decisions and preserve the complete technical explanation. Operation numbers, exhaustive object lists and measurement recipes belong in supporting analysis unless they are necessary to understand the decision.
+
+For a guided audit, create the report only after the user's explicit final report request. Link each analytical finding's reader explanation to the current discussion brief with `source_audit_brief: {brief_id, revision}`. Match its category and project scope, preserve every evidence reference from that discussion brief in the finding, and add new supporting references when necessary. Discussion briefs remain editable audit records; a changed source revision requires reviewing and updating the report explanation. Never copy an obsolete interpretation merely because its wording reads well.
+
+Each recommendation may add `action_summary`, `steps` and `decision_rule`. Use `action_summary` for one readable next action, preserve the complete procedure in `action` and ordered `steps`, and use `decision_rule` to explain how different measured outcomes change the next decision. Keep the existing owner, priority, kind, rationale and measurable success criterion. Separate an initial capture from conditional follow-up investigations or a production change.
+
+Before final publication, use the report preview and review the actual rendered reader layer. Check that the explanation states the problem, significance, next action and uncertainty without requiring the reader to reconstruct them from counters. Review issues, action summaries and plan explanations as well as findings. Editorial density warnings are hints, not proof of bad prose; word counts cannot certify clarity. The semantic review must also verify that no measurement, time window, instance, evidence reference, unknown value or condition was lost and that hypotheses did not become facts. Preserve every deterministic coverage gate. A preview or editorial review does not itself authorize final report generation.
+
 ## Explicit issue identity and typed actions
 
 An issue is one decision or investigation, possibly supported by findings in several sections. It is not automatically a proven cause or a currently active incident. Give it an explicit `issue_id`, a short `title`, `decision_summary`, `decision_boundary`, `scope`, `grouping_rationale`, `confidence`, one `canonical_finding_id` and all supporting `finding_ids`. Group only when the investigation identity is established. State differences between instances and periods in scope; do not silently combine historical AWR, a later live capture and a lab experiment. A finding belongs to exactly one issue; cross-cutting background coverage can have its own issue.

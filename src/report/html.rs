@@ -104,6 +104,15 @@ fn markdown_to_html_with_toc(
     html_dir: &str,
     html_absolute_dir: &str,
 ) -> String {
+    let report_language = if markdown_input
+        .lines()
+        .any(|line| line.trim() == "# Analiza wydajności Oracle")
+    {
+        "pl"
+    } else {
+        "en"
+    };
+    let l = crate::report::i18n::ReportLanguage::new(report_language);
     // Upgrade the old MCP summary format without treating ordinary bold labels
     // (Mechanism, Evidence basis, etc.) as headings.
     let legacy_summary = Regex::new(r"(?m)^\*\*(\d+\. [^\n]+ \[(?:critical|high|medium|low|informational) / [^\]\n]+\])\*\* — ([^\n]+)$").unwrap();
@@ -165,20 +174,28 @@ fn markdown_to_html_with_toc(
                 in_heading = false;
                 // Add the heading text to the map
                 headings_map.insert(current_heading_id.clone(), heading_text.clone());
-                let normalized = heading_text.to_ascii_lowercase();
+                let normalized = heading_text.to_lowercase();
                 let mut heading_class = match current_heading_level_for_map {
                     1 => "report-title".to_string(),
                     2 => "section-title".to_string(),
                     3 => {
-                        if normalized.contains("[critical /") {
+                        if normalized.contains("[critical /") || normalized.contains("[krytyczne /")
+                        {
                             "finding-title severity-critical".to_string()
-                        } else if normalized.contains("[high /") {
+                        } else if normalized.contains("[high /")
+                            || normalized.contains("[wysokie /")
+                        {
                             "finding-title severity-high".to_string()
-                        } else if normalized.contains("[medium /") {
+                        } else if normalized.contains("[medium /")
+                            || normalized.contains("[średnie /")
+                        {
                             "finding-title severity-medium".to_string()
-                        } else if normalized.contains("[low /") {
+                        } else if normalized.contains("[low /") || normalized.contains("[niskie /")
+                        {
                             "finding-title severity-low".to_string()
-                        } else if normalized.contains("[informational /") {
+                        } else if normalized.contains("[informational /")
+                            || normalized.contains("[informacyjne /")
+                        {
                             "finding-title severity-informational".to_string()
                         } else {
                             "subsection-title".to_string()
@@ -187,10 +204,12 @@ fn markdown_to_html_with_toc(
                     4 => "group-title".to_string(),
                     _ => "metric-table-title".to_string(),
                 };
-                if normalized.starts_with("11. prioritized actions") {
+                if normalized.starts_with("11. prioritized actions")
+                    || normalized.starts_with("11. działania według priorytetu")
+                {
                     heading_class.push_str(" actions-section-title");
                 }
-                if normalized == "mandatory assessments" {
+                if normalized == "mandatory assessments" || normalized == "wymagane oceny" {
                     heading_class.push_str(" assessment-list-title");
                 }
                 parser_with_ids.push(Event::Html(
@@ -248,9 +267,9 @@ fn markdown_to_html_with_toc(
     }
 
     // Generate HTML Table of Contents
-    let mut toc_html = String::from(
-        "<nav class=\"toc\" aria-label=\"Report contents\"><h2>Report contents</h2><ul>",
-    );
+    let contents_label = l.choose("Report contents", "Spis treści");
+    let mut toc_html =
+        format!("<nav class=\"toc\" aria-label=\"{contents_label}\"><h2>{contents_label}</h2><ul>");
     for (level, id) in &toc {
         let label = encode_text(&headings_map[id]);
         toc_html.push_str(&format!(
@@ -271,10 +290,10 @@ fn markdown_to_html_with_toc(
     // Wrap the result in a complete HTML template
     format!(
         r#"<!DOCTYPE html>
-<html lang="en">
+<html lang="{report_language}">
 <head>
     <meta charset="UTF-8">
-    <title>JAS-MIN Oracle Performance Analysis</title>
+    <title>JAS-MIN {report_title}</title>
     <style>
         :root {{
             color-scheme: light;
@@ -770,6 +789,7 @@ fn markdown_to_html_with_toc(
 {content}
 <footer class="brand-footer"><a href="https://www.ora-600.pl" target="_blank" rel="noopener"><img src="data:image/png;base64,{ora600_logo}" width="220" alt="ORA-600 Database Whisperers"/></a></footer>
 <script>
+const reportPolish = document.documentElement.lang === "pl";
 function tableSortText(cell) {{
     return (cell.textContent || "").replace(/\s+/g, " ").trim();
 }}
@@ -810,7 +830,7 @@ document.querySelectorAll(".table-scroll table").forEach(function (table) {{
         const indicator = document.createElement("span");
         button.type = "button";
         button.className = "table-sort-button";
-        button.setAttribute("aria-label", "Sort by " + label + " ascending");
+        button.setAttribute("aria-label", (reportPolish ? "Sortuj według " : "Sort by ") + label + (reportPolish ? " rosnąco" : " ascending"));
         indicator.className = "table-sort-indicator";
         indicator.setAttribute("aria-hidden", "true");
         indicator.textContent = "↕";
@@ -827,7 +847,7 @@ document.querySelectorAll(".table-scroll table").forEach(function (table) {{
             }});
             header.setAttribute("aria-sort", ascending ? "ascending" : "descending");
             indicator.textContent = ascending ? "↑" : "↓";
-            button.setAttribute("aria-label", "Sort by " + label + (ascending ? " descending" : " ascending"));
+            button.setAttribute("aria-label", (reportPolish ? "Sortuj według " : "Sort by ") + label + (reportPolish ? (ascending ? " malejąco" : " rosnąco") : (ascending ? " descending" : " ascending")));
             const rows = Array.from(body.rows);
             rows.sort(function (left, right) {{
                 const a = tableSortValue(left.cells[columnIndex]);
@@ -848,7 +868,7 @@ document.addEventListener("click", function (event) {{
         const review = filter.closest("[data-plan-review]");
         const pressed = filter.getAttribute("aria-pressed") !== "true";
         filter.setAttribute("aria-pressed", String(pressed));
-        filter.textContent = pressed ? "Show complete plan" : "Show flagged paths only";
+        filter.textContent = reportPolish ? (pressed ? "Pokaż pełny plan" : "Pokaż tylko wskazane ścieżki") : (pressed ? "Show complete plan" : "Show flagged paths only");
         review.querySelectorAll("[data-plan-node]").forEach(function (node) {{
             node.dataset.filtered = String(pressed && node.dataset.onFlaggedPath !== "true");
         }});
@@ -886,6 +906,7 @@ document.addEventListener("input", function (event) {{
         signals_js = include_str!("../report/assets/report_signals.js"),
         reader_js = include_str!("../report/assets/report_reader.js"),
         brand_logo = JASMIN_AUDIT_LOGO_SVG,
+        report_title = l.text("Oracle Performance Analysis"),
         toc = toc_html,
         navigation = classic_navigation,
         content = html_output,

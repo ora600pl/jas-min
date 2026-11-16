@@ -1,11 +1,17 @@
 import { McpClient } from './mcp-client.mjs';
 import { DemoClient } from './demo.mjs';
-import { automaticPresentation, viewTexts, translationStatus } from './public/charts.js';
+import { automaticPresentation, localizedView, viewTexts, translationStatus } from './public/charts.js';
 import { validatePresentation } from './presentation.mjs';
 
 export const ALLOWED = new Set(['get_database_load_summary', 'list_snapshots', 'list_available_metrics',
   'get_metric_time_series', 'get_wait_event_timeline', 'get_sql_timeline', 'top_wait_events_in_snapshot',
-  'top_sqls_in_snapshot', 'get_sql_text', 'compare_snapshots', 'get_snapshot_details', 'get_diagnostic_guidance']);
+  'top_sqls_in_snapshot', 'get_sql_text', 'compare_snapshots', 'get_snapshot_details', 'get_diagnostic_guidance',
+  'get_analysis_catalog', 'get_precomputed_analysis', 'get_db_instance_info', 'get_init_parameter',
+  'get_wait_event_histogram', 'get_wait_event_sql_contributors', 'find_snapshots_with_event',
+  'find_snapshots_with_sql', 'find_sqls_by_module', 'find_sqls_touching_object', 'search_sql_text',
+  'list_available_sql_plans', 'get_sql_execution_plan', 'list_available_child_cursor_reasons',
+  'get_child_cursor_reasons', 'get_alertlog_errors', 'top_segments_in_snapshot', 'top_latches_in_snapshot',
+  'get_access_path_diagnostics', 'compare_project_metric', 'compare_project_sql']);
 export function localEndpoint(value) {
   const u = new URL(value);
   if (u.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname) || u.username || u.password || u.hash)
@@ -14,8 +20,9 @@ export function localEndpoint(value) {
 }
 export class Companion {
   constructor() {
-    this.state = { revision: 0, language: 'en', mode: null, status: 'idle', project: null, selection: {}, views: [], current: null, note: '' };
-    this.client = null; this.analysis = null; this.schemas = [];
+    this.state = { revision: 0, language: 'en', mode: null, status: 'idle', project: null, analysis_id: null,
+      audit: null, audit_support: 'unknown', selection: {}, views: [], current: null, note: '' };
+    this.client = null; this.analysis = null; this.schemas = []; this.upstreamSchemas = [];
   }
   update(patch) { Object.assign(this.state, patch); this.state.revision++; }
   async open({ mode = 'live', endpoint = 'http://127.0.0.1:4242/mcp', language = this.state.language } = {}) {
@@ -26,8 +33,8 @@ export class Companion {
     const client = mode === 'demo' ? new DemoClient() : new McpClient(endpoint);
     try { await client.initialize(); } catch (e) { await client.close().catch(() => {}); throw e; }
     await this.client?.close().catch(() => {});
-    this.client = client; this.endpoint = endpoint; this.analysis = null; this.schemas = [];
-    this.update({ mode, language, project: null, selection: {}, views: [], current: null, note: '' });
+    this.client = client; this.endpoint = endpoint; this.analysis = null; this.schemas = []; this.upstreamSchemas = [];
+    this.update({ mode, language, project: null, analysis_id: null, audit: null, audit_support: 'unknown', selection: {}, views: [], current: null, note: '' });
   }
   validateLanguage(language) {
     if (!['en', 'pl'].includes(language)) throw new Error('language must be en or pl');
@@ -59,25 +66,92 @@ export class Companion {
   }
   requireClient() { if (!this.client) throw new Error('Call companion_open first.'); }
   async projects() { this.requireClient(); return this.client.call('list_performance_projects'); }
-  async select(project_id) {
+  async select(project_id, { guided = true } = {}) {
     this.requireClient();
     const projects = await this.projects();
     if (!projects.projects?.some(p => p.project_id === project_id)) throw new Error('Unknown project. Use companion_projects.');
-    const result = await this.client.call('start_performance_analysis', { project_id });
+    const result = await this.client.call('start_performance_analysis', { project_id, language: this.state.language });
     if (!result.analysis_id) throw new Error('MCP did not return an analysis_id.');
     this.analysis = result.analysis_id;
-    this.update({ project: project_id, selection: {}, views: [], current: null, note: '' });
-    return { project_id, analysis_id: this.analysis };
+    this.update({ project: project_id, analysis_id: this.analysis, audit: null, selection: {}, views: [], current: null, note: '' });
+    await this.tools();
+    if (guided && this.state.audit_support === 'available') await this.startAudit();
+    return { project_id, analysis_id: this.analysis, audit_support: this.state.audit_support, audit: this.state.audit };
   }
   async tools() {
     this.requireClient();
-    this.schemas = (await this.client.tools()).filter(t => ALLOWED.has(t.name)).map(t => {
+    this.upstreamSchemas = await this.client.tools();
+    this.update({ audit_support: ['start_audit', 'get_audit_status'].every(name => this.upstreamSchemas.some(t => t.name === name)) ? 'available' : 'unsupported' });
+    this.schemas = this.upstreamSchemas.filter(t => ALLOWED.has(t.name)).map(t => {
       const schema = structuredClone(t.inputSchema);
       for (const k of ['analysis_id', 'project_id']) delete schema.properties?.[k];
       if (schema.required) schema.required = schema.required.filter(k => !['analysis_id', 'project_id'].includes(k));
       return { name: t.name, description: t.description, inputSchema: schema };
     });
-    return { tools: this.schemas };
+    return { tools: this.schemas, audit_support: this.state.audit_support };
+  }
+  async requireAuditTool(name) {
+    this.requireClient();
+    if (!this.upstreamSchemas.length) await this.tools();
+    if (!this.upstreamSchemas.some(t => t.name === name))
+      throw new Error(`Guided audit tool ${name} is unavailable on this server. Update JAS-MIN or continue an ordinary evidence discussion; audit briefs are not being saved.`);
+  }
+  applyAudit(status, project_id = this.state.project) {
+    if (status?.audit_started === false) throw new Error('This analysis has no guided audit yet. Start its audit in JAS-MIN before resuming it in Companion.');
+    if (!status || typeof status.analysis_id !== 'string' || !Array.isArray(status.project_ids) || !Array.isArray(status.chapters) || !Array.isArray(status.briefs))
+      throw new Error('The server returned an incompatible audit status. Update the server and Companion together.');
+    const project = project_id || (status.project_ids.length === 1 ? status.project_ids[0] : null);
+    if (!project || !status.project_ids.includes(project)) throw new Error('Select a project_id belonging to this audit. No project identity is inferred from row order.');
+    const changed = this.analysis !== status.analysis_id || this.state.project !== project;
+    this.analysis = status.analysis_id;
+    this.update({ analysis_id: this.analysis, project, audit: structuredClone(status), audit_support: 'available',
+      ...(changed ? { selection: {}, views: [], current: null, note: '' } : {}) });
+    return status;
+  }
+  async auditStatus() {
+    await this.requireAuditTool('get_audit_status');
+    if (!this.analysis) throw new Error('Select a project or resume an audit first.');
+    return this.applyAudit(await this.client.call('get_audit_status', { analysis_id: this.analysis }));
+  }
+  async auditMutation(name, args = {}) {
+    await this.requireAuditTool(name);
+    if (!this.analysis) throw new Error('Select a project or resume an audit first.');
+    await this.client.call(name, { ...args, analysis_id: this.analysis });
+    return this.auditStatus();
+  }
+  async startAudit() { return this.auditMutation('start_audit'); }
+  async recordBrief({ view_id, ...brief }) {
+    if (!this.state.project) throw new Error('Select a project first.');
+    if (view_id !== undefined) {
+      const view = this.state.views.find(v => v.id === view_id);
+      if (!view) throw new Error('The visual is no longer in the display cache. Recreate it from its retained evidence before attaching it.');
+      if (translationStatus(view, this.state.language).pending.some(field => field.path.startsWith('presentation.')))
+        throw new Error('This board still needs translation. Show it and complete the pending translations before attaching it to the audit brief.');
+      brief.visual = structuredClone(localizedView(view, this.state.language).presentation || automaticPresentation(view, this.state.language));
+      brief.visual.source_view_id = view.id;
+      brief.visual.language = this.state.language;
+      if (Buffer.byteLength(JSON.stringify(brief.visual), 'utf8') > 128 * 1024)
+        throw new Error('The audit visual exceeds 128 KiB. Select a narrower chart or save the explanation without view_id; evidence references are retained independently.');
+    }
+    return this.auditMutation('record_audit_brief', { ...brief, project_id: this.state.project });
+  }
+  async advanceAudit(args) { return this.auditMutation('advance_audit', args); }
+  async authorizeReport(args) { return this.auditMutation('authorize_report', args); }
+  async exportAudit() {
+    await this.requireAuditTool('export_audit');
+    if (!this.analysis) throw new Error('Select a project or resume an audit first.');
+    return this.client.call('export_audit', { analysis_id: this.analysis });
+  }
+  async resumeAudit({ analysis_id, project_id }) {
+    await this.requireAuditTool('get_audit_status');
+    const status = await this.client.call('get_audit_status', { analysis_id });
+    return this.applyAudit(status, project_id || (status.project_ids?.length === 1 ? status.project_ids[0] : null));
+  }
+  async restoreAudit({ checkpoint, project_id }) {
+    await this.requireAuditTool('restore_audit');
+    if (Buffer.byteLength(JSON.stringify(checkpoint), 'utf8') > 64 * 1024 * 1024) throw new Error('The audit checkpoint exceeds the core 64 MiB restore limit.');
+    const status = await this.client.call('restore_audit', { checkpoint });
+    return this.applyAudit(status, project_id || (status.project_ids?.length === 1 ? status.project_ids[0] : null));
   }
   async query(tool, args = {}, display = true) {
     this.requireClient();

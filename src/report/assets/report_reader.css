@@ -50,3 +50,26 @@ details[open] > summary { margin-bottom: 1rem; }
     details > :not(summary) { display: block !important; }
     .technical-evidence, .finding-evidence, .decision-card { background: white; box-shadow: none; }
 }
+
+.reader-brief { max-width: 74ch; line-height: 1.7; }
+.reader-brief p { margin: 0 0 1rem; }
+.reader-boundary { color: #555; }
+.action-steps { max-width: 80ch; margin: .8rem 0 1.2rem; }
+.action-steps li { margin-bottom: .5rem; }
+html:lang(pl) .severity-critical::before { content: "KRYTYCZNE"; }
+html:lang(pl) .severity-high::before { content: "WYSOKIE"; }
+html:lang(pl) .severity-medium::before { content: "ŚREDNIE"; }
+html:lang(pl) .severity-low::before { content: "NISKIE"; }
+html:lang(pl) .severity-informational::before { content: "INFORMACYJNE"; }
+
+.audit-visual { margin: 1rem 0 1.5rem; max-width: 90ch; }
+.audit-panel { margin: 1rem 0; padding: 1rem; border: 1px solid #ddd; border-radius: 8px; }
+.audit-panel figcaption { margin-bottom: .8rem; }
+.audit-line-chart { display: block; width: 100%; height: auto; font-size: 12px; }
+.audit-flow { display: flex; flex-wrap: wrap; gap: 1.4rem; padding-left: 1.3rem; }
+.audit-flow li { flex: 1 1 12rem; padding: .6rem; background: #f6f6f6; }
+.audit-visual-source, .audit-visual-note { font-size: .85rem; color: #555; }
+.audit-bar { margin: .8rem 0; }
+.audit-bar strong { display: block; font-size: .9rem; }
+.audit-bar-track { height: .8rem; background: #eee; }
+.audit-bar-fill { height: 100%; background: #b3131b; }

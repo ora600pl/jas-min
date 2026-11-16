@@ -1,0 +1,12 @@
+{
+  "name": "jasmin-local",
+  "description": "Local plugins for JAS-MIN performance investigations.",
+  "owner": { "name": "JAS-MIN maintainers" },
+  "plugins": [
+    {
+      "name": "jasmin-companion",
+      "source": "./plugins/jasmin-companion",
+      "description": "Local Oracle performance evidence, interactive charts and guided investigation."
+    }
+  ]
+}

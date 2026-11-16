@@ -1,0 +1,12 @@
+.audit{border:1px solid #365449;border-radius:14px;background:#11201c;padding:20px;margin-bottom:25px}
+.audit[hidden]{display:none}.audit-heading{display:flex;justify-content:space-between;align-items:baseline;gap:15px}
+.audit-heading h2{font-size:18px;margin:0 0 10px}.audit-progress{font-size:12px;color:#9fd6c5}
+.audit progress{display:block;width:100%;height:6px;accent-color:#70d8be;margin:4px 0 18px}
+.audit-chapters{display:flex;gap:8px;overflow:auto;list-style:none;padding:0 0 10px;margin:0}
+.audit-chapters li{border:1px solid #2b433b;border-radius:6px;padding:7px 10px;flex:none;font-size:11px;color:#8caaa0}
+.audit-chapters li.active{border-color:#70d8be;color:#c9ffe9;background:#203b30}.audit-chapters li.discussed{color:#9bd6b9}
+.audit-hint,.audit-boundary{font-size:11px;color:#92afa2;line-height:1.6}.audit-boundary{border-top:1px solid #2d463a;padding-top:12px;margin-bottom:0}
+.audit-question{margin:18px 0 8px}.audit-question h3{font-size:18px;color:#e0f1e8;margin-top:5px}.audit-next{font-size:13px;line-height:1.7}
+.audit ul{font-size:12px;line-height:1.7;padding-left:21px}.audit-briefs{margin-bottom:15px}.audit-brief{padding:18px 0;border-bottom:1px solid #2d463a}
+.audit-brief p{font-size:13px;line-height:1.75;white-space:pre-wrap;max-width:85ch}.audit-brief h3{font-size:15px;color:#c9e6da}
+@media(max-width:650px){.audit{padding:15px}.audit-heading{display:block}.audit-question h3{font-size:16px}.audit-progress{display:block;margin-bottom:12px}}

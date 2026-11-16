@@ -10,6 +10,7 @@ use crate::awr::AWRSCollection;
 use crate::debug_note;
 use crate::local_agent::{build_case_seed, dispatch_precomputed_analysis, GuidanceLibrary};
 use crate::reasonings::{CrossModelClassification, DbTimeGradientSection, ReportForAI};
+use crate::report::i18n::ReportLanguage;
 use crate::report_issues::{self, ActionKind, IssueAction, ReportIssue};
 use crate::tools::{get_safe_filename, render_markdown_html_document};
 use anyhow::{bail, Context, Result};
@@ -47,7 +48,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-09-13.3";
+const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-11-11.1";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -362,7 +363,7 @@ impl FromStr for McpEndpoint {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct EvidenceRecord {
     evidence_id: String,
     tool_name: String,
@@ -372,21 +373,19 @@ struct EvidenceRecord {
     result: Value,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct GuidanceRecord {
     title: String,
     text: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct GuidanceQuotation {
     guidance_ref: String,
     quote: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct ReportConfig {
     output_format: String,
     language: String,
@@ -420,20 +419,44 @@ impl Default for ReportConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct Recommendation {
     #[serde(default)]
     kind: ActionKind,
     owner: String,
     priority: String,
     action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    action_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    decision_rule: Option<String>,
     rationale: String,
     success_criterion: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+/// The reader-facing explanation is separate from the complete diagnostic record.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditBriefReference {
+    brief_id: String,
+    revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReaderBrief {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_audit_brief: Option<AuditBriefReference>,
+    observed: String,
+    explanation: String,
+    next_step: String,
+    boundary: String,
+    evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct ReportFinding {
     finding_id: String,
     category: String,
@@ -441,6 +464,8 @@ struct ReportFinding {
     severity: String,
     confidence: String,
     conclusion: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reader_brief: Option<ReaderBrief>,
     mechanism: String,
     temporal_pattern: String,
     affected_workload: String,
@@ -453,8 +478,7 @@ struct ReportFinding {
     recommendations: Vec<Recommendation>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct ReportAssessment {
     assessment: String,
     status: String,
@@ -465,15 +489,13 @@ struct ReportAssessment {
     guidance_quotes: Vec<GuidanceQuotation>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct ReportTableRow {
     cells: BTreeMap<String, String>,
     evidence_refs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 struct ReportTable {
     table_id: String,
     kind: String,
@@ -672,6 +694,7 @@ struct AnalysisSession {
     next_table: u64,
     report_revision: u64,
     finalized_markdown: Option<String>,
+    audit: Option<audit_workflow::AuditState>,
 }
 
 impl AnalysisSession {
@@ -699,6 +722,7 @@ impl AnalysisSession {
             next_table: 1,
             report_revision: 0,
             finalized_markdown: None,
+            audit: None,
         }
     }
 }
@@ -1067,7 +1091,7 @@ impl AnalysisRuntime {
         let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         let analysis_id = format!(
             "A-{}-{sequence:04}",
-            chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+            chrono::Utc::now().format("%Y%m%dT%H%M%S%.9fZ")
         );
         debug_note!(
             "Starting MCP analysis session: analysis_id='{}', projects={:?}",
@@ -1801,7 +1825,8 @@ impl AnalysisRuntime {
             ("evidence_summary", &evidence_summary),
         ])?;
         let details = optional_string(arguments, "details", 16_000);
-        let evidence_refs = string_array(arguments, "evidence_refs", 32, 32)?;
+        let evidence_refs = string_array(arguments, "evidence_refs", 128, 32)?;
+        let reader_brief = parse_reader_brief(arguments.get("reader_brief"), &evidence_refs)?;
         let guidance_refs = string_array(arguments, "guidance_refs", 16, 64)?;
         let recommendations = parse_recommendations(arguments.get("recommendations"))?;
         if category != "limitations" && evidence_refs.is_empty() {
@@ -1848,6 +1873,7 @@ impl AnalysisRuntime {
                 severity,
                 confidence,
                 conclusion,
+                reader_brief,
                 mechanism,
                 temporal_pattern,
                 affected_workload,
@@ -2077,6 +2103,7 @@ impl AnalysisRuntime {
         let mut state = session
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
+        audit_workflow::finalization_gate(&state)?;
         let status = report_status_value(&analysis_id, &state, &self.projects);
         let ready_to_finalize = status
             .get("ready_to_finalize")
@@ -2103,32 +2130,12 @@ impl AnalysisRuntime {
             }));
         }
         state.report_revision += 1;
-        let datasets = state
-            .project_ids
-            .iter()
-            .filter_map(|project_id| self.projects.get(project_id))
-            .map(|project| project.dataset_manifest())
-            .collect::<Vec<_>>();
-        let mut report_document = json!({
-            "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
-            "analysis_id": analysis_id,
-            "revision": state.report_revision,
-            "generated_at": chrono::Utc::now().to_rfc3339(),
-            "project_ids": state.project_ids,
-            "dataset": if datasets.len() == 1 { datasets[0].clone() } else { Value::Null },
-            "datasets": datasets,
-            "config": state.config,
-            "section_index": report_section_index(&state),
-            "issues": state.issues.values().collect::<Vec<_>>(),
-            "findings": state.findings.values().map(|finding| {
-                let mut value = serde_json::to_value(finding).expect("report finding is serializable");
-                value["issue_id"] = json!(issue_for_finding(&state, &finding.finding_id).map(|issue| &issue.issue_id));
-                value
-            }).collect::<Vec<_>>(),
-            "structured_tables": state.report_tables.values().collect::<Vec<_>>(),
-            "mandatory_assessments": state.assessments,
-            "coverage": status
-        });
+        let mut report_document = audit_workflow::document_value(
+            &analysis_id,
+            &state,
+            &self.projects,
+            state.report_revision,
+        );
         let entity_links = ReportEntityLinks::build(&state.project_ids, &self.projects);
         report_document["signal_atlas"] = json!(report_signal_adapter::build_signal_atlas(
             &report_document,
@@ -2374,6 +2381,15 @@ impl AnalysisRuntime {
             "record_report_table" => self.record_report_table(&arguments),
             "set_report_assessment" => self.set_assessment(&arguments),
             "get_report_status" => self.report_status(&arguments),
+            "start_audit" => self.start_audit(&arguments),
+            "get_audit_status" => self.audit_status(&arguments),
+            "record_audit_brief" => self.record_audit_brief(&arguments),
+            "advance_audit" => self.advance_audit(&arguments),
+            "authorize_report" => self.authorize_report(&arguments),
+            "export_audit" => self.export_audit(&arguments),
+            "restore_audit" => self.restore_audit(&arguments),
+            "preview_report" => self.preview_report(&arguments),
+            "record_report_review" => self.record_report_review(&arguments),
             "finalize_report" => self.finalize_report(&arguments),
             "convert_markdown_to_html" => self.convert_markdown_to_html(&arguments),
             other => self.execute_evidence_tool(other, &arguments),
@@ -2957,34 +2973,42 @@ fn build_mcp_tools(runtime: &AnalysisRuntime) -> Vec<Tool> {
         .values()
         .filter_map(|definition| openai_definition_to_mcp(definition, true, true, true))
         .collect::<Vec<_>>();
-    tools.extend(mcp_control_definitions().iter().filter_map(|definition| {
-        let name = definition.pointer("/function/name")?.as_str()?;
-        let requires_analysis = !matches!(
-            name,
-            "list_performance_projects" | "start_performance_analysis"
-        );
-        let supports_project_id = matches!(
-            name,
-            "get_precomputed_analysis" | "get_wait_event_sql_contributors"
-        );
-        let read_only = matches!(
-            name,
-            "list_performance_projects"
-                | "get_analysis_catalog"
-                | "get_precomputed_analysis"
-                | "get_wait_event_sql_contributors"
-                | "get_diagnostic_guidance"
-                | "compare_project_metric"
-                | "compare_project_sql"
-                | "get_report_status"
-        );
-        openai_definition_to_mcp(
-            definition,
-            requires_analysis,
-            supports_project_id,
-            read_only,
-        )
-    }));
+    tools.extend(
+        mcp_control_definitions()
+            .into_iter()
+            .chain(audit_workflow::tool_definitions())
+            .filter_map(|definition| {
+                let name = definition.pointer("/function/name")?.as_str()?;
+                let requires_analysis = !matches!(
+                    name,
+                    "list_performance_projects" | "start_performance_analysis" | "restore_audit"
+                );
+                let supports_project_id = matches!(
+                    name,
+                    "get_precomputed_analysis" | "get_wait_event_sql_contributors"
+                );
+                let read_only = matches!(
+                    name,
+                    "list_performance_projects"
+                        | "get_analysis_catalog"
+                        | "get_precomputed_analysis"
+                        | "get_wait_event_sql_contributors"
+                        | "get_diagnostic_guidance"
+                        | "compare_project_metric"
+                        | "compare_project_sql"
+                        | "get_report_status"
+                        | "get_audit_status"
+                        | "export_audit"
+                        | "preview_report"
+                );
+                openai_definition_to_mcp(
+                    &definition,
+                    requires_analysis,
+                    supports_project_id,
+                    read_only,
+                )
+            }),
+    );
     tools.sort_by(|a, b| a.name.cmp(&b.name));
     debug_note!(
         "Built MCP tool catalog: projects={}, evidence_tools={}, total_tools={}",
@@ -3171,7 +3195,7 @@ fn mcp_control_definitions() -> Vec<Value> {
         ),
         function_definition(
             "configure_report",
-            "Sets the session-scoped output format and detail profile while retaining the stable server-controlled core section order.",
+            "Sets the session-scoped output format, reader language and detail profile while retaining the stable core section order. Polish and English labels are localized without changing source identifiers or authored evidence. Compact changes presentation; supporting analysis remains available.",
             json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -3189,7 +3213,7 @@ fn mcp_control_definitions() -> Vec<Value> {
         ),
         function_definition(
             "record_finding",
-            "Creates or replaces one evidence-backed report finding. Every finding must connect the measured symptom to a mechanism, temporal pattern and affected workload, then state the evidence boundary. The human-readable evidence_summary must state exact supporting values. Evidence and guidance references must have been obtained in this analysis session; every applied guidance reference requires a verified verbatim quotation.",
+            "Creates or replaces one evidence-backed report finding. Use reader_brief for connected reader-facing explanation, separate from the complete supporting fields; guided audits link it to the current source_audit_brief revision. Every finding must connect the measured symptom to a mechanism, temporal pattern and affected workload, then state the evidence boundary. The human-readable evidence_summary must state exact supporting values. Evidence and guidance references must have been obtained in this analysis session; every applied guidance reference requires a verified verbatim quotation.",
             json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -3200,16 +3224,24 @@ fn mcp_control_definitions() -> Vec<Value> {
                     "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "informational"]},
                     "confidence": {"type": "string", "enum": ["high", "medium", "low", "unknown"]},
                     "conclusion": {"type": "string"},
+                    "reader_brief": {"type":"object","additionalProperties":false,"description":"Reader-facing explanation, separate from complete evidence. Use connected sentences and explain technical meaning; keep operation IDs and capture recipes in supporting analysis. All facts must be supported by this finding.","properties":{
+                        "source_audit_brief":{"type":"object","additionalProperties":false,"properties":{"brief_id":{"type":"string","minLength":1,"maxLength":64},"revision":{"type":"integer","minimum":1}},"required":["brief_id","revision"]},
+                        "observed":{"type":"string","minLength":1,"maxLength":4000,"description":"What happened, with the decisive measurement and its scope."},
+                        "explanation":{"type":"string","minLength":1,"maxLength":4000,"description":"Why this matters and how the mechanism works; distinguish observation from hypothesis."},
+                        "next_step":{"type":"string","minLength":1,"maxLength":4000,"description":"The next concrete decision or investigation in plain language."},
+                        "boundary":{"type":"string","minLength":1,"maxLength":4000,"description":"What remains unknown and could change the decision."},
+                        "evidence_refs":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string"}}
+                    },"required":["observed","explanation","next_step","boundary","evidence_refs"]},
                     "mechanism": {"type": "string", "description": "How the measured signals connect. Separate a demonstrated mechanism from a hypothesis and do not restate the conclusion."},
                     "temporal_pattern": {"type": "string", "description": "When the symptom occurs: peak snapshots or timestamps, recurrence, baseline direction and whether it is episodic or sustained."},
                     "affected_workload": {"type": "string", "description": "Named SQL_IDs, PL/SQL units, modules, services, objects or business paths affected. State explicitly when attribution is not available."},
                     "evidence_limitations": {"type": "string", "description": "Counterevidence and the precise causal or coverage boundary: what the cited evidence cannot prove and what runtime proof remains necessary."},
                     "evidence_summary": {"type": "string", "description": "Human-readable evidence basis with exact values, time scope, and project/instance context; never just evidence IDs or tool names."},
                     "details": {"type": "string"},
-                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "evidence_refs": {"type": "array", "maxItems":128, "items": {"type": "string"}},
                     "guidance_refs": {"type": "array", "items": {"type": "string"}},
                     "guidance_quotes": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"guidance_ref": {"type": "string"}, "quote": {"type": "string", "description": "Contiguous verbatim excerpt from the retrieved guidance section."}}, "required": ["guidance_ref", "quote"]}},
-                    "recommendations": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"kind":{"type":"string","enum":["evidence_capture","mitigation","durable_fix"],"description":"Required for explicit issue reports. Omitted legacy values remain unclassified, never inferred."}, "owner": {"type": "string", "enum": ["DBA", "Developer", "Management"]}, "priority": {"type": "string", "enum": ["immediate", "high", "medium", "low"]}, "action": {"type": "string"}, "rationale": {"type": "string", "description": "Why this action follows from the measured finding and why it has this priority."}, "success_criterion": {"type": "string", "description": "A measurable before/after acceptance criterion including the relevant metric and regression guard."}}, "required": ["owner", "priority", "action", "rationale", "success_criterion"]}}
+                    "recommendations": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"kind":{"type":"string","enum":["evidence_capture","mitigation","durable_fix"],"description":"Required for explicit issue reports. Omitted legacy values remain unclassified, never inferred."}, "owner": {"type": "string", "enum": ["DBA", "Developer", "Management"]}, "priority": {"type": "string", "enum": ["immediate", "high", "medium", "low"]}, "action": {"type": "string"}, "action_summary":{"type":"string","minLength":1,"maxLength":2000,"description":"One clear next action for the reader; retain the complete procedure in action and steps."}, "steps":{"type":"array","maxItems":16,"items":{"type":"string","minLength":1,"maxLength":2000}}, "decision_rule":{"type":"string","minLength":1,"maxLength":4000,"description":"Explain how the measured outcomes change the next decision."}, "rationale": {"type": "string", "description": "Why this action follows from the measured finding and why it has this priority."}, "success_criterion": {"type": "string", "description": "A measurable before/after acceptance criterion including the relevant metric and regression guard."}}, "required": ["owner", "priority", "action", "rationale", "success_criterion"]}}
                 },
                 "required": ["category", "title", "severity", "confidence", "conclusion", "mechanism", "temporal_pattern", "affected_workload", "evidence_limitations", "evidence_summary", "evidence_refs"]
             }),
@@ -4650,7 +4682,10 @@ fn report_status_value(
         "analysis_id": analysis_id,
         "project_ids": state.project_ids,
         "comparison_mode": state.project_ids.len() > 1,
-        "ready_to_finalize": ready,
+        "ready_to_finalize": ready && audit_workflow::finalization_gate(state).is_ok(),
+        "evidence_complete": ready,
+        "publication_blocker": audit_workflow::finalization_gate(state).err(),
+        "guided_audit": audit_workflow::status_value(analysis_id, state),
         "findings": state.findings.len(),
         "evidence_records": state.evidence.len(),
         "structured_tables": state.report_tables.len(),
@@ -4671,7 +4706,7 @@ fn report_status_value(
         "missing_structured_table_rows": missing_table_rows,
         "completed_assessments": state.assessments.keys().collect::<Vec<_>>(),
         "missing_assessments": missing_assessments,
-        "next_step": if ready { "Call finalize_report." } else { "Collect every listed evidence item, record every structured table row, store all required category findings, complete mandatory assessments, explicitly group findings with record_issue and classify every action kind; refresh stale issues with record_issue after reviewing changed findings." }
+        "next_step": if ready && audit_workflow::finalization_gate(state).is_err() { "Follow publication_blocker: finish discussion, await the explicit report request, or review the current preview. Evidence completeness is retained." } else if ready { "Call finalize_report." } else { "Collect every listed evidence item, record every structured table row, store all required category findings, complete mandatory assessments, explicitly group findings with record_issue and classify every action kind; refresh stale issues with record_issue after reviewing changed findings." }
     })
 }
 
@@ -4684,23 +4719,114 @@ fn report_readability_review(state: &AnalysisSession) -> Value {
             warnings.push(json!({"finding_id": finding.finding_id, "code": "LONG_FINDING_TITLE",
                 "suggestion": "Aim for 12 words; move chronology and qualifications into the finding body."}));
         }
-        let words = [
-            &finding.conclusion,
-            &finding.affected_workload,
-            &finding.temporal_pattern,
-            &finding.evidence_summary,
-            &finding.evidence_limitations,
-        ]
-        .iter()
-        .map(|text| text.split_whitespace().count())
-        .sum::<usize>();
+        let texts: Vec<&str> = if let Some(brief) = &finding.reader_brief {
+            vec![
+                &brief.observed,
+                &brief.explanation,
+                &brief.next_step,
+                &brief.boundary,
+            ]
+        } else {
+            vec![
+                &finding.conclusion,
+                &finding.affected_workload,
+                &finding.temporal_pattern,
+                &finding.evidence_summary,
+                &finding.evidence_limitations,
+            ]
+        };
+        let words = texts
+            .iter()
+            .map(|text| text.split_whitespace().count())
+            .sum::<usize>();
         if words > 180 {
             warnings.push(json!({"finding_id": finding.finding_id, "code": "LONG_DECISION_LAYER", "words": words,
                 "suggestion": "Keep decisive measurements and the decision-changing boundary visible; move repeated explanation into details. Do not truncate facts."}));
         }
+        for (index, text) in texts.iter().enumerate() {
+            editorial_density_warning(
+                &mut warnings,
+                "finding",
+                &finding.finding_id,
+                &format!("reader_paragraph_{index}"),
+                text,
+            );
+        }
+        for (index, action) in finding.recommendations.iter().enumerate() {
+            let visible = action.action_summary.as_deref().unwrap_or(&action.action);
+            if visible.split_whitespace().count() > 70 {
+                warnings.push(json!({"finding_id":finding.finding_id,"action_index":index,"code":"LONG_ACTION_SUMMARY",
+                    "suggestion":"State one next action in action_summary and retain the complete procedure in action and steps."}));
+            }
+            editorial_density_warning(
+                &mut warnings,
+                "finding",
+                &finding.finding_id,
+                &format!("recommendations[{index}]"),
+                visible,
+            );
+        }
+    }
+    for issue in state.issues.values() {
+        if issue.decision_summary.split_whitespace().count() > 100 {
+            warnings.push(json!({"issue_id":issue.issue_id,"code":"LONG_ISSUE_SUMMARY",
+                "suggestion":"Explain the decision and its significance; link to the complete investigation for supporting detail."}));
+        }
+        editorial_density_warning(
+            &mut warnings,
+            "issue",
+            &issue.issue_id,
+            "decision_summary",
+            &issue.decision_summary,
+        );
+    }
+    for table in state
+        .report_tables
+        .values()
+        .filter(|table| table.kind == "execution_plans")
+    {
+        for (index, row) in table.rows.iter().enumerate() {
+            for field in ["risk", "recommendation_rationale", "action"] {
+                let Some(text) = row.cells.get(field) else {
+                    continue;
+                };
+                if text.split_whitespace().count() > 100 {
+                    warnings.push(json!({"table_id":table.table_id,"row_index":index,"field":field,"code":"LONG_PLAN_EXPLANATION",
+                        "suggestion":"Separate the observed plan feature, its possible cost and the test that would discriminate. Keep operation details in key_operations and access_and_joins."}));
+                }
+                editorial_density_warning(
+                    &mut warnings,
+                    "table",
+                    &table.table_id,
+                    &format!("rows[{index}].{field}"),
+                    text,
+                );
+            }
+        }
     }
     json!({"blocking": false, "warnings": warnings,
-        "instruction": "Review editorial warnings before finalizing. Preserve all evidence and deterministic coverage; these are writing targets, not completeness failures."})
+        "instruction": "Review editorial warnings before finalizing. These heuristics cannot certify readability or causality. Preserve all evidence and deterministic coverage; revise the explanation without truncating facts."})
+}
+
+fn editorial_density_warning(
+    warnings: &mut Vec<Value>,
+    kind: &str,
+    id: &str,
+    field: &str,
+    text: &str,
+) {
+    let technical_tokens = text
+        .split_whitespace()
+        .filter(|token| {
+            token.contains('_')
+                || (token.chars().any(|c| c.is_ascii_digit())
+                    && token.chars().any(|c| c.is_ascii_alphabetic()))
+        })
+        .count();
+    if text.matches(';').count() >= 4 || technical_tokens >= 8 {
+        warnings.push(json!({"entity_kind":kind,"entity_id":id,"field":field,"code":"DENSE_TECHNICAL_PROSE",
+            "suggestion":"Explain what the observations mean in connected sentences. Move enumerations and capture recipes to supporting evidence or action steps; keep decisive measurements and uncertainty visible."}));
+    }
 }
 
 fn issue_finding_snapshot(state: &AnalysisSession, issue: &ReportIssue) -> BTreeMap<String, Value> {
@@ -4745,6 +4871,9 @@ fn issue_actions_for_report(state: &AnalysisSession) -> Vec<IssueAction> {
                     owner: action.owner.clone(),
                     priority: action.priority.clone(),
                     action: action.action.clone(),
+                    action_summary: action.action_summary.clone(),
+                    steps: action.steps.clone(),
+                    decision_rule: action.decision_rule.clone(),
                     rationale: action.rationale.clone(),
                     success_criterion: action.success_criterion.clone(),
                 })
@@ -4810,18 +4939,31 @@ fn render_markdown(
     state: &AnalysisSession,
     entity_links: &ReportEntityLinks,
 ) -> String {
+    let l = ReportLanguage::new(&state.config.language);
     let mut output = String::new();
-    output.push_str("# Oracle Performance Analysis\n\n");
+    output.push_str(&format!("# {}\n\n", l.text("Oracle Performance Analysis")));
+    if let Some(notice) = document.get("preview_notice").and_then(Value::as_str) {
+        output.push_str(&format!(
+            "<aside class=\"decision-boundary\">{}</aside>\n\n",
+            encode_text(notice)
+        ));
+    }
+
     output.push_str(&format!(
-        "Analysis `{}` · revision {} · language `{}` · audience `{}`\n\n",
+        "{} `{}` · {} {} · {} `{}` · {} `{}`\n\n",
+        l.choose("Analysis", "Analiza"),
         document["analysis_id"].as_str().unwrap_or("unknown"),
+        l.choose("revision", "wersja"),
         document["revision"].as_u64().unwrap_or(0),
+        l.choose("language", "język"),
         state.config.language,
-        state.config.audience
+        l.choose("audience", "odbiorcy"),
+        l.text(&state.config.audience)
     ));
     let project_labels = report_project_labels(document);
     output.push_str(&format!(
-        "Database instances in scope: {}\n\n",
+        "{}: {}\n\n",
+        l.choose("Database instances in scope", "Instancje objęte analizą"),
         state
             .project_ids
             .iter()
@@ -4834,20 +4976,24 @@ fn render_markdown(
     ));
     if state.project_ids.len() > 1 {
         output.push_str(
-            "Baseline and candidate direction must be stated in each comparative finding and its cited evidence.\n\n",
+            l.choose("Baseline and candidate direction must be stated in each comparative finding and its cited evidence.\n\n", "Każde porównanie wskazuje okres odniesienia, okres porównywany i źródło pomiarów.\n\n"),
         );
     }
     output.push_str(&render_source_report_links(document));
-    output.push_str("<div class=\"severity-legend\" role=\"note\" aria-label=\"Finding severity legend\"><strong>Finding severity</strong><span class=\"legend-chip legend-critical\">CRITICAL</span><span class=\"legend-chip legend-high\">HIGH</span><span class=\"legend-chip legend-medium\">MEDIUM</span><span class=\"legend-chip legend-info\">INFORMATIONAL</span><span>Confidence remains stated in every finding title.</span></div>\n\n");
+    output.push_str(l.choose("<div class=\"severity-legend\" role=\"note\" aria-label=\"Finding severity legend\"><strong>Finding severity</strong><span class=\"legend-chip legend-critical\">CRITICAL</span><span class=\"legend-chip legend-high\">HIGH</span><span class=\"legend-chip legend-medium\">MEDIUM</span><span class=\"legend-chip legend-info\">INFORMATIONAL</span><span>Confidence remains stated in every finding title.</span></div>\n\n", "<div class=\"severity-legend\" role=\"note\" aria-label=\"Znaczenie ustaleń\"><strong>Znaczenie ustaleń</strong><span class=\"legend-chip legend-critical\">KRYTYCZNE</span><span class=\"legend-chip legend-high\">WYSOKIE</span><span class=\"legend-chip legend-medium\">ŚREDNIE</span><span class=\"legend-chip legend-info\">INFORMACYJNE</span><span>Pewność wniosku podano w tytule każdego ustalenia.</span></div>\n\n"));
 
-    output.push_str("## 1. Executive Summary\n\n");
+    output.push_str(&format!("## 1. {}\n\n", l.text("Executive Summary")));
     if !state.issues.is_empty() {
         let issues = state.issues.values().cloned().collect::<Vec<_>>();
-        output.push_str(&report_issues::render_issue_queue(
+        output.push_str(&report_issues::render_issue_queue_localized(
             &issues,
             &issue_actions_for_report(state),
+            &state.config.language,
         ));
-        output.push_str(&report_issues::render_issue_register(&issues));
+        output.push_str(&report_issues::render_issue_register_localized(
+            &issues,
+            &state.config.language,
+        ));
     }
     let mut leading = state
         .findings
@@ -4868,29 +5014,33 @@ fn render_markdown(
     });
     if leading.is_empty() {
         if state.findings.is_empty() {
-            output.push_str("No evidence-backed findings have been recorded.\n\n");
+            output.push_str(&format!(
+                "{}\n\n",
+                l.text("No evidence-backed findings have been recorded.")
+            ));
         }
     } else {
         if state.config.issue_grouping == "explicit" {
-            output.push_str("**Draft: these findings still need explicit issue assignment.**\n\n");
+            output.push_str(l.choose(
+                "**Draft: these findings still need explicit issue assignment.**\n\n",
+                "**Szkic: te ustalenia wymagają jeszcze przypisania do tematów.**\n\n",
+            ));
         }
         let leading = leading.into_iter().take(5).collect::<Vec<_>>();
-        output.push_str("Start with the next action. Priority describes urgency; severity describes impact; confidence describes the evidence. [Complete action register](#action-register).\n\n");
+        output.push_str(l.choose("Start with the next action. Priority describes urgency; severity describes impact; confidence describes the evidence. [Complete action register](#action-register).\n\n", "Zacznij od następnego kroku. Priorytet określa pilność działania, znaczenie — skalę problemu, a pewność — siłę dowodów. [Pełna lista działań](#action-register).\n\n"));
         for (index, finding) in leading.into_iter().enumerate() {
             output.push_str(&format!(
                 "<section class=\"decision-card\">\n\n### {}. {}\n\n{}\n\n",
                 index + 1,
                 finding.title,
-                finding.conclusion,
+                finding
+                    .reader_brief
+                    .as_ref()
+                    .map(|brief| brief.observed.as_str())
+                    .unwrap_or(&finding.conclusion),
             ));
-            output.push_str(&render_next_action(finding));
-            output.push_str(&format!(
-                "<p class=\"decision-boundary\"><strong>Decision boundary:</strong> {}</p>\n\n<p class=\"decision-meta\">Severity: {} · Confidence: {} · <a href=\"#finding-{}\">Finding and evidence</a></p>\n\n</section>\n\n",
-                encode_text(&finding.evidence_limitations),
-                encode_text(&finding.severity),
-                encode_text(&finding.confidence),
-                evidence_anchor(&finding.finding_id),
-            ));
+            output.push_str(&render_next_action(finding, &state.config.language));
+            output.push_str(&format!("<p class=\"decision-boundary\"><strong>{}:</strong> {}</p>\n\n<p class=\"decision-meta\">{}: {} · {}: {} · <a href=\"#finding-{}\">{}</a></p>\n\n</section>\n\n", l.text("Decision boundary"), encode_text(finding.reader_brief.as_ref().map(|brief| brief.boundary.as_str()).unwrap_or(&finding.evidence_limitations)), l.text("Severity"), l.severity(&finding.severity), l.text("Confidence"), l.text(&finding.confidence), evidence_anchor(&finding.finding_id), l.text("Finding and evidence")));
         }
     }
 
@@ -4910,7 +5060,7 @@ fn render_markdown(
         (10, "parameters", "Relevant Initialization Parameters"),
     ];
     for (number, category, title) in sections {
-        output.push_str(&format!("## {number}. {title}\n\n"));
+        output.push_str(&format!("## {number}. {}\n\n", l.text(title)));
         let signal_atlas = if category == "gradients_anomalies" {
             report_signal_adapter::build_signal_atlas(document, state, entity_links)
         } else {
@@ -4929,7 +5079,10 @@ fn render_markdown(
             .collect::<Vec<_>>();
         findings.sort_by_key(|finding| severity_rank(&finding.severity));
         if findings.is_empty() {
-            output.push_str("No evidence-backed findings were recorded for this section.\n\n");
+            output.push_str(&format!(
+                "{}\n\n",
+                l.text("No evidence-backed findings were recorded for this section.")
+            ));
         }
         let detail = state
             .config
@@ -4941,38 +5094,84 @@ fn render_markdown(
             output.push_str("<article class=\"report-finding\">\n\n");
             if let Some(issue) = issue_for_finding(state, &finding.finding_id) {
                 output.push_str(&format!(
-                    "**Issue:** [{}](#issue-detail-{}) · [Canonical finding](#{})\n\n",
+                    "**{}:** [{}](#issue-detail-{}) · [{}](#{})\n\n",
+                    l.text("Issue"),
                     issue.title,
                     issue.issue_id.to_ascii_lowercase(),
+                    l.text("Canonical finding"),
                     report_issues::finding_anchor(&issue.canonical_finding_id)
                 ));
             }
             output.push_str(&format!(
-                "<a id=\"finding-{}\"></a>\n\n### {} [{} / {}]\n\n{}\n\n",
+                "<a id=\"finding-{}\"></a>\n\n### {} [{} / {}]\n\n",
                 evidence_anchor(&finding.finding_id),
                 finding.title,
-                finding.severity,
-                finding.confidence,
-                finding.conclusion,
+                l.severity(&finding.severity),
+                l.text(&finding.confidence)
             ));
-            if signal_atlas.is_none() {
-                output.push_str(&render_finding_entity_shortcuts(
-                    finding,
-                    state,
-                    &project_labels,
-                    entity_links,
+            if let Some(brief) = &finding.reader_brief {
+                output.push_str(&render_reader_brief(brief, l));
+                if let Some(source) = &brief.source_audit_brief {
+                    if let Some(audit_brief) = state
+                        .audit
+                        .as_ref()
+                        .and_then(|audit| audit.briefs.get(&source.brief_id))
+                    {
+                        if let Some(visual) = &audit_brief.visual {
+                            if source.revision == audit_brief.revision {
+                                output.push_str(&crate::report::audit_visuals::render_visual(
+                                    visual,
+                                    &state.config.language,
+                                ));
+                            } else {
+                                output.push_str(&format!("<p class=\"audit-visual-unavailable\">{}</p>", l.choose("The retained visual belongs to a newer discussion revision; refresh this report explanation before publication.", "Zapisana wizualizacja dotyczy nowszej wersji dyskusji; przed publikacją zaktualizuj wyjaśnienie w raporcie.")));
+                            }
+                        }
+                    }
+                }
+            } else {
+                output.push_str(&format!("{}\n\n", finding.conclusion));
+                if signal_atlas.is_none() {
+                    output.push_str(&render_finding_entity_shortcuts(
+                        finding,
+                        state,
+                        &project_labels,
+                        entity_links,
+                    ));
+                    output.push_str(&format!("<div class=\"finding-context\">\n\n**{}:** {}\n\n**{}:** {}\n\n</div>\n\n**{}:** {}\n\n", l.text("Affected workload"), finding.affected_workload, l.text("Temporal pattern"), finding.temporal_pattern, l.text("Evidence basis"), finding.evidence_summary));
+                }
+                output.push_str(&render_next_action(finding, &state.config.language));
+                output.push_str(&format!(
+                    "**{}:** {}\n\n",
+                    l.text("Decision boundary"),
+                    finding.evidence_limitations
                 ));
             }
-            if signal_atlas.is_none() {
-                output.push_str(&format!("<div class=\"finding-context\">\n\n**Affected workload:** {}\n\n**Temporal pattern:** {}\n\n</div>\n\n**Evidence basis:** {}\n\n",finding.affected_workload,finding.temporal_pattern,finding.evidence_summary));
-            }
-            output.push_str(&render_next_action(finding));
             output.push_str(&format!(
-                "**Decision boundary:** {}\n\n<details class=\"finding-evidence\"><summary>Measurements, mechanism and supporting evidence</summary>\n\n**Diagnostic mechanism:** {}\n\n",
-                finding.evidence_limitations, finding.mechanism
+                "<details class=\"finding-evidence\"><summary>{}</summary>\n\n**{}:** {}\n\n",
+                l.text("Measurements, mechanism and supporting evidence"),
+                l.text("Diagnostic mechanism"),
+                finding.mechanism
             ));
-            if signal_atlas.is_some() {
-                output.push_str(&format!("**Affected workload:** {}\n\n**Temporal pattern:** {}\n\n**Evidence basis:** {}\n\n",finding.affected_workload,finding.temporal_pattern,finding.evidence_summary));
+            if finding.reader_brief.is_some() {
+                output.push_str(&format!(
+                    "**{}:** {}\n\n**{}:** {}\n\n",
+                    l.text("Original diagnostic conclusion"),
+                    finding.conclusion,
+                    l.text("Decision boundary"),
+                    finding.evidence_limitations
+                ));
+            }
+            if signal_atlas.is_some() || finding.reader_brief.is_some() {
+                output.push_str(&format!(
+                    "**{}:** {}\n\n**{}:** {}\n\n**{}:** {}\n\n",
+                    l.text("Affected workload"),
+                    finding.affected_workload,
+                    l.text("Temporal pattern"),
+                    finding.temporal_pattern,
+                    l.text("Evidence basis"),
+                    finding.evidence_summary
+                ));
                 output.push_str(&render_finding_entity_shortcuts(
                     finding,
                     state,
@@ -4983,18 +5182,19 @@ fn render_markdown(
             output.push_str(&render_guidance_quotes(&finding.guidance_quotes, state));
             if state.config.include_evidence_appendix && !finding.evidence_refs.is_empty() {
                 output.push_str(&format!(
-                    "**Technical provenance:** {}\n\n",
+                    "**{}:** {}\n\n",
+                    l.text("Technical provenance"),
                     evidence_links(&finding.evidence_refs)
                 ));
             }
-            if detail != "compact" && !finding.details.is_empty() {
+            if !finding.details.is_empty() {
                 if detail == "deep" {
                     output.push_str(&finding.details);
                     output.push_str("\n\n");
                 } else {
                     output.push_str(&format!(
-                        "<details class=\"finding-detail\"><summary>Additional diagnostic context</summary><p>{}</p></details>\n\n",
-                        encode_text(&finding.details).replace('\n', "<br>")
+                        "<details class=\"finding-detail\"><summary>{}</summary><p>{}</p></details>\n\n",
+                        l.text("Additional diagnostic context"), encode_text(&finding.details).replace('\n', "<br>")
                     ));
                 }
             }
@@ -5013,7 +5213,11 @@ fn render_markdown(
         let mut grouped_tables = by_kind.into_iter().collect::<Vec<_>>();
         grouped_tables.sort_by_key(|(kind, _)| report_table_render_rank(kind));
         if !grouped_tables.is_empty() {
-            output.push_str("<details class=\"technical-evidence\"><summary>Structured technical evidence — complete tables</summary>\n\n### Structured technical evidence\n\n");
+            output.push_str(&format!(
+                "<details class=\"technical-evidence\"><summary>{}</summary>\n\n### {}\n\n",
+                l.text("Structured technical evidence — complete tables"),
+                l.text("Structured technical evidence")
+            ));
         }
         let has_tables = !grouped_tables.is_empty();
         for (kind, source_tables) in grouped_tables {
@@ -5048,18 +5252,40 @@ fn render_markdown(
         .filter(|finding| finding.category == "limitations")
         .collect::<Vec<_>>();
     if !limitations.is_empty() {
-        output.push_str("<details class=\"coverage-detail\"><summary>Evidence coverage and limitations</summary>\n\n");
+        output.push_str(&format!(
+            "<details class=\"coverage-detail\"><summary>{}</summary>\n\n",
+            l.text("Evidence coverage and limitations")
+        ));
         for finding in limitations {
-            output.push_str(&format!("<a id=\"finding-{}\"></a>\n\n### {}\n\n{}\n\n**Evidence basis:** {}\n\n**Decision boundary:** {}\n\n{}\n\n",
-                evidence_anchor(&finding.finding_id), finding.title, finding.conclusion,
-                finding.evidence_summary, finding.evidence_limitations, finding.details));
+            output.push_str(&format!(
+                "<a id=\"finding-{}\"></a>\n\n### {}\n\n",
+                evidence_anchor(&finding.finding_id),
+                finding.title
+            ));
+            if let Some(brief) = &finding.reader_brief {
+                output.push_str(&render_reader_brief(brief, l));
+            }
+            for (label, value) in [
+                ("Original diagnostic conclusion", &finding.conclusion),
+                ("Diagnostic mechanism", &finding.mechanism),
+                ("Affected workload", &finding.affected_workload),
+                ("Temporal pattern", &finding.temporal_pattern),
+                ("Evidence basis", &finding.evidence_summary),
+                ("Decision boundary", &finding.evidence_limitations),
+            ] {
+                output.push_str(&format!("**{}:** {}\n\n", l.text(label), value));
+            }
+            output.push_str(&format!("{}\n\n", finding.details));
             output.push_str(&render_guidance_quotes(&finding.guidance_quotes, state));
         }
         output.push_str("</details>\n\n");
     }
 
     output.push_str("<a id=\"action-register\"></a>\n\n");
-    output.push_str("## 11. Prioritized Actions and Mandatory Assessments\n\n");
+    output.push_str(&format!(
+        "## 11. {}\n\n",
+        l.text("Prioritized Actions and Mandatory Assessments")
+    ));
     let mut actions = state
         .findings
         .values()
@@ -5073,10 +5299,20 @@ fn render_markdown(
     actions
         .sort_by_key(|(finding, action)| (priority_rank(&action.priority), finding.title.as_str()));
     if actions.is_empty() {
-        output.push_str("No prioritized actions were recorded.\n\n");
-    } else if state.config.issue_grouping == "explicit" {
-        output.push_str(&report_issues::render_action_register(
+        output.push_str(&format!(
+            "{}\n\n",
+            l.text("No prioritized actions were recorded.")
+        ));
+    } else if state.config.issue_grouping == "explicit"
+        || actions.iter().any(|(_, action)| {
+            action.action_summary.is_some()
+                || !action.steps.is_empty()
+                || action.decision_rule.is_some()
+        })
+    {
+        output.push_str(&report_issues::render_action_register_localized(
             &issue_actions_for_report(state),
+            &state.config.language,
         ));
     } else {
         for priority in ["immediate", "high", "medium", "low"] {
@@ -5088,8 +5324,9 @@ fn render_markdown(
                 continue;
             }
             output.push_str(&format!(
-                "### {} priority\n\n",
-                priority.to_ascii_uppercase()
+                "### {} {}\n\n",
+                l.text(&priority.to_ascii_uppercase()),
+                l.choose("priority", "priorytet")
             ));
             let mut rendered = BTreeSet::new();
             for (_, action) in &selected {
@@ -5124,21 +5361,29 @@ fn render_markdown(
                     .collect::<Vec<_>>()
                     .join("; ");
                 output.push_str(&format!(
-                    "- **{} — {}**  \n  **Why:** {}  \n  **Success criterion:** {}  \n  *Supports: {}*\n",
-                    action.owner, action.action, action.rationale, action.success_criterion, supports
+                    "- **{} — {}**  \n  **{}:** {}  \n  **{}:** {}  \n  *{}: {}*\n",
+                    l.text(&action.owner),
+                    action.action,
+                    l.text("Why"),
+                    action.rationale,
+                    l.text("Success criterion"),
+                    action.success_criterion,
+                    l.text("Supports"),
+                    supports
                 ));
             }
             output.push('\n');
         }
     }
-    output.push_str("### Mandatory Assessments\n\n");
+    output.push_str(&format!("### {}\n\n", l.text("Mandatory Assessments")));
     for assessment in REQUIRED_ASSESSMENTS {
         if let Some(value) = state.assessments.get(*assessment) {
             output.push_str(&format!(
-                "- **{} — {}**: {} **Evidence basis:** {}",
+                "- **{} — {}**: {} **{}:** {}",
                 assessment.replace('_', " "),
                 value.status,
                 value.conclusion,
+                l.text("Evidence basis"),
                 value.evidence_summary
             ));
             if state.config.include_evidence_appendix && !value.evidence_refs.is_empty() {
@@ -5605,6 +5850,7 @@ fn render_plan_review(
     label: &str,
     entity_links: &ReportEntityLinks,
 ) -> String {
+    let l = ReportLanguage::new(&state.config.language);
     let cell = |key: &str| row.cells.get(key).map(String::as_str).unwrap_or("");
     let sql_id = entity_links.html_code_link(cell("project_id"), "sql", cell("sql_id"));
     let plan_hash = encode_text(cell("plan_hash"));
@@ -5622,9 +5868,18 @@ fn render_plan_review(
     let limitations = encode_text(cell("scope_limitations"));
     let success_metric = encode_text(cell("success_metric"));
     let artifact_heading = if plan_status_raw == "not_applicable_plsql" {
-        format!("SQL {sql_id} · PL/SQL entry point")
+        format!(
+            "SQL {sql_id} · {}",
+            l.choose("PL/SQL entry point", "punkt wejścia PL/SQL")
+        )
     } else if plan_status_raw == "missing_attachment" {
-        format!("SQL {sql_id} · execution plan not supplied")
+        format!(
+            "SQL {sql_id} · {}",
+            l.choose(
+                "execution plan not supplied",
+                "nie dostarczono planu wykonania"
+            )
+        )
     } else {
         format!("SQL {sql_id} · plan hash <code>{plan_hash}</code>")
     };
@@ -5638,9 +5893,49 @@ fn render_plan_review(
     } else {
         "Attachment status"
     };
-    let mut output = format!(
-        "<section class=\"plan-review\" data-plan-review><header class=\"plan-review-header\"><div><span class=\"plan-scope\">{label}</span><h4>{artifact_heading}</h4></div><span class=\"plan-recommendation-badge\">{recommendation_type}</span></header><dl class=\"sql-context\"><div><dt>Why this SQL is here</dt><dd>{selection_reason}</dd></div><div><dt>Measured workload impact</dt><dd>{workload_evidence}</dd></div><div><dt>Coverage and timing</dt><dd>{temporal_evidence}</dd></div><div><dt>Comparison context</dt><dd>{comparative_context}</dd></div></dl><dl class=\"plan-conclusion\"><div><dt>{finding_label}</dt><dd>{risk}</dd></div><div><dt>Why this recommendation follows</dt><dd>{rationale}</dd></div><div><dt>What this evidence cannot prove</dt><dd>{limitations}</dd></div><div><dt>Concrete action</dt><dd>{action}</dd></div><div><dt>Success criterion</dt><dd>{success_metric}</dd></div><div><dt>{status_label}</dt><dd>{status}</dd></div></dl>"
-    );
+    let mut output = format!("<section class=\"plan-review\" data-plan-review><header class=\"plan-review-header\"><div><span class=\"plan-scope\">{label}</span><h4>{artifact_heading}</h4></div><span class=\"plan-recommendation-badge\">{recommendation_type}</span></header><dl class=\"sql-context\">");
+    for (label, value) in [
+        ("Why this SQL is here", &selection_reason),
+        ("Measured workload impact", &workload_evidence),
+        ("Coverage and timing", &temporal_evidence),
+        ("Comparison context", &comparative_context),
+    ] {
+        output.push_str(&format!(
+            "<div><dt>{}</dt><dd>{value}</dd></div>",
+            l.text(label)
+        ));
+    }
+    output.push_str("</dl><dl class=\"plan-conclusion\">");
+    for (label, value) in [
+        (finding_label, &risk),
+        ("Why this recommendation follows", &rationale),
+        ("What this evidence cannot prove", &limitations),
+        ("Concrete action", &action),
+        ("Success criterion", &success_metric),
+        (status_label, &status),
+    ] {
+        output.push_str(&format!(
+            "<div><dt>{}</dt><dd>{value}</dd></div>",
+            l.text(label)
+        ));
+    }
+    output.push_str(&format!(
+        "</dl><details class=\"plan-supporting-evidence\"><summary>{}</summary><dl>",
+        l.choose("Complete plan analysis", "Pełna analiza planu")
+    ));
+    for (key, label) in [
+        ("key_operations", "Key operations"),
+        ("access_and_joins", "Access paths / joins"),
+        ("cardinality", "Cardinality / row-source evidence"),
+        ("partition_parallelism", "Partitioning / PX"),
+    ] {
+        output.push_str(&format!(
+            "<div><dt>{}</dt><dd>{}</dd></div>",
+            l.text(label),
+            encode_text(cell(key))
+        ));
+    }
+    output.push_str("</dl></details>");
 
     let graph = plan_graph_evidence(row, state);
     let operations = graph
@@ -5665,7 +5960,7 @@ fn render_plan_review(
     } else {
         "Show flagged paths only"
     };
-    output.push_str(&format!("<div class=\"plan-toolbar\" aria-label=\"Execution plan graph controls\"><button type=\"button\" data-plan-filter aria-pressed=\"{initially_filtered}\">{filter_label}</button><label>Zoom <input type=\"range\" min=\"75\" max=\"150\" value=\"100\" step=\"5\" data-plan-zoom></label><span>Flagged row-source paths are shown first; expand the complete plan when needed.</span></div><div class=\"plan-canvas\" tabindex=\"0\" role=\"region\" aria-label=\"Interactive execution plan row-source graph\"><div class=\"plan-tree\">"));
+    output.push_str(&format!("<div class=\"plan-toolbar\" aria-label=\"{}\"><button type=\"button\" data-plan-filter aria-pressed=\"{initially_filtered}\">{}</button><label>{} <input type=\"range\" min=\"75\" max=\"150\" value=\"100\" step=\"5\" data-plan-zoom></label><span>{}</span></div><div class=\"plan-canvas\" tabindex=\"0\" role=\"region\" aria-label=\"{}\"><div class=\"plan-tree\">", l.choose("Execution plan graph controls", "Sterowanie widokiem planu"), l.text(filter_label), l.choose("Zoom", "Powiększenie"), l.choose("Flagged row-source paths are shown first; expand the complete plan when needed.", "Najpierw pokazano wskazane ścieżki; w razie potrzeby rozwiń cały plan."), l.choose("Interactive execution plan row-source graph", "Interaktywny graf operacji planu wykonania")));
     for (index, operation) in operations.iter().enumerate() {
         let id = operation.get("id").and_then(Value::as_u64).unwrap_or(0);
         let depth = operation.get("depth").and_then(Value::as_u64).unwrap_or(0);
@@ -5703,7 +5998,7 @@ fn render_plan_review(
                 .unwrap_or(""),
         );
         let toggle = if has_children {
-            format!("<button type=\"button\" class=\"plan-node-toggle\" data-plan-node-toggle aria-expanded=\"true\" aria-label=\"Collapse descendants of operation {id}\">−</button>")
+            format!("<button type=\"button\" class=\"plan-node-toggle\" data-plan-node-toggle aria-expanded=\"true\" aria-label=\"{} {id}\">−</button>", l.choose("Collapse descendants of operation", "Zwiń operacje podrzędne"))
         } else {
             "<span class=\"plan-node-leaf\" aria-hidden=\"true\">•</span>".to_string()
         };
@@ -5781,21 +6076,18 @@ fn render_execution_plan_reviews(
     if !no_change.is_empty() {
         output.push_str(&format!("<details class=\"plan-coverage\"><summary>{} execution artifact variant(s) reviewed with no plan-change recommendation</summary><ul>", no_change.len()));
         for row in no_change {
-            let cell = |key: &str| row.cells.get(key).map(String::as_str).unwrap_or("");
-            let sql_link = entity_links.html_code_link(cell("project_id"), "sql", cell("sql_id"));
-            let artifact = if cell("plan_status") == "not_applicable_plsql" {
-                "PL/SQL entry point".to_string()
-            } else {
-                format!("plan <code>{}</code>", encode_text(cell("plan_hash")))
-            };
-            output.push_str(&format!(
-                "<li>{} / {}: {} Measured context: {} Outcome: {}</li>",
-                sql_link,
-                artifact,
-                encode_text(cell("selection_reason")),
-                encode_text(cell("workload_evidence")),
-                encode_text(cell("recommendation_rationale"))
-            ));
+            let project_id = row
+                .cells
+                .get("project_id")
+                .map(String::as_str)
+                .unwrap_or("");
+            let label = project_labels
+                .get(project_id)
+                .map(String::as_str)
+                .unwrap_or(project_id);
+            output.push_str("<li>");
+            output.push_str(&render_plan_review(row, state, label, entity_links));
+            output.push_str("</li>");
         }
         output.push_str("</ul></details>\n\n");
     }
@@ -6039,7 +6331,9 @@ fn validate_stable_markdown_report(markdown: &str) -> std::result::Result<(), Va
         ));
     }
     let lines = markdown.lines().map(str::trim).collect::<Vec<_>>();
-    if !lines.contains(&"# Oracle Performance Analysis") {
+    if !lines.contains(&"# Oracle Performance Analysis")
+        && !lines.contains(&"# Analiza wydajności Oracle")
+    {
         return Err(tool_error(
             "INVALID_REPORT_TITLE",
             "Markdown must contain the '# Oracle Performance Analysis' title",
@@ -6049,7 +6343,12 @@ fn validate_stable_markdown_report(markdown: &str) -> std::result::Result<(), Va
     let mut positions = Vec::with_capacity(STABLE_MARKDOWN_HEADINGS.len());
     let mut missing = Vec::new();
     for heading in STABLE_MARKDOWN_HEADINGS {
-        if let Some(position) = lines.iter().position(|line| line == heading) {
+        let (prefix, title) = heading.split_once(". ").expect("stable numbered heading");
+        let localized = format!("{prefix}. {}", ReportLanguage::new("pl").text(title));
+        if let Some(position) = lines
+            .iter()
+            .position(|line| line == heading || *line == localized)
+        {
             positions.push(position);
         } else {
             missing.push(*heading);
@@ -6224,6 +6523,100 @@ fn html_output_filename(
     }
 }
 
+fn optional_reader_text(
+    object: &Map<String, Value>,
+    name: &str,
+    max_chars: usize,
+) -> std::result::Result<Option<String>, Value> {
+    let Some(value) = object.get(name) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            tool_error(
+                "INVALID_READER_TEXT",
+                format!("'{name}' must be a non-empty string"),
+            )
+        })?;
+    if value.chars().count() > max_chars {
+        return Err(tool_error("INVALID_READER_TEXT", format!("'{name}' exceeds {max_chars} characters; revise or move details without truncating evidence")));
+    }
+    Ok(Some(value.trim().to_string()))
+}
+
+fn optional_reader_steps(object: &Map<String, Value>) -> std::result::Result<Vec<String>, Value> {
+    let Some(value) = object.get("steps") else {
+        return Ok(Vec::new());
+    };
+    let items = value
+        .as_array()
+        .filter(|items| items.len() <= 16)
+        .ok_or_else(|| {
+            tool_error(
+                "INVALID_ACTION_STEPS",
+                "steps must be an array of at most 16 non-empty strings",
+            )
+        })?;
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .filter(|text| !text.trim().is_empty() && text.chars().count() <= 2_000)
+                .map(|text| text.trim().to_string())
+                .ok_or_else(|| {
+                    tool_error(
+                        "INVALID_ACTION_STEPS",
+                        "Each step must contain 1..=2000 characters",
+                    )
+                })
+        })
+        .collect()
+}
+
+fn parse_reader_brief(
+    value: Option<&Value>,
+    evidence_refs: &[String],
+) -> std::result::Result<Option<ReaderBrief>, Value> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let brief: ReaderBrief = serde_json::from_value(value.clone())
+        .map_err(|error| tool_error("INVALID_READER_BRIEF", error.to_string()))?;
+    for (name, text) in [
+        ("observed", &brief.observed),
+        ("explanation", &brief.explanation),
+        ("next_step", &brief.next_step),
+        ("boundary", &brief.boundary),
+    ] {
+        if text.trim().is_empty() || text.chars().count() > 4_000 {
+            return Err(tool_error("INVALID_READER_BRIEF", format!("reader_brief.{name} must contain 1..=4000 characters; preserve the full analysis in supporting fields")));
+        }
+    }
+    if brief.source_audit_brief.as_ref().is_some_and(|source| {
+        source.brief_id.trim().is_empty() || source.brief_id.len() > 64 || source.revision == 0
+    }) {
+        return Err(tool_error(
+            "INVALID_READER_BRIEF",
+            "source_audit_brief requires a non-empty brief_id and a positive revision",
+        ));
+    }
+    if brief.evidence_refs.is_empty()
+        || brief.evidence_refs.len() > 32
+        || brief
+            .evidence_refs
+            .iter()
+            .any(|reference| !evidence_refs.contains(reference))
+    {
+        return Err(tool_error(
+            "READER_BRIEF_EVIDENCE_MISMATCH",
+            "reader_brief must cite a non-empty subset of the finding's validated evidence_refs",
+        ));
+    }
+    Ok(Some(brief))
+}
+
 fn parse_recommendations(value: Option<&Value>) -> std::result::Result<Vec<Recommendation>, Value> {
     let Some(items) = value.and_then(Value::as_array) else {
         return Ok(Vec::new());
@@ -6270,6 +6663,9 @@ fn parse_recommendations(value: Option<&Value>) -> std::result::Result<Vec<Recom
                 owner,
                 priority,
                 action,
+                action_summary: optional_reader_text(object, "action_summary", 2_000)?,
+                steps: optional_reader_steps(object)?,
+                decision_rule: optional_reader_text(object, "decision_rule", 4_000)?,
                 rationale,
                 success_criterion,
             })
@@ -7717,10 +8113,43 @@ fn evidence_links(evidence: &[String]) -> String {
         .join(", ")
 }
 
-fn render_next_action(finding: &ReportFinding) -> String {
-    match finding.recommendations.iter().min_by_key(|action| priority_rank(&action.priority)) {
-        Some(action) => format!("**Next action — {} / {} / {}:** {}\n\n", action.owner, action.priority.to_ascii_uppercase(), action.kind.label(), action.action),
-        None => "**Next action:** No action recorded; review the evidence boundary before intervening.\n\n".to_string(),
+fn render_reader_brief(brief: &ReaderBrief, l: ReportLanguage) -> String {
+    let mut output = String::from("<div class=\"reader-brief\">\n");
+    for (class, label, text) in [
+        ("reader-observed", "What we observed", &brief.observed),
+        ("reader-explanation", "What this means", &brief.explanation),
+        ("reader-next-step", "Next action", &brief.next_step),
+        ("reader-boundary", "Decision boundary", &brief.boundary),
+    ] {
+        output.push_str(&format!(
+            "<p class=\"{class}\"><strong>{}:</strong> {}</p>\n",
+            l.text(label),
+            encode_text(text)
+        ));
+    }
+    output.push_str("</div>\n\n");
+    output
+}
+
+fn render_next_action(finding: &ReportFinding, language: &str) -> String {
+    let l = ReportLanguage::new(language);
+    match finding
+        .recommendations
+        .iter()
+        .min_by_key(|action| priority_rank(&action.priority))
+    {
+        Some(action) => report_issues::render_action_lead(
+            &action.owner,
+            &action.priority,
+            action.kind,
+            action.action_summary.as_deref().unwrap_or(&action.action),
+            language,
+        ),
+        None => format!(
+            "**{}:** {}\n\n",
+            l.text("Next action"),
+            l.text("No action recorded; review the evidence boundary before intervening.")
+        ),
     }
 }
 
@@ -7742,6 +8171,7 @@ fn unique_guidance_quotes(state: &AnalysisSession) -> Vec<(&str, &str)> {
 }
 
 fn render_guidance_quotes(quotations: &[GuidanceQuotation], state: &AnalysisSession) -> String {
+    let l = ReportLanguage::new(&state.config.language);
     let registry = unique_guidance_quotes(state);
     let links = quotations
         .iter()
@@ -7751,7 +8181,14 @@ fn render_guidance_quotes(quotations: &[GuidanceQuotation], state: &AnalysisSess
                 .position(|entry| {
                     *entry == (quotation.guidance_ref.as_str(), quotation.quote.as_str())
                 })
-                .map(|index| format!("[Rule {}](#guidance-quote-{})", index + 1, index + 1))
+                .map(|index| {
+                    format!(
+                        "[{} {}](#guidance-quote-{})",
+                        l.choose("Rule", "Zasada"),
+                        index + 1,
+                        index + 1
+                    )
+                })
         })
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -7759,7 +8196,7 @@ fn render_guidance_quotes(quotations: &[GuidanceQuotation], state: &AnalysisSess
     if links.is_empty() {
         String::new()
     } else {
-        format!("**Methodology:** {}\n\n", links.join(", "))
+        format!("**{}:** {}\n\n", l.text("Methodology"), links.join(", "))
     }
 }
 
@@ -8426,7 +8863,7 @@ mod tests {
                 query.as_object().unwrap().clone(),
             )
             .unwrap();
-        assert_eq!(response["schema_version"], "2026-09-13.3");
+        assert_eq!(response["schema_version"], MCP_ANALYSIS_SCHEMA_VERSION);
         assert!(response["evidence_id"].as_str().unwrap().starts_with("E-"));
         assert_eq!(
             response["result"]["data"]["db_time_sql_elapsed_time"]["model_rankings"]["ridge"][0]
@@ -9367,6 +9804,7 @@ mod tests {
             title: "cursor: pin S wait on X is material".to_string(),
             severity: "critical".to_string(),
             confidence: "high".to_string(),
+            reader_brief: None,
             conclusion: "The complete wait name identifies the observed symptom.".to_string(),
             mechanism: "The complete mutex wait name preserves the blocking cursor-pin state under investigation.".to_string(),
             temporal_pattern: "The test fixture represents a material wait observed in an aligned snapshot window.".to_string(),
@@ -9423,7 +9861,8 @@ mod tests {
                 title: "Parameter governance needs measured review".to_string(),
                 severity: "medium".to_string(),
                 confidence: "high".to_string(),
-                conclusion: "The observed value requires a workload-scoped governance decision."
+                reader_brief: None,
+            conclusion: "The observed value requires a workload-scoped governance decision."
                     .to_string(),
                 mechanism: "The permissive ceiling can hide lifecycle defects but is not a stand-alone bottleneck."
                     .to_string(),
@@ -9631,14 +10070,8 @@ mod tests {
             ],
         };
         let labels = BTreeMap::from([
-            (
-                "node-1".to_string(),
-                "DB1 · Oracle instance 1".to_string(),
-            ),
-            (
-                "node-2".to_string(),
-                "DB2 · Oracle instance 2".to_string(),
-            ),
+            ("node-1".to_string(), "DB1 · Oracle instance 1".to_string()),
+            ("node-2".to_string(), "DB2 · Oracle instance 2".to_string()),
         ]);
 
         let rendered = render_report_table(&table, &state, &labels, &ReportEntityLinks::default());
@@ -10427,3 +10860,10 @@ mod report_reader_tests;
 #[cfg(test)]
 #[path = "../report/issue_tests.rs"]
 mod report_issue_tests;
+
+#[path = "audit_workflow.rs"]
+mod audit_workflow;
+
+#[cfg(test)]
+#[path = "../report/readability_examples.rs"]
+mod report_readability_examples;
