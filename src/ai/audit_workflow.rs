@@ -10,14 +10,14 @@ use hypotheses::{HypothesisCheck, HypothesisOutcome, OpeningHypothesis};
 
 const CHAPTERS: &[(&str, &str, &str, &str, &str)] = &[
     ("scope", "Audit scope", "Zakres audytu", "Which workload, period and user symptom are we investigating?", "Jaką operację, okres i objaw zgłoszony przez użytkownika badamy?"),
-    ("performance_profile", "Performance profile", "Profil wydajności", "Which DB Time and DB CPU gradient signals align with the absolute workload profile, and which two or three hypotheses should we test?", "Jak gradienty DB Time i DB CPU mają się do bezwzględnego profilu obciążenia i które dwie lub trzy hipotezy sprawdzimy?"),
+    ("performance_profile", "Gradients, anomalies and workload", "Gradienty, anomalie i obciążenie", "Which DB Time and DB CPU gradient signals and dated anomalies or clusters match the measured workload? Which two or three hypotheses should we test?", "Które sygnały gradientowe DB Time i DB CPU oraz okna anomalii pokrywają się ze zmierzonym obciążeniem? Jakie dwie lub trzy hipotezy sprawdzimy?"),
     ("wait_events", "Wait events", "Oczekiwania", "Which waits matter, and what workload is associated with them?", "Które oczekiwania są istotne i z jaką pracą się wiążą?"),
     ("sql", "SQL and execution plans", "SQL i plany wykonania", "Which SQL paths explain the measured workload, and what remains unproven?", "Które ścieżki SQL wyjaśniają zmierzoną pracę i czego jeszcze nie potwierdziliśmy?"),
     ("segments", "Segments and objects", "Segmenty i obiekty", "Which objects recur across signals, and can we attribute their cost?", "Które obiekty powtarzają się w pomiarach i czy potrafimy przypisać ich koszt?"),
     ("latches", "Internal contention", "Kontencja wewnętrzna", "What do we know about concurrency, holders and waiters?", "Co wiemy o współbieżności oraz sesjach blokujących i oczekujących?"),
     ("io", "I/O", "Operacje I/O", "Do measurements distinguish storage latency from workload volume?", "Czy pomiary rozróżniają opóźnienie dysków i ilość wykonywanej pracy?"),
     ("undo_redo", "UNDO, redo and commits", "UNDO, redo i zatwierdzanie", "What explains redo and commit costs for this workload?", "Co wyjaśnia koszt redo i zatwierdzania dla badanych operacji?"),
-    ("gradients_anomalies", "Models and unusual periods", "Modele i nietypowe okresy", "Which opening hypotheses were confirmed, rejected or remain unresolved, and which measurements explain each outcome?", "Które hipotezy robocze potwierdziły się, które odpadły, a które pozostają otwarte? Jakie pomiary o tym rozstrzygają?"),
+    ("gradients_anomalies", "Hypothesis review", "Weryfikacja hipotez", "Which opening hypotheses were confirmed, rejected or remain unresolved, and which measurements explain each outcome?", "Które hipotezy robocze potwierdziły się, które odpadły, a które pozostają otwarte? Jakie pomiary o tym rozstrzygają?"),
     ("parameters", "Configuration", "Konfiguracja", "Which collected settings need action or an explained exception?", "Które zebrane ustawienia wymagają działania lub uzasadnienia wyjątku?"),
     ("synthesis", "Decisions and next steps", "Wnioski i kolejne kroki", "What can we conclude, what is still open, and what should happen first?", "Co możemy stwierdzić, co pozostaje otwarte i czym należy zająć się najpierw?"),
 ];
@@ -216,7 +216,7 @@ pub(super) fn status_value(analysis_id: &str, state: &AnalysisSession) -> Value 
         "phase":if audit.authorized(){"report_requested"}else{"discussion"},
         "next_step":if audit.authorized(){"Build findings from reviewed briefs, retain all evidence, preview, review and finalize."}else{match audit.current_chapter_id.as_str() {
             "scope" => "Establish the workload, symptom, project and time window before opening hypotheses.",
-            "performance_profile" => "Compare DB Time/DB CPU gradients with the absolute workload profile. Save two or three opening_hypotheses, or explain a missing input in hypothesis_gap.",
+            "performance_profile" => "Inspect full_gradients, load_profile_anomalies and anomaly_clusters first. Compare their contributors and timestamps with the measured workload and baseline. Record source measurements or specific coverage gaps. Save two or three opening_hypotheses, or explain a missing input in hypothesis_gap.",
             "gradients_anomalies" => "Revisit every opening ID in hypothesis_outcomes. Use confirmed, rejected or unresolved, and explain what the chapter checks established.",
             _ => "Use the project's opening hypotheses. In relevant chapters record hypothesis_checks with the stable ID, observed result or evidence gap. Continue at the auditor's pace."
         }},
@@ -388,6 +388,7 @@ impl AnalysisRuntime {
                 .map_err(|e| tool_error("INVALID_AUDIT_BRIEF", e.to_string()))?;
             validate_brief(&brief, &s)?;
             hypotheses::validate_content(&brief, &s, &self.projects[&brief.project_id])?;
+            hypotheses::validate_opening_windows(&brief, &s, &self.projects[&brief.project_id])?;
             let AnalysisSession {
                 evidence, audit, ..
             } = &mut *s;
@@ -1346,6 +1347,24 @@ mod tests {
                 }],
                 ..Default::default()
             });
+        let report = Arc::make_mut(&mut data.report);
+        report
+            .load_profile_anomalies
+            .push(crate::reasonings::LoadProfileAnomalies {
+                load_profile_stat_name: "Physical reads".into(),
+                anomaly_date: "2026-08-01 10:00".into(),
+                per_second: 22.,
+                mad_score: 6.,
+                ..Default::default()
+            });
+        report
+            .anomaly_clusters
+            .push(crate::reasonings::AnomlyCluster {
+                begin_snap_id: 10,
+                begin_snap_date: "2026-08-01 10:00".into(),
+                number_of_anomalies: 2,
+                ..Default::default()
+            });
         let (id, project) = start(&runtime);
         let save = |entry| call(&runtime, "record_audit_brief", entry);
         let load = call(
@@ -1381,6 +1400,22 @@ mod tests {
         let mut gap = brief(&id, &project, "performance_profile");
         gap["hypothesis_gap"] = json!("No metrics");
         assert!(save(gap).is_err());
+        for section in ["load_profile_anomalies", "anomaly_clusters"] {
+            assert!(save(profile.clone())
+                .unwrap_err()
+                .to_string()
+                .contains(section));
+            let observed = call(
+                &runtime,
+                "get_precomputed_analysis",
+                json!({"analysis_id":id,"section":section}),
+            )
+            .unwrap();
+            profile["evidence_refs"]
+                .as_array_mut()
+                .unwrap()
+                .push(observed["evidence_id"].clone());
+        }
         let mut partial = profile.clone();
         partial["evidence_refs"] = json!([gradient]);
         assert!(save(partial).is_err());

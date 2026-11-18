@@ -89,7 +89,9 @@ Missing observations remain unknown, not zero. When MCP returns duplicate RAC ti
 
 ## Guided audit
 
-The audit proceeds through one discussion topic at a time. The panel shows the current question, chapter progress, next useful check and unresolved questions. Ask to revisit any chapter or correct an earlier explanation. Saving a brief means that the topic was discussed; it does not mean the user approved a diagnosis.
+After scope, the first analytical chapter compares gradient signals, anomaly windows and measured workload. The ninth chapter revisits the opening hypotheses using the later checks.
+
+Click a chapter at the top of the panel to reopen its explanations and the views displayed in this panel session. Select a view by title and ask about it in the same chat. The assistant can see your selection while the audit retains its current step. To continue the discussion at a different step, ask the assistant to move there. The chapter keeps its displayed views after the recent-view history rolls over. Boards attached to saved briefs can also be reopened in a new panel session connected to the same audit.
 
 `companion_record_brief` saves the question, explanation, conclusion, evidence boundary, next step and exact evidence references in the upstream analysis. Reusing a brief ID preserves its corrections as revisions. An optional `view_id` attaches a copy of the evidence board. These records are independent of the panel's 20-view display cache. The core validates evidence references; a custom chart's free-text source label alone is not proof of provenance.
 
@@ -121,7 +123,7 @@ git pull --ff-only
 node plugins/jasmin-companion/install.mjs
 ```
 
-Reload Codex to load updated server code, tools, and skill instructions. Editing the repository alone does not update the installed copy. Refreshing the browser reloads panel assets, but does not restart the MCP server.
+Finish using the old panel before running the installer. A version update can replace the directory from which the old panel loads its files. Reload Codex, then use `companion_resume_audit` with the existing analysis ID while the same JAS-MIN server is running. If you also plan to restart that server, save an audit checkpoint first and use `companion_restore_audit` afterward.
 
 To uninstall, use a compatible Codex CLI (the same one used for installation):
 

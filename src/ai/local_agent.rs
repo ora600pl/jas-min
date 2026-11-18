@@ -738,8 +738,7 @@ pub async fn analyze_report_local_agent(
     let mut cfg = LocalAgentConfig::from_args(model, language, args);
     let collection = crate::reasonings::load_scoped_collection(args)?;
     let stem = stem_from_report_name(report_name);
-    let mut seed = build_case_seed(report);
-    seed["absolute_workload"] = opening::workload(&collection);
+    let seed = opening::seed(report, &collection);
     let guidance_library = GuidanceLibrary::load();
     let guidance_catalog = guidance_library.prompt_notice();
     let tools = local_tools_schema(
@@ -2350,14 +2349,14 @@ fn final_report_prompt(language: &str) -> String {
 
 Required Markdown structure:
 1. Executive Summary
-2. Overall Performance Profile and DB Time degradation
+2. Gradients, Anomalies and Workload Profile, with dated anomalies, cluster windows and the opening hypotheses
 3. Wait Events
 4. SQL-Level Analysis, including plan findings when plans were available
 5. Segments and Objects
 6. Latches and Internal Contention
 7. I/O and Disk Assessment
 8. UNDO, Redo and Load Profile
-9. Gradient and anomaly synthesis
+9. Hypothesis Review and Statistical Synthesis
 10. Relevant Initialization Parameters
 11. Prioritized Actions: DBA, Developers, Immediate, Management
 
@@ -2801,7 +2800,34 @@ mod tests {
             c.awrs.push(snapshot);
         }
         crate::analyze::restrict_to_report_scope(&mut c, "2-3").unwrap();
-        let profile = opening::workload(&c);
+        let report = ReportForAI {
+            load_profile_anomalies: (1..=5)
+                .map(|index| crate::reasonings::LoadProfileAnomalies {
+                    anomaly_date: format!("2026-08-01 {index:02}:00"),
+                    load_profile_stat_name: "Physical reads".into(),
+                    per_second: 22.0,
+                    mad_score: index as f64,
+                    ..Default::default()
+                })
+                .collect(),
+            anomaly_clusters: vec![crate::reasonings::AnomlyCluster {
+                begin_snap_date: "2026-08-01 05:00".into(),
+                begin_snap_id: 7,
+                number_of_anomalies: 2,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let evidence = opening::evidence(&opening::seed(&report, &c));
+        let windows = &evidence["anomaly_windows"];
+        assert_eq!(windows["load_profile_anomalies_total"], 5);
+        assert_eq!(windows["highest_mad"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            windows["highest_mad"][0]["anomaly_date"],
+            "2026-08-01 05:00"
+        );
+        assert_eq!(windows["largest_recorded_clusters"][0]["begin_snap_id"], 7);
+        let profile = &evidence["absolute_workload"];
         assert_eq!(profile["snapshot_count"], 1);
         assert_eq!(profile["first_snapshot"]["snap_id"], 2);
         assert_eq!(profile["total_db_time_s"], 20.0);

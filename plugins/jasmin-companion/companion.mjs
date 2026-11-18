@@ -21,9 +21,12 @@ export function localEndpoint(value) {
 export class Companion {
   constructor() {
     this.state = { revision: 0, language: 'en', mode: null, status: 'idle', project: null, analysis_id: null,
-      audit: null, audit_support: 'unknown', selection: {}, views: [], current: null, note: '' };
+      audit: null, audit_support: 'unknown', viewed_chapter_id: null, selection: {}, views: [], current: null, note: '' };
     this.client = null; this.analysis = null; this.schemas = []; this.upstreamSchemas = [];
+    this.lastViewByChapter = new Map();
+    this.archivedViews = new Map();
   }
+  resetChapterViews() { this.lastViewByChapter.clear(); this.archivedViews.clear(); }
   update(patch) { Object.assign(this.state, patch); this.state.revision++; }
   async open({ mode = 'live', endpoint = 'http://127.0.0.1:4242/mcp', language = this.state.language } = {}) {
     this.validateLanguage(language);
@@ -34,7 +37,8 @@ export class Companion {
     try { await client.initialize(); } catch (e) { await client.close().catch(() => {}); throw e; }
     await this.client?.close().catch(() => {});
     this.client = client; this.endpoint = endpoint; this.analysis = null; this.schemas = []; this.upstreamSchemas = [];
-    this.update({ mode, language, project: null, analysis_id: null, audit: null, audit_support: 'unknown', selection: {}, views: [], current: null, note: '' });
+    this.resetChapterViews();
+    this.update({ mode, language, project: null, analysis_id: null, audit: null, audit_support: 'unknown', viewed_chapter_id: null, selection: {}, views: [], current: null, note: '' });
   }
   validateLanguage(language) {
     if (!['en', 'pl'].includes(language)) throw new Error('language must be en or pl');
@@ -60,6 +64,7 @@ export class Companion {
       view.translations ||= {};
       view.translations[language] = { ...view.translations[language], ...patch };
       view.copyRevision = (view.copyRevision || 0) + 1;
+      this.rememberView(view);
     }
     this.update({ language });
     return this.languageContext();
@@ -73,7 +78,8 @@ export class Companion {
     const result = await this.client.call('start_performance_analysis', { project_id, language: this.state.language });
     if (!result.analysis_id) throw new Error('MCP did not return an analysis_id.');
     this.analysis = result.analysis_id;
-    this.update({ project: project_id, analysis_id: this.analysis, audit: null, selection: {}, views: [], current: null, note: '' });
+    this.resetChapterViews();
+    this.update({ project: project_id, analysis_id: this.analysis, audit: null, viewed_chapter_id: null, selection: {}, views: [], current: null, note: '' });
     await this.tools();
     if (guided && this.state.audit_support === 'available') await this.startAudit();
     return { project_id, analysis_id: this.analysis, audit_support: this.state.audit_support, audit: this.state.audit };
@@ -103,10 +109,114 @@ export class Companion {
     const project = project_id || (status.project_ids.length === 1 ? status.project_ids[0] : null);
     if (!project || !status.project_ids.includes(project)) throw new Error('Select a project_id belonging to this audit. No project identity is inferred from row order.');
     const changed = this.analysis !== status.analysis_id || this.state.project !== project;
+    const previousChapter = this.viewedChapter();
+    const previousView = this.state.views.find(v => v.id === this.state.current);
+    const previouslyCurrent = previousView?.brief_id && this.isCurrentBriefView(previousView);
+    if (changed) this.resetChapterViews();
     this.analysis = status.analysis_id;
     this.update({ analysis_id: this.analysis, project, audit: structuredClone(status), audit_support: 'available',
-      ...(changed ? { selection: {}, views: [], current: null, note: '' } : {}) });
+      ...(changed ? { viewed_chapter_id: null, selection: {}, views: [], current: null, note: '' } : {}) });
+    const chapter = this.viewedChapter();
+    if (changed || chapter !== previousChapter || (previouslyCurrent && !this.isCurrentBriefView(previousView))) {
+      this.browseChapter(chapter);
+    }
     return status;
+  }
+  viewedChapter() {
+    return this.state.viewed_chapter_id ?? this.state.audit?.current_chapter_id ?? null;
+  }
+  isCurrentBriefView(view) {
+    return !view.brief_id || this.state.audit?.briefs.some(b => b.project_id === this.state.project &&
+      b.brief_id === view.brief_id && b.visual && (b.revision ?? b.updated_at_revision) === view.brief_revision);
+  }
+  lookupView(id) {
+    return this.state.views.find(v => v.id === id) ?? this.archivedViews.get(id);
+  }
+  displayedBoard() {
+    const view = this.lookupView(this.state.current);
+    if (!view) return null;
+    const localized = localizedView(view, this.state.language);
+    const board = localized.presentation || automaticPresentation(view, this.state.language);
+    return { view_id: view.id, chapter_id: view.chapter_id, brief_id: view.brief_id, brief_revision: view.brief_revision,
+      superseded: !this.isCurrentBriefView(view), note: localized.note || '', evidence_id: view.data.evidence_id,
+      evidence_refs: view.data.evidence_refs, source_view_ids: view.data.source_view_ids, source_view_id: board.source_view_id,
+      title: board.title, takeaway: board.takeaway, panels: board.panels };
+  }
+  rememberView(view) {
+    if (!view.chapter_id) return;
+    let archived = this.archivedViews.get(view.id);
+    if (!archived) {
+      const presentation = view.presentation || automaticPresentation(view);
+      if (!presentation.panels.length) return;
+      // Store the rendered board and its provenance. Full measurement envelopes stay in the recent cache.
+      archived = { id: view.id, tool: view.tool, args: {}, time: view.time, language: view.language || 'en',
+        presentation, data: { evidence_id: view.data.evidence_id, evidence_refs: view.data.evidence_refs,
+          source_view_ids: view.data.source_view_ids } };
+      if (!view.presentation) {
+        const fields = viewTexts({ presentation: automaticPresentation(view, 'pl') });
+        archived.translations = { pl: Object.fromEntries(fields.map(f => [f.path, f.text])) };
+        archived.automaticTextPaths = fields.map(f => f.path);
+      }
+      this.archivedViews.set(view.id, archived);
+    }
+    if (archived.note !== view.note) for (const entries of Object.values(archived.translations || {})) delete entries.note;
+    Object.assign(archived, { chapter_id: view.chapter_id, brief_id: view.brief_id, brief_revision: view.brief_revision,
+      note: view.note, noteLanguage: view.noteLanguage, copyRevision: view.copyRevision });
+    if (view.presentation) {
+      archived.translations = view.translations;
+      archived.automaticTextPaths = view.automaticTextPaths;
+    } else if (view.translations) {
+      for (const [language, entries] of Object.entries(view.translations)) {
+        archived.translations[language] = { ...archived.translations[language], ...entries };
+      }
+    }
+    this.lastViewByChapter.set(view.chapter_id, view.id);
+  }
+  chapterViews() {
+    const chapter = this.viewedChapter();
+    if (!chapter) return [];
+    const rows = [];
+    for (const v of this.archivedViews.values()) {
+      if (v.chapter_id !== chapter) continue;
+      const title = v.translations?.[this.state.language]?.['presentation.title'] ?? v.presentation.title;
+      rows.push({ view_id: v.id, brief_id: v.brief_id, brief_revision: v.brief_revision, superseded: !this.isCurrentBriefView(v), title, evidence_id: v.data.evidence_id });
+    }
+    for (const b of this.state.audit.briefs) {
+      if (b.project_id === this.state.project && b.chapter_id === chapter && b.visual && !rows.some(v => v.brief_id === b.brief_id && !v.superseded)) {
+        rows.push({ brief_id: b.brief_id, title: b.visual.title });
+      }
+    }
+    return rows;
+  }
+  browseChapter(chapter_id, brief_id) {
+    const audit = this.state.audit;
+    if (!audit?.chapters.some(c => c.chapter_id === chapter_id)) throw new Error('Unknown chapter in this audit.');
+    const briefs = audit.briefs.filter(b => b.chapter_id === chapter_id && b.project_id === this.state.project && b.visual);
+    let view = this.lookupView(this.lastViewByChapter.get(chapter_id));
+    if (view && !this.isCurrentBriefView(view)) view = null;
+    if (brief_id !== undefined || !view) {
+      let brief;
+      if (brief_id !== undefined) {
+        brief = briefs.find(b => b.brief_id === brief_id);
+        if (!brief) throw new Error('No saved visual for this brief in the selected chapter.');
+      } else {
+        const newest = Math.max(0, ...briefs.map(b => b.updated_at_revision || 0));
+        const candidates = briefs.filter(b => (b.updated_at_revision || 0) === newest);
+        if (candidates.length === 1) brief = candidates[0];
+      }
+      if (brief) {
+        const revision = brief.revision ?? brief.updated_at_revision;
+        const previous = Array.from(this.archivedViews.values()).find(v => v.brief_id === brief.brief_id && v.brief_revision === revision);
+        view = (previous && this.lookupView(previous.id)) || {
+          id: crypto.randomUUID(), tool: 'record_audit_brief', args: {}, chapter_id, brief_id: brief.brief_id,
+          brief_revision: revision, data: { evidence_refs: brief.evidence_refs }, language: brief.visual.language || this.state.language,
+          presentation: structuredClone(brief.visual),
+        };
+      }
+    }
+    this.update({ viewed_chapter_id: chapter_id === audit.current_chapter_id ? null : chapter_id,
+      current: null, note: '', selection: {} });
+    if (view) this.record(view);
   }
   async auditStatus() {
     await this.requireAuditTool('get_audit_status');
@@ -123,8 +233,8 @@ export class Companion {
   async recordBrief({ view_id, ...brief }) {
     if (!this.state.project) throw new Error('Select a project first.');
     if (view_id !== undefined) {
-      const view = this.state.views.find(v => v.id === view_id);
-      if (!view) throw new Error('The visual is no longer in the display cache. Recreate it from its retained evidence before attaching it.');
+      const view = this.lookupView(view_id);
+      if (!view || !this.isCurrentBriefView(view)) throw new Error('Unknown view in this audit.');
       if (translationStatus(view, this.state.language).pending.some(field => field.path.startsWith('presentation.')))
         throw new Error('This board still needs translation. Show it and complete the pending translations before attaching it to the audit brief.');
       brief.visual = structuredClone(localizedView(view, this.state.language).presentation || automaticPresentation(view, this.state.language));
@@ -133,9 +243,32 @@ export class Companion {
       if (Buffer.byteLength(JSON.stringify(brief.visual), 'utf8') > 128 * 1024)
         throw new Error('The audit visual exceeds 128 KiB. Select a narrower chart or save the explanation without view_id; evidence references are retained independently.');
     }
-    return this.auditMutation('record_audit_brief', { ...brief, project_id: this.state.project });
+    const status = await this.auditMutation('record_audit_brief', { ...brief, project_id: this.state.project });
+    if (view_id !== undefined) {
+      const view = this.lookupView(view_id);
+      if (view) {
+        // A discussion may have revisited another topic before its board was attached.
+        if (view.chapter_id !== brief.chapter_id && this.lastViewByChapter.get(view.chapter_id) === view.id) this.lastViewByChapter.delete(view.chapter_id);
+        view.chapter_id = brief.chapter_id;
+        const saved = status.briefs.find(b => b.project_id === this.state.project && b.chapter_id === brief.chapter_id &&
+          b.visual?.source_view_id === view.id && b.updated_at_revision === status.revision);
+        if (saved) {
+          view.brief_id = saved.brief_id;
+          view.brief_revision = saved.revision ?? saved.updated_at_revision;
+        }
+        this.rememberView(view);
+        if (this.state.current === view_id) {
+          this.update({ viewed_chapter_id: brief.chapter_id === status.current_chapter_id ? null : brief.chapter_id });
+        }
+      }
+    }
+    return status;
   }
-  async advanceAudit(args) { return this.auditMutation('advance_audit', args); }
+  async advanceAudit(args) {
+    const status = await this.auditMutation('advance_audit', args);
+    if (this.state.viewed_chapter_id) this.browseChapter(status.current_chapter_id);
+    return status;
+  }
   async authorizeReport(args) { return this.auditMutation('authorize_report', args); }
   async exportAudit() {
     await this.requireAuditTool('export_audit');
@@ -176,10 +309,12 @@ export class Companion {
   }
   record(view, activate = true) {
     // Keep the displayed board intact while collecting supporting evidence.
+    view.chapter_id ??= this.viewedChapter();
     const current = this.state.views.find(v => v.id === this.state.current);
-    const keep = this.state.views.filter(v => v.id !== current?.id).slice(-18);
-    this.update({ views: [...keep, ...(current ? [current] : []), view],
-      ...(activate ? { current: view.id, note: view.note || '' } : {}) });
+    const keep = this.state.views.filter(v => v.id !== view.id && v.id !== current?.id).slice(-18);
+    if (activate) this.rememberView(view);
+    this.update({ views: [...keep, ...(current && current.id !== view.id ? [current] : []), view],
+      ...(activate ? { current: view.id, note: view.note || '', selection: {} } : {}) });
   }
   present({ title, takeaway, panels = [], view_ids = [], language = this.state.language }) {
     this.validateLanguage(language);
@@ -217,13 +352,18 @@ export class Companion {
     if (view) {
       view.note = text; view.noteLanguage = language;
       for (const entries of Object.values(view.translations || {})) delete entries.note;
+      this.rememberView(view);
     }
     this.update({ note: text, language });
   }
   show(view_id) {
-    const view = this.state.views.find(v => v.id === view_id);
+    const view = this.lookupView(view_id);
     if (!view) throw new Error('Unknown view in this session.');
-    this.update({ current: view_id, note: view.note || '' }); return { view_id, ...this.languageContext() };
+    if (view.chapter_id) {
+      this.update({ viewed_chapter_id: view.chapter_id === this.state.audit.current_chapter_id ? null : view.chapter_id });
+    }
+    this.record(view);
+    return { view_id, ...this.languageContext() };
   }
   selectPoint(selection) {
     const view = this.state.views.find(v => v.id === this.state.current);

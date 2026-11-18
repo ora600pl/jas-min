@@ -45,8 +45,7 @@ async fn start_hosted_review(
     analysis: &ReportForAI,
     collection: &AWRSCollection,
 ) -> Result<HostedOpening, Box<dyn std::error::Error>> {
-    let mut seed = crate::local_agent::build_case_seed(analysis);
-    seed["absolute_workload"] = opening::workload(collection);
+    let seed = opening::seed(analysis, collection);
     let evidence = opening::evidence(&seed);
     let model = vendor_model_lang[1];
     let mut instructions = opening::instructions(vendor_model_lang[2]);
@@ -943,7 +942,17 @@ Follow this reasoning sequence:
 # OUTPUT STRUCTURE
 
 ## 1. 🧭 Executive Summary
-## 2. 📈 Overall Performance Profile
+## 2. 📈 Gradients, Anomalies and Workload Profile
+Compare the named gradient contributors with the measured workload and baseline. Localize the MAD anomalies and clusters to the actual dates and snapshots, explain what changed and report missing coverage before opening the hypotheses.
+- Present DB Time gradient findings (wait events, instance stats, SQL elapsed time)
+- Present DB CPU gradient findings (instance stats, SQL CPU time)
+- For each top predictor, report `impact_active`, `impact_share` (%), and the
+  bursty/systematic diagnosis
+- Quote `impact_peak` when discussing spike periods or capacity concerns
+- For SQL analysis: include a cross-gradient comparison table showing SQL_IDs that appear
+  in db_time_gradient_sql_elapsed_time and/or db_cpu_gradient_sql_cpu_time, with columns:
+  SQL_ID, DB Time Classification, DB CPU Classification, Active Impact, Share %, Diagnosis.
+  Where Diagnosis is one of: CPU-Dominant, Wait-Dominant, Mixed, or CPU-Only.
 ## 3. ⏳ Wait Event Analysis
 ### 3.1 Foreground Waits
 For each significant wait event:
@@ -959,17 +968,8 @@ For each significant wait event:
 ## 6. 🔧 Latches & Internal Contention
 ## 7. 💾 I/O & Disk Subsystem Assessment
 ## 8. 🔁 UNDO / Redo / Load Profile Observations
-## 9. ⚡ Anomaly Clusters, Cross-Domain Patterns & Gradient Analysis
-When presenting gradient analysis in this section:
-- Present DB Time gradient findings (wait events, instance stats, SQL elapsed time)
-- Present DB CPU gradient findings (instance stats, SQL CPU time)
-- For each top predictor, report `impact_active`, `impact_share` (%), and the 
-  bursty/systematic diagnosis
-- Quote `impact_peak` when discussing spike periods or capacity concerns
-- For SQL analysis: include a cross-gradient comparison table showing SQL_IDs that appear 
-  in db_time_gradient_sql_elapsed_time and/or db_cpu_gradient_sql_cpu_time, with columns:
-  SQL_ID, DB Time Classification, DB CPU Classification, Active Impact, Share %, Diagnosis.
-  Where Diagnosis is one of: CPU-Dominant, Wait-Dominant, Mixed, or CPU-Only.
+## 9. Hypothesis Review and Statistical Synthesis
+Revisit each opening ID using the independent tests in the intervening sections. For each outcome explain the measured support, counterevidence or missing comparison.
 ## 10. ⚙️ Initialization Parameter Analysis
 ### 10.1 Parameters Related to Identified Performance Issues
 For each finding from sections 2-9 where an initialization parameter is relevant:

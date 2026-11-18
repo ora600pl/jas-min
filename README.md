@@ -264,7 +264,7 @@ See [JAS-MIN MCP Server](docs/mcp-server.md) for client lifecycle, tool groups, 
 
 ### Batch Analysis
 
-For `google`, `openai`, and `openrouter`, JAS-MIN first asks the selected model to compare gradients with the measured workload in the selected scope and identify two or three testable hypotheses. The report request carries the opening hypotheses into the investigation. Section 2 shows the original hypotheses, the relevant diagnostic chapters check them and section 9 explains which were confirmed, rejected or remain unresolved. The report payload uses the compact `ReportForAI` structure and Load Profile statistics.
+For `google`, `openai`, and `openrouter`, JAS-MIN first asks the selected model to compare gradients and observed anomaly windows with the measured workload in the selected scope and identify two or three testable hypotheses. Section 2 presents the signals, their timing and the original hypotheses. The relevant diagnostic chapters check them and section 9 explains which were confirmed, rejected or remain unresolved. The report payload uses the compact `ReportForAI` structure and Load Profile statistics.
 
 Typical output files are named after the text log and model, for example:
 
@@ -280,7 +280,7 @@ The generated Markdown is converted to HTML with links back to JAS-MIN detail pa
 
 The `local` backend uses a tool-driven workflow designed for LM Studio:
 
-1. Session 1 opens with a planning request that compares DB Time and DB CPU gradients with measured workload in the selected snapshot range. It records two or three testable hypotheses, or the specific evidence gap. The investigator receives the original hypotheses alongside the compact gradient, degradation and peak data.
+1. Session 1 opens with a planning request that compares DB Time and DB CPU gradients, anomalies and clusters with measured workload in the selected snapshot range. It records two or three testable hypotheses, or the specific evidence gap. The investigator receives the original hypotheses alongside the opening measurements.
 2. The investigator receives a small triage tool catalog first. Later rounds expose deeper timeline, plan, parameter, segment, latch, and attachment tools only when there is room to use them. Duplicate calls in one session return a short reference instead of repeating a large cached result.
 3. When `reasonings.txt` is available, relevant §x.y sections are retrieved for detected symptoms. They remain methodology rather than database evidence.
 4. The investigator submits a compact checkpoint. Qwen uses JSON Schema plus LM Studio's `reasoning_content` channel because live tests showed its forced checkpoint tool call repeatedly exhausted 4096 tokens; other models can use the dedicated checkpoint tool with the structured fallback.

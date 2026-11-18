@@ -20,8 +20,9 @@ require every applicable measurement, table, assessment and finding.
    revisions remain in the audit history. A brief without evidence references
    records a discussion or coverage gap; it is not measurement evidence.
 4. Use `advance_audit` to move to or revisit a chapter. The sections cover scope,
-   performance profile, waits, SQL, segments, internal contention, I/O,
-   UNDO/redo, statistical synthesis, configuration and final decisions.
+   gradients and anomalies alongside the workload profile, waits, SQL, segments,
+   internal contention, I/O, UNDO/redo, hypothesis review, configuration and
+   final decisions.
    Comparative audits need a discussion or explicit gap for each selected
    project in every chapter. One project's brief cannot close another's scope.
 5. When the auditor explicitly asks for the report, call `authorize_report`
@@ -31,16 +32,26 @@ require every applicable measurement, table, assessment and finding.
    Saving briefs, exporting a checkpoint and completing chapters never grant
    permission to generate a report.
 
-Companion displays progress, the current question, the next useful check and
-open questions. Its twenty-view display cache is independent from the upstream
-audit record. Selected visual data can be attached to a brief before the screen
-is evicted. The same upstream `analysis_id` is used for later report authoring.
+Click a chapter in Companion to see its question, explanations and the views
+displayed during this panel session. Select a view by title and ask about it
+in the chat. `companion_context` identifies the selected chapter, view and
+brief alongside the active discussion step. With `include_displayed_board`
+it also returns the values and sources visible on the selected board.
+Browsing preserves the discussion
+step and report authorization. Chapter views remain available after the
+twenty-view display cache rolls over. To retain a board when reconnecting to
+the same analysis in a new panel session, attach it to a brief with `view_id`.
+A chapter without a board still shows its question and any saved briefs.
 
 ### Following a hypothesis through the audit
 
 After recording the scope, compare the DB Time and DB CPU gradients with the
 absolute workload for each project. Inspect the incident and a comparable
-baseline. Use `top_sqls_in_snapshot` in both windows to find recurring costs. For example, a SQL statement can use substantial CPU in both periods
+baseline. Read `load_profile_anomalies` and `anomaly_clusters` at this stage
+to identify the measured windows and metrics that warrant a closer look.
+Keep the observation and its evidence reference in the opening brief.
+Use `top_sqls_in_snapshot` in both windows to find recurring costs.
+For example, a SQL statement can use substantial CPU in both periods
 and have a low gradient. A second statement with a large peak gradient needs a
 timeline check to establish whether its changes coincide with the incident.
 
@@ -148,6 +159,14 @@ cargo test --bin jas-min report_
 cargo test --bin jas-min companion_core_transport_integration -- --ignored
 cd plugins/jasmin-companion
 npm test
+```
+
+For the keyboard and click-through checks in Chromium, make Playwright
+available to Node and run the transport test from the repository root.
+Set `BROWSER_PATH` if using a separately installed Chromium executable.
+
+```sh
+JASMIN_AUDIT_BROWSER_QA=1 cargo test --bin jas-min companion_core_transport_integration -- --ignored
 ```
 
 An opt-in preview writes new artifacts only; choose a new output path:

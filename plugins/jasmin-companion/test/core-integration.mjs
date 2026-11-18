@@ -42,7 +42,7 @@ try {
       columns: ['Miara', 'Wartość'], rows: [['Liczba snapshotów', evidence.result.snapshot_count], ['DB Time [s]', evidence.result.total_db_time_s]] }] });
   await companion.recordBrief({ chapter_id: 'scope', question: 'Którą próbkę obejmuje test?', explanation: observed,
     conclusion: 'Badamy dostępną próbkę i jej pokrycie.', evidence_boundary: boundary, next_step: nextStep,
-    open_questions: [], evidence_refs: [evidence.evidence_id] });
+    open_questions: [], evidence_refs: [evidence.evidence_id], view_id: board.view_id });
   await companion.advanceAudit({ chapter_id: 'performance_profile', complete_current: true });
   const hypothesisGap = 'Próbka obejmuje pojedynczy snapshot. Brakuje gradientów i porównywalnego okresu odniesienia.';
   const briefInput = { chapter_id: 'performance_profile', question: 'Czy podsumowanie ustala przyczynę kosztu?',
@@ -143,6 +143,11 @@ try {
   assert.deepEqual(reexported.checkpoint.evidence, exported.checkpoint.evidence);
   assert.deepEqual(reexported.checkpoint.audit.history, exported.checkpoint.audit.history);
   checks.restore_new_analysis = true; checks.restore_clears_authorization = true;
+  if (process.env.JASMIN_AUDIT_BROWSER_QA === '1') {
+    const { checkChapterNavigation } = await import('./chapter-navigation-browser.mjs');
+    await checkChapterNavigation(endpoint, analysis_id, project_id);
+    checks.browser_chapter_navigation = true;
+  }
   console.log(JSON.stringify({ ok: true, ...checks }));
 } finally {
   await Promise.allSettled([companion.close(), restored.close()]);

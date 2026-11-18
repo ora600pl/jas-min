@@ -387,6 +387,13 @@ pub(crate) fn render_action_register_localized(actions: &[IssueAction], language
 pub(crate) fn prepare_api_report(
     markdown: &str,
 ) -> Result<(String, Option<IssueManifest>), String> {
+    prepare_markdown(markdown, true)
+}
+
+fn prepare_markdown(
+    markdown: &str,
+    accept_archived_layout: bool,
+) -> Result<(String, Option<IssueManifest>), String> {
     let options = Options::ENABLE_HEADING_ATTRIBUTES | Options::ENABLE_TABLES;
     let mut manifest_range = None;
     let mut in_manifest = false;
@@ -600,14 +607,16 @@ pub(crate) fn prepare_api_report(
         crate::report_signals::validate(atlas)?;
         if signal_starts.len() != 1 || signal_ends.len() != 1 {
             return Err(
-                "Signal atlas needs one jasmin-signals:start/end marker pair in section 9".into(),
+                "Signal atlas needs one jasmin-signals:start/end marker pair in section 2".into(),
             );
         }
-        let signals_section = section(9)?;
         let start = signal_starts[0];
         let end = signal_ends[0];
-        if start < signals_section.0 || end < start || end >= signals_section.1 {
-            return Err("Signal atlas markers must be ordered inside section 9".into());
+        let inside = |bounds: (usize, usize)| bounds.0 <= start && start <= end && end < bounds.1;
+        if !(inside(section(2)?) || (accept_archived_layout && inside(section(9)?))) {
+            return Err(
+                "Place the signal atlas inside section 2 before the diagnostic chapters".into(),
+            );
         }
         if finding_positions
             .iter()
@@ -655,7 +664,7 @@ pub(crate) fn finalize_api_markdown_with_opening(
     markdown: &str,
     original: &[&str],
 ) -> Result<String, String> {
-    let (mut rendered, manifest) = prepare_api_report(markdown)?;
+    let (mut rendered, manifest) = prepare_markdown(markdown, false)?;
     let manifest = manifest.ok_or("New AI reports require one validated jasmin-issues block; raw response retained for correction")?;
     crate::report::hypothesis_sections::validate(&rendered, original)?;
     {
@@ -837,7 +846,20 @@ mod tests {
     fn api_atlas_uses_shared_renderer_requires_sources_and_preserves_technical_text() {
         let mut manifest = manifest();
         manifest.signal_atlas = Some(crate::report_signals::tests::fixture());
-        let raw = report(&manifest).replace("## 9. Section\n\n", "## 9. Section\n\n<!-- jasmin-signals:start -->\n<!-- jasmin-signals:end -->\n\n<a id=\"evidence-e-1\"></a>\n\nExact source measurements remain here.\n\n");
+        let atlas_block = "<!-- jasmin-signals:start -->\n<!-- jasmin-signals:end -->\n\n<a id=\"evidence-e-1\"></a>\n\nExact source measurements remain here.\n\n";
+        let template = report(&manifest);
+        let raw = template.replace(
+            "## 2. Section\n\n",
+            &format!("## 2. Section\n\n{atlas_block}"),
+        );
+        let archived = template.replace(
+            "## 9. Section\n\n",
+            &format!("## 9. Section\n\n{atlas_block}"),
+        );
+        assert!(prepare_api_report(&archived).is_ok());
+        assert!(finalize_api_markdown(&archived)
+            .unwrap_err()
+            .contains("section 2"));
         let (prepared, _) = prepare_api_report(&raw).unwrap();
         assert!(prepared.contains("class=\"signal-atlas\""));
         assert!(prepared.contains("Exact source measurements remain here."));

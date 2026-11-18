@@ -68,11 +68,13 @@ inside the finding's supporting detail when the atlas is available.
 
 ## APIs and local reviewer
 
-The shared [writing contract](../src/report_writing.md) defines `signal_atlas`
+The shared [writing contract](../src/report/assets/report_writing.md) defines `signal_atlas`
 inside the existing `jasmin-issues` manifest. Models provide scoped numeric data,
 source selection flags, conclusions and provenance anchors. Place the empty
-`jasmin-signals:start/end` HTML comment pair in section 9. The shared renderer
-fills it; normalized Markdown retains the JSON for reproducible conversion.
+`jasmin-signals:start/end` HTML comment pair in section 2. The shared renderer
+places the gradient signals and measured anomaly windows next to the opening
+hypotheses. Section 9 explains what the later checks established for each
+hypothesis. Normalized Markdown retains the JSON for reproducible conversion.
 
 Validation rejects duplicate fits/contributors, negative or nonfinite magnitude
 values, unknown project/contributor references, unsafe source URLs, missing

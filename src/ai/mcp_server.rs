@@ -49,7 +49,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-11-11.1";
-const REPORT_HYPOTHESIS_WORKFLOW: &str = "After establishing the symptom, instance and period, compare DB Time and DB CPU gradient signals with the measured workload in the same incident and baseline windows. Use absolute time or rates and check for material costs with little variation. In section 2, open two or three distinct testable hypotheses per project, each with a stable ID, comparison window and distinguishing measurement. In relevant later chapters cite the ID and the observed test result. In section 9 revisit every ID as confirmed, rejected or unresolved and explain why using the follow-up measurements or the specific evidence gap. When the source cannot support the opening comparison, explain the gap.";
+const REPORT_HYPOTHESIS_WORKFLOW: &str = "After establishing the symptom, instance and period, inspect full_gradients, load_profile_anomalies and anomaly_clusters alongside the measured workload. Compare named contributors, anomaly timestamps and cluster snapshots with incident and baseline measurements; state missing coverage for each family. Use absolute time or rates and check for material costs with little variation. In section 2, open two or three distinct testable hypotheses per project, each with a stable ID, comparison window and distinguishing measurement. In relevant later chapters cite the ID and the observed test result. In section 9 revisit every ID as confirmed, rejected or unresolved and explain why using the follow-up measurements or the specific evidence gap. When the source cannot support the opening comparison, explain the gap.";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -217,14 +217,14 @@ fn serialized_json_size<T: Serialize + ?Sized>(value: &T) -> usize {
 // labels. Changing them alters what get_report_status accepts as complete.
 const STABLE_MARKDOWN_HEADINGS: &[&str] = &[
     "## 1. Executive Summary",
-    "## 2. Overall Performance Profile and DB Time Degradation",
+    "## 2. Gradients, Anomalies and Workload Profile",
     "## 3. Wait Events",
     "## 4. SQL-Level Analysis",
     "## 5. Segments and Objects",
     "## 6. Latches and Internal Contention",
     "## 7. I/O and Disk Assessment",
     "## 8. UNDO, Redo and Load Profile",
-    "## 9. Gradient and Anomaly Synthesis",
+    "## 9. Hypothesis Review and Statistical Synthesis",
     "## 10. Relevant Initialization Parameters",
     "## 11. Prioritized Actions and Mandatory Assessments",
 ];
@@ -3647,14 +3647,14 @@ fn report_contract(config: &ReportConfig) -> Value {
         "config": config,
         "stable_sections": [
             {"number": 1, "id": "executive_summary", "title": "Executive Summary"},
-            {"number": 2, "id": "performance_profile", "title": "Overall Performance Profile and DB Time Degradation"},
+            {"number": 2, "id": "performance_profile", "title": "Gradients, Anomalies and Workload Profile"},
             {"number": 3, "id": "wait_events", "title": "Wait Events"},
             {"number": 4, "id": "sql", "title": "SQL-Level Analysis"},
             {"number": 5, "id": "segments", "title": "Segments and Objects"},
             {"number": 6, "id": "latches", "title": "Latches and Internal Contention"},
             {"number": 7, "id": "io", "title": "I/O and Disk Assessment"},
             {"number": 8, "id": "undo_redo", "title": "UNDO, Redo and Load Profile"},
-            {"number": 9, "id": "gradients_anomalies", "title": "Gradient and Anomaly Synthesis"},
+            {"number": 9, "id": "gradients_anomalies", "title": "Hypothesis Review and Statistical Synthesis"},
             {"number": 10, "id": "parameters", "title": "Relevant Initialization Parameters"},
             {"number": 11, "id": "recommendations", "title": "Prioritized Actions and Mandatory Assessments"}
         ],
@@ -4884,6 +4884,14 @@ fn issue_actions_for_report(state: &AnalysisSession) -> Vec<IssueAction> {
         .collect()
 }
 
+// The stored category also validates archived tables; reader-facing order follows the investigation.
+fn displayed_table_chapter(table: &ReportTable) -> &str {
+    match table.kind.as_str() {
+        "gradients" | "anomalies" | "anomaly_clusters" => "performance_profile",
+        _ => &table.category,
+    }
+}
+
 fn report_section_index(state: &AnalysisSession) -> Value {
     let definitions = [
         (1, "executive_summary", None),
@@ -4919,7 +4927,7 @@ fn report_section_index(state: &AnalysisSession) -> Value {
                     "finding_ids": finding_ids,
                     "table_ids": category.map(|category| {
                         state.report_tables.values()
-                            .filter(|table| table.category == category)
+                            .filter(|table| displayed_table_chapter(table) == category)
                             .map(|table| table.table_id.as_str())
                             .collect::<Vec<_>>()
                     }).unwrap_or_default(),
@@ -5051,7 +5059,7 @@ fn render_markdown(
         (
             2,
             "performance_profile",
-            "Overall Performance Profile and DB Time Degradation",
+            "Gradients, Anomalies and Workload Profile",
         ),
         (3, "wait_events", "Wait Events"),
         (4, "sql", "SQL-Level Analysis"),
@@ -5059,7 +5067,11 @@ fn render_markdown(
         (6, "latches", "Latches and Internal Contention"),
         (7, "io", "I/O and Disk Assessment"),
         (8, "undo_redo", "UNDO, Redo and Load Profile"),
-        (9, "gradients_anomalies", "Gradient and Anomaly Synthesis"),
+        (
+            9,
+            "gradients_anomalies",
+            "Hypothesis Review and Statistical Synthesis",
+        ),
         (10, "parameters", "Relevant Initialization Parameters"),
     ];
     let mut hypotheses = Vec::new();
@@ -5073,8 +5085,17 @@ fn render_markdown(
         }
     }
     let mut hypothesis_citations = BTreeSet::new();
+    let signal_atlas = report_signal_adapter::build_signal_atlas(document, state, entity_links);
     for (number, category, title) in sections {
         output.push_str(&format!("## {number}. {}\n\n", l.text(title)));
+        if category == "performance_profile" {
+            if let Some(atlas) = &signal_atlas {
+                output.push_str(&crate::report_signals::render(
+                    atlas,
+                    state.config.include_evidence_appendix,
+                ));
+            }
+        }
         output.push_str(&report_audit_hypotheses::render_chapter(
             category,
             &hypotheses,
@@ -5082,17 +5103,7 @@ fn render_markdown(
             state.config.include_evidence_appendix,
             &mut hypothesis_citations,
         ));
-        let signal_atlas = if category == "gradients_anomalies" {
-            report_signal_adapter::build_signal_atlas(document, state, entity_links)
-        } else {
-            None
-        };
-        if let Some(atlas) = &signal_atlas {
-            output.push_str(&crate::report_signals::render(
-                atlas,
-                state.config.include_evidence_appendix,
-            ));
-        }
+        let has_synthesis_atlas = category == "gradients_anomalies" && signal_atlas.is_some();
         let mut findings = state
             .findings
             .values()
@@ -5152,7 +5163,7 @@ fn render_markdown(
                 }
             } else {
                 output.push_str(&format!("{}\n\n", finding.conclusion));
-                if signal_atlas.is_none() {
+                if !has_synthesis_atlas {
                     output.push_str(&render_finding_entity_shortcuts(
                         finding,
                         state,
@@ -5183,7 +5194,7 @@ fn render_markdown(
                     finding.evidence_limitations
                 ));
             }
-            if signal_atlas.is_some() || finding.reader_brief.is_some() {
+            if has_synthesis_atlas || finding.reader_brief.is_some() {
                 output.push_str(&format!(
                     "**{}:** {}\n\n**{}:** {}\n\n**{}:** {}\n\n",
                     l.text("Affected workload"),
@@ -5225,7 +5236,7 @@ fn render_markdown(
         let tables = state
             .report_tables
             .values()
-            .filter(|table| table.category == category)
+            .filter(|table| displayed_table_chapter(table) == category)
             .collect::<Vec<_>>();
         let mut by_kind = BTreeMap::<String, Vec<&ReportTable>>::new();
         for table in tables {
@@ -6366,11 +6377,27 @@ fn validate_stable_markdown_report(markdown: &str) -> std::result::Result<(), Va
     let mut missing = Vec::new();
     for heading in STABLE_MARKDOWN_HEADINGS {
         let (prefix, title) = heading.split_once(". ").expect("stable numbered heading");
-        let localized = format!("{prefix}. {}", ReportLanguage::new("pl").text(title));
-        if let Some(position) = lines
-            .iter()
-            .position(|line| line == heading || *line == localized)
-        {
+        let polish = ReportLanguage::new("pl");
+        let localized = format!("{prefix}. {}", polish.text(title));
+        // Archived finalizations can retain the earlier titles for these same chapter IDs.
+        let previous = match prefix {
+            "## 2" => Some("Overall Performance Profile and DB Time Degradation"),
+            "## 9" => Some("Gradient and Anomaly Synthesis"),
+            _ => None,
+        }
+        .map(|old| {
+            [
+                format!("{prefix}. {old}"),
+                format!("{prefix}. {}", polish.text(old)),
+            ]
+        });
+        if let Some(position) = lines.iter().position(|line| {
+            line == heading
+                || *line == localized
+                || previous
+                    .as_ref()
+                    .is_some_and(|titles| titles.iter().any(|title| title == line))
+        }) {
             positions.push(position);
         } else {
             missing.push(*heading);
@@ -10531,7 +10558,7 @@ mod tests {
         assert!(markdown.contains("### HIGH priority"));
         assert!(markdown.contains("**Why:**"));
         assert!(markdown.contains("**Success criterion:**"));
-        assert!(markdown.contains("## 9. Gradient and Anomaly Synthesis"));
+        assert!(markdown.contains("## 9. Hypothesis Review and Statistical Synthesis"));
         assert!(markdown.contains("## 5. Segments and Objects"));
         assert!(markdown.contains("## 10. Relevant Initialization Parameters"));
         assert!(!markdown.contains("No evidence-backed findings were recorded for this section."));
@@ -10618,7 +10645,7 @@ mod tests {
         assert!(html.contains("Report contents"));
         assert!(html.contains("class=\"report-title\""));
         assert!(html.contains("class=\"section-title\""));
-        assert!(html.contains("Overall Performance Profile and DB Time Degradation"));
+        assert!(html.contains("Gradients, Anomalies and Workload Profile"));
 
         let duplicate = runtime
             .convert_markdown_to_html_in_directory(

@@ -154,6 +154,62 @@ test('audit display follows the last corrected brief without inferring chronolog
   assert.equal(auditModel(state).question, 'Chapter question');
 });
 
+test('chapter navigation recalls multiple evicted views with measurements and notes but no raw envelopes', async () => {
+  const upstream = new AuditFixture(), c = attach(upstream); await c.select('project-1');
+  const raw = await c.query('get_metric_time_series');
+  c.state.views.find(v => v.id === raw.view_id).data.result.extra_raw = 'Only in the raw response';
+  c.note('Inspect this sample.', 'en'); c.selectPoint({ snap_id: 1 });
+  const second = c.present({ title: 'Second board', takeaway: 'Review the comparison.', panels: [
+    { type: 'flow', title: 'Possible mechanism', classification: 'hypothesis', source: 'Recorded sample',
+      steps: [{ title: 'Input', detail: 'More rows.' }, { title: 'Cost', detail: 'More reads.' }] }] });
+  await c.advanceAudit({ chapter_id: 'synthesis' });
+  for (let i = 0; i < 25; i++) await c.query('get_metric_time_series', {}, false);
+  assert.equal(c.state.views.some(v => [raw.view_id, second.view_id].includes(v.id)), false);
+  const calls = upstream.calls.length, audit = structuredClone(c.state.audit);
+  c.browseChapter('scope'); assert.equal(c.state.current, second.view_id);
+  assert.deepEqual(c.chapterViews().map(row => row.view_id), [raw.view_id, second.view_id]);
+  c.show(raw.view_id);
+  const restored = c.state.views.find(v => v.id === raw.view_id);
+  assert.equal(restored.presentation.panels[0].series[0].points[0].value, 2);
+  assert.equal(restored.data.evidence_id, raw.evidence_id);
+  assert.equal(restored.data.result, undefined); assert.equal(c.state.note, 'Inspect this sample.');
+  assert.deepEqual(c.state.selection, {}); c.selectPoint({ snap_id: 1 });
+  assert.deepEqual(c.setLanguage({ language: 'pl' }).pending.map(f => f.path), ['note']);
+  assert.equal(c.state.views.length <= 20, true); assert.deepEqual(c.state.audit, audit);
+  assert.equal(upstream.calls.length, calls);
+  await c.select('project-2'); assert.deepEqual(c.chapterViews(), []);
+  assert.throws(() => c.show(raw.view_id), /Unknown view/);
+});
+
+test('attaching a revisited topic corrects the board chapter independently of active audit progress', async () => {
+  const c = attach(new AuditFixture()); await c.select('project-1');
+  await c.advanceAudit({ chapter_id: 'synthesis' });
+  const v = await c.query('get_metric_time_series');
+  const saved = await c.recordBrief({ ...brief('scope'), view_id: v.view_id });
+  assert.equal(c.viewedChapter(), 'scope'); assert.equal(saved.current_chapter_id, 'synthesis');
+  assert.deepEqual(c.chapterViews().map(row => row.view_id), [v.view_id]);
+  c.browseChapter('synthesis'); assert.deepEqual(c.chapterViews(), []);
+  c.browseChapter('scope'); assert.equal(c.state.current, v.view_id);
+});
+
+test('context supplies exact displayed measurements on request and an earlier saved brief provides its own question', async t => {
+  const app = await createServer(); t.after(() => app.close());
+  const c = app.companion; c.client = new AuditFixture(); await c.select('project-1');
+  const first = await c.query('get_metric_time_series');
+  const saved = await c.recordBrief({ ...brief(), question: 'First question', next_step: 'First check', view_id: first.view_id });
+  await c.recordBrief({ ...brief(), question: 'Later question', next_step: 'Later check' });
+  await c.advanceAudit({ chapter_id: 'synthesis' });
+  for (let i = 0; i < 25; i++) await c.query('get_metric_time_series', {}, false);
+  c.browseChapter('scope', saved.briefs[0].brief_id);
+  const model = auditModel(c.state); assert.equal(model.question, 'First question'); assert.equal(model.nextStep, 'First check');
+  const compact = await app.call('companion_context');
+  assert.ok(!('displayed_board' in compact)); assert.equal(compact.viewed_brief_id, saved.briefs[0].brief_id);
+  const { displayed_board: board } = await app.call('companion_context', { include_displayed_board: true });
+  assert.equal(board.panels[0].source, first.evidence_id);
+  assert.equal(board.panels[0].series[0].points[0].value, 2);
+  assert.equal(board.view_id, first.view_id); assert.equal(board.title, 'DB Time(s)');
+});
+
 test('Companion exposes the hypothesis fields and shows only the selected project after resume', async t => {
   const app = await createServer(); t.after(() => app.close());
   const fixture = new AuditFixture(); app.companion.client = fixture; app.companion.update({ mode: 'live' });

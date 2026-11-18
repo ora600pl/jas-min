@@ -38,6 +38,77 @@ fn finding(id: &str, category: &str, priority: &str) -> ReportFinding {
 }
 
 #[test]
+fn opening_contains_the_atlas_and_dated_measurements_before_waits() {
+    let mut state =
+        AnalysisSession::new(json!({}), ReportConfig::default(), vec!["project-1".into()]);
+    for (kind, cells) in [
+        (
+            "gradients",
+            vec![
+                ("analysis_family", "db_cpu_instance_stats"),
+                ("target_metric", "DB CPU"),
+                ("contributor", "logical reads"),
+                ("classification", "Systematic"),
+                ("interpretation", "Reads increased in the incident."),
+                ("action", "Compare reads per execution."),
+            ],
+        ),
+        (
+            "anomalies",
+            vec![
+                ("metric", "Physical reads"),
+                ("time_scope", "2026-08-01 10:00"),
+                ("observed_value", "22/s"),
+            ],
+        ),
+        (
+            "anomaly_clusters",
+            vec![
+                ("cluster_id", "10"),
+                ("time_scope", "2026-08-01 10:00"),
+                ("members", "Physical reads; I/O requests"),
+                ("common_context", "Increased read volume."),
+            ],
+        ),
+    ] {
+        let mut cells: BTreeMap<String, String> = cells
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        cells.insert("project_id".into(), "project-1".into());
+        state.report_tables.insert(
+            kind.into(),
+            ReportTable {
+                table_id: kind.into(),
+                kind: kind.into(),
+                category: "gradients_anomalies".into(),
+                title: kind.into(),
+                rows: vec![ReportTableRow {
+                    cells,
+                    evidence_refs: vec![SEED_EVIDENCE_ID.into()],
+                }],
+            },
+        );
+    }
+    let rendered = render_markdown(&json!({}), &state, &ReportEntityLinks::default());
+    let opening = rendered
+        .split("## 2. ")
+        .nth(1)
+        .unwrap()
+        .split("## 3. ")
+        .next()
+        .unwrap();
+    assert!(opening.contains("class=\"signal-atlas\""));
+    assert!(opening.contains("logical reads"));
+    assert!(opening.contains("2026-08-01 10:00"));
+    assert!(opening.contains("Physical reads"));
+    assert_eq!(rendered.matches("class=\"signal-atlas\"").count(), 1);
+    let index = report_section_index(&state);
+    assert_eq!(index[1]["table_ids"].as_array().unwrap().len(), 3);
+    assert_eq!(index[8]["table_ids"], json!([]));
+}
+
+#[test]
 fn decision_queue_ranks_actions_and_keeps_evidence_and_limitations() {
     let mut state = AnalysisSession::new(json!({}), ReportConfig::default(), vec![]);
     state.config.issue_grouping = "legacy".into();

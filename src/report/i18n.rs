@@ -17,6 +17,12 @@ impl ReportLanguage {
         match english {
             "Oracle Performance Analysis" => "Analiza wydajności Oracle",
             "Executive Summary" => "Najważniejsze wnioski",
+            "Gradients, Anomalies and Workload Profile" => {
+                "Gradienty, anomalie i profil obciążenia"
+            }
+            "Hypothesis Review and Statistical Synthesis" => {
+                "Weryfikacja hipotez i synteza statystyczna"
+            }
             "Overall Performance Profile and DB Time Degradation" => {
                 "Profil obciążenia i pogorszenie DB Time"
             }

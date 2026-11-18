@@ -504,11 +504,11 @@ plans in large attachments.
 
 ### MCP workflow tools
 
-Schema `2026-09-09.1` renders a [source-backed analytical atlas](report-signal-atlas.md)
-in section 9. Record the structured cross-signal synthesis before its concise
-finding; validated numeric tables satisfy the exact-signal requirement without
-requiring duplicate numbers in the narrative. JSON export includes the derived
-`signal_atlas`. The full evidence and readiness contract remain in force.
+The first analytical section renders a [source-backed analytical atlas](report-signal-atlas.md)
+alongside the measured workload. Record the structured cross-signal synthesis
+before its concise finding. Section 9 uses those observations and the later
+chapter checks to explain the verdicts. JSON export includes the derived
+`signal_atlas`.
 
 | Tool | State effect |
 |---|---|
@@ -621,8 +621,9 @@ A robust investigation normally follows this order:
 2. Call `start_performance_analysis` with the intended `project_ids`; preserve
    which project is the baseline and which is the candidate in every finding.
 3. After agreeing on the symptom, instance and period, compare each project's
-   DB Time and DB CPU gradients with its absolute workload. Use
-   `get_precomputed_analysis(section="full_gradients")`,
+   DB Time and DB CPU gradients and observed anomaly windows with its absolute
+   workload. Retrieve `full_gradients`, `load_profile_anomalies` and
+   `anomaly_clusters` with `get_precomputed_analysis`. Use
    `get_database_load_summary` and the scoped baseline and incident snapshots.
    In section 2 record two or three testable explanations with stable IDs,
    the comparison window and a measurement that distinguishes each one.
@@ -744,14 +745,14 @@ The default configuration is:
 The server owns the stable section order:
 
 1. Executive Summary
-2. Overall Performance Profile and DB Time Degradation
+2. Gradients, Anomalies and Workload Profile
 3. Wait Events
 4. SQL-Level Analysis
 5. Segments and Objects
 6. Latches and Internal Contention
 7. I/O and Disk Assessment
 8. UNDO, Redo and Load Profile
-9. Gradient and Anomaly Synthesis
+9. Hypothesis Review and Statistical Synthesis
 10. Relevant Initialization Parameters
 11. Prioritized Actions and Mandatory Assessments
 

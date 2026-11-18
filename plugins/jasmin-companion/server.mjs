@@ -1,4 +1,5 @@
 import http from 'node:http';
+import metadata from './package.json' with { type: 'json' };
 import { readFile, realpath } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +37,9 @@ export const TOOLS = [
   definition('companion_tools', 'Read schemas of available read-only JAS-MIN evidence tools.'),
   definition('companion_query', 'Collect evidence from JAS-MIN. Supported results become charts; an active presentation stays visible. Use companion_present to compose or replace the analytical board. Read companion_tools first.', { tool: str, arguments: { type: 'object' }, display: { type: 'boolean', description: 'False collects evidence without changing the visible view.' } }, ['tool']),
   definition('companion_present', 'Compose the side panel to support your explanation: related charts, baseline comparisons, tables and labelled mechanism flows. Match all authored copy to the current conversation language; pass language. Preserve source identifiers. Use source-verified numbers, units and instance identity; missing values are null. The board stays visible during subsequent queries. For line panels x is a numeric timestamp or ordered index, points strictly increasing per series. Separate different units into separate panels.', {...presentationProperties, language}, ['title', 'takeaway']),
-  definition('companion_context', 'Read current project, view and snapshot/SQL selection made by the user.'),
+  definition('companion_context', 'Read the project, viewed_chapter_id, viewed_brief_id, displayed view and snapshot/SQL selection. Use the viewed chapter for follow-up questions. audit.current_chapter_id tracks the saved audit progress.', {
+    include_displayed_board: { type: 'boolean', description: 'Include the localized displayed board, measured points or rows, provenance and note for a follow-up about the selected view. Default false.' },
+  }),
   definition('companion_show', 'Display a previously returned view_id from this chat.', { view_id: str }, ['view_id']),
   definition('companion_note', 'Display your short interpretation next to the evidence. Write the note in the current conversation language and pass language. Preserve source identifiers. Does not synthesize audio.', { text: { type: 'string', description: 'Concise panel interpretation in the dialogue language.', maxLength: 2000 }, language }, ['text']),
   definition('companion_start_audit', 'Start or continue a guided chapter-by-chapter audit in the selected analysis. Discuss one question at a time; this does not authorize a report.'),
@@ -75,14 +78,20 @@ export async function createServer({ port = 0 } = {}) {
       const path = new URL(req.url, origin).pathname;
       if (!path.startsWith(`/${token}/`)) return reply(404, { error: 'Unknown panel' });
       const route = path.slice(token.length + 2);
-      if (req.method === 'GET' && route === 'state') return reply(200, companion.state);
-      if (req.method === 'POST' && ['selection', 'show'].includes(route)) {
+      if (req.method === 'GET' && route === 'state') return reply(200, { ...companion.state, chapter_views: companion.chapterViews() });
+      if (req.method === 'POST' && ['selection', 'show', 'chapter'].includes(route)) {
         if (req.headers['x-companion-client'] !== 'panel') return reply(403, { error: 'Missing client header' });
         let body = '';
         for await (const part of req) { body += part; if (body.length > 4096) { reply(413, { error: 'Request too large' }); return; } }
         const args = JSON.parse(body);
-        if (route === 'selection') companion.selectPoint(args);
-        else companion.show(args.view_id);
+        await enqueue(() => {
+          if (route === 'selection') companion.selectPoint(args);
+          else if (route === 'show') companion.show(args.view_id);
+          else {
+            if (args.analysis_id !== companion.analysis || args.project_id !== companion.state.project) throw new Error('The panel switched to another audit or project.');
+            companion.browseChapter(args.chapter_id, args.brief_id);
+          }
+        });
         return reply(200, { ok: true });
       }
       if (req.method !== 'GET' || !files.has(route)) return reply(404, { error: 'Not found' });
@@ -114,12 +123,17 @@ export async function createServer({ port = 0 } = {}) {
         case 'companion_tools': return await companion.tools();
         case 'companion_query': return await companion.query(args.tool, args.arguments, args.display);
         case 'companion_present': return companion.present(args);
-        case 'companion_context':
+        case 'companion_context': {
           if (companion.state.audit) await companion.auditStatus();
-          return { project_id: companion.state.project, analysis_id: companion.analysis, mode: companion.state.mode, audit_support: companion.state.audit_support, audit: companion.state.audit, selection: companion.state.selection, current_view_id: companion.state.current, ...companion.languageContext(),
-            views: companion.state.views.map(v => ({ view_id: v.id, tool: v.tool, args: v.args, evidence_id: v.data.evidence_id, title: v.presentation?.title, presentation: !!v.presentation })) };
+          const view = companion.state.views.find(v => v.id === companion.state.current);
+          return { project_id: companion.state.project, analysis_id: companion.analysis, mode: companion.state.mode, audit_support: companion.state.audit_support, audit: companion.state.audit,
+            viewed_chapter_id: companion.viewedChapter(), viewed_brief_id: view?.brief_id ?? null, chapter_views: companion.chapterViews(),
+            ...(args.include_displayed_board ? { displayed_board: companion.displayedBoard() } : {}),
+            selection: companion.state.selection, current_view_id: companion.state.current, ...companion.languageContext(),
+            views: companion.state.views.map(v => ({ view_id: v.id, chapter_id: v.chapter_id, tool: v.tool, args: v.args, evidence_id: v.data.evidence_id, title: v.presentation?.title, presentation: !!v.presentation })) };
+        }
         case 'companion_start_audit': return await companion.startAudit();
-        case 'companion_audit_status': return await companion.auditStatus();
+        case 'companion_audit_status': return { ...await companion.auditStatus(), viewed_chapter_id: companion.viewedChapter() };
         case 'companion_record_brief': return await companion.recordBrief(args);
         case 'companion_advance_audit': return await companion.advanceAudit(args);
         case 'companion_authorize_report': return await companion.authorizeReport(args);
@@ -133,10 +147,11 @@ export async function createServer({ port = 0 } = {}) {
       }
     } finally { companion.update({ status: 'idle' }); }
   }
-  function call(name, args = {}) {
-    const result = queue.then(() => execute(name, args));
+  function enqueue(operation) {
+    const result = queue.then(operation);
     queue = result.catch(() => {}); return result;
   }
+  function call(name, args = {}) { return enqueue(() => execute(name, args)); }
   return { panel_url, companion, call, async close() {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
@@ -159,7 +174,7 @@ export async function serveStdio(app) {
     const response = { jsonrpc: '2.0', id: request.id };
     try {
       switch (request.method) {
-        case 'initialize': response.result = { protocolVersion: ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'].includes(request.params?.protocolVersion) ? request.params.protocolVersion : '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'jasmin-companion', version: '0.1.0' } }; break;
+        case 'initialize': response.result = { protocolVersion: ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'].includes(request.params?.protocolVersion) ? request.params.protocolVersion : '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'jasmin-companion', version: metadata.version } }; break;
         case 'ping': response.result = {}; break;
         case 'tools/list': response.result = { tools: TOOLS }; break;
         case 'tools/call': {

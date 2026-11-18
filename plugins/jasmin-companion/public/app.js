@@ -6,7 +6,7 @@ const t = text => translate(language, text);
 async function action(route, args) {
   try {
     const r = await fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Companion-Client': 'panel' }, body: JSON.stringify(args) });
-    const data = await r.json(); if (!r.ok) throw new Error(data.error); actionError = ''; revision = -1;
+    const data = await r.json(); if (!r.ok) throw new Error(data.error); actionError = ''; await refresh();
   } catch (e) { actionError = e.message; $('error').textContent = actionError ? `${t('The action could not be completed.')} ${actionError}` : ''; }
 }
 function render(state) {
@@ -19,8 +19,14 @@ function render(state) {
   $('activity').textContent = state.status === 'working' ? t('Checking the evidence…') : t('Ready when you are');
   $('mode').textContent = state.mode === 'demo' ? t('DEMO · SYNTHETIC DATA') : state.mode === 'live' ? 'JAS-MIN · MCP' : t('WAITING FOR CONVERSATION');
   $('project').textContent = state.project || '';
-  const auditKey = `${state.analysis_id}:${state.project}:${state.audit?.revision}:${state.audit?.report_authorized}:${state.audit_support}:${language}`;
-  if (renderedAudit !== auditKey) { renderAudit($('audit'), state); renderedAudit = auditKey; }
+  const auditKey = JSON.stringify([state.analysis_id, state.project, state.audit?.revision, state.audit?.current_chapter_id,
+    state.viewed_chapter_id, state.current, state.chapter_views, state.audit?.report_authorized, state.audit_support, language]);
+  if (renderedAudit !== auditKey) {
+    renderAudit($('audit'), state,
+      (chapter_id, brief_id) => action('chapter', { analysis_id: state.analysis_id, project_id: state.project, chapter_id, brief_id }),
+      view_id => action('show', { view_id }));
+    renderedAudit = auditKey;
+  }
   const sourceView = state.views.find(v => v.id === state.current), view = sourceView && localizedView(sourceView, language), selection = state.selection;
   $('selection').textContent = selection.snap_id != null ? `${selection.instance ? selection.instance+' · ' : ''}${selection.sql_id ? 'SQL '+selection.sql_id+' · ' : ''}Snapshot #${selection.snap_id}` : t('Select a point to focus the conversation');
   $('history').replaceChildren();
@@ -46,12 +52,15 @@ function render(state) {
   }
   $('note').textContent = view?.note ?? state.note;
 }
-async function poll() {
-  try {
+async function refresh() {
     const response = await fetch('state'); if (!response.ok) throw new Error(t('Panel unavailable. Reopen it with companion_open.'));
     const state = await response.json();
-    if (state.revision !== revision) { render(state); revision = state.revision; }
+    if (state.revision > revision) { render(state); revision = state.revision; }
     $('error').textContent = actionError ? `${t('The action could not be completed.')} ${actionError}` : '';
+}
+async function poll() {
+  try {
+    await refresh();
   } catch (e) { $('error').textContent = e.message; $('activity').textContent = t('Panel connection lost'); }
   setTimeout(poll, 1000);
 }

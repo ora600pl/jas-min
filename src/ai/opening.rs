@@ -1,5 +1,6 @@
 use crate::awr::AWRSCollection;
 use crate::measurements::available;
+use crate::reasonings::{LoadProfileAnomalies, ReportForAI};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -78,6 +79,39 @@ pub(super) fn workload(collection: &AWRSCollection) -> Value {
     })
 }
 
+/// Keep original measurements and selected windows together throughout both AI sessions.
+pub(super) fn seed(report: &ReportForAI, collection: &AWRSCollection) -> Value {
+    let mut seed = crate::local_agent::build_case_seed(report);
+    seed["absolute_workload"] = workload(collection);
+    let mut anomalies: Vec<_> = report.load_profile_anomalies.iter().collect();
+    anomalies.sort_by(|a, b| LoadProfileAnomalies::compare_severity(a, b));
+    anomalies.truncate(3);
+    let mut clusters: Vec<_> = report.anomaly_clusters.iter().collect();
+    clusters.sort_by_key(|c| {
+        (
+            std::cmp::Reverse(c.number_of_anomalies),
+            &c.begin_snap_date,
+            c.begin_snap_id,
+        )
+    });
+    let windows: Vec<_> = clusters
+        .into_iter()
+        .take(3)
+        .map(|c| {
+            let mut members: Vec<_> = c.anomalies_detected.iter().collect();
+            members.sort_by_key(|m| (&m.area_of_anomaly, &m.statistic_name));
+            members.truncate(3);
+            json!({"begin_snap_id":c.begin_snap_id,"begin_snap_date":c.begin_snap_date,
+               "number_of_anomalies":c.number_of_anomalies,"sample_members":members})
+        })
+        .collect();
+    seed["anomaly_windows"] = json!({
+        "load_profile_anomalies_total": report.load_profile_anomalies.len(), "highest_mad": anomalies,
+        "anomaly_clusters_total": report.anomaly_clusters.len(), "largest_recorded_clusters": windows
+    });
+    seed
+}
+
 pub(super) fn identify(mut opening: Value) -> Result<Value, String> {
     let gap = opening["coverage_gap"]
         .as_str()
@@ -135,7 +169,7 @@ pub(super) fn schema() -> Value {
 }
 
 pub(super) fn instructions(language: &str) -> String {
-    format!("Write in {language}. Begin an Oracle investigation after establishing its scope. Compare the measured workload with DB Time and DB CPU gradients. Consider expensive steady work, typical changes and peak signals. Give two or three distinct, falsifiable explanations. For each name the actual gradient observation and the absolute measurement with units, the comparison window and a check that could disprove it. State the source boundary when a timeline or comparison is missing. If fewer hypotheses can be formed, explain why in coverage_gap. Otherwise leave coverage_gap empty. Use only the supplied evidence. Return one JSON object with a hypotheses array and a coverage_gap string. Each hypothesis has exactly five text fields: statement, gradient_signal, workload_profile, comparison_window, test. Keep each statement short for use as a report heading.")
+    format!("Write in {language}. Begin an Oracle investigation after establishing its scope. Compare the measured workload with DB Time and DB CPU gradients and locate the supplied MAD anomalies and clusters by timestamp and snapshot. Use comparable windows and distinguish empty detector output from measured baseline activity. Consider expensive steady work, typical changes and peak signals. Give two or three distinct, falsifiable explanations. For each name the actual gradient observation and the absolute measurement with units, the comparison window and a check that could disprove it. State the source boundary when a timeline or comparison is missing. If fewer hypotheses can be formed, explain why in coverage_gap. Otherwise leave coverage_gap empty. Use only the supplied evidence. Return one JSON object with a hypotheses array and a coverage_gap string. Each hypothesis has exactly five text fields: statement, gradient_signal, workload_profile, comparison_window, test. Keep each statement short for use as a report heading.")
 }
 
 pub(super) fn evidence(seed: &Value) -> Value {
@@ -166,7 +200,8 @@ pub(super) fn evidence(seed: &Value) -> Value {
         .collect();
     json!({
         "absolute_workload": seed["absolute_workload"], "gradients": gradients,
-        "db_time_degradation": seed["db_time_degradation"], "performance_peaks": peaks
+        "db_time_degradation": seed["db_time_degradation"], "performance_peaks": peaks,
+        "anomaly_windows": seed["anomaly_windows"]
     })
 }
 

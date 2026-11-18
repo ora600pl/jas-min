@@ -94,6 +94,43 @@ fn contains_gradient_rows(record: &EvidenceRecord) -> bool {
         })
 }
 
+/// Newly authored openings use the available temporal evidence; archived briefs retain
+/// the evidence contract that was in effect when their revisions were recorded.
+pub(super) fn validate_opening_windows(
+    brief: &AuditBrief,
+    state: &AnalysisSession,
+    project: &ProjectData,
+) -> Result<(), Value> {
+    if !has_opening(brief) {
+        return Ok(());
+    }
+    for (section, available) in [
+        (
+            "load_profile_anomalies",
+            !project.report.load_profile_anomalies.is_empty(),
+        ),
+        (
+            "anomaly_clusters",
+            !project.report.anomaly_clusters.is_empty(),
+        ),
+    ] {
+        if available
+            && !brief.evidence_refs.iter().any(|id| {
+                let record = &state.evidence[id];
+                record.project_id.as_deref() == Some(&brief.project_id)
+                    && record.tool_name == "get_precomputed_analysis"
+                    && record.arguments["section"] == section
+                    && record.result["data"]
+                        .as_array()
+                        .is_some_and(|rows| !rows.is_empty())
+            })
+        {
+            return Err(invalid(&format!("Review the measured windows and cite this project's nonempty get_precomputed_analysis({section}) result in the opening brief.")));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn validate_content(
     brief: &AuditBrief,
     state: &AnalysisSession,

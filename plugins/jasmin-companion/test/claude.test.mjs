@@ -13,7 +13,7 @@ test('Claude manifest launches a relocated plugin and keeps panel evidence in it
   const installed = join(scratch, 'plugin cache with spaces');
   const project = join(scratch, 'unrelated project');
   await mkdir(project);
-  for (const file of ['.claude-plugin', 'server.mjs', 'companion.mjs', 'demo.mjs', 'mcp-client.mjs', 'presentation.mjs', 'public', 'assets', 'skills']) {
+  for (const file of ['.claude-plugin', 'package.json', 'server.mjs', 'companion.mjs', 'demo.mjs', 'mcp-client.mjs', 'presentation.mjs', 'public', 'assets', 'skills']) {
     await cp(new URL('../' + file, import.meta.url), join(installed, file), { recursive: true });
   }
   const linked = join(scratch, 'linked plugin');

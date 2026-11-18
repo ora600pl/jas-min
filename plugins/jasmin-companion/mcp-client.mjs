@@ -1,3 +1,4 @@
+import manifest from './package.json' with { type: 'json' };
 // Minimal Streamable HTTP client: JSON and SSE, including stateful sessions.
 export class McpClient {
   constructor(url) {
@@ -55,7 +56,7 @@ export class McpClient {
   }
   async initialize() {
     const result = await this.rpc('initialize', {
-      protocolVersion: this.protocol, capabilities: {}, clientInfo: { name: 'jasmin-companion', version: '0.1.0' },
+      protocolVersion: this.protocol, capabilities: {}, clientInfo: { name: 'jasmin-companion', version: manifest.version },
     });
     this.protocol = result.protocolVersion;
     await this.rpc('notifications/initialized', {}, true);
