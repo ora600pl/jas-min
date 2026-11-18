@@ -78,8 +78,19 @@ pub(crate) struct TopStats {
     pub(crate) sql_elapsed_time_anomalies_mad: HashMap<String, Vec<(String, f64)>>,
 }
 
+pub(crate) fn restrict_to_report_scope(
+    collection: &mut AWRSCollection,
+    snap_range: &str,
+) -> Result<(), String> {
+    let (begin, end) = parse_snap_range(snap_range)?;
+    collection.awrs.retain(|snapshot| {
+        snapshot.snap_info.begin_snap_id >= begin && snapshot.snap_info.end_snap_id <= end
+    });
+    Ok(())
+}
+
 // Check if snap_range argument is passed correctly
-fn parse_snap_range(snap_range: &str) -> Result<(u64, u64), String> {
+pub(crate) fn parse_snap_range(snap_range: &str) -> Result<(u64, u64), String> {
     let parts: Vec<&str> = snap_range.split('-').collect();
     if parts.len() != 2 {
         return Err(format!(

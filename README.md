@@ -262,9 +262,9 @@ Clients negotiating MCP `2026-07-28` or newer receive the required `ttlMs` and `
 
 See [JAS-MIN MCP Server](docs/mcp-server.md) for client lifecycle, tool groups, evidence rules, quality gates, and the report contract.
 
-### One-Shot Batch Analysis
+### Batch Analysis
 
-For `google`, `openai`, and `openrouter`, JAS-MIN can send the compact `ReportForAI` structure plus Load Profile statistics to the selected model in one call. The report payload is serialized as TOON/JSON-like text to keep token usage lower than pretty JSON while preserving structure.
+For `google`, `openai`, and `openrouter`, JAS-MIN first asks the selected model to compare gradients with the measured workload in the selected scope and identify two or three testable hypotheses. The report request carries the opening hypotheses into the investigation. Section 2 shows the original hypotheses, the relevant diagnostic chapters check them and section 9 explains which were confirmed, rejected or remain unresolved. The report payload uses the compact `ReportForAI` structure and Load Profile statistics.
 
 Typical output files are named after the text log and model, for example:
 
@@ -280,11 +280,11 @@ The generated Markdown is converted to HTML with links back to JAS-MIN detail pa
 
 The `local` backend uses a tool-driven workflow designed for LM Studio:
 
-1. Session 1 receives only a compact seed containing gradient analyses, DB Time degradation, and DB CPU / DB Time ratios for detected peaks.
+1. Session 1 opens with a planning request that compares DB Time and DB CPU gradients with measured workload in the selected snapshot range. It records two or three testable hypotheses, or the specific evidence gap. The investigator receives the original hypotheses alongside the compact gradient, degradation and peak data.
 2. The investigator receives a small triage tool catalog first. Later rounds expose deeper timeline, plan, parameter, segment, latch, and attachment tools only when there is room to use them. Duplicate calls in one session return a short reference instead of repeating a large cached result.
 3. When `reasonings.txt` is available, relevant §x.y sections are retrieved for detected symptoms. They remain methodology rather than database evidence.
 4. The investigator submits a compact checkpoint. Qwen uses JSON Schema plus LM Studio's `reasoning_content` channel because live tests showed its forced checkpoint tool call repeatedly exhausted 4096 tokens; other models can use the dedicated checkpoint tool with the structured fallback.
-5. Session 2 starts with a fresh context containing the original seed and checkpoint. A skeptical reviewer re-queries evidence and attempts to falsify the first session's findings.
+5. Session 2 starts with a fresh context containing the original seed and checkpoint, including the opening hypotheses. A skeptical reviewer re-queries evidence and reports the outcome of each hypothesis in section 9 with the measurements or gap that determined it.
 6. Before synthesis, deterministic coverage states distinguish inspected, available-but-not-inspected, unavailable, and unknown data.
 7. Checkpoint and report synthesis use a fresh compact case file assembled from the evidence store rather than the verbose tool transcript. Full tool results remain in the audit JSON while each model-visible evidence item receives a bounded share of the closing context.
 8. The reviewer emits Markdown directly. If LM Studio returns `finish_reason=length`, JAS-MIN continues the report; it refuses to publish after exhausted continuation attempts rather than writing a truncated file. JAS-MIN also writes checkpoint, evidence, diagnostic-guidance, and token-usage audit files.

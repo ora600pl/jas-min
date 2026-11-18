@@ -154,6 +154,29 @@ test('audit display follows the last corrected brief without inferring chronolog
   assert.equal(auditModel(state).question, 'Chapter question');
 });
 
+test('Companion exposes the hypothesis fields and shows only the selected project after resume', async t => {
+  const app = await createServer(); t.after(() => app.close());
+  const fixture = new AuditFixture(); app.companion.client = fixture; app.companion.update({ mode: 'live' });
+  const selected = await app.call('companion_select_project', { project_id: 'project-1' });
+  const audit = fixture.sessions.get(selected.analysis_id);
+  audit.chapters.push({ chapter_id: 'performance_profile', title: 'Performance profile' });
+  const hypotheses = ['H1', 'H2'].map(id => ({ id, statement: `Explanation ${id}`, gradient_signal: 'More reads',
+    workload_profile: 'Read time per second', comparison_window: 'Incident and baseline', test: 'Compare reads per execution' }));
+  await app.call('companion_record_brief', { ...brief('performance_profile'), opening_hypotheses: hypotheses });
+  assert.deepEqual(fixture.calls.find(c => c.name === 'record_audit_brief').args.opening_hypotheses, hypotheses);
+
+  audit.project_ids.push('project-2');
+  audit.hypotheses = [{ project_id: 'project-1', opening_hypotheses: hypotheses },
+    { project_id: 'project-2', hypothesis_gap: 'Missing load profile.' }];
+  await app.call('companion_resume_audit', { analysis_id: selected.analysis_id, project_id: 'project-2' });
+  const model = auditModel(app.companion.state);
+  assert.equal(model.hypotheses.hypothesis_gap, 'Missing load profile.');
+  assert.deepEqual(model.briefs, []);
+  const { properties } = TOOLS.find(t => t.name === 'companion_record_brief').inputSchema;
+  assert.deepEqual(properties.hypothesis_outcomes.items.properties.status.enum, ['confirmed', 'rejected', 'unresolved']);
+  assert.ok(properties.hypothesis_checks.items.required.includes('evidence_refs'));
+});
+
 test('checkpoint transport accepts retained evidence beyond ordinary response limits', async t => {
   const payload = 'x'.repeat(9 * 1024 * 1024);
   const server = http.createServer(async (req, res) => {

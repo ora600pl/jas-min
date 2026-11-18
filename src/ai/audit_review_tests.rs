@@ -26,6 +26,7 @@ fn brief(project: &str, chapter: &str, evidence_refs: Vec<String>) -> AuditBrief
         open_questions: vec!["Does the cost per completed task change?".into()],
         evidence_refs,
         visual: None,
+        ..Default::default()
     }
 }
 
@@ -217,6 +218,9 @@ fn save_chapters(runtime: &AnalysisRuntime, id: &str, project: &str) {
             .unwrap()
             .remove("updated_at_revision");
         arguments["analysis_id"] = json!(id);
+        if chapter.0 == "performance_profile" {
+            arguments["hypothesis_gap"] = json!("This capture contains no fitted gradient rows.");
+        }
         call(runtime, "record_audit_brief", arguments).unwrap();
     }
 }

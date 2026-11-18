@@ -1,3 +1,4 @@
+use super::opening;
 use crate::ai_tools::*;
 use crate::awr::{
     load_awrs_collection_from_json_str, AWRSCollection, HostCPU, IOStats, LoadProfile, SQLCPUTime,
@@ -31,6 +32,82 @@ fn get_openai_url() -> String {
     env::var("OPENAI_URL").unwrap_or_else(|_| "https://api.openai.com/".to_string())
 }
 
+struct HostedOpening {
+    review: Value,
+    handoff: String,
+}
+
+async fn start_hosted_review(
+    client: &Client,
+    vendor_model_lang: &[&str],
+    api_key: &str,
+    response_file: &str,
+    analysis: &ReportForAI,
+    collection: &AWRSCollection,
+) -> Result<HostedOpening, Box<dyn std::error::Error>> {
+    let mut seed = crate::local_agent::build_case_seed(analysis);
+    seed["absolute_workload"] = opening::workload(collection);
+    let evidence = opening::evidence(&seed);
+    let model = vendor_model_lang[1];
+    let mut instructions = opening::instructions(vendor_model_lang[2]);
+    for attempt in 0..2 {
+        let input = format!("{instructions}\n\nSCOPED MEASUREMENTS\n{evidence}");
+        let content = match vendor_model_lang[0] {
+            "google" => {
+                let payload = json!({
+                    "contents":[{"role":"user","parts":[{"text":input}]}],
+                    "generationConfig":{"responseMimeType":"application/json"}
+                });
+                let response: Value = client
+                    .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"))
+                    .header("x-goog-api-key", api_key).json(&payload)
+                    .send().await?.error_for_status()?.json().await?;
+                extract_gemini_text(&response)
+            }
+            "openai" => {
+                let response: Value = client
+                    .post(format!("{}v1/responses", get_openai_url()))
+                    .bearer_auth(api_key)
+                    .json(&json!({"model":model,"input":[{"role":"user",
+                        "content":[{"type":"input_text","text":input}]}]}))
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                extract_openai_responses_text(&response)
+            }
+            "openrouter" => {
+                let payload = json!({"model":model,"messages":[{"role":"user","content":input}]});
+                let response = request_openrouter_json(
+                    client,
+                    api_key,
+                    &payload,
+                    response_file,
+                    "opening review",
+                )
+                .await?;
+                extract_chat_message_content(&response["choices"][0]["message"])
+            }
+            provider => return Err(format!("Unknown report provider {provider}").into()),
+        };
+        let result = crate::local_agent::parse_json_content(&content)
+            .map_err(|error| error.to_string())
+            .and_then(opening::identify);
+        match result {
+            Ok(review) => {
+                let handoff = format!("SCOPED OPENING MEASUREMENTS\n{evidence}\n\nORIGINAL WORKING HYPOTHESES\n{review}\nUse each original statement verbatim in its section 2 heading with its assigned identity. Test it in the relevant later chapters and explain its outcome in section 9.");
+                return Ok(HostedOpening { review, handoff });
+            }
+            Err(error) if attempt == 0 => {
+                instructions.push_str(&format!("\nCorrect the previous JSON response. {error}."));
+            }
+            Err(error) => return Err(format!("Invalid opening hypothesis review: {error}").into()),
+        }
+    }
+    unreachable!()
+}
+
 fn stem_from_logfile(logfile_name: &str) -> &str {
     logfile_name.split('.').next().unwrap_or(logfile_name)
 }
@@ -40,13 +117,25 @@ fn load_profile_for_stem(stem: &str) -> String {
     fs::read_to_string(&json_path).expect(&format!("Can't open file {}", json_path))
 }
 
-fn load_tools_collection(args: &crate::Args) -> AWRSCollection {
-    let mut json_file = args.json_file().to_string();
-    if json_file.is_empty() {
-        json_file = format!("{}.json", args.directory());
-    }
-    let s_json = fs::read_to_string(&json_file).expect(&format!("Can't read {}", json_file));
-    load_awrs_collection_from_json_str(&s_json).expect("Wrong AWRSCollection JSON")
+pub(super) fn load_scoped_collection(
+    args: &crate::Args,
+) -> Result<AWRSCollection, Box<dyn std::error::Error>> {
+    let path = if !args.json_file().is_empty() {
+        args.json_file().to_string()
+    } else if !args.outfile.is_empty() {
+        args.outfile.clone()
+    } else {
+        Path::new(args.directory())
+            .with_extension("json")
+            .to_string_lossy()
+            .into_owned()
+    };
+    let data = fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot load the scoped AWR collection from {path}: {e}"))?;
+    let mut collection = load_awrs_collection_from_json_str(&data)
+        .map_err(|e| format!("Invalid AWR collection JSON in {path}: {e}"))?;
+    crate::analyze::restrict_to_report_scope(&mut collection, &args.snap_range)?;
+    Ok(collection)
 }
 
 fn build_model_instructions(
@@ -666,8 +755,8 @@ data-driven performance audit reports based on structured AWR/STATSPACK data.
 
 You receive a **ReportForAI** object (TOON format) containing preprocessed, aggregated 
 statistics from multiple Oracle AWR/STATSPACK snapshots. You may also receive a separate 
-`load_profile_statistics.json` with load profile summary data — if present, analyze it first 
-and write a comprehensive statistical summary for all metrics before proceeding.
+`load_profile_statistics.json` with load profile summary data. Use it to establish absolute
+workload levels alongside the gradient evidence once the scope is established.
 
 The ReportForAI contains these analytical sections:
 - `general_data` — overall DB load shape description with MAD analysis
@@ -784,6 +873,7 @@ wait, CPU and anomaly evidence without using a model score as proof of the mecha
 Follow this reasoning sequence:
 
 ## Step 1: Establish Performance Profile
+- Establish the workload, instance and period. Compare the DB Time and DB CPU gradients with absolute DB Time, DB CPU, wait and SQL measurements for that scope. Form two or three working hypotheses using the comparison and preserve their identity through the checks and the section 9 review. Explain any missing comparison.
 - Interpret DB CPU / DB Time ratio across all spikes (< 0.66 = wait-bound, ~1.0 = CPU-bound)
 - Assess ratio variance for mixed/intermittent problems
 - AIX caveat: if the platform is AIX, do not decide CPU-bound from DB CPU/DB Time or AWR Host CPU %CPU alone. Entc%/%entc/ec, physc/pc, EC, capped/uncapped and shared/dedicated LPAR data are required; if Entc%/ec is high, classify it as CPU entitlement/physical-capacity pressure even when AWR idle is nonzero or the LPAR is uncapped.
@@ -794,15 +884,14 @@ Follow this reasoning sequence:
 
 ## Step 3: Trace Root Causes
 - Wait events are symptoms -> trace to SQLs -> segments -> application behavior
-- Use correlation data to build causal chains
+- Use temporal alignment and measured workload to test the opening hypotheses and competing explanations.
 - **When `tables_associated_with_event_based_on_ash_sql` is present for a wait event, 
   treat it as direct evidence linking the event to specific tables. Cross-reference 
   these tables with segment statistics (logical reads, physical reads, row lock waits, 
   buffer busy waits, etc.) for deeper insight. This SQL-parsed data supplements but 
   does NOT replace statistical reasoning — always validate with segment stats and 
   correlation data.**
-- Cross-validate with gradient analysis when available — use `impact_active` to quantify 
-  contributions and `impact_share` to express relative importance
+- Use gradient scores to contextualize changes. Use measured waits and SQL costs to quantify actual workload.
 
 ## Step 4: Assess Infrastructure vs Application
 - I/O stats reveal disk quality (LGWR latency, DBWR throughput)
@@ -831,8 +920,7 @@ Follow this reasoning sequence:
 
 ## Step 6: Synthesize and Prioritize
 - Rank findings by business impact (DB Time contribution x frequency)
-- When gradient data is available, use `impact_active` x model-confidence (classification tier) 
-  as the quantitative ranking signal
+- Revisit each opening hypothesis with evidence from the intervening chapters. Rank actions using measured impact and the evidence for their mechanism.
 - Separate systematic issues from incidents (use the bursty-vs-systematic diagnostic)
 - Assign ownership (DBA vs Developer)
 
@@ -1113,9 +1201,10 @@ pub async fn gemini(
     events_sqls: HashMap<&str, HashSet<String>>,
     args: &crate::Args,
     report_for_ai: &str,
+    analysis: &ReportForAI,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tools_mode = args.tools_mode;
-    let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
+    let mode_label = if tools_mode { "TOOLS" } else { "batch" };
     debug_note!(
         "Starting Gemini analysis: model='{}', language='{}', mode={}, report_chars={}",
         vendor_model_lang.get(1).copied().unwrap_or(""),
@@ -1140,6 +1229,17 @@ pub async fn gemini(
     let response_file = format!("{}_gemini{}.md", logfile_name, suffix);
     let client = Client::new();
 
+    let scoped = load_scoped_collection(args)?;
+    let opening = start_hosted_review(
+        &client,
+        &vendor_model_lang,
+        &api_key,
+        &response_file,
+        analysis,
+        &scoped,
+    )
+    .await?;
+    let collection = tools_mode.then_some(scoped);
     let spell =
         build_model_instructions(vendor_model_lang[2], args, &events_sqls, stem, tools_mode);
     let main_report_uri = upload_log_file_gemini(
@@ -1172,6 +1272,7 @@ pub async fn gemini(
         }),
     ];
 
+    initial_parts.push(json!({"text":opening.handoff}));
     if tools_mode {
         if let Some(note) = available_attachments_prompt(stem) {
             initial_parts.push(json!({
@@ -1184,12 +1285,6 @@ pub async fn gemini(
         "role": "user",
         "parts": initial_parts
     })];
-
-    let collection: Option<AWRSCollection> = if tools_mode {
-        Some(load_tools_collection(args))
-    } else {
-        None
-    };
 
     let max_iterations = if tools_mode {
         args.max_tool_iterations
@@ -1527,7 +1622,10 @@ pub async fn gemini(
         return Err("Gemini response had no extractable final report; no HTML generated".into());
     } else {
         fs::write(&response_file, final_content.as_bytes())?;
-        let final_content = crate::report_issues::finalize_api_markdown(&final_content)?;
+        let final_content = crate::report_issues::finalize_api_markdown_with_opening(
+            &final_content,
+            &opening::statements(&opening.review),
+        )?;
         fs::write(&response_file, final_content.as_bytes())?;
         debug_note!(
             "Gemini analysis output written: path='{}', bytes={}",
@@ -1576,9 +1674,10 @@ pub async fn openrouter(
     events_sqls: HashMap<&str, HashSet<String>>,
     args: &crate::Args,
     report_for_ai: &str,
+    analysis: &ReportForAI,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tools_mode = args.tools_mode;
-    let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
+    let mode_label = if tools_mode { "TOOLS" } else { "batch" };
     debug_note!(
         "Starting OpenRouter analysis: model='{}', language='{}', mode={}, report_chars={}",
         vendor_model_lang.get(1).copied().unwrap_or(""),
@@ -1602,6 +1701,17 @@ pub async fn openrouter(
     let response_file = format!("{}_{}{}.md", logfile_name, model_name, suffix);
     let client = Client::new();
 
+    let scoped = load_scoped_collection(args)?;
+    let opening = start_hosted_review(
+        &client,
+        &vendor_model_lang,
+        &api_key,
+        &response_file,
+        analysis,
+        &scoped,
+    )
+    .await?;
+    let collection = tools_mode.then_some(scoped);
     let spell =
         build_model_instructions(vendor_model_lang[2], args, &events_sqls, stem, tools_mode);
 
@@ -1622,11 +1732,7 @@ pub async fn openrouter(
         )}),
     ];
 
-    let collection: Option<AWRSCollection> = if tools_mode {
-        Some(load_tools_collection(args))
-    } else {
-        None
-    };
+    messages.push(json!({"role":"user", "content":opening.handoff}));
 
     let max_iterations = if tools_mode {
         args.max_tool_iterations
@@ -1931,7 +2037,10 @@ pub async fn openrouter(
     }
 
     fs::write(&response_file, final_content.as_bytes())?;
-    let final_content = crate::report_issues::finalize_api_markdown(&final_content)?;
+    let final_content = crate::report_issues::finalize_api_markdown_with_opening(
+        &final_content,
+        &opening::statements(&opening.review),
+    )?;
     fs::write(&response_file, final_content.as_bytes())?;
     debug_note!(
         "OpenRouter analysis output written: path='{}', bytes={}, finish_reason='{}'",
@@ -2055,9 +2164,10 @@ pub async fn openai_gpt(
     events_sqls: HashMap<&str, HashSet<String>>,
     args: &crate::Args,
     report_for_ai: &str,
+    analysis: &ReportForAI,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tools_mode = args.tools_mode;
-    let mode_label = if tools_mode { "TOOLS" } else { "single-shot" };
+    let mode_label = if tools_mode { "TOOLS" } else { "batch" };
     debug_note!(
         "Starting OpenAI analysis: model='{}', language='{}', mode={}, report_chars={}",
         vendor_model_lang.get(1).copied().unwrap_or(""),
@@ -2082,6 +2192,18 @@ pub async fn openai_gpt(
     let suffix = if tools_mode { "_tools" } else { "" };
     let response_file = format!("{}_{}{}.md", logfile_name, vendor_model_lang[1], suffix);
 
+    let client = Client::new();
+    let scoped = load_scoped_collection(args)?;
+    let opening = start_hosted_review(
+        &client,
+        &vendor_model_lang,
+        &api_key,
+        &response_file,
+        analysis,
+        &scoped,
+    )
+    .await?;
+    let collection = tools_mode.then_some(scoped);
     let spell =
         build_model_instructions(vendor_model_lang[2], args, &events_sqls, stem, tools_mode);
 
@@ -2102,6 +2224,7 @@ pub async fn openai_gpt(
         }),
     ];
 
+    report_payload.push(json!({"type":"input_text", "text":opening.handoff}));
     if tools_mode {
         if let Some(note) = available_attachments_prompt(stem) {
             report_payload.push(json!({
@@ -2115,12 +2238,6 @@ pub async fn openai_gpt(
         "role": "user",
         "content": report_payload
     }));
-
-    let collection: Option<AWRSCollection> = if tools_mode {
-        Some(load_tools_collection(args))
-    } else {
-        None
-    };
 
     let max_iterations = if tools_mode {
         args.max_tool_iterations
@@ -2152,7 +2269,6 @@ pub async fn openai_gpt(
         args.tokens_budget
     };
 
-    let client = Client::new();
     let mut final_content = String::new();
     let mut last_usage: Value = Value::Null;
     let mut last_finish: Value = Value::Null;
@@ -2446,7 +2562,10 @@ pub async fn openai_gpt(
         return Err("OpenAI response had no extractable final report; no HTML generated".into());
     } else {
         fs::write(&response_file, final_content.as_bytes())?;
-        let final_content = crate::report_issues::finalize_api_markdown(&final_content)?;
+        let final_content = crate::report_issues::finalize_api_markdown_with_opening(
+            &final_content,
+            &opening::statements(&opening.review),
+        )?;
         fs::write(&response_file, final_content.as_bytes())?;
         debug_note!(
             "OpenAI analysis output written: path='{}', bytes={}",

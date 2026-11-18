@@ -29,7 +29,8 @@ try {
   assert.match(evidence.evidence_id, /^E-/);
   assert.equal(typeof evidence.result.snapshot_count, 'number');
   assert.ok(evidence.result.total_db_time_s === null || Number.isFinite(evidence.result.total_db_time_s));
-  const refs = [evidence.evidence_id];
+  const gradients = await companion.query('get_precomputed_analysis', { section: 'full_gradients', limit: 3 }, false);
+  const refs = [evidence.evidence_id, gradients.evidence_id];
   const dbTimeObservation = evidence.result.total_db_time_s === null ? 'łączny DB Time jest niedostępny' : `łączny DB Time wynosi ${evidence.result.total_db_time_s} s`;
   const observed = `Próbka testowa obejmuje ${evidence.result.snapshot_count} snapshotów; ${dbTimeObservation}.`;
   const originalExplanation = 'Podsumowanie opisuje zakres próbki. Nie rozstrzyga, czy zmiana czasu wynika z większej ilości pracy, czy droższego pojedynczego wykonania.';
@@ -39,10 +40,15 @@ try {
   const board = companion.present({ language: 'pl', title: 'Co mówi podsumowanie próbki?', takeaway: observed,
     panels: [{ type: 'table', title: 'Zakres pomiaru', classification: 'measured', source: evidence.evidence_id,
       columns: ['Miara', 'Wartość'], rows: [['Liczba snapshotów', evidence.result.snapshot_count], ['DB Time [s]', evidence.result.total_db_time_s]] }] });
-  await companion.advanceAudit({ chapter_id: 'performance_profile' });
+  await companion.recordBrief({ chapter_id: 'scope', question: 'Którą próbkę obejmuje test?', explanation: observed,
+    conclusion: 'Badamy dostępną próbkę i jej pokrycie.', evidence_boundary: boundary, next_step: nextStep,
+    open_questions: [], evidence_refs: [evidence.evidence_id] });
+  await companion.advanceAudit({ chapter_id: 'performance_profile', complete_current: true });
+  const hypothesisGap = 'Próbka obejmuje pojedynczy snapshot. Brakuje gradientów i porównywalnego okresu odniesienia.';
   const briefInput = { chapter_id: 'performance_profile', question: 'Czy podsumowanie ustala przyczynę kosztu?',
     explanation: originalExplanation, conclusion: 'Podsumowanie wyznacza następny pomiar; przyczyna pozostaje nieustalona.',
-    evidence_boundary: boundary, next_step: nextStep, open_questions: ['Czy pojedyncze wykonanie stało się droższe?'], evidence_refs: refs };
+    hypothesis_gap: hypothesisGap, evidence_boundary: boundary, next_step: nextStep,
+    open_questions: ['Czy pojedyncze wykonanie stało się droższe?'], evidence_refs: refs };
   let status = await companion.recordBrief({ ...briefInput, view_id: board.view_id });
   let brief = status.briefs.find(b => b.chapter_id === 'performance_profile' && b.project_id === project_id);
   assert.ok(brief?.brief_id); assert.equal(brief.revision, 1);
@@ -68,7 +74,7 @@ try {
   // Test-only coverage gaps exercise chapter state without pretending an audit was done.
   for (const chapter of status.chapters) {
     await companion.advanceAudit({ chapter_id: chapter.chapter_id });
-    if (chapter.chapter_id === 'performance_profile') continue;
+    if (['scope', 'performance_profile'].includes(chapter.chapter_id)) continue;
     await companion.recordBrief({ chapter_id: chapter.chapter_id, question: chapter.question_pl,
       explanation: 'W tym teście integracji nie badamy tej kategorii. Zapis służy wyłącznie sprawdzeniu zachowania jawnej luki w rozmowie i późniejszym raporcie.',
       conclusion: 'Brak pomiarów pozwalających wydać ocenę w tej kategorii.', evidence_boundary: boundary,
@@ -103,6 +109,7 @@ try {
   assert.equal(preview.status.ready_to_finalize, false);
   for (const text of [observed, correctedExplanation, boundary, nextStep]) assert.ok(preview.markdown.includes(text), `Preview lost reader text: ${text}`);
   assert.ok(preview.html.includes(correctedExplanation));
+  assert.ok(preview.markdown.includes(hypothesisGap));
   const expectedChecks = ['explanation_clear', 'actions_executable', 'uncertainty_preserved', 'evidence_preserved', 'language_consistent'];
   assert.deepEqual(preview.editorial_checklist, expectedChecks);
   await core('record_report_review', { preview_id: preview.preview_id,
@@ -129,6 +136,7 @@ try {
   assert.notEqual(resumed.analysis_id, analysis_id);
   assert.equal(resumed.report_authorized, false); assert.equal(resumed.editorial_review_current, false);
   assert.deepEqual(resumed.briefs, (await companion.auditStatus()).briefs);
+  assert.equal(resumed.hypotheses.find(h => h.project_id === project_id).hypothesis_gap, hypothesisGap);
   assert.equal(resumed.history_count, 1);
   await assert.rejects(restored.client.call('finalize_report', { analysis_id: resumed.analysis_id, allow_incomplete: true }), /AUDIT_REPORT_NOT_REQUESTED/);
   const reexported = await restored.exportAudit();

@@ -3,21 +3,26 @@ use super::*;
 use serde::Deserialize;
 use std::hash::{Hash, Hasher};
 
+#[path = "audit_hypotheses.rs"]
+mod hypotheses;
+pub(super) use hypotheses::hypothesis_status;
+use hypotheses::{HypothesisCheck, HypothesisOutcome, OpeningHypothesis};
+
 const CHAPTERS: &[(&str, &str, &str, &str, &str)] = &[
     ("scope", "Audit scope", "Zakres audytu", "Which workload, period and user symptom are we investigating?", "Jaką operację, okres i objaw zgłoszony przez użytkownika badamy?"),
-    ("performance_profile", "Performance profile", "Profil wydajności", "What dominates database time, and how do peaks differ from the baseline?", "Co zajmuje czas bazy i czym szczyty różnią się od spokojnych okresów?"),
+    ("performance_profile", "Performance profile", "Profil wydajności", "Which DB Time and DB CPU gradient signals align with the absolute workload profile, and which two or three hypotheses should we test?", "Jak gradienty DB Time i DB CPU mają się do bezwzględnego profilu obciążenia i które dwie lub trzy hipotezy sprawdzimy?"),
     ("wait_events", "Wait events", "Oczekiwania", "Which waits matter, and what workload is associated with them?", "Które oczekiwania są istotne i z jaką pracą się wiążą?"),
     ("sql", "SQL and execution plans", "SQL i plany wykonania", "Which SQL paths explain the measured workload, and what remains unproven?", "Które ścieżki SQL wyjaśniają zmierzoną pracę i czego jeszcze nie potwierdziliśmy?"),
     ("segments", "Segments and objects", "Segmenty i obiekty", "Which objects recur across signals, and can we attribute their cost?", "Które obiekty powtarzają się w pomiarach i czy potrafimy przypisać ich koszt?"),
     ("latches", "Internal contention", "Kontencja wewnętrzna", "What do we know about concurrency, holders and waiters?", "Co wiemy o współbieżności oraz sesjach blokujących i oczekujących?"),
     ("io", "I/O", "Operacje I/O", "Do measurements distinguish storage latency from workload volume?", "Czy pomiary rozróżniają opóźnienie dysków i ilość wykonywanej pracy?"),
     ("undo_redo", "UNDO, redo and commits", "UNDO, redo i zatwierdzanie", "What explains redo and commit costs for this workload?", "Co wyjaśnia koszt redo i zatwierdzania dla badanych operacji?"),
-    ("gradients_anomalies", "Models and unusual periods", "Modele i nietypowe okresy", "Where do the statistical signals agree, and which runtime test can distinguish explanations?", "Gdzie sygnały statystyczne są zgodne i jaki pomiar rozstrzygnie pozostałe wyjaśnienia?"),
+    ("gradients_anomalies", "Models and unusual periods", "Modele i nietypowe okresy", "Which opening hypotheses were confirmed, rejected or remain unresolved, and which measurements explain each outcome?", "Które hipotezy robocze potwierdziły się, które odpadły, a które pozostają otwarte? Jakie pomiary o tym rozstrzygają?"),
     ("parameters", "Configuration", "Konfiguracja", "Which collected settings need action or an explained exception?", "Które zebrane ustawienia wymagają działania lub uzasadnienia wyjątku?"),
     ("synthesis", "Decisions and next steps", "Wnioski i kolejne kroki", "What can we conclude, what is still open, and what should happen first?", "Co możemy stwierdzić, co pozostaje otwarte i czym należy zająć się najpierw?"),
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AuditBrief {
     #[serde(default)]
@@ -39,6 +44,17 @@ pub(super) struct AuditBrief {
     pub evidence_refs: Vec<String>,
     #[serde(default)]
     pub visual: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opening_hypotheses: Vec<OpeningHypothesis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hypothesis_gap: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hypothesis_checks: Vec<HypothesisCheck>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hypothesis_outcomes: Vec<HypothesisOutcome>,
+    // Server-stamped revisions of the opening and checks used when this brief was saved.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub hypothesis_basis: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,11 +101,15 @@ impl AuditState {
         self.review = None;
     }
     fn discussed(&self, id: &str, projects: &[String]) -> bool {
-        projects.iter().all(|project| {
-            self.briefs
-                .values()
-                .any(|b| b.chapter_id == id && &b.project_id == project)
-        })
+        projects
+            .iter()
+            .all(|project| self.project_discussed(id, project))
+    }
+    fn project_discussed(&self, chapter: &str, project: &str) -> bool {
+        self.briefs
+            .values()
+            .any(|b| b.chapter_id == chapter && b.project_id == project)
+            && hypotheses::chapter_complete(self, chapter, project)
     }
     pub(super) fn authorized(&self) -> bool {
         self.authorization
@@ -185,15 +205,21 @@ pub(super) fn status_value(analysis_id: &str, state: &AnalysisSession) -> Value 
     };
     let chapters: Vec<Value> = CHAPTERS.iter().map(|(id,title,pl,q,qpl)| json!({
         "chapter_id":id,"title":title,"title_pl":pl,"question":q,"question_pl":qpl,
-        "project_coverage":state.project_ids.iter().map(|project|json!({"project_id":project,"discussed":audit.briefs.values().any(|b|b.chapter_id==*id && &b.project_id==project)})).collect::<Vec<_>>(),
+        "project_coverage":state.project_ids.iter().map(|project|json!({"project_id":project,"discussed":audit.project_discussed(id,project)})).collect::<Vec<_>>(),
         "status": if audit.discussed(id, &state.project_ids) {"discussed"} else if audit.current_chapter_id == *id {"current"} else {"pending"}
     })).collect();
     json!({"analysis_id":analysis_id,"audit_started":true,"project_ids":state.project_ids,
         "revision":audit.revision,"current_chapter_id":audit.current_chapter_id,"chapters":chapters,
+        "hypotheses":state.project_ids.iter().map(|p| hypothesis_status(audit,p)).collect::<Vec<_>>(),
         "briefs":audit.briefs.values().collect::<Vec<_>>(),"history_count":audit.history.len(),
         "report_authorized":audit.authorized(),"authorized_revision":audit.authorization.as_ref().map(|a|a.revision),
         "phase":if audit.authorized(){"report_requested"}else{"discussion"},
-        "next_step":if audit.authorized(){"Build findings from reviewed briefs, retain all evidence, preview, review and finalize."}else{"Discuss the current chapter and save its explanation. Continue only at the auditor's conversational pace; report generation requires an explicit final request."},
+        "next_step":if audit.authorized(){"Build findings from reviewed briefs, retain all evidence, preview, review and finalize."}else{match audit.current_chapter_id.as_str() {
+            "scope" => "Establish the workload, symptom, project and time window before opening hypotheses.",
+            "performance_profile" => "Compare DB Time/DB CPU gradients with the absolute workload profile. Save two or three opening_hypotheses, or explain a missing input in hypothesis_gap.",
+            "gradients_anomalies" => "Revisit every opening ID in hypothesis_outcomes. Use confirmed, rejected or unresolved, and explain what the chapter checks established.",
+            _ => "Use the project's opening hypotheses. In relevant chapters record hypothesis_checks with the stable ID, observed result or evidence gap. Continue at the auditor's pace."
+        }},
         "open_questions":audit.briefs.values().flat_map(|b|b.open_questions.iter().map(move |q|json!({"brief_id":b.brief_id,"question":q}))).collect::<Vec<_>>(),
         "editorial_review_current":audit.review.as_ref().is_some_and(|r|r.preview_id == preview_id(state))})
 }
@@ -361,8 +387,11 @@ impl AnalysisRuntime {
             let mut brief: AuditBrief = serde_json::from_value(Value::Object(fields))
                 .map_err(|e| tool_error("INVALID_AUDIT_BRIEF", e.to_string()))?;
             validate_brief(&brief, &s)?;
-            let audit = s
-                .audit
+            hypotheses::validate_content(&brief, &s, &self.projects[&brief.project_id])?;
+            let AnalysisSession {
+                evidence, audit, ..
+            } = &mut *s;
+            let audit = audit
                 .as_mut()
                 .ok_or_else(|| tool_error("AUDIT_NOT_STARTED", "Call start_audit first"))?;
             if audit.history.len() >= 4096
@@ -391,6 +420,8 @@ impl AnalysisRuntime {
             {
                 return Err(tool_error("INVALID_AUDIT_BRIEF", "Invalid brief_id"));
             }
+
+            brief.hypothesis_basis = hypotheses::validate_dependencies(&brief, audit, evidence)?;
             if let Some(old) = audit.briefs.get(&brief.brief_id) {
                 if old.project_id != brief.project_id || old.chapter_id != brief.chapter_id {
                     return Err(tool_error("AUDIT_BRIEF_SCOPE_CHANGED","Update within the original project and chapter; create a new brief for another scope"));
@@ -458,11 +489,7 @@ impl AnalysisRuntime {
             let mut pending = Vec::new();
             for project in &projects {
                 for c in CHAPTERS {
-                    if !audit
-                        .briefs
-                        .values()
-                        .any(|b| b.chapter_id == c.0 && &b.project_id == project)
-                    {
+                    if !audit.project_discussed(c.0, project) {
                         pending.push(format!("{project}:{}", c.0));
                     }
                 }
@@ -948,10 +975,28 @@ impl AnalysisRuntime {
                         "Brief identity/revision mismatch",
                     ));
                 }
-                validate_brief(brief, &s)?;
             }
-            for brief in &saved.audit.history {
+            // Recheck each hypothesis against the opening and chapter evidence available at that revision.
+            let mut replay = AuditState::default();
+            let mut revisions: Vec<_> = saved
+                .audit
+                .history
+                .iter()
+                .chain(saved.audit.briefs.values())
+                .collect();
+            revisions.sort_by_key(|b| b.updated_at_revision);
+            for brief in revisions {
                 validate_brief(brief, &s)?;
+                hypotheses::validate_content(brief, &s, &self.projects[&brief.project_id])?;
+                if hypotheses::validate_dependencies(brief, &replay, &s.evidence)?
+                    != brief.hypothesis_basis
+                {
+                    return Err(tool_error(
+                        "INVALID_CHECKPOINT",
+                        "Hypothesis sources do not match the archived discussion revision",
+                    ));
+                }
+                replay.briefs.insert(brief.brief_id.clone(), brief.clone());
             }
             let mut audit = saved.audit;
             audit.authorization = None;
@@ -969,11 +1014,12 @@ pub(super) fn tool_definitions() -> Vec<Value> {
     let mut brief_props = json!({"brief_id":{"type":"string"},"project_id":{"type":"string"},"chapter_id":{"type":"string"},
         "question":{"type":"string"},"explanation":{"type":"string"},"conclusion":{"type":"string"},"evidence_boundary":{"type":"string"},"next_step":{"type":"string"},
         "open_questions":{"type":"array","items":{"type":"string"}},"evidence_refs":{"type":"array","items":{"type":"string"}},"visual":{"type":"object"}});
+    hypotheses::add_tool_fields(&mut brief_props);
     brief_props["evidence_refs"]["description"]=json!("Exact evidence IDs from this analysis and project. Empty means discussion/coverage gap, never measured proof.");
     vec![
         function_definition("start_audit","Start or resume a guided chapter discussion. This does not collect measurements or authorize a report.",simple.clone()),
         function_definition("get_audit_status","Read current chapter, durable session briefs, open questions and independent evidence completeness. Chapters discussed never imply causal proof or permission to publish.",simple.clone()),
-        function_definition("record_audit_brief","Save the explanation developed with the auditor, precise uncertainty, next decision and evidence references. Reuse brief_id to revise; all previous revisions are retained. This marks the chapter discussed, not user-approved. Changes revoke report authorization.",json!({"type":"object","additionalProperties":false,"properties":brief_props,"required":["project_id","chapter_id","question","explanation","conclusion","evidence_boundary","next_step","evidence_refs"]})),
+        function_definition("record_audit_brief","Save the chapter discussion. In performance_profile submit opening_hypotheses or hypothesis_gap after scope. Use hypothesis_checks in relevant subsequent chapters and hypothesis_outcomes in gradients_anomalies. Reuse the same brief_id for corrections and retain its structured fields. This marks the chapter discussed, not user-approved. Changes revoke report authorization.",json!({"type":"object","additionalProperties":false,"properties":brief_props,"required":["project_id","chapter_id","question","explanation","conclusion","evidence_boundary","next_step","evidence_refs"]})),
         function_definition("advance_audit","Move to the chapter the auditor wants to discuss; allow revisits. Do not advance automatically through the entire audit.",json!({"type":"object","additionalProperties":false,"properties":{"chapter_id":{"type":"string"},"complete_current":{"type":"boolean"}},"required":["chapter_id"]})),
         function_definition("authorize_report","Record the auditor's explicit final request to turn the completed discussion into a report. Quote the actual user request; never infer it from chapter completion. Does not bypass evidence or editorial gates.",json!({"type":"object","additionalProperties":false,"properties":{"user_request":{"type":"string","minLength":1}},"required":["user_request"]})),
         function_definition("export_audit","Export every discussion revision, evidence payload and report state as a portable checkpoint. Save the returned checkpoint in a private configured file; the tool itself does not persist it.",simple.clone()),
@@ -1014,7 +1060,12 @@ mod tests {
     }
     fn discuss_all(runtime: &AnalysisRuntime, id: &str, project: &str) {
         for c in CHAPTERS {
-            call(runtime, "record_audit_brief", brief(id, project, c.0)).unwrap();
+            let mut entry = brief(id, project, c.0);
+            if c.0 == "performance_profile" {
+                entry["hypothesis_gap"] =
+                    json!("No DB Time or DB CPU gradient was available for the sampled interval.");
+            }
+            call(runtime, "record_audit_brief", entry).unwrap();
         }
     }
     fn authorize(runtime: &AnalysisRuntime, id: &str) {
@@ -1194,6 +1245,47 @@ mod tests {
         assert_eq!(runtime.sessions.len(), count);
     }
     #[test]
+    fn legacy_checkpoint_can_resume_the_opening_without_losing_existing_chapters() {
+        let runtime = super::super::tests::runtime();
+        let (id, project) = start(&runtime);
+        for (chapter, ..) in CHAPTERS {
+            call(
+                &runtime,
+                "record_audit_brief",
+                brief(&id, &project, chapter),
+            )
+            .unwrap();
+        }
+        let checkpoint = call(&runtime, "export_audit", json!({"analysis_id":id})).unwrap()
+            ["checkpoint"]
+            .clone();
+        assert!(checkpoint["audit"]["briefs"]["brief-performance_profile"]
+            .get("hypothesis_basis")
+            .is_none());
+        let restored = call(&runtime, "restore_audit", json!({"checkpoint":checkpoint})).unwrap();
+        assert_eq!(restored["briefs"].as_array().unwrap().len(), CHAPTERS.len());
+        assert_eq!(restored["hypotheses"][0]["opening_hypotheses"], json!([]));
+        let resumed = restored["analysis_id"].as_str().unwrap();
+        let pending = call(
+            &runtime,
+            "authorize_report",
+            json!({"analysis_id":resumed,"user_request":"Prepare the report."}),
+        )
+        .unwrap_err();
+        assert_eq!(
+            pending["pending_chapters"],
+            json!([
+                format!("{project}:performance_profile"),
+                format!("{project}:gradients_anomalies")
+            ])
+        );
+        let mut revised = brief(resumed, &project, "performance_profile");
+        revised["hypothesis_gap"] = json!("No fitted gradients are available in this capture.");
+        call(&runtime, "record_audit_brief", revised).unwrap();
+        authorize(&runtime, resumed);
+    }
+
+    #[test]
     fn invalid_refs_and_cross_project_edits_do_not_replace_saved_brief() {
         let runtime = super::super::tests::runtime();
         let (id, project) = start(&runtime);
@@ -1211,6 +1303,148 @@ mod tests {
             call(&runtime, "export_audit", json!({"analysis_id":id})).unwrap()
         );
     }
+    #[test]
+    fn project_hypotheses_require_followup_measurements_and_current_scope() {
+        let mut runtime = super::super::tests::runtime();
+        let data = Arc::make_mut(&mut runtime.projects)
+            .values_mut()
+            .next()
+            .unwrap();
+        let data = Arc::make_mut(data);
+        let snapshots = &mut Arc::make_mut(&mut data.collection).awrs;
+        snapshots[0].load_profile.push(crate::awr::LoadProfile {
+            stat_name: "DB time".into(),
+            per_second: 2.0,
+            ..Default::default()
+        });
+        snapshots[0]
+            .foreground_wait_events
+            .push(crate::awr::WaitEvents {
+                event: "db file sequential read".into(),
+                waits: 2000,
+                total_wait_time_s: 8.0,
+                avg_wait: 4.0,
+                ..Default::default()
+            });
+        let mut baseline = snapshots[0].clone();
+        baseline.snap_info = crate::awr::SnapInfo {
+            begin_snap_id: 9,
+            end_snap_id: 10,
+            begin_snap_time: "2026-08-01 09:00".into(),
+            end_snap_time: "2026-08-01 10:00".into(),
+        };
+        baseline.load_profile[0].per_second = 1.0;
+        baseline.foreground_wait_events[0].waits = 1000;
+        baseline.foreground_wait_events[0].total_wait_time_s = 4.0;
+        snapshots.insert(0, baseline);
+        Arc::make_mut(&mut data.report).db_time_gradient_fg_wait_events =
+            Some(DbTimeGradientSection {
+                ridge_top: vec![crate::reasonings::GradientTopItem {
+                    event_name: "db file sequential read".into(),
+                    impact_peak: 1.5,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        let (id, project) = start(&runtime);
+        let save = |entry| call(&runtime, "record_audit_brief", entry);
+        let load = call(
+            &runtime,
+            "get_database_load_summary",
+            json!({"analysis_id":id}),
+        )
+        .unwrap()["evidence_id"]
+            .clone();
+        let gradient = call(
+            &runtime,
+            "get_precomputed_analysis",
+            json!({"analysis_id":id,"section":"full_gradients"}),
+        )
+        .unwrap()["evidence_id"]
+            .clone();
+        let timeline = call(
+            &runtime,
+            "get_wait_event_timeline",
+            json!({"analysis_id":id,"event_name":"db file sequential read","kind":"foreground"}),
+        )
+        .unwrap();
+        assert_eq!(timeline["result"]["timeline"][0]["waits"], 1000);
+        assert_eq!(timeline["result"]["timeline"][1]["waits"], 2000);
+        let measured = timeline["evidence_id"].clone();
+        let scope = brief(&id, &project, "scope");
+        let mut profile = brief(&id, &project, "performance_profile");
+        profile["evidence_refs"] = json!([load, gradient]);
+        profile["opening_hypotheses"] = json!(["Higher demand","Higher elapsed time per read","Changed access path"].into_iter().enumerate().map(|(index,statement)|
+            json!({"id":format!("H{}",index+1),"statement":statement,"comparison_window":"Snapshot 10 compared with snapshot 9","gradient_signal":"db file sequential read peak impact 1.5","workload_profile":"2 seconds of DB time per wall second","test":"Compare read count, latency and access path with the matched scope."})).collect::<Vec<_>>());
+        assert!(save(profile.clone()).is_err());
+        save(scope.clone()).unwrap();
+        let mut gap = brief(&id, &project, "performance_profile");
+        gap["hypothesis_gap"] = json!("No metrics");
+        assert!(save(gap).is_err());
+        let mut partial = profile.clone();
+        partial["evidence_refs"] = json!([gradient]);
+        assert!(save(partial).is_err());
+        let mut two = profile.clone();
+        two["opening_hypotheses"].as_array_mut().unwrap().pop();
+        save(two).unwrap();
+        save(profile.clone()).unwrap();
+
+        let mut work = brief(&id, &project, "io");
+        work["evidence_refs"] = json!([load, measured]);
+        work["hypothesis_checks"] = json!([
+            {"id":"H1","reason":"Read demand compared with the snapshot.","evidence_refs":[load,measured]},
+            {"id":"H2","reason":"Read latency compared with the snapshot.","evidence_refs":[measured]},
+            {"id":"H3","reason":"No matched plan capture.","evidence_refs":[]}
+        ]);
+        save(work.clone()).unwrap();
+        let mut synthesis = brief(&id, &project, "gradients_anomalies");
+        synthesis["evidence_refs"] = json!([load, measured]);
+        synthesis["hypothesis_outcomes"] = json!([
+            {"id":"H1","status":"confirmed","reason":"Read counts increased over the comparison interval.","evidence_refs":[measured]},
+            {"id":"H2","status":"rejected","reason":"Read latency stayed constant in the sample.","evidence_refs":[measured]},
+            {"id":"H3","status":"unresolved","reason":"A matching plan capture is still missing.","evidence_refs":[]}
+        ]);
+        let mut incomplete = synthesis.clone();
+        incomplete["hypothesis_outcomes"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        assert!(save(incomplete).is_err());
+        let mut reused = synthesis.clone();
+        reused["hypothesis_outcomes"][0]["evidence_refs"] = json!([load]);
+        assert!(save(reused).is_err());
+        let status = save(synthesis.clone()).unwrap();
+        assert_eq!(
+            status["hypotheses"][0]["hypothesis_outcomes"],
+            synthesis["hypothesis_outcomes"]
+        );
+        let checkpoint = call(&runtime, "export_audit", json!({"analysis_id":id})).unwrap()
+            ["checkpoint"]
+            .clone();
+        let restored = call(&runtime, "restore_audit", json!({"checkpoint":checkpoint})).unwrap();
+        assert_eq!(restored["hypotheses"], status["hypotheses"]);
+        work["hypothesis_checks"][0]["reason"] = json!(
+            "Read wait counts doubled from 1,000 to 2,000 in these equal-duration snapshots."
+        );
+        assert_eq!(
+            save(work.clone()).unwrap()["hypotheses"][0]["hypothesis_outcomes"],
+            json!([])
+        );
+        save(synthesis.clone()).unwrap();
+        profile["opening_hypotheses"][0]["test"] =
+            json!("Compare physical reads per execution for matched plans.");
+        let revised = save(profile.clone()).unwrap();
+        assert_eq!(revised["hypotheses"][0]["hypothesis_checks"], json!([]));
+        assert!(save(synthesis.clone()).is_err());
+        save(work).unwrap();
+        save(synthesis).unwrap();
+        let mut revised_scope = scope;
+        revised_scope["conclusion"] = json!("The symptom affects a different interval.");
+        let moved = save(revised_scope).unwrap();
+        assert_eq!(moved["hypotheses"][0]["opening_needs_scope_review"], true);
+        assert_eq!(moved["hypotheses"][0]["hypothesis_outcomes"], json!([]));
+    }
+
     #[test]
     fn tool_schemas_expose_restore_without_an_existing_session() {
         let runtime = super::super::tests::runtime();
@@ -1288,6 +1522,12 @@ async fn companion_core_transport_integration() {
 #[cfg(test)]
 #[test]
 fn checkpoint_numeric_comparison_handles_javascript_without_rounding_large_ids() {
+    // Gradient values survive a real JSON transport; adjacent measurements still differ.
+    let original = json!({"peak": 0.14504457915907235});
+    let from_wire: Value = serde_json::from_str(r#"{"peak":0.14504457915907235}"#).unwrap();
+    let changed: Value = serde_json::from_str(r#"{"peak":0.14504457915907237}"#).unwrap();
+    assert!(same_json_measurements(&original, &from_wire));
+    assert!(!same_json_measurements(&original, &changed));
     assert!(same_json_measurements(
         &json!({"seconds":3600.0,"value":1e20}),
         &json!({"seconds":3600,"value":100000000000000000000.0})

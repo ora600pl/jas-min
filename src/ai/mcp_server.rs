@@ -49,6 +49,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-11-11.1";
+const REPORT_HYPOTHESIS_WORKFLOW: &str = "After establishing the symptom, instance and period, compare DB Time and DB CPU gradient signals with the measured workload in the same incident and baseline windows. Use absolute time or rates and check for material costs with little variation. In section 2, open two or three distinct testable hypotheses per project, each with a stable ID, comparison window and distinguishing measurement. In relevant later chapters cite the ID and the observed test result. In section 9 revisit every ID as confirmed, rejected or unresolved and explain why using the follow-up measurements or the specific evidence gap. When the source cannot support the opening comparison, explain the gap.";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
@@ -1147,7 +1148,7 @@ impl AnalysisRuntime {
             "instruction": if project_bootstrap.len() > 1 {
                 "Use this analysis_id for the comparative investigation. Pass project_id to project-specific evidence tools and use the comparison tools for normalized cross-project evidence."
             } else {
-                "Use this analysis_id in every subsequent JAS-MIN tool call. Build competing hypotheses, obtain narrow evidence, consult guidance only for detected symptoms, and finish through the report tools."
+                "Use this analysis_id in every subsequent JAS-MIN tool call. Use report_contract.diagnostic_synthesis_policy.hypothesis_workflow to open, test and resolve the working hypotheses. Obtain narrow evidence, consult guidance only for detected symptoms, and finish through the report tools."
             },
             "focus": arguments.get("focus").cloned().unwrap_or(Value::Null),
             "projects": project_bootstrap.clone(),
@@ -2778,7 +2779,7 @@ impl ServerHandler for JasminMcpServer {
                 ),
         )
         .with_instructions(format!(
-            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Every finding must synthesize the measured symptom into a mechanism, temporal pattern, named affected workload and explicit evidence limitation; a conclusion plus a table dump is incomplete. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Every recommendation must name an owner and priority, explain why it follows from the finding, and define a measurable success criterion. Complete every stable category. Record gradients, anomalies and anomaly clusters as separate table kinds. When multiple analytic families are available, record analytic_signal_synthesis before the gradients_anomalies finding. The structured synthesis must name at least three exact top-five contributors from at least two target families, distinguish active from peak influence, reproduce concrete model names and classification, and localize anomaly and cluster windows. The finding can then state the decision and its boundary briefly without repeating the numeric fields. Generic statements that detectors merely converge on activity are rejected. For every foreground wait reaching 10% DB Time, call get_wait_event_sql_contributors and record the wait-to-SQL relationships; follow the strongest material contributor through SQL text, timeline and plan applicability. Correlation or ASH attribution is association evidence, not blocker/waiter proof. Inspect every supplied execution artifact. Review every unique SQL plan hash, but classify PL/SQL entry points as not_applicable_plsql because a top-level row-source plan is not expected; profile their inner SQL instead of requesting DBMS_XPLAN recapture. Choose an explicit recommendation type with artifact-specific rationale and action; generic 'validate actual rows' prose is rejected. Inspect every child-cursor diagnostic. Parse every non-empty alert attachment with include_parse_error_details=true, reproduce every error_summary code, and cite parse-error evidence in an SQL finding. Record every segment hotspot and a cross-statistic segment_synthesis. Review every collected performance parameter value; missing parameters require no row and only concern/critical ratings are reader-facing. get_report_status lists every missing item and blocks finalization until the deterministic lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage. Use each alert attachment's observed first/last timestamp rather than assuming AWR-period coverage. A zero-match literal proves only that exact filter. If guidance is applied, include a verified verbatim quotation. Complete mandatory assessments and finish through finalize_report. For HTML, finalize Markdown first and pass it unchanged to convert_markdown_to_html. Reader-facing material waits and SQL_IDs must link to every existing project-specific detail report with meaningful instance labels.\n\n{}",
+            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. {REPORT_HYPOTHESIS_WORKFLOW} Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Every finding must synthesize the measured symptom into a mechanism, temporal pattern, named affected workload and explicit evidence limitation; a conclusion plus a table dump is incomplete. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Every recommendation must name an owner and priority, explain why it follows from the finding, and define a measurable success criterion. Complete every stable category. Record gradients, anomalies and anomaly clusters as separate table kinds. When multiple analytic families are available, record analytic_signal_synthesis before the gradients_anomalies finding. The structured synthesis must name at least three exact top-five contributors from at least two target families, distinguish active from peak influence, reproduce concrete model names and classification, and localize anomaly and cluster windows. The finding can then state the decision and its boundary briefly without repeating the numeric fields. Generic statements that detectors merely converge on activity are rejected. For every foreground wait reaching 10% DB Time, call get_wait_event_sql_contributors and record the wait-to-SQL relationships; follow the strongest material contributor through SQL text, timeline and plan applicability. Correlation or ASH attribution is association evidence, not blocker/waiter proof. Inspect every supplied execution artifact. Review every unique SQL plan hash, but classify PL/SQL entry points as not_applicable_plsql because a top-level row-source plan is not expected; profile their inner SQL instead of requesting DBMS_XPLAN recapture. Choose an explicit recommendation type with artifact-specific rationale and action; generic 'validate actual rows' prose is rejected. Inspect every child-cursor diagnostic. Parse every non-empty alert attachment with include_parse_error_details=true, reproduce every error_summary code, and cite parse-error evidence in an SQL finding. Record every segment hotspot and a cross-statistic segment_synthesis. Review every collected performance parameter value; missing parameters require no row and only concern/critical ratings are reader-facing. get_report_status lists every missing item and blocks finalization until the deterministic lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage. Use each alert attachment's observed first/last timestamp rather than assuming AWR-period coverage. A zero-match literal proves only that exact filter. If guidance is applied, include a verified verbatim quotation. Complete mandatory assessments and finish through finalize_report. For HTML, finalize Markdown first and pass it unchanged to convert_markdown_to_html. Reader-facing material waits and SQL_IDs must link to every existing project-specific detail report with meaningful instance labels.\n\n{}",
             self.runtime.projects.len(),
             concat!(include_str!("../report/assets/report_writing.md"), "\n\n", include_str!("access_path_reasoning.md"))
         ))
@@ -2875,7 +2876,7 @@ impl ServerHandler for JasminMcpServer {
             Ok(GetPromptResult::new(vec![PromptMessage::new_text(
                 Role::User,
                 format!(
-                    "Investigate {focus} using the JAS-MIN MCP server. Begin with list_performance_projects when multiple projects may be loaded, then call start_performance_analysis with the intended project_ids and use its analysis_id for all evidence calls. In comparative sessions pass project_id to project-specific tools and use compare_project_metric or compare_project_sql for cross-project evidence. Form competing hypotheses and falsify them with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. For gradient/anomaly synthesis, name the dominant exact contributors across target families, distinguish typical from peak influence, state which Ridge, Elastic Net, Huber or Quantile-95 models agree, reproduce the server classification, and anchor the conclusion to exact anomaly and cluster windows; a generic statement that independent detectors converge on activity is not analysis. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings with exact reader-facing evidence summaries instead of exposing raw evidence IDs as prose. Every applied guidance reference requires a verbatim quote from the retrieved section. Complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html; ensure comparative output links every source project report.\n\n{}",
+                    "Investigate {focus} using the JAS-MIN MCP server. Begin with list_performance_projects when multiple projects may be loaded, then call start_performance_analysis with the intended project_ids and use its analysis_id for all evidence calls. In comparative sessions pass project_id to project-specific tools and use compare_project_metric or compare_project_sql for cross-project evidence. {REPORT_HYPOTHESIS_WORKFLOW} Test the hypotheses with timelines, snapshots, SQL text, plans, child-cursor reasons, alert log and AIX evidence when available. For gradient/anomaly synthesis, name the dominant exact contributors across target families, distinguish typical from peak influence, state which Ridge, Elastic Net, Huber or Quantile-95 models agree, reproduce the server classification, and anchor the conclusion to exact anomaly and cluster windows; a generic statement that independent detectors converge on activity is not analysis. Fetch reasonings.txt guidance only for concrete symptoms and never cite it as measurement evidence. Store evidence-backed findings with exact reader-facing evidence summaries instead of exposing raw evidence IDs as prose. Every applied guidance reference requires a verbatim quote from the retrieved section. Complete every mandatory assessment, validate report status and finalize the stable report. Write finding content in {language}. If the user requests HTML, finalize Markdown output first and pass the returned Markdown unchanged to convert_markdown_to_html; ensure comparative output links every source project report.\n\n{}",
                     concat!(include_str!("../report/assets/report_writing.md"), "\n\n", include_str!("access_path_reasoning.md"))
                 ),
             )])
@@ -3662,6 +3663,8 @@ fn report_contract(config: &ReportConfig) -> Value {
         "issue_policy": "New sessions use explicit grouping: record findings first, then record_issue with a canonical finding and distinct evidence perspectives. All findings require assignment, every action requires kind, and duplicate membership or unknown references are rejected. Legacy mode is an explicit compatibility option; old archives retain their layout without inferred grouping.",
         "required_finding_categories": REQUIRED_REPORT_CATEGORIES,
         "diagnostic_synthesis_policy": {
+            "hypothesis_workflow": REPORT_HYPOTHESIS_WORKFLOW,
+            "hypothesis_recording": "For a guided audit, record the opening hypotheses, intermediate checks and outcomes in their chapter briefs. In a direct report, record the initial performance_profile finding before investigating later chapters. Keep the original IDs and statements in that finding. Cite their IDs and test results in the relevant diagnostic findings, then record the reason for each verdict in gradients_anomalies.",
             "required_fields": ["mechanism", "temporal_pattern", "affected_workload", "evidence_limitations"],
             "narrative_order": "Lead with the diagnosis. Connect symptom to mechanism, named workload and time pattern before the exhaustive structured evidence tables.",
             "causality_boundary": "Correlation, gradient selection and ASH attribution are association evidence. evidence_limitations must state the missing runtime proof and relevant counterevidence.",
@@ -5059,8 +5062,26 @@ fn render_markdown(
         (9, "gradients_anomalies", "Gradient and Anomaly Synthesis"),
         (10, "parameters", "Relevant Initialization Parameters"),
     ];
+    let mut hypotheses = Vec::new();
+    if let Some(audit) = &state.audit {
+        for project in &state.project_ids {
+            let label = project_labels.get(project).unwrap_or(project);
+            hypotheses.push((
+                label.as_str(),
+                audit_workflow::hypothesis_status(audit, project),
+            ));
+        }
+    }
+    let mut hypothesis_citations = BTreeSet::new();
     for (number, category, title) in sections {
         output.push_str(&format!("## {number}. {}\n\n", l.text(title)));
+        output.push_str(&report_audit_hypotheses::render_chapter(
+            category,
+            &hypotheses,
+            l,
+            state.config.include_evidence_appendix,
+            &mut hypothesis_citations,
+        ));
         let signal_atlas = if category == "gradients_anomalies" {
             report_signal_adapter::build_signal_atlas(document, state, entity_links)
         } else {
@@ -5406,7 +5427,8 @@ fn render_markdown(
     if state.config.include_evidence_appendix {
         output.push_str("## Appendix A. Technical Evidence Provenance\n\n");
         output.push_str("This optional machine-to-human index lists only cited measurements. The findings above remain authoritative because they state the exact values and interpretation in plain language.\n\n");
-        let cited = cited_evidence_refs(state);
+        let mut cited = cited_evidence_refs(state);
+        cited.extend(hypothesis_citations);
         output.push_str(&format!(
             "<details class=\"evidence-appendix\"><summary>Show {} cited evidence records</summary><ul>",
             cited.len()
@@ -10852,6 +10874,9 @@ mod tests {
 
 #[path = "../report/signal_adapter.rs"]
 mod report_signal_adapter;
+
+#[path = "../report/audit_hypotheses.rs"]
+mod report_audit_hypotheses;
 
 #[cfg(test)]
 #[path = "../report/reader_tests.rs"]

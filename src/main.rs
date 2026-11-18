@@ -330,7 +330,8 @@ fn load_mcp_projects(args: &Args) -> Result<Vec<AnalysisProject>, String> {
             args.outfile.clone()
         };
         debug_note!("Starting to parse MCP project directory: {}", directory);
-        let parsed = awr::parse_awr_dir(project_args, &mut report_links, &json_output)?;
+        let mut parsed = awr::parse_awr_dir(project_args, &mut report_links, &json_output)?;
+        analyze::restrict_to_report_scope(&mut parsed.collection, &args.snap_range)?;
         debug_note!(
             "MCP directory project parsed: source='{}', snapshots={}, report_link_groups={}",
             directory,
@@ -360,7 +361,8 @@ fn load_mcp_projects(args: &Args) -> Result<Vec<AnalysisProject>, String> {
         let project_args = args.for_json_file(json_file.clone());
         let mut report_links = HashMap::new();
         debug_note!("Starting to load MCP project JSON: {}", json_file);
-        let parsed = awr::prarse_json_file(project_args, &mut report_links)?;
+        let mut parsed = awr::prarse_json_file(project_args, &mut report_links)?;
+        analyze::restrict_to_report_scope(&mut parsed.collection, &args.snap_range)?;
         debug_note!(
             "MCP JSON project parsed: source='{}', snapshots={}, report_link_groups={}",
             json_file,
@@ -554,6 +556,7 @@ fn main() {
                 events_sqls.clone(),
                 &args,
                 &toon_str,
+                &report_for_ai,
             ) {
                 eprintln!("❌ OpenAI analysis failed: {error}");
                 std::process::exit(1);
@@ -565,6 +568,7 @@ fn main() {
                 events_sqls.clone(),
                 &args,
                 &toon_str,
+                &report_for_ai,
             ) {
                 eprintln!("❌ Gemini analysis failed: {error}");
                 std::process::exit(1);
@@ -576,6 +580,7 @@ fn main() {
                 events_sqls.clone(),
                 &args,
                 &toon_str,
+                &report_for_ai,
             ) {
                 eprintln!("❌ OpenRouter analysis failed: {error}");
                 std::process::exit(1);

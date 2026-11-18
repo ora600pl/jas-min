@@ -620,8 +620,13 @@ A robust investigation normally follows this order:
    inferring coverage from the filename or enclosing AWR period.
 2. Call `start_performance_analysis` with the intended `project_ids`; preserve
    which project is the baseline and which is the candidate in every finding.
-3. Establish each whole-window workload envelope with
-   `get_database_load_summary(project_id=...)`.
+3. After agreeing on the symptom, instance and period, compare each project's
+   DB Time and DB CPU gradients with its absolute workload. Use
+   `get_precomputed_analysis(section="full_gradients")`,
+   `get_database_load_summary` and the scoped baseline and incident snapshots.
+   In section 2 record two or three testable explanations with stable IDs,
+   the comparison window and a measurement that distinguishes each one.
+   Document missing coverage if the opening comparison is unavailable.
 4. In comparative work, use `compare_project_metric` for normalized load,
    latency, wait, CPU, and I/O distributions. Use a neutral direction until the
    semantic meaning of higher or lower values is justified.
@@ -632,10 +637,11 @@ A robust investigation normally follows this order:
 7. For SQL IDs material to either period, call `compare_project_sql`, then
    inspect each project's SQL timeline and text. Inventory and inspect every
    supplied execution plan and child-cursor attachment.
-8. Form competing hypotheses instead of committing to the first correlated
-   metric.
-9. Verify or falsify them with narrow wait, SQL, timeline, histogram, snapshot,
-   plan, child-cursor, alert-log, parameter, segment, latch, and OS calls.
+8. Test the relevant opening IDs in the wait, SQL, segment, contention, I/O
+   and commit chapters. Cite the measured result or document the missing input.
+9. In section 9 revisit every opening ID. Explain which hypotheses the follow-up
+   evidence confirmed or rejected and which remain unresolved, alongside the
+   existing statistical synthesis.
 10. Retrieve only the `reasonings.txt` sections relevant to symptoms already
    observed.
 11. Store findings with their evidence and optional guidance references, then

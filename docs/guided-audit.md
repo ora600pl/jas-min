@@ -36,6 +36,30 @@ open questions. Its twenty-view display cache is independent from the upstream
 audit record. Selected visual data can be attached to a brief before the screen
 is evicted. The same upstream `analysis_id` is used for later report authoring.
 
+### Following a hypothesis through the audit
+
+After recording the scope, compare the DB Time and DB CPU gradients with the
+absolute workload for each project. Inspect the incident and a comparable
+baseline. Use `top_sqls_in_snapshot` in both windows to find recurring costs. For example, a SQL statement can use substantial CPU in both periods
+and have a low gradient. A second statement with a large peak gradient needs a
+timeline check to establish whether its changes coincide with the incident.
+
+Save two or three `opening_hypotheses` in the performance profile. Give each
+one an ID, a statement, its gradient signal, its measured workload, the
+comparison window and a distinguishing test. Cite the gradient and load
+measurements in the brief. Use `hypothesis_gap` to explain an unavailable
+opening comparison. Retrieve the current hypotheses from `get_audit_status`
+when resuming a chapter.
+
+In the relevant intervening chapters, record `hypothesis_checks` against
+the original IDs. For example, compare the number of SQL executions and the
+cost per execution in both windows to distinguish increased demand from more
+expensive executions. In chapter 9, give every opening ID a
+`hypothesis_outcomes` entry with a verdict, a reason and its evidence.
+Use `confirmed` or `rejected` for a measured result and `unresolved` when
+the observations cannot distinguish the explanations. Name the missing
+measurement. Keep each check's and outcome's evidence references in its brief.
+
 ## Report authoring and publication
 
 Existing `record_finding`, `record_issue`, `record_report_table` and assessment

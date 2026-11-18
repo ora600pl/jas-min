@@ -4,6 +4,11 @@ const labels = {
   'This project': 'Ten projekt',
   'Current question': 'Teraz sprawdzamy', 'Next step': 'Następny krok',
   'Open questions': 'Pytania bez odpowiedzi', 'Saved explanations': 'Zapisane wyjaśnienia',
+  'Working hypotheses': 'Hipotezy robocze', 'Gradient signal': 'Sygnał gradientowy',
+  'Measured workload': 'Zmierzony profil obciążenia', 'Comparison window': 'Okno porównania',
+  'Distinguishing measurement': 'Pomiar rozstrzygający', 'Chapter checks': 'Pomiary w rozdziałach',
+  'Revisit the performance profile after the scope change.': 'Po zmianie zakresu wróć do profilu wydajności i sprawdź hipotezy.',
+  'confirmed': 'potwierdzona', 'rejected': 'odrzucona', 'unresolved': 'nierozstrzygnięta',
   'What this means': 'Co z tego wynika', 'Evidence boundary': 'Czego jeszcze nie wiemy',
   'Evidence': 'Dowody', 'discussed': 'omówiony', 'current': 'teraz', 'pending': 'przed nami',
   'Report requested': 'Raport został zamówiony',
@@ -27,7 +32,8 @@ export function auditModel(state) {
   // Older checkpoints may lack chronology; do not infer it from IDs or array order.
   const brief = latest.length === 1 ? latest[0] : undefined;
   const language = state.language || 'en';
-  return { audit, chapters, briefs, current, brief,
+  const hypotheses = audit.hypotheses?.find(h => h.project_id === state.project);
+  return { audit, chapters, briefs, current, brief, hypotheses, language,
     discussed: chapters.filter(c => c.status === 'discussed').length,
     projectDiscussed: chapters.filter(c => c.project_coverage?.find(p => p.project_id === state.project)?.discussed).length,
     title: language === 'pl' ? current?.title_pl || current?.title : current?.title,
@@ -39,6 +45,39 @@ export function auditModel(state) {
 const node = (tag, text, cls) => {
   const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el;
 };
+function renderHypotheses(container, model, t) {
+  const group = model.hypotheses;
+  if (group?.opening_needs_scope_review) {
+    container.append(node('p', t('Revisit the performance profile after the scope change.'), 'audit-next'));
+    return;
+  }
+  if (!group?.opening_hypotheses?.length && !group?.hypothesis_gap) return;
+  container.append(node('h3', t('Working hypotheses')));
+  if (group.hypothesis_gap) container.append(node('p', group.hypothesis_gap));
+  for (const h of group.opening_hypotheses || []) {
+    const details = node('details', undefined, 'audit-briefs');
+    const outcome = group.hypothesis_outcomes?.find(row => row.id === h.id);
+    details.append(node('summary', [h.id, h.statement, outcome && t(outcome.status)].filter(Boolean).join(' · ')));
+    const body = node('div', undefined, 'audit-brief');
+    for (const [label, value] of [['Gradient signal', h.gradient_signal], ['Measured workload', h.workload_profile],
+      ['Comparison window', h.comparison_window], ['Distinguishing measurement', h.test]]) {
+      const p = node('p'); p.append(node('strong', t(label) + ' '), document.createTextNode(value)); body.append(p);
+    }
+    const checks = group.hypothesis_checks?.filter(row => row.id === h.id) || [];
+    if (checks.length) {
+      body.append(node('strong', t('Chapter checks')));
+      const list = node('ul');
+      for (const check of checks) {
+        const chapter = model.chapters.find(c => c.chapter_id === check.chapter_id);
+        const title = chapter && (model.language === 'pl' ? chapter.title_pl || chapter.title : chapter.title);
+        list.append(node('li', [title, check.reason].filter(Boolean).join(' · ')));
+      }
+      body.append(list);
+    }
+    if (outcome) body.append(node('p', outcome.reason));
+    details.append(body); container.append(details);
+  }
+}
 export function renderAudit(container, state) {
   const m = auditModel(state), language = state.language || 'en', t = text => tr(language, text);
   container.replaceChildren();
@@ -61,6 +100,7 @@ export function renderAudit(container, state) {
   const question = node('div', undefined, 'audit-question');
   question.append(node('span', t('Current question'), 'eyebrow'), node('h3', m.question || m.title)); container.append(question);
   if (m.nextStep) { const next = node('p', undefined, 'audit-next'); next.append(node('strong', `${t('Next step')}: `), document.createTextNode(m.nextStep)); container.append(next); }
+  renderHypotheses(container, m, t);
   if (m.openQuestions.length) {
     container.append(node('h3', t('Open questions'))); const list = node('ul'); for (const text of m.openQuestions) list.append(node('li', text)); container.append(list);
   }

@@ -1,3 +1,4 @@
+use super::opening;
 use crate::ai_tools::{dispatch_tool_call, tools_schema};
 use crate::awr::{load_awrs_collection_from_json_str, AWRSCollection};
 use crate::debug_note;
@@ -735,9 +736,10 @@ pub async fn analyze_report_local_agent(
     language: &str,
 ) -> Result<LocalAgentOutcome, Box<dyn std::error::Error>> {
     let mut cfg = LocalAgentConfig::from_args(model, language, args);
-    let collection = load_collection(args)?;
+    let collection = crate::reasonings::load_scoped_collection(args)?;
     let stem = stem_from_report_name(report_name);
-    let seed = build_case_seed(report);
+    let mut seed = build_case_seed(report);
+    seed["absolute_workload"] = opening::workload(&collection);
     let guidance_library = GuidanceLibrary::load();
     let guidance_catalog = guidance_library.prompt_notice();
     let tools = local_tools_schema(
@@ -788,11 +790,12 @@ pub async fn analyze_report_local_agent(
         cfg.high_water_tokens()
     );
 
-    let checkpoint = run_investigation_session(
+    let opening = plan_opening_hypotheses(&client, &seed, &mut usage).await?;
+    let mut checkpoint = run_investigation_session(
         &client,
         1,
         investigator_system_prompt(&cfg.language, &guidance_catalog),
-        investigator_user_prompt(&seed),
+        investigator_user_prompt(&json!({"case_seed": seed, "opening_review": opening})),
         &tools,
         report,
         &collection,
@@ -804,6 +807,7 @@ pub async fn analyze_report_local_agent(
         checkpoint_prompt(),
     )
     .await?;
+    checkpoint["opening_review"] = opening;
     debug_note!(
         "Local agent investigator session completed: evidence={}, guidance={}, usage_records={}",
         evidence_store.records.len(),
@@ -1679,7 +1683,11 @@ pub fn write_local_agent_outputs(
         format!("{base_name}.local_agent.usage.json"),
         serde_json::to_vec_pretty(&outcome.usage)?,
     )?;
-    let final_markdown = crate::report_issues::finalize_api_markdown(&outcome.final_markdown)?;
+    let statements = opening::statements(&outcome.investigation_checkpoint["opening_review"]);
+    let final_markdown = crate::report_issues::finalize_api_markdown_with_opening(
+        &outcome.final_markdown,
+        &statements,
+    )?;
     fs::write(format!("{base_name}.final.md"), final_markdown)?;
     debug_note!("Local agent outputs written: base='{}'", base_name);
     Ok(())
@@ -1709,6 +1717,50 @@ fn write_local_agent_progress(
         serde_json::to_vec_pretty(usage)?,
     )?;
     Ok(())
+}
+
+async fn plan_opening_hypotheses(
+    client: &LocalChatClient,
+    seed: &Value,
+    usage: &mut Vec<AgentUsageRecord>,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let response_format = json!({"type":"json_schema","json_schema":{
+        "name":"opening_review","strict":true,"schema":opening::schema()
+    }});
+    let mut messages = vec![
+        json!({"role":"system","content":opening::instructions(&client.cfg.language)}),
+        json!({"role":"user","content":opening::evidence(seed).to_string()}),
+    ];
+    for attempt in 0..2 {
+        let turn = client
+            .complete(
+                &messages,
+                None,
+                None,
+                Some(response_format.clone()),
+                client.cfg.closing_output_tokens(1).min(2048),
+                false,
+                Some(0.0),
+            )
+            .await?;
+        usage.push(AgentUsageRecord {
+            session: 1,
+            phase: "opening_hypotheses".into(),
+            round: attempt,
+            prompt_tokens: turn.prompt_tokens,
+            completion_tokens: turn.completion_tokens,
+            finish_reason: turn.finish_reason.clone(),
+        });
+        let result = parse_json_content(&extract_message_content(&turn.message))
+            .map_err(|e| e.to_string())
+            .and_then(opening::identify);
+        match result {
+            Ok(opening) => return Ok(opening),
+            Err(error) if attempt == 0 => messages.push(json!({"role":"user","content":format!("Revise the opening review. {error}. Use short, complete fields.")})),
+            Err(error) => return Err(format!("Invalid opening hypothesis review: {error}").into()),
+        }
+    }
+    unreachable!()
 }
 
 pub(crate) fn build_case_seed(report: &ReportForAI) -> Value {
@@ -2192,7 +2244,7 @@ fn investigator_system_prompt(language: &str, guidance_catalog: &str) -> String 
     format!(
         r#"You are JAS-MIN Investigator, an expert Oracle Database performance diagnostician.
 
-You receive only a compact, high-signal seed: gradient analyses, DB Time degradation and DB CPU/DB Time ratios for performance peaks. Detailed AWR/STATSPACK evidence is available through read-only tools.
+You receive the scoped workload profile, gradients, DB Time degradation, peaks and opening hypotheses. Detailed AWR/STATSPACK evidence is available through read-only tools.
 
 SCAN / ROW-CONTINUATION REASONING:
 {access_path_reasoning}
@@ -2201,8 +2253,8 @@ DIAGNOSTIC GUIDANCE AVAILABILITY:
 {guidance_catalog}
 
 Your job in this session is evidence collection, not report writing:
-1. Form several competing hypotheses from the seed.
-2. Use tools proactively to confirm or falsify them.
+1. Use the supplied opening_review as the starting point. Keep its H1/H2/H3 identities stable and address material work outside them when needed.
+2. Test each opening explanation with measured waits, SQL or other relevant runtime evidence. Preserve contradictory results and missing comparisons with their evidence IDs.
 3. Prefer narrow calls and compare bad snapshots with a quiet baseline.
 4. Trace wait -> SQL -> execution plan/object -> workload or infrastructure when evidence permits; preserve correlation and direct ASH attribution as association evidence rather than causality.
 5. Inspect SQL text, timeline and plan applicability before SQL tuning recommendations. BEGIN/DECLARE/CALL entry points are PL/SQL and have no expected top-level row-source plan; profile the PL/SQL unit and inspect its inner SQL instead of requesting DBMS_XPLAN recapture.
@@ -2235,6 +2287,8 @@ fn reviewer_system_prompt(language: &str, guidance_catalog: &str) -> String {
         r#"You are JAS-MIN Reviewer, a skeptical senior Oracle performance engineer.
 
 You receive the original compact seed and a structured checkpoint from another investigation session. Do not merely rewrite or endorse it. Try to falsify every material conclusion, search for alternative explanations, verify temporal alignment, and obtain fresh evidence through tools. Re-query important evidence because the prior raw conversation is intentionally unavailable.
+
+Use session_1_checkpoint.opening_review for the original scope and working hypotheses. Use each original statement verbatim as its section 2 heading with the same H1/H2/H3 identity, link their checks from relevant chapters, and explain the outcome of each in section 9 using fresh evidence. If the opening reported a gap, address its impact and any evidence that later filled it.
 
 SCAN / ROW-CONTINUATION REASONING:
 {access_path_reasoning}
@@ -2286,7 +2340,7 @@ fn reviewer_user_prompt(seed: &Value) -> String {
 fn checkpoint_prompt() -> String {
     r#"Stop requesting tools. Return a compact investigation checkpoint conforming to the supplied JSON schema.
 
-For every claim include a concise evidence_summary with exact values, evidence_refs and separate guidance_refs. Confidence must reflect evidence, never guidance alone. Record all consulted_guidance_refs, rejected hypotheses, unresolved questions, inspected entities, coverage gaps and priorities for an independent second session. This checkpoint is a factual case file, not chain-of-thought and not the final report."#
+For every claim include a concise evidence_summary with exact values, evidence_refs and separate guidance_refs. In claims, rejected_hypotheses and unresolved_questions, identify the relevant opening H1/H2/H3 and preserve contradictory observations. The orchestrator attaches the original opening_review. Confidence must reflect evidence, never guidance alone. Record all consulted_guidance_refs, rejected hypotheses, unresolved questions, inspected entities, coverage gaps and priorities for an independent second session. This checkpoint is a factual case file, not chain-of-thought and not the final report."#
         .to_string()
 }
 
@@ -2441,7 +2495,7 @@ fn extract_checkpoint(message: &Value) -> Result<Value, serde_json::Error> {
     parse_json_content(&extract_message_content(message))
 }
 
-fn parse_json_content(content: &str) -> Result<Value, serde_json::Error> {
+pub(super) fn parse_json_content(content: &str) -> Result<Value, serde_json::Error> {
     let trimmed = content
         .trim()
         .trim_start_matches("```json")
@@ -2534,20 +2588,6 @@ fn find_model_context_tokens(catalog: &Value, model: &str) -> Option<usize> {
         }
         _ => None,
     }
-}
-
-fn load_collection(args: &crate::Args) -> Result<AWRSCollection, Box<dyn std::error::Error>> {
-    let path = if !args.json_file().is_empty() {
-        args.json_file().to_string()
-    } else if !args.outfile.is_empty() {
-        args.outfile.clone()
-    } else {
-        format!("{}.json", args.directory())
-    };
-    let data = fs::read_to_string(&path)
-        .map_err(|e| format!("Cannot load AWR collection for local tools from {path}: {e}"))?;
-    load_awrs_collection_from_json_str(&data)
-        .map_err(|e| format!("Invalid AWR collection JSON in {path}: {e}").into())
 }
 
 fn stem_from_report_name(report_name: &str) -> String {
@@ -2705,6 +2745,78 @@ mod tests {
             schema["properties"]["claims"]["items"]["properties"]["evidence_summary"]["maxLength"],
             500
         );
+    }
+
+    #[test]
+    fn opening_review_preserves_ids_and_requires_a_reason_for_sparse_profiles() {
+        let row = json!({"statement":"Higher request rate","gradient_signal":"Wait changes with DB Time",
+            "workload_profile":"Wait time totals 12 seconds","comparison_window":"Snapshots 4 and 5","test":"Compare counts and latency"});
+        let mut review = json!({"hypotheses":[row.clone()], "coverage_gap":""});
+        assert!(opening::identify(review.clone()).is_err());
+        review["coverage_gap"] = json!("The other candidate has no aligned timeline.");
+        assert_eq!(
+            opening::identify(review.clone()).unwrap()["hypotheses"][0]["id"],
+            "H1"
+        );
+        review["hypotheses"] = json!([row.clone(), row]);
+        assert!(opening::identify(review.clone()).is_err());
+        review["hypotheses"][1]["statement"] = json!("Read latency increased");
+        let identified = opening::identify(review.clone()).unwrap();
+        assert_eq!(identified["hypotheses"][1]["id"], "H2");
+        review["hypotheses"][1]["test"] = json!("");
+        assert!(opening::identify(review).is_err());
+    }
+
+    #[test]
+    fn opening_profile_matches_gradient_scope_and_keeps_unmeasured_time_unknown() {
+        let mut c = AWRSCollection {
+            db_instance_information: DBInstance::default(),
+            initialization_parameters: HashMap::new(),
+            awrs: vec![],
+            sql_text: HashMap::new(),
+            nmon: None,
+        };
+        for id in 1..=3 {
+            let mut snapshot = crate::awr::AWR::default();
+            snapshot.snap_info.begin_snap_id = id;
+            snapshot.snap_info.end_snap_id = id + 1;
+            snapshot.sql_elapsed_time.push(crate::awr::SQLElapsedTime {
+                sql_id: "steady".into(),
+                elapsed_time_s: 6.0,
+                ..Default::default()
+            });
+            snapshot.time_model_stats.push(crate::awr::TimeModelStats {
+                stat_name: "DB time".into(),
+                time_s: id as f64 * 10.0,
+                ..Default::default()
+            });
+            snapshot
+                .foreground_wait_events
+                .push(crate::awr::WaitEvents {
+                    event: "read wait".into(),
+                    total_wait_time_s: id as f64 * 2.0,
+                    waits: 5,
+                    ..Default::default()
+                });
+            c.awrs.push(snapshot);
+        }
+        crate::analyze::restrict_to_report_scope(&mut c, "2-3").unwrap();
+        let profile = opening::workload(&c);
+        assert_eq!(profile["snapshot_count"], 1);
+        assert_eq!(profile["first_snapshot"]["snap_id"], 2);
+        assert_eq!(profile["total_db_time_s"], 20.0);
+        assert!(profile["total_db_cpu_s"].is_null());
+        assert_eq!(
+            profile["top_sql_by_observed_elapsed_seconds"][0],
+            json!({"sql_id": "steady", "observed_seconds":6.0, "observed_rows":1})
+        );
+        assert_eq!(profile["top_sql_by_observed_cpu_seconds"], json!([]));
+        assert_eq!(
+            profile["top_foreground_waits_by_observed_seconds"][0]["total_wait_time_s"],
+            4.0
+        );
+        c.awrs.clear();
+        assert!(opening::workload(&c)["total_db_time_s"].is_null());
     }
 
     #[test]

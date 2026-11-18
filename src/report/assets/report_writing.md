@@ -15,6 +15,14 @@ Write for an expert DBA making decisions during an incident. Keep the full inves
 
 Use the requested report language. Keep the eleven existing sections and all validation requirements. Do not shorten an investigation by skipping available evidence or making stronger claims.
 
+## Working hypotheses after scope
+
+Once the instance, workload and period are established, compare DB Time and DB CPU gradients with measured workload levels in the same scope. Include a costly, steady contributor if one is observed. Distinguish typical activity and peak signals, and locate each candidate on the actual timeline. Choose two or three distinct, testable explanations. Give each a stable identity (H1, H2 and optionally H3), the gradient observation, the absolute measurement with its unit, the comparison window and a check that could disprove it. If coverage prevents forming two, explain the missing comparison and retain any viable hypothesis.
+
+In section 2 present the opening hypotheses as they stood before the checks. In the relevant sections 3 through 8 refer back to each hypothesis and record what the chapter's measurements added, including contrary evidence or a specific coverage gap. Continue investigating material workload outside the opening hypotheses. Open section 9 with the result for every original identity. State confirmed, rejected or unresolved in the report language, the decisive observation and why it changes the interpretation. For an unresolved result specify the missing comparison. Support a confirmed or rejected outcome with measurements beyond model agreement.
+
+For classic API and local reports, give each opening hypothesis a Markdown heading such as `### H1 — <statement> {#hypothesis-h1}`. From the relevant later chapter link back with `[H1](#hypothesis-h1)` next to its evidence. Use a corresponding heading in section 9, for example `### H1 — <localized outcome> {#review-h1-confirmed}`. The anchor's last word must be `confirmed`, `rejected` or `unresolved`. Place the reasoning in a paragraph under each heading, outside the generated atlas markers. When fewer than two hypotheses are supportable, explain the coverage gap in section 2 under `{#hypothesis-gap}` and its consequence in section 9 under `{#review-gap}`.
+
 ## Reader explanations and the guided audit handoff
 
 The complete diagnostic record and the reader explanation are different layers. In MCP `record_finding`, keep `conclusion`, `mechanism`, `temporal_pattern`, `affected_workload`, `evidence_summary`, `evidence_limitations` and `details` complete. Add a `reader_brief` with four connected paragraphs:

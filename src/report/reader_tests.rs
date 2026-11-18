@@ -452,6 +452,7 @@ fn sourced_reader_brief_projects_only_the_matching_retained_visual_revision() {
             open_questions: vec![],
             evidence_refs: vec![SEED_EVIDENCE_ID.into()],
             visual: Some(visual),
+            ..Default::default()
         },
     );
     state.findings.insert(record.finding_id.clone(), record);
@@ -472,4 +473,140 @@ fn sourced_reader_brief_projects_only_the_matching_retained_visual_revision() {
     let stale = render_markdown(&json!({}), &state, &ReportEntityLinks::default());
     assert!(!stale.contains("class=\"audit-visual\""));
     assert!(stale.contains("audit-visual-unavailable"));
+}
+
+#[test]
+fn guided_hypotheses_connect_openings_checks_and_outcomes_in_each_report_language() {
+    let mut state = AnalysisSession::new(
+        json!({}),
+        ReportConfig::default(),
+        vec!["project-1".into(), "project-2".into()],
+    );
+    let mut audit = audit_workflow::AuditState::default();
+    let opening = |id: &str, statement: &str| {
+        json!({
+            "id":id, "statement":statement, "gradient_signal":"Peak read demand increased.",
+            "workload_profile":"Reads accounted for half the elapsed time.",
+            "comparison_window":"Snapshots 2 and 4", "test":"Compare read requests per execution."
+        })
+    };
+    for project in &state.project_ids {
+        let scope_id = format!("{project}-scope");
+        let profile_id = format!("{project}-profile");
+        let check_id = format!("{project}-check");
+        let chapter9_id = format!("{project}-outcomes");
+        let check_ref = format!("E-{project}-io");
+        state.evidence.insert(
+            check_ref.clone(),
+            EvidenceRecord {
+                evidence_id: check_ref.clone(),
+                tool_name: "get_database_load_summary".into(),
+                project_id: Some(project.clone()),
+                arguments: json!({}),
+                result: json!({}),
+            },
+        );
+        for (brief_id, chapter, fields) in [
+            (&scope_id, "scope", json!({})),
+            (
+                &profile_id,
+                "performance_profile",
+                json!({"hypothesis_basis":{(&scope_id):1}, "opening_hypotheses":[
+                    opening("H1", "More reads per execution"), opening("H2", "Higher latency <per read>"), opening("H3", "More concurrent readers")
+                ]}),
+            ),
+            (
+                &check_id,
+                "io",
+                json!({"hypothesis_basis":{(&profile_id):1},
+                "hypothesis_checks":[
+                    {"id":"H1","reason":"Read requests doubled in the comparison window.","evidence_refs":[check_ref]},
+                    {"id":"H2","reason":"Read latency was stable.","evidence_refs":[check_ref]},
+                    {"id":"H3","reason":"No session samples were captured.","evidence_refs":[]}
+                ]}),
+            ),
+            (
+                &chapter9_id,
+                "gradients_anomalies",
+                json!({"hypothesis_basis":{(&profile_id):1,(&check_id):1},
+                "hypothesis_outcomes":[
+                    {"id":"H1","status":"confirmed","reason":"The read count doubled for the same execution count.","evidence_refs":[check_ref]},
+                    {"id":"H2","status":"rejected","reason":"Milliseconds per request stayed constant.","evidence_refs":[check_ref]},
+                    {"id":"H3","status":"unresolved","reason":"Reader concurrency was not captured.","evidence_refs":[]}
+                ]}),
+            ),
+        ] {
+            let mut brief = json!({"brief_id":brief_id, "revision":1, "project_id":project, "chapter_id":chapter,
+                "question":"What changed?", "explanation":"Compare snapshots.", "conclusion":"Read volume increased.",
+                "evidence_boundary":"Only captured intervals.", "next_step":"Check concurrent readers.",
+                "evidence_refs":if chapter=="performance_profile" { vec![SEED_EVIDENCE_ID] } else { vec![check_ref.as_str()] }});
+            brief
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            audit
+                .briefs
+                .insert(brief_id.clone(), serde_json::from_value(brief).unwrap());
+        }
+    }
+    state.audit = Some(audit);
+    for (language, opening_title, outcomes) in [
+        (
+            "en",
+            "Opening hypotheses",
+            ["Confirmed", "Rejected", "Unresolved"],
+        ),
+        (
+            "pl",
+            "Hipotezy robocze",
+            ["Potwierdzona", "Odrzucona", "Nierozstrzygnięta"],
+        ),
+    ] {
+        state.config.language = language.into();
+        for appendix in [true, false] {
+            state.config.include_evidence_appendix = appendix;
+            let markdown = render_markdown(&json!({}), &state, &ReportEntityLinks::default());
+            let section = |number, next| {
+                markdown
+                    .split(&format!("\n## {number}."))
+                    .nth(1)
+                    .unwrap()
+                    .split(&format!("\n## {next}."))
+                    .next()
+                    .unwrap()
+            };
+            let profile = section(2, 3);
+            assert!(profile.contains(opening_title));
+            assert!(profile.contains("Reads accounted for half the elapsed time."));
+            assert!(profile.contains("Snapshots 2 and 4"));
+            assert!(profile.contains("Higher latency &lt;per read&gt;"));
+            assert!(!profile.contains("Milliseconds per request stayed constant."));
+            assert!(section(7, 8).contains("Read requests doubled in the comparison window."));
+            let synthesis = section(9, 10);
+            for outcome in outcomes {
+                assert!(synthesis.contains(outcome));
+            }
+            assert!(synthesis.contains("Milliseconds per request stayed constant."));
+            assert!(synthesis.contains("Reader concurrency was not captured."));
+            let html = render_markdown_html_document(&markdown, "", "", HashMap::new());
+            let document = scraper::Html::parse_document(&html);
+            let count = |selector: &str| {
+                document
+                    .select(&scraper::Selector::parse(selector).unwrap())
+                    .count()
+            };
+            for project in 1..=2 {
+                for hypothesis in 1..=3 {
+                    for prefix in ["audit-hypothesis", "audit-outcome"] {
+                        let id = format!("{prefix}-{project}-{hypothesis}");
+                        assert_eq!(count(&format!("#{id}")), 1);
+                        assert!(count(&format!("a[href='#{id}']")) > 0);
+                    }
+                }
+            }
+            assert_eq!(count("#evidence-seed-e0001"), usize::from(appendix));
+            assert_eq!(count("a[href='#evidence-seed-e0001']") > 0, appendix);
+            assert_eq!(count("#evidence-e-project-2-io"), usize::from(appendix));
+        }
+    }
 }

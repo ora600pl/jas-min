@@ -651,9 +651,13 @@ pub(crate) fn prepare_api_report(
 }
 
 /// Keep validated metadata with the normalized Markdown for reproducible re-export.
-pub(crate) fn finalize_api_markdown(markdown: &str) -> Result<String, String> {
+pub(crate) fn finalize_api_markdown_with_opening(
+    markdown: &str,
+    original: &[&str],
+) -> Result<String, String> {
     let (mut rendered, manifest) = prepare_api_report(markdown)?;
     let manifest = manifest.ok_or("New AI reports require one validated jasmin-issues block; raw response retained for correction")?;
+    crate::report::hypothesis_sections::validate(&rendered, original)?;
     {
         rendered.push_str(&format!(
             "\n\n```jasmin-issues\n{}\n```\n",
@@ -666,6 +670,10 @@ pub(crate) fn finalize_api_markdown(markdown: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn finalize_api_markdown(markdown: &str) -> Result<String, String> {
+        finalize_api_markdown_with_opening(markdown, &["More requests", "Longer waits"])
+    }
 
     fn manifest() -> IssueManifest {
         IssueManifest {
@@ -706,8 +714,10 @@ mod tests {
             text.push_str(&format!("## {number}. Section\n\n"));
             match number {
                 1 => text.push_str("Generator inserts the queue.\n\n"),
-                2 => text.push_str("### Wait evidence {#finding-f-1}\n\nInstance 1: 2 waiters.\n\n"),
+                2 => text.push_str("### H1 — More requests {#hypothesis-h1}\n\nCompare the request rate at onset with the preceding hour.\n\n### H2 — Longer waits {#hypothesis-h2}\n\nCompare mean wait latency for the same period.\n\n### Wait evidence {#finding-f-1}\n\nInstance 1: 2 waiters.\n\n"),
+                3 => text.push_str("[H1](#hypothesis-h1) requests doubled. [H2](#hypothesis-h2) latency held at 2 ms.\n\n"),
                 4 => text.push_str("### Cursor evidence {#finding-f-2}\n\nSeparate September sample; cause still unknown.\n\n"),
+                9 => text.push_str("### H1 — Confirmed {#review-h1-confirmed}\n\nTwice as many requests accounted for the additional waits.\n\n### H2 — Rejected {#review-h2-rejected}\n\nLatency stayed at 2 ms throughout the affected window.\n\n"),
                 11 => text.push_str("<!-- jasmin-actions:start -->\n<!-- jasmin-actions:end -->\n\n### Mandatory assessments\n\nCPU capacity remains unknown.\n\n"),
                 _ => text.push_str("Complete category evidence.\n\n"),
             }
@@ -741,6 +751,9 @@ mod tests {
         )
         .unwrap();
         assert!(html.contains("id=\"finding-f-1\""));
+        assert!(html.contains("id=\"hypothesis-h1\""));
+        assert!(html.contains("href=\"#hypothesis-h1\""));
+        assert!(html.contains("id=\"review-h2-rejected\""));
         assert!(!html.contains("language-jasmin-issues"));
     }
 
@@ -861,6 +874,59 @@ mod tests {
         let mut unknown = json.clone();
         unknown["unexpected"] = json!(true);
         assert!(serde_json::from_value::<IssueManifest>(unknown).is_err());
+    }
+
+    #[test]
+    fn fresh_reports_reconcile_every_opening_hypothesis_with_a_chapter_check() {
+        let raw = report(&manifest());
+        let old = raw.replace("{#review-h2-rejected}", "");
+        assert!(prepare_api_report(&old).is_ok());
+        assert!(finalize_api_markdown(&old).is_err());
+        assert!(finalize_api_markdown_with_opening(
+            &raw,
+            &["More requests", "Longer waits", "More commits"]
+        )
+        .is_err());
+        assert!(
+            finalize_api_markdown(&raw.replace("](#hypothesis-h2)", "](#hypothesis-h1)")).is_err()
+        );
+        assert!(finalize_api_markdown(
+            &raw.replace("Latency stayed at 2 ms throughout the affected window.", "")
+        )
+        .is_err());
+        let polish = raw
+            .replace("Rejected", "Nierozstrzygnięta")
+            .replace("review-h2-rejected", "review-h2-unresolved");
+        assert!(finalize_api_markdown(&polish).is_ok());
+        let sparse = raw
+            .replace("hypothesis-h2}", "hypothesis-gap}")
+            .replace("[H2](#hypothesis-h2)", "H2")
+            .replace("review-h2-rejected", "review-gap");
+        assert!(finalize_api_markdown_with_opening(&sparse, &["More requests"]).is_ok());
+        assert!(finalize_api_markdown(&sparse.replace("{#review-gap}", "")).is_err());
+    }
+
+    #[test]
+    fn opening_statements_remain_attached_to_their_original_ids() {
+        let raw = report(&manifest());
+        let original = ["More requests", "Longer waits"];
+        let formatted = raw.replace("H1 — More requests", "**H1** — More    `requests`");
+        assert!(finalize_api_markdown_with_opening(&formatted, &original).is_ok());
+        assert!(finalize_api_markdown_with_opening(
+            &formatted,
+            &["More `requests`", "Longer waits"]
+        )
+        .is_ok());
+        assert!(
+            finalize_api_markdown_with_opening(&raw, &["Longer waits", "More requests"]).is_err()
+        );
+        assert!(finalize_api_markdown_with_opening(
+            &raw.replace("Longer waits", "More commits"),
+            &original
+        )
+        .is_err());
+        assert!(finalize_api_markdown(&raw.replace("Longer waits", "MORE   REQUESTS")).is_err());
+        assert!(finalize_api_markdown(&raw.replace("H1 — Confirmed", "H2 — Confirmed")).is_err());
     }
 
     #[test]

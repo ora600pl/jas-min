@@ -9,6 +9,24 @@ const definition = (name, description, properties = {}, required = []) => ({ nam
   inputSchema: { type: 'object', properties, required, additionalProperties: false },
   annotations: { readOnlyHint: !['companion_set_language', 'companion_present', 'companion_note', 'companion_show', 'companion_select_project', 'companion_open', 'companion_start_audit', 'companion_record_brief', 'companion_advance_audit', 'companion_authorize_report', 'companion_resume_audit', 'companion_restore_audit'].includes(name), destructiveHint: false, openWorldHint: false } });
 const str = { type: 'string' };
+const evidenceRefs = { type: 'array', items: str };
+const hypothesisId = { type: 'string', enum: ['H1', 'H2', 'H3'] };
+const hypothesisText = { type: 'string', minLength: 1, maxLength: 4000 };
+const rows = (properties, minItems) => ({
+  type: 'array', minItems, maxItems: 3,
+  items: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false },
+});
+const hypothesisFields = {
+  opening_hypotheses: rows({
+    id: hypothesisId, statement: hypothesisText, gradient_signal: hypothesisText, workload_profile: hypothesisText,
+    comparison_window: hypothesisText, test: hypothesisText,
+  }, 2),
+  hypothesis_gap: { ...hypothesisText, description: 'Explain the missing gradient or measured load evidence in the performance profile when it prevents opening hypotheses.' },
+  hypothesis_checks: rows({ id: hypothesisId, reason: hypothesisText, evidence_refs: evidenceRefs }, 1),
+  hypothesis_outcomes: rows({
+    id: hypothesisId, status: { type: 'string', enum: ['confirmed', 'rejected', 'unresolved'] }, reason: hypothesisText, evidence_refs: evidenceRefs,
+  }, 2),
+};
 const language = { type: 'string', enum: ['en', 'pl'], description: 'Language of the current user dialogue: pl for Polish, en for English. Follow prose, not SQL or quoted source text.' };
 export const TOOLS = [
   definition('companion_open', 'Start the local avatar panel. Open the returned panel_url in the host browser or a local web browser. Live is default; demo is synthetic.', { mode: { enum: ['live', 'demo'], type: 'string' }, endpoint: str, language }),
@@ -25,7 +43,7 @@ export const TOOLS = [
   definition('companion_audit_status', 'Read saved audit chapters, explanations, open questions and report authorization from the upstream analysis. Briefs survive display-history eviction.'),
   definition('companion_record_brief', 'Save a human-readable explanation after a discussion or correction. Reuse brief_id to retain a revision history. Preserve uncertainty and exact evidence IDs. A saved chapter is discussed, not user-approved; changes revoke previous report authorization.', {
     brief_id: str, chapter_id: str, question: str, explanation: str, conclusion: str, evidence_boundary: str, next_step: str,
-    open_questions: { type: 'array', items: str }, evidence_refs: { type: 'array', items: str },
+    open_questions: { type: 'array', items: str }, evidence_refs: evidenceRefs, ...hypothesisFields,
     view_id: { type: 'string', description: 'Optional current display-cache view to snapshot with the brief. The text and evidence references remain independently required.' },
   }, ['chapter_id', 'question', 'explanation', 'conclusion', 'evidence_boundary', 'next_step', 'open_questions', 'evidence_refs']),
   definition('companion_advance_audit', 'Move to or revisit an audit chapter following the discussion. Never automatically run all chapters. A change revokes report authorization; no per-chapter approval is needed.', { chapter_id: str, complete_current: { type: 'boolean' } }, ['chapter_id']),
