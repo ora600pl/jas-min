@@ -46,9 +46,13 @@ pub(crate) struct Args {
     #[clap(long, default_value = "")]
     pub(crate) hints_policy: String,
 
-    ///Should I be quiet? This mode suppresses terminal output but still writes to log file
-    #[clap(short, long)]
+    /// Show detailed terminal output.
+    #[arg(id = "verbose", short = 'v', long, action = clap::ArgAction::SetFalse)]
     pub(crate) quiet: bool,
+
+    /// Suppress detailed terminal output (default).
+    #[arg(short = 'q', long = "quiet", overrides_with = "verbose")]
+    _quiet_flag: bool,
 
     ///Use AI model to interpret collected statistics and describe them.
     ///Environment variable [OPENAI_API_KEY | GEMINI_API_KEY | OPENROUTER_API_KEY | LOCAL_API_KEY] should be set to your personal API key

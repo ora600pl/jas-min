@@ -135,7 +135,7 @@ jas-min -d ./statspack_reports --nmon ./nmon/oraprod
 ### Parse one report to JSON on stdout
 
 ```bash
-jas-min --file ./AWR_Report_100_101.html
+jas-min --file ./AWR_Report_100_101.html --verbose
 ```
 
 ### Restrict the snapshot range
@@ -690,7 +690,8 @@ Options:
   -i, --id-sqls <ID_SQLS>                    Include comma-separated SQL_IDs in TOP SQL
   -j, --json-file <JSON_FILE>                Analyze a JSON file. Repeat with --mcp to load multiple projects
   -s, --snap-range <SNAP_RANGE>              Snapshot filter BEGIN-END [default: 0-666666666]
-  -q, --quiet                                Suppress terminal output, still write log
+  -v, --verbose                              Show detailed terminal output
+  -q, --quiet                                Suppress detailed terminal output (default)
   -a, --ai <AI>                              AI mode: VENDOR:MODEL:LANG
   -m, --mad-top <MAD_TOP>                   TOPn for retaining anomalies detected using MAD [default: 10]
   -W, --mad-window-size <MAD_WINDOW_SIZE>    MAD window size as percent of probes [default: 100]

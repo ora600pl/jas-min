@@ -653,16 +653,29 @@ mod cli_tests {
     }
 
     #[test]
-    fn quiet_remains_an_opt_in_flag() {
+    fn quiet_is_the_default() {
         let default_args = Args::try_parse_from(["jas-min", "--file", "report.html"]).unwrap();
-        assert!(!default_args.quiet);
+        assert!(default_args.quiet);
         assert_eq!(default_args.ridge_lambda, 0.05);
         assert_eq!(default_args.en_lambda, None);
         assert_eq!(default_args.en_alpha, 0.2);
 
-        let quiet_args =
-            Args::try_parse_from(["jas-min", "--file", "report.html", "--quiet"]).unwrap();
-        assert!(quiet_args.quiet);
+        for (flags, quiet) in [
+            (&["-q"][..], true),
+            (&["--quiet"][..], true),
+            (&["-v"][..], false),
+            (&["--verbose"][..], false),
+            (&["--verbose", "-q"][..], true),
+            (&["--quiet", "-v"][..], false),
+        ] {
+            let args = Args::try_parse_from(
+                ["jas-min", "--file", "report.html"]
+                    .into_iter()
+                    .chain(flags.iter().copied()),
+            )
+            .unwrap();
+            assert_eq!(args.quiet, quiet, "flags: {flags:?}");
+        }
     }
 
     #[test]
