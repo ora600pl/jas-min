@@ -1,0 +1,30 @@
+/* SQL excerpts opt in so earlier reports keep their reviewed public bytes. */
+.sql-example {
+    margin: 2rem 0;
+    padding-top: .85rem;
+    border-top: 2px solid var(--ink, #26322e);
+    scroll-margin-top: 1.5rem;
+}
+.sql-example h3 { margin: 0 0 .4rem; font-size: 1.1rem; }
+.sql-example .narrative, .sql-check { max-width: 78ch; }
+.sql-passages { margin: 1rem 0; }
+.sql-passages pre {
+    margin: .4rem 0;
+    padding: .8rem 1rem;
+    border-left: 3px solid #963440;
+    background: #f5f3f0;
+    color: #2a3330;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    tab-size: 4;
+}
+.sql-passages code { font: 500 .91rem/1.55 ui-monospace, "SFMono-Regular", Consolas, monospace; }
+.sql-location { margin: 1rem 0 .25rem; color: #515b56; font-size: .85rem; }
+@media print {
+    .sql-passages pre { break-inside: avoid; }
+    .sql-example h3, .sql-location { break-after: avoid; }
+}
+
+.entity-index { columns: 2 16rem; margin: .5rem 0 1.5rem; padding-inline-start: 1.2rem; }
+.entity-index li { break-inside: avoid; padding-block: .15rem; overflow-wrap: anywhere; }
+@media print { .full-sql pre { break-inside: auto; } }

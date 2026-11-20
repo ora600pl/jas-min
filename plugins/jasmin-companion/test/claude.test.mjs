@@ -13,7 +13,7 @@ test('Claude manifest launches a relocated plugin and keeps panel evidence in it
   const installed = join(scratch, 'plugin cache with spaces');
   const project = join(scratch, 'unrelated project');
   await mkdir(project);
-  for (const file of ['.claude-plugin', 'package.json', 'server.mjs', 'companion.mjs', 'demo.mjs', 'mcp-client.mjs', 'presentation.mjs', 'public', 'assets', 'skills']) {
+  for (const file of ['.claude-plugin', 'package.json', 'server.mjs', 'companion.mjs', 'discussed-entities.mjs', 'demo.mjs', 'mcp-client.mjs', 'presentation.mjs', 'preview-store.mjs', 'public', 'assets', 'skills']) {
     await cp(new URL('../' + file, import.meta.url), join(installed, file), { recursive: true });
   }
   const linked = join(scratch, 'linked plugin');
@@ -51,7 +51,7 @@ test('Claude manifest launches a relocated plugin and keeps panel evidence in it
   const names = new Set((await rpc('tools/list')).tools.map(tool => tool.name));
   for (const name of ['companion_open', 'companion_query', 'companion_present', 'companion_set_language', 'companion_context']) assert.ok(names.has(name));
   const { panel_url: url } = await call('companion_open', { mode: 'demo', language: 'pl' });
-  for (const file of ['', 'app.js', 'charts.js', 'style.css', 'avatar.png']) assert.equal((await fetch(url + file)).status, 200);
+  for (const file of ['', 'app.js', 'charts.js', 'gradients.js', 'style.css', 'avatar.png']) assert.equal((await fetch(url + file)).status, 200);
   const projectId = (await call('companion_projects')).projects[0].project_id;
   await call('companion_select_project', { project_id: projectId });
   const evidence = await call('companion_query', { tool: 'get_metric_time_series', arguments: { kind: 'load_profile', name: 'DBTime' } });

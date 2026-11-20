@@ -648,7 +648,23 @@ fn prepare_markdown(
         }
         replacements.push((
             start + signal_start_marker.len()..end,
-            format!("\n\n{}\n", crate::report_signals::render(atlas, true)),
+            format!(
+                "\n\n{}\n",
+                crate::report_signals::render(
+                    atlas,
+                    true,
+                    ReportLanguage::new(
+                        if markdown
+                            .lines()
+                            .any(|line| line.trim() == "# Analiza wydajności Oracle")
+                        {
+                            "PL"
+                        } else {
+                            "EN"
+                        }
+                    )
+                )
+            ),
         ));
     }
     replacements.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));

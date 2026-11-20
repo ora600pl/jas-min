@@ -39,6 +39,9 @@ base64 ="0.22.1"
 toon = { path = "vendor/toon", version = "0.1.2" }
 nalgebra = "0.34.1"
 chrono = "0.4.43"
+sha2 = { version = "0.10", default-features = false }
+zip = { version = "4", default-features = false }
+tempfile = "3"
 
 [dev-dependencies]
 # Byte-for-byte compatibility oracle for the locally optimized encoder.

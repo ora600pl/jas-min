@@ -1,4 +1,7 @@
 // Shared, data-only adapters. No DOM and no inferred RAC identities.
+import { gradientPresentation, localizeGradientFamilies } from './gradients.js';
+import { cpuScenarioPresentation } from './cpu-scenario.js';
+
 export const finite = value => typeof value === 'number' && Number.isFinite(value);
 export const valueAt = (row, path) => path.split('.').reduce((v, key) => v?.[key], row);
 export function timestamp(value) {
@@ -39,6 +42,10 @@ export function automaticPresentation(view, language = 'en') {
   const lineModel = (rows, path, name, unit) => timeline(rows, path, name, t(unit), language);
   const d = view.data.result ?? view.data;
   const source = view.data.evidence_id || view.tool;
+  if (view.tool === 'get_rac_cpu_scenario') return cpuScenarioPresentation(d, source, language);
+  if (view.tool === 'get_precomputed_analysis' && d.section === 'full_gradients') {
+    return gradientPresentation(d, view.data.evidence_id || 'get_precomputed_analysis(full_gradients)', language);
+  }
   const panels = [];
   const add = p => panels.push({ classification: 'measured', source, ...p });
   const bars = (title, rows, field, unit, label = 'event') => ({type:'bar',title:t(title),unit:t(unit),items:rows.map(r=>({label:String(r[label] ?? r.snap_id),value:finite(r[field])?r[field]:null}))});
@@ -157,7 +164,42 @@ export function renderPresentation(container,board,onSelect,language = 'en'){
       if(!p.items.length)card.append(node('p',t('No measurements returned.'),'empty'));
     }else if(p.type==='table'){
       const wrap=node('div',undefined,'table-wrap'),table=node('table'),thead=node('thead'),tr=node('tr');for(const c of p.columns)tr.append(node('th',c));thead.append(tr);table.append(thead);const body=node('tbody');
-      p.rows.forEach((r,i)=>{const row=node('tr');r.forEach((v,j)=>{const cell=node('td');if(j===0&&p.selections?.[i]){const b=node('button',String(v??'—'));b.onclick=()=>onSelect(p.selections[i]);cell.append(b);}else cell.textContent=typeof v==='number'?fmt(v):v??'—';row.append(cell);});body.append(row);});table.append(body);wrap.append(table);card.append(wrap);
+      const coefficientColumns = Array.isArray(p.coefficient_columns)
+        ? p.coefficient_columns.slice(0, p.columns.length).filter(j => Number.isInteger(j) && j >= 0 && j < p.columns.length)
+        : [];
+      const significant = new Intl.NumberFormat(language, { maximumSignificantDigits: 4 });
+      const scientific = new Intl.NumberFormat(language, { notation: 'scientific', maximumSignificantDigits: 4 });
+      p.rows.forEach((values, i) => {
+        const row = node('tr');
+        const scale = Math.max(0, ...coefficientColumns.map(j => finite(values[j]) ? Math.abs(values[j]) : 0));
+        values.forEach((value, j) => {
+          const cell = node('td');
+          if (j === 0 && p.selections?.[i]) {
+            const button = node('button', String(value ?? '—'));
+            button.onclick = () => onSelect(p.selections[i]);
+            cell.append(button);
+          } else if (finite(value) && p.number_format === 'significant') {
+            const formatter = value !== 0 && Math.abs(value) < 0.001 ? scientific : significant;
+            cell.textContent = formatter.format(value);
+            if (j === 5 && Array.isArray(p.unconverged_q95_families) && p.unconverged_q95_families.includes(p.gradient_families?.[i])) {
+              const warning = node('abbr', '†');
+              warning.title = t('Quantile 95 did not converge. Diagnostic coefficient.');
+              cell.append(warning);
+            }
+            if (coefficientColumns.includes(j)) {
+              const track = node('span', undefined, 'coefficient-track');
+              track.setAttribute('aria-hidden', 'true');
+              const bar = node('span', undefined, value < 0 ? 'negative' : 'positive');
+              bar.style.width = `${scale > 0 ? (Math.abs(value) / scale) * 50 : 0}%`;
+              track.append(bar);
+              cell.append(track);
+            }
+          } else cell.textContent = typeof value === 'number' ? fmt(value) : value ?? '—';
+          row.append(cell);
+        });
+        body.append(row);
+      });
+      table.append(body);wrap.append(table);card.append(wrap);
     }else if(p.type==='flow'){
       const flow=node('ol',undefined,'mechanism');for(const step of p.steps){const item=node('li');item.append(node('strong',step.title),node('p',step.detail));flow.append(item);}card.append(flow);
     }else if(p.type==='sql'){card.append(node('pre',p.text,'sql-text'));}
@@ -198,6 +240,7 @@ export function localizedView(view, language = 'en') {
     for (const part of parts) target = target[part];
     target[key] = text;
   }
+  if (result.presentation) localizeGradientFamilies(result.presentation.panels, language);
   return result;
 }
 export function translationStatus(view, language = 'en') {
@@ -208,6 +251,7 @@ export function translationStatus(view, language = 'en') {
 }
 export const translate = (language, text) => language === 'pl' ? (POLISH[text] ?? text) : text;
 const POLISH = {
+  'Quantile 95 did not converge. Diagnostic coefficient.': 'Brak zbieżności Quantile 95. Współczynnik diagnostyczny.',
   'Instance unspecified': 'Instancja nieokreślona', 'Database time': 'Czas bazy danych', 'Snapshot': 'Snapshot',
   'Multiple records share a timestamp without distinct instance IDs. Points are shown separately; no RAC instance is inferred and no totals are added.': 'Wiele rekordów ma ten sam czas bez odrębnych identyfikatorów instancji. Punkty pokazujemy osobno, bez przypisywania instancji RAC ani sumowania.',
   'Missing observations are gaps, not zero.': 'Brakujące obserwacje pozostają lukami — nie oznaczają zera.',

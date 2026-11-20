@@ -1,12 +1,20 @@
 import { finite } from './public/charts.js';
 const str = (s, max=500) => typeof s==='string' && s.trim().length>0 && s.length<=max;
 const fail = message => { throw new Error(`Invalid presentation: ${message}`); };
-export function validatePresentation(board) {
+export function validatePresentation(board, projectIds) {
   if (!board || !str(board.title,180) || !str(board.takeaway,1200)) fail('title and takeaway are required.');
   if (!Array.isArray(board.panels) || !board.panels.length || board.panels.length>6) fail('provide 1–6 panels.');
   if (JSON.stringify(board).length>700000) fail('payload exceeds 700 KB; narrow the window.');
   for (const p of board.panels) {
     if (!str(p.title,180) || !str(p.source,1000)) fail('each panel needs a title and a source/evidence reference.');
+    if (p.project_id !== undefined && (!str(p.project_id,96) || (projectIds && !projectIds.includes(p.project_id))))
+      fail('panel project_id must belong to this audit.');
+    if (p.row_project_ids !== undefined && (p.type !== 'table' || !Array.isArray(p.row_project_ids) ||
+        p.row_project_ids.length !== p.rows?.length || p.row_project_ids.some(id => !str(id,96) || (projectIds && !projectIds.includes(id)))))
+      fail('row_project_ids must identify the project of every table row.');
+    if (p.evidence_refs !== undefined && (!Array.isArray(p.evidence_refs) || p.evidence_refs.length < 1 || p.evidence_refs.length > 128 ||
+        p.evidence_refs.some(id => !str(id,128)) || new Set(p.evidence_refs).size !== p.evidence_refs.length))
+      fail('panel evidence_refs must contain distinct retained evidence IDs.');
     if (!['measured','hypothesis','explanation'].includes(p.classification)) fail('classify each panel as measured, hypothesis or explanation.');
     if (p.note!==undefined && !str(p.note,1500)) fail('invalid panel note.');
     if (['line','bar'].includes(p.type) && !str(p.unit,100)) fail('charts require explicit units.');
@@ -41,6 +49,9 @@ export const presentationProperties = {
   view_ids:{type:'array',items:text,description:'Optional existing view IDs to render together using automatic adapters. Up to 6 panels in total.'},
   panels:{type:'array',description:'Optional custom visual panels from verified evidence or a clearly labelled mechanism. No HTML or scripts.',items:{type:'object',properties:{
     type:{type:'string',enum:['line','bar','table','flow']},title:text,classification:{type:'string',enum:['measured','hypothesis','explanation']},source:{type:'string',description:'Evidence IDs or exact local artifact and extraction/derivation description. Required.'},note:text,unit:text,x_label:text,
+    project_id:{type:'string',description:'Project owning this panel. Defaults to the active project.'},
+    row_project_ids:{type:'array',items:text,description:'For a table covering multiple projects, provide the source project of every row in order.'},
+    evidence_refs:{type:'array', minItems:1, maxItems:128, uniqueItems:true, items:text, description:'Retained evidence IDs used by this specific panel. Include them in the brief when saving the board.'},
     series:{type:'array',items:{type:'object',properties:{name:text,points:{type:'array',items:{type:'object',properties:{x:{type:'number'},label:text,value:{type:['number','null']},snap_id:{type:'integer'},instance:text},required:['x','label','value']}}},required:['name','points']}},
     items:{type:'array',items:{type:'object',properties:{label:text,value:{type:['number','null']}},required:['label','value']}},
     columns:{type:'array',items:text},rows:{type:'array',items:{type:'array',items:{type:['string','number','null']}}},

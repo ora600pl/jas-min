@@ -5,6 +5,28 @@ report. Discussion progress and evidence completeness are separate: a chapter
 can have an explained coverage gap, while the original report gates still
 require every applicable measurement, table, assessment and finding.
 
+## From discussion to the client report
+
+Companion records the SQL IDs and wait events shown on boards, including table
+rows, annotations and previously saved chapter revisions. The conversation host
+calls `companion_record_discussed_entities` for names mentioned in chat. A
+direct MCP client can call `record_discussed_entities` with the analysis,
+project, `sql_ids` and `wait_events`. Reopening the audit restores the register.
+The problem-oriented report includes these entries even when their source brief
+was outside the selected chapters. A mention alone carries no measured cost.
+
+In a single-instance table, SQL IDs and wait names link to charts for that
+instance. A SQL chart includes the full captured statement. Each instance
+has one card per wait event, with the available foreground and background
+charts on the same card. The client report opens with bubble plots of the DB
+Time and DB CPU gradients across the full observation period of each instance.
+Each plot compares contributors within one predictor family and target. Its
+axes show model impact at P90 and P99 of changes across that period. Discuss
+dated peaks, their comparison windows and the checks of individual hypotheses
+in the chapters about those problems. An optional SQL recommendation quotes the applicable source
+expression, shows a proposed replacement and states the conditions under which
+it preserves the result.
+
 ## Conversation workflow
 
 1. Select a project in Companion. Compatible servers start a guided audit with

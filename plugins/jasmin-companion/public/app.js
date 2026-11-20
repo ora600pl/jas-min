@@ -2,11 +2,20 @@ import { renderChart, automaticPresentation, localizedView, translate } from './
 import { renderAudit } from './audit.js';
 const $ = id => document.getElementById(id);
 let revision = -1, renderedView = null, renderedAudit = null, actionError = '', language = 'en';
+let rawScope, submittedRaw;
+const rawDetails = $('raw').parentElement;
+rawDetails.addEventListener('toggle', recordOpenRaw);
+function recordOpenRaw() {
+  if (!rawDetails.open || !rawScope || submittedRaw === rawScope.view_id) return;
+  const id = rawScope.view_id;
+  submittedRaw = id;
+  action('raw-evidence', rawScope).then(ok => { if (!ok && submittedRaw === id) submittedRaw = null; });
+}
 const t = text => translate(language, text);
 async function action(route, args) {
   try {
     const r = await fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Companion-Client': 'panel' }, body: JSON.stringify(args) });
-    const data = await r.json(); if (!r.ok) throw new Error(data.error); actionError = ''; await refresh();
+    const data = await r.json(); if (!r.ok) throw new Error(data.error); actionError = ''; await refresh(); return true;
   } catch (e) { actionError = e.message; $('error').textContent = actionError ? `${t('The action could not be completed.')} ${actionError}` : ''; }
 }
 function render(state) {
@@ -20,14 +29,22 @@ function render(state) {
   $('mode').textContent = state.mode === 'demo' ? t('DEMO · SYNTHETIC DATA') : state.mode === 'live' ? 'JAS-MIN · MCP' : t('WAITING FOR CONVERSATION');
   $('project').textContent = state.project || '';
   const auditKey = JSON.stringify([state.analysis_id, state.project, state.audit?.revision, state.audit?.current_chapter_id,
-    state.viewed_chapter_id, state.current, state.chapter_views, state.audit?.report_authorized, state.audit_support, language]);
+    state.viewed_chapter_id, state.current, state.chapter_views, state.gradient_error, state.audit?.report_authorized, state.audit_support,
+    state.tx_pilot_available, state.tx_assets_available, state.cpu_pilot_available, state.cpu_assets_available,
+    state.combined_pilot_available, state.combined_assets_available, state.audit?.active_topic,
+    state.audit?.pilot_kind, state.audit?.snapshot?.revision, state.saved_audits, state.saved_audits_error,
+    state.client_report_available, state.client_assets_available, state.client_preview?.preview_id, state.client_release?.zip_path, state.audit?.client_report_plan_stale,
+    state.tx_preview?.preview_id, state.tx_release?.zip_path, state.cpu_preview?.preview_id, state.cpu_release?.zip_path, state.combined_preview?.preview_id, state.combined_release?.zip_path, language]);
   if (renderedAudit !== auditKey) {
-    renderAudit($('audit'), state,
+    renderAudit($('audit'), $('gradient-discussion'), state,
       (chapter_id, brief_id) => action('chapter', { analysis_id: state.analysis_id, project_id: state.project, chapter_id, brief_id }),
-      view_id => action('show', { view_id }));
+      view_id => action('show', { view_id }),
+      (route, args) => action(route, { ...args, analysis_id: state.analysis_id, project_id: state.project }));
     renderedAudit = auditKey;
   }
   const sourceView = state.views.find(v => v.id === state.current), view = sourceView && localizedView(sourceView, language), selection = state.selection;
+  rawScope = state.discussed_entities_available && state.audit && view && !view.presentation ?
+    { analysis_id: state.analysis_id, project_id: state.project, view_id: view.id } : null;
   $('selection').textContent = selection.snap_id != null ? `${selection.instance ? selection.instance+' · ' : ''}${selection.sql_id ? 'SQL '+selection.sql_id+' · ' : ''}Snapshot #${selection.snap_id}` : t('Select a point to focus the conversation');
   $('history').replaceChildren();
   for (const item of [...state.views].reverse()) {
@@ -56,6 +73,7 @@ async function refresh() {
     const response = await fetch('state'); if (!response.ok) throw new Error(t('Panel unavailable. Reopen it with companion_open.'));
     const state = await response.json();
     if (state.revision > revision) { render(state); revision = state.revision; }
+    recordOpenRaw();
     $('error').textContent = actionError ? `${t('The action could not be completed.')} ${actionError}` : '';
 }
 async function poll() {

@@ -59,6 +59,159 @@ jas-min \
 
 One server accepts at most 32 projects.
 
+### Automatic checkpoints for guided audits
+
+Selecting a project in Companion starts a general guided audit. The core saves
+the initial discussion, each recorded or corrected brief, and each discussion
+chapter transition under `.jasmin/audits/<audit_id>/` in its working directory.
+Set `JASMIN_AUDIT_WORKSPACE` to an existing private directory to select a
+different location. Browsing an earlier chapter leaves the current checkpoint
+intact. The save receipt includes the revision and the path to its JSON file.
+Keep the sibling `objects/` directory with the numbered files. It contains the
+discussion state and evidence referenced by those revisions.
+
+After restarting MCP with the same captures, scope and workspace, choose
+**Saved audits → Resume** in Companion. The stable `audit_id` identifies the
+discussion and the response supplies the new connection's `analysis_id`.
+To adopt a running general discussion on a compatible core, reopen that
+analysis in Companion. For a legacy audit that used the TX or CPU store for
+its general discussion, explicitly request `resume_saved_audit` with
+`as_general: true` on its latest revision. This retains the audit ID and
+appends a checkpoint. Existing specialized audits keep their type on a
+normal resume.
+
+### Previewing a problem-oriented client report
+
+Use `save_client_report_plan` on a general guided audit to checkpoint the
+ordered problems, public narrative, source brief revisions and selected
+measurements. A chapter can draw on several discussion topics. Choose a
+measured board table by brief revision and panel index to retain its headers,
+units and source scope. SQL measurements can compare the matched CPU and
+elapsed sample, list individual intervals or describe a family selected by
+module prefix and captured SQL text. A family source shows which statements
+contributed to its totals and which had comparable execution counters.
+Use `sql_excerpt` to select literal passages of captured SQL by instance
+and SQL_ID. Include the behavior, scaling condition and verification step.
+The source page preserves exact text and character positions and links back
+to the chapter. Quoted code is read from the capture when the preview is built.
+
+`preview_client_report` returns an offline `raport.html` and sources under
+`wykresy/`. Open the entry file or the preview link in Companion. Source links
+select the measured instance and return to the originating table. When a brief
+is corrected, use `get_client_report_plan` to inspect affected chapters,
+review their public text and save the current source revisions. Report plans
+survive a restart with the original audit workspace and captures.
+
+Use `publish_client_report` with the reviewed preview ID and the user's
+explicit release request to issue its frozen files as a ZIP.
+
+### Durable row-lock pilot
+
+Start the MCP server with the working directory of the investigation, or set
+`JASMIN_AUDIT_WORKSPACE` to an existing private directory. In Companion select
+the project (include both projects for a two-instance comparison) and enable
+the TX pilot. Saving an explanation, correcting it or moving the discussion to
+another chapter commits a snapshot under `.jasmin/audits/`. Browsing a chapter
+only changes the displayed view. For a correction, reuse the brief ID and attach
+the supporting board. Save the reason for the correction in `private_note`
+and put the remaining question and next test in the brief.
+
+After a restart, load the same source captures with the same snapshot scope and
+working directory. Open a fresh Companion panel, list the saved audits and
+resume the selected entry. The core replays the evidence and the panel restores
+the current chapter, selected brief, board and private continuation context.
+
+To produce a client edition, preview the current TX brief with a reader title,
+an action owner, a success criterion and the retained foreground TX timeline
+for each public instance label and window. Another project's timeline needs
+its own brief and revision. Open the client preview in Companion, review the
+decision and measurements, then publish that preview when the auditor requests
+the ZIP. Companion can download the verified archive through its connection
+to MCP, including when the server is reached through a tunnel. The edition under
+`wydania/` opens at `index.html` after extraction. The private snapshots and
+publication recipes stay under `.jasmin/`.
+
+The process-level replay in `scripts/test-tx-pilot.py` accepts two external AWR
+JSON captures with a common TX window, the native instance numbers, public
+labels and a private output workspace. Run it with `--help` for the arguments.
+It starts dedicated local MCP and Companion processes, kills both after a
+correction and stage transition, restores through fresh processes and compares
+the ZIP files with the preview and the two source measurements.
+
+### Durable RAC CPU scenario
+
+Load the AWR capture for each RAC instance and select all of them in one analysis.
+Call `enable_cpu_pilot` to select the RAC CPU scenario workflow for the
+audit. The same navigation and restart procedure applies as for the
+row-lock pilot. Existing saved row-lock discussions retain their type.
+
+Call `get_rac_cpu_scenario` with the selected project IDs, a monitoring module
+prefix, a list of SQL IDs and the assumed percentage reduction in their CPU
+cost. The tool pairs the AWR intervals and divides DB CPU seconds by each
+instance's own elapsed seconds before adding the rates. It computes the cluster
+peak from that series. CPU-hours describe cumulative work over the period.
+Only observed TOP CPU contributions enter the modeled reduction.
+
+Attach the scenario board to a brief and record its evidence reference. In
+Companion, preview the current brief with public names for every instance, the
+decision title, action owner and success criterion. The list of selected SQL IDs
+can be included explicitly. The offline edition contains the measured and
+modeled peaks, assumptions, and interval tables for the cluster and each
+instance. Open the preview and publish the same edition with
+`publish_cpu_report` when the user requests a ZIP.
+
+Use `python3 scripts/test-cpu-pilot.py --help` for the two-process restart test.
+It checks every paired interval against independently supplied reference rows,
+restores the saved discussion and verifies the offline client archive.
+
+### One audit with TX and RAC CPU topics
+
+Load the same RAC sources into a single analysis and call `enable_combined_pilot`.
+Companion displays two topic buttons. Switching with `switch_audit_topic` saves
+the active discussion and returns to the other topic's project, chapter, brief,
+board and correction. Browsing a chapter within a topic keeps the current
+snapshot. After a restart, use `resume_saved_audit` with the same source captures
+and scope.
+
+The TX wait timeline accepts optional inclusive `first_snap_id` and
+`last_snap_id` bounds on the beginning snapshot. This lets a short lock
+investigation keep its original evidence window alongside a longer RAC scenario.
+The CPU scenario keeps the per-instance measurements for the entire selected
+scope. Each topic retains its own evidence and action owner.
+
+When the auditor asks Companion to generate the final combined report, the agent
+calls `companion_preview_combined_report` with the current TX and CPU briefs and
+the same public instance names in both selections. It checks the rendered
+findings and measurements, then uses `companion_publish_combined_report` with
+that request to issue the ZIP. The returned receipt identifies the archive
+available through **Download ZIP**. A preview-only request stops at the preview.
+After revising either conclusion, generate a fresh preview for publication.
+
+Extract the ZIP and open `index.html`. This single document contains the
+summary, both decision chapters, their detailed measurements and the chart
+catalogue. The adjacent `wykresy/` directory contains the chart cards and
+shared offline assets. The menu links to sections of the report, and links
+from individual charts return to the corresponding measurements.
+The classic foreground TX chart
+covers the instance's source period. Its return link opens the selected incident
+window. The two measured dashboard series (DB Time and DB CPU) link back to the
+instance measurements. The cluster-wide conditional scenario is shown separately.
+When the reader-facing selection includes SQL IDs, the directory lists the
+available classic SQL charts by statement and instance.
+
+The edition takes its chart data from the classic HTML generated for the
+selected projects. To publish from an existing chart archive, set
+`JASMIN_ORIGINAL_REPORTS_DIR` on the server to the parent of its per-project
+`<dataset>.html_reports` directories. It verifies the source against the loaded AWR capture,
+packages the figures and a shared local Plotly library, and serves those same
+files in the Companion preview.
+
+`python3 scripts/test-combined-pilot.py --help` describes the local replay from
+two published pilot receipts. The test reads the original histories, re-queries
+the selected AWR evidence, reassigns evidence references within each topic,
+corrects the TX brief, restarts both processes and verifies the issued files.
+Store the new audit and its verification receipt in a separate private workspace.
+
 Repeated `--directory` or `--json-file` inputs require `--mcp`. JAS-MIN derives
 a stable, lowercase `project_id` from every basename and adds a numeric suffix
 when basenames collide. The IDs are published by
@@ -211,6 +364,13 @@ An evidence tool request is processed in this order:
    evidence record; otherwise the result receives the next `E-nnnn` identifier.
 8. The result is returned as MCP structured content together with its
    `analysis_id`, `project_id`, `evidence_id`, tool name, and cache status.
+
+For a panel preview, `get_precomputed_analysis` also accepts
+`preview_only: true`. An exact match to previously collected evidence includes
+its original `evidence_id`. A new preview returns the values without registering
+them or invalidating the report review. To cite those values in an audit brief,
+repeat the same query with the default `preview_only: false` and use the
+returned evidence ID.
 
 Comparison tools resolve both project IDs inside the same analysis, calculate
 bounded distribution summaries, and register the complete comparison as one
@@ -1435,3 +1595,7 @@ summaries expose `db_time_rate` and `db_cpu_rate` (`per_second`, `source`). Exis
 return these same selected rates plus `value_source` for each observed point. Other
 Load Profile metrics keep their original rates. Raw snapshot fields are preserved.
 Classic functions and MCP use the same accessor; no additional Oracle queries are run.
+
+### Finding-scoped evidence in guided reports
+
+A discussion brief may include `evidence_cards` with stable IDs, a kind, title, Markdown body and decisive evidence references. Revisions preserve the cards with their source evidence. Select cards via `record_finding.reader_brief.supporting_card_ids` in reading order. Review and finalization verify that the selection belongs to the exact source brief revision and is supported by the decisive references. This separates the full checkpoint evidence inventory from the measurements and hypotheses shown beneath each finding. Legacy briefs retain a structured, paragraph-deduplicated presentation.

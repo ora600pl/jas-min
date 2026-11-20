@@ -24,6 +24,8 @@
 /target/
 
 # JAS-MIN generated analysis and local test-run artifacts
+.jasmin/
+/wydania/
 /test_runs/
 /jasmin/
 /report_for_ai.toon

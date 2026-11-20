@@ -12,12 +12,18 @@ const checks = {};
 try {
   await companion.open({ mode: 'live', endpoint, language: 'pl' });
   const projects = await companion.projects();
-  assert.equal(projects.projects.length, 1, 'Use an isolated one-project fixture.');
-  const project_id = projects.projects[0].project_id;
+  const browserQA = process.env.JASMIN_AUDIT_BROWSER_QA === '1';
+  const project_id = 'nonexistent-test-dataset';
+  assert.deepEqual(projects.projects.map(p => p.project_id).sort(),
+    browserQA ? ['gradient-fixture', project_id] : [project_id], 'Use only the isolated test fixtures.');
   const selected = await companion.select(project_id);
   const analysis_id = selected.analysis_id;
   assert.equal(selected.audit_support, 'available');
   assert.equal(selected.audit.audit_started, true);
+  assert.equal(selected.audit.pilot_kind, 'general');
+  assert.equal(selected.audit.snapshot.persisted, true);
+  assert.equal(selected.audit.snapshot.revision, 1);
+  assert.ok(selected.audit.snapshot.path.endsWith('00000000000000000001.json'));
   assert.equal(selected.audit.report_authorized, false);
   assert.equal(selected.audit.current_chapter_id, 'scope');
   assert.ok(selected.audit.chapters.some(c => c.chapter_id === 'performance_profile'));
@@ -45,7 +51,9 @@ try {
     open_questions: [], evidence_refs: [evidence.evidence_id], view_id: board.view_id });
   await companion.advanceAudit({ chapter_id: 'performance_profile', complete_current: true });
   const hypothesisGap = 'Próbka obejmuje pojedynczy snapshot. Brakuje gradientów i porównywalnego okresu odniesienia.';
-  const briefInput = { chapter_id: 'performance_profile', question: 'Czy podsumowanie ustala przyczynę kosztu?',
+  const evidenceCard = { id: 'window', kind: 'measurement', title: 'Granice próby',
+    body: `| Miara | Wartość |\n|---|---|\n| Liczba migawek | ${evidence.result.snapshot_count} |`, evidence_refs: [evidence.evidence_id] };
+  const briefInput = { evidence_cards: [evidenceCard], chapter_id: 'performance_profile', question: 'Czy podsumowanie ustala przyczynę kosztu?',
     explanation: originalExplanation, conclusion: 'Podsumowanie wyznacza następny pomiar; przyczyna pozostaje nieustalona.',
     hypothesis_gap: hypothesisGap, evidence_boundary: boundary, next_step: nextStep,
     open_questions: ['Czy pojedyncze wykonanie stało się droższe?'], evidence_refs: refs };
@@ -90,7 +98,7 @@ try {
 
   const finding = await core('record_finding', { category: 'performance_profile', title: 'Granice podsumowania testowej próbki',
     severity: 'informational', confidence: 'low', conclusion: brief.conclusion,
-    reader_brief: { source_audit_brief: { brief_id: brief.brief_id, revision: brief.revision }, observed,
+    reader_brief: { supporting_card_ids: ['window'], source_audit_brief: { brief_id: brief.brief_id, revision: brief.revision }, observed,
       explanation: correctedExplanation, next_step: nextStep, boundary, evidence_refs: refs },
     mechanism: 'Agregacja sumuje obserwowany czas bazy. Ten rachunek nie rozdziela wolumenu pracy od kosztu pojedynczego wykonania.',
     temporal_pattern: `Zakres próbki zaczyna się od ${evidence.result.first_snapshot?.begin_snap_time || 'braku oznaczonego początku'} i kończy na ${evidence.result.last_snapshot?.end_snap_time || 'braku oznaczonego końca'}; nie wyznaczono okresu porównawczego.`,
@@ -109,6 +117,9 @@ try {
   assert.equal(preview.status.ready_to_finalize, false);
   for (const text of [observed, correctedExplanation, boundary, nextStep]) assert.ok(preview.markdown.includes(text), `Preview lost reader text: ${text}`);
   assert.ok(preview.html.includes(correctedExplanation));
+  assert.ok(preview.html.includes(evidenceCard.title));
+  assert.ok(preview.html.includes('<table>'));
+  assert.deepEqual(brief.evidence_cards, [evidenceCard]);
   assert.ok(preview.markdown.includes(hypothesisGap));
   const expectedChecks = ['explanation_clear', 'actions_executable', 'uncertainty_preserved', 'evidence_preserved', 'language_consistent'];
   assert.deepEqual(preview.editorial_checklist, expectedChecks);
@@ -123,6 +134,7 @@ try {
   assert.equal(draft.report.coverage.ready_to_finalize, false);
   assert.deepEqual(draft.report.evidence[evidence.evidence_id].result, evidence.result);
   assert.equal(draft.report.findings[0].reader_brief.source_audit_brief.revision, 2);
+  assert.deepEqual(draft.report.findings[0].reader_brief.supporting_card_ids, ['window']);
   assert.ok(draft.markdown.includes(correctedExplanation));
   checks.editorial_gate = true; checks.explicit_incomplete_draft = true; checks.raw_evidence_preserved = true;
 
@@ -133,6 +145,9 @@ try {
   // A fresh transport and analysis exercise the same import path used after restart.
   await restored.open({ mode: 'live', endpoint, language: 'pl' });
   const resumed = await restored.restoreAudit({ checkpoint: JSON.parse(JSON.stringify(exported.checkpoint)) });
+  assert.equal(resumed.pilot_kind, 'general');
+  assert.equal(resumed.snapshot.persisted, true);
+  assert.notEqual(resumed.audit_id, selected.audit.audit_id);
   assert.notEqual(resumed.analysis_id, analysis_id);
   assert.equal(resumed.report_authorized, false); assert.equal(resumed.editorial_review_current, false);
   assert.deepEqual(resumed.briefs, (await companion.auditStatus()).briefs);
@@ -143,10 +158,36 @@ try {
   assert.deepEqual(reexported.checkpoint.evidence, exported.checkpoint.evidence);
   assert.deepEqual(reexported.checkpoint.audit.history, exported.checkpoint.audit.history);
   checks.restore_new_analysis = true; checks.restore_clears_authorization = true;
-  if (process.env.JASMIN_AUDIT_BROWSER_QA === '1') {
+  const sourceBrief = resumed.briefs.find(b => b.chapter_id === 'scope');
+  const reference = { brief_id: sourceBrief.brief_id, revision: sourceBrief.revision };
+  const problem = { id: 'zakres', title: 'Zakres pomiaru', question: sourceBrief.question,
+    conclusion: sourceBrief.conclusion, interpretation: 'Wielkość próbki wyznacza granicę porównania.',
+    limitation: 'Z jednej próbki nie można ustalić kosztu typowego wykonania.', owner: 'DBA',
+    next_step: sourceBrief.next_step, success_metric: 'Porównanie tej samej liczby zakończonych operacji.',
+    briefs: [reference], measurements: [{kind:'board_panel', ...reference, panel_index:0}] };
+  const plan = { title:'Przegląd wydajności', introduction:'Porównujmy tę samą pracę w obu okresach.', chapters:[problem] };
+  const savedPlan = await restored.saveClientReportPlan({ plan });
+  assert.equal(savedPlan.snapshot.revision,resumed.snapshot.revision + 1);
+  assert.equal(savedPlan.report_authorized,false);
+  assert.deepEqual((await restored.getClientReportPlan()).plan,plan);
+  const edition = await restored.previewClientReport();
+  assert.equal(edition.entry_file,'raport.html');
+  const page = await restored.readPilotAsset('client',edition.preview_id,edition.entry_file);
+  const html = page.buffer.toString('utf8');
+  for (const value of [problem.title,problem.interpretation,'Miara','Wartość','Liczba snapshotów']) assert.ok(html.includes(value),value);
+  assert.ok(!html.includes(reference.brief_id));
+  const correction = await restored.recordBrief({ ...briefInput, brief_id: sourceBrief.brief_id, chapter_id:'scope',
+    hypothesis_gap: undefined, conclusion:'Porównaj zakresy po przeliczeniu zmian pracy.' });
+  assert.equal(correction.client_report_plan_stale,true);
+  assert.equal((await restored.getClientReportPlan()).stale,true);
+  assert.deepEqual((await restored.readPilotAsset('client',edition.preview_id,edition.entry_file)).buffer, page.buffer);
+  await assert.rejects(restored.previewClientReport());
+  checks.client_report_panel_roundtrip = true;
+  if (browserQA) {
     const { checkChapterNavigation } = await import('./chapter-navigation-browser.mjs');
     await checkChapterNavigation(endpoint, analysis_id, project_id);
     checks.browser_chapter_navigation = true;
+    checks.browser_resumed_gradient_models = true;
   }
   console.log(JSON.stringify({ ok: true, ...checks }));
 } finally {

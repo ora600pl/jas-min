@@ -73,3 +73,16 @@ html:lang(pl) .severity-informational::before { content: "INFORMACYJNE"; }
 .audit-bar strong { display: block; font-size: .9rem; }
 .audit-bar-track { height: .8rem; background: #eee; }
 .audit-bar-fill { height: 100%; background: #b3131b; }
+
+.finding-evidence .finding-proof, .coverage-detail .finding-proof {
+    max-width: 76ch;
+    margin: .8rem 0;
+    padding: .75rem 1rem;
+    border-left: 3px solid #c6cbd0;
+    background: #fff;
+    line-height: 1.55;
+}
+.finding-proof h4 { margin: .1rem 0 .35rem; font-size: 1rem; color: #272b30; }
+.finding-proof p { margin: .35rem 0; }
+.finding-proof header > span { color: #565b63; font-size: .85rem; }
+.finding-proof pre, .finding-detail pre { overflow: auto; }

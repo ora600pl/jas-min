@@ -38,7 +38,7 @@ pub struct DbLoadRate {
     pub source: &'static str,
 }
 
-fn time_model_seconds(a: &AWR, metric: DbLoadMetric) -> Option<f64> {
+pub(crate) fn time_model_seconds(a: &AWR, metric: DbLoadMetric) -> Option<f64> {
     if !available(a, "time_model_stats", !a.time_model_stats.is_empty()) {
         return None;
     }

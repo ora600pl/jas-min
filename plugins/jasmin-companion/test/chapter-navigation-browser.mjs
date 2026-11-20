@@ -4,6 +4,93 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createServer } from '../server.mjs';
+import { Companion } from '../companion.mjs';
+
+async function checkResumedGradientModels(browser, endpoint) {
+  const project_id = 'gradient-fixture';
+  const writer = new Companion();
+  const resumed = await createServer();
+  try {
+    await writer.open({ endpoint, language: 'pl' });
+    const { analysis_id } = await writer.select(project_id);
+    const load = await writer.query('get_database_load_summary', { top_n: 3 }, false);
+    const oldTitle = 'Liczba snapshotów w profilu obciążenia';
+    const saved = writer.present({ title: oldTitle, takeaway: 'Liczba snapshotów w badanym okresie.', language: 'pl',
+      panels: [{ type: 'table', title: 'Zakres próbki', source: load.evidence_id, classification: 'measured',
+        columns: ['Miara', 'Wartość'], rows: [['Snapshoty', load.result.snapshot_count]] }] });
+    await writer.recordBrief({ chapter_id: 'performance_profile', view_id: saved.view_id,
+      question: 'Ile snapshotów obejmuje analiza?', explanation: 'Zliczono dostępne snapshoty.',
+      conclusion: 'Zapisano zakres próbki.', evidence_boundary: 'Podsumowanie obejmuje całą próbkę.',
+      next_step: 'Porównaj wyniki modeli.', evidence_refs: [load.evidence_id] });
+    const prior = await writer.advanceAudit({ chapter_id: 'sql' });
+    const before = (await writer.exportAudit()).checkpoint;
+    const { panel_url } = await resumed.call('companion_open', { endpoint, language: 'pl' });
+    await resumed.call('companion_resume_audit', { analysis_id, project_id });
+    const page = await browser.newPage();
+    page.setDefaultTimeout(8000);
+    await page.goto(panel_url);
+    await page.locator('.audit-chapters button[data-chapter-id="performance_profile"]').click();
+    const chart = page.locator('#chart');
+    const matrix = chart.locator('table').filter({ has: page.getByRole('columnheader', { name: /ridge/i }) }).first();
+    await matrix.getByRole('columnheader', { name: /elastic net/i }).waitFor();
+    const headers = await matrix.locator('th').allTextContents();
+    const modelNames = ['ridge', 'elastic_net', 'huber', 'quantile95'];
+    const indices = [/ridge/i, /elastic net/i, /huber/i, /(?:quantile|kwantyl|Q)\s*95/i].map(pattern => {
+      const index = headers.findIndex(h => pattern.test(h));
+      assert.ok(index >= 0, `Missing regression model in the rendered matrix: ${pattern}`);
+      return index;
+    });
+    assert.ok(await chart.getByRole('columnheader', { name: 'P90 (impact_active)' }).isVisible());
+    assert.ok(await chart.getByRole('columnheader', { name: 'P99 (impact_peak)' }).isVisible());
+    assert.ok(await chart.getByRole('columnheader', { name: 'Status Quantile 95' }).isVisible());
+    assert.ok(await matrix.locator('.coefficient-track > span').evaluateAll(bars =>
+      bars.some(b => b.getBoundingClientRect().width > 1)));
+    assert.ok(await page.evaluate(() => document.querySelector('#chart').compareDocumentPosition(
+      document.querySelector('#gradient-discussion .audit-briefs')) & Node.DOCUMENT_POSITION_FOLLOWING));
+    const dashboard = await resumed.call('companion_context', { include_displayed_board: true });
+    assert.equal(dashboard.viewed_chapter_id, 'performance_profile');
+    assert.equal(dashboard.audit.current_chapter_id, 'sql');
+    assert.equal(dashboard.audit.revision, prior.revision);
+    assert.equal(dashboard.audit.report_authorized, prior.report_authorized);
+    const panel = dashboard.displayed_board.panels.find(p => p.columns?.some(c => /ridge/i.test(c)));
+    assert.match(panel.source, /get_precomputed_analysis.*full_gradients/);
+    const gradient = await writer.client.call('get_precomputed_analysis', { project_id, analysis_id,
+      section: 'full_gradients', ranking: 'extreme', limit: 4, preview_only: true });
+    const rendered = await matrix.locator('tbody tr').evaluateAll(rows => rows.map(r => Array.from(r.cells, c => c.textContent)));
+    assert.ok(rendered.some(([family]) => family.includes('DB Time')));
+    assert.ok(rendered.some(([family]) => family.includes('DB CPU')));
+    const measuredModels = new Set();
+    for (const [rowIndex, cells] of rendered.entries()) {
+      const [family, predictor] = cells;
+      const key = family.startsWith('DB Time') ? 'db_time_instance_stats_counters' : 'db_cpu_instance_stats';
+      for (const [i, model] of modelNames.entries()) {
+        const fitted = gradient.result.data[key].model_rankings[model].find(r => r.event_name === predictor);
+        assert.equal(panel.rows[rowIndex][indices[i]], fitted?.gradient_coef ?? null);
+        const value = cells[indices[i]];
+        if (fitted) {
+          measuredModels.add(model);
+          const visible = Number(value.replaceAll(/\s/g, '').replace(',', '.').replace('−', '-'));
+          const tolerance = Math.abs(fitted.gradient_coef) * 0.001;
+          assert.ok(Number.isFinite(visible) && Math.abs(visible - fitted.gradient_coef) <= tolerance,
+            `${family} / ${predictor} / ${model}: displayed ${value}, fitted ${fitted.gradient_coef}`);
+        } else assert.equal(value, '—', 'A coefficient absent from the returned page stays unknown.');
+      }
+    }
+    assert.deepEqual([...measuredModels].sort(), [...modelNames].sort());
+    assert.deepEqual((await writer.exportAudit()).checkpoint, before);
+    await page.setViewportSize({ width: 420, height: 800 });
+    assert.ok(await matrix.evaluate(table => {
+      const wrap = table.parentElement;
+      return wrap.scrollWidth > wrap.clientWidth && wrap.getBoundingClientRect().right <= window.innerWidth;
+    }), 'The narrow panel scrolls the model matrix within its own container.');
+    await page.locator('#audit').getByRole('button', { name: oldTitle, exact: true }).click();
+    await page.waitForFunction(title => document.querySelector('#title')?.textContent === title, oldTitle);
+    assert.ok(await chart.getByText(String(load.result.snapshot_count), { exact: true }).isVisible());
+    await page.close();
+  } finally {
+    await Promise.allSettled([writer.close(), resumed.close()]);
+  }
+}
 
 export async function checkChapterNavigation(endpoint, analysis_id, project_id) {
   const { chromium } = createRequire(import.meta.url)('playwright');
@@ -97,6 +184,7 @@ export async function checkChapterNavigation(endpoint, analysis_id, project_id) 
     assert.equal(returned.audit.revision, audit.revision);
     assert.equal(returned.audit.report_authorized, true);
     assert.deepEqual(errors, []);
+    await checkResumedGradientModels(browser, endpoint);
   } finally {
     try { await app?.close(); } finally { await browser.close(); }
   }

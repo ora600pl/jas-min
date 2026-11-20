@@ -11,11 +11,25 @@ fn cell<'a>(row: &'a ReportTableRow, key: &str) -> &'a str {
     row.cells.get(key).map(String::as_str).unwrap_or("")
 }
 
+pub(super) fn family_label(family: &str, l: ReportLanguage) -> &str {
+    match family {
+        "db_time_foreground_wait_events" => l.choose("Foreground waits", "Oczekiwania sesji"),
+        "db_time_sql_elapsed_time" => l.choose("SQL elapsed time", "Czas wykonania SQL"),
+        "db_cpu_sql_cpu_time" => l.choose("SQL CPU", "CPU zapytań SQL"),
+        "db_cpu_instance_stats" => l.choose("CPU counters", "Liczniki CPU"),
+        "db_time_instance_stats_counters" => l.choose("Activity counters", "Liczniki aktywności"),
+        "db_time_instance_stats_volumes" => l.choose("Work volumes", "Wolumen pracy"),
+        "db_time_instance_stats_time" => l.choose("Time-model signals", "Miary modelu czasu"),
+        _ => family,
+    }
+}
+
 pub(super) fn build_signal_atlas(
     document: &Value,
     state: &AnalysisSession,
     links: &ReportEntityLinks,
 ) -> Option<SignalAtlas> {
+    let l = ReportLanguage::new(&state.config.language);
     let labels = report_project_labels(document);
     let label = |project: &str| {
         labels
@@ -71,13 +85,27 @@ pub(super) fn build_signal_atlas(
         let window = dataset
             .map(|d| {
                 format!(
-                    "{} – {} · {} snapshots",
-                    d["begin_time"].as_str().unwrap_or("start not supplied"),
-                    d["end_time"].as_str().unwrap_or("end not supplied"),
-                    d["snapshots"].as_u64().unwrap_or(0)
+                    "{} – {} · {} {}",
+                    d["begin_time"]
+                        .as_str()
+                        .unwrap_or(l.choose("start not supplied", "brak początku")),
+                    d["end_time"]
+                        .as_str()
+                        .unwrap_or(l.choose("end not supplied", "brak końca")),
+                    d["snapshots"]
+                        .as_u64()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    l.choose("snapshots", "migawek")
                 )
             })
-            .unwrap_or_else(|| "Window retained in the cited source evidence".into());
+            .unwrap_or_else(|| {
+                l.choose(
+                    "Window retained in the cited source evidence",
+                    "Badany przedział podano w przywołanym źródle",
+                )
+                .into()
+            });
         let points = group
             .iter()
             .map(|row| {
@@ -138,17 +166,8 @@ pub(super) fn build_signal_atlas(
                 }
             })
             .collect::<Vec<_>>();
-        let family_label = match family.as_str() {
-            "db_time_foreground_wait_events" => "Foreground waits",
-            "db_time_sql_elapsed_time" => "SQL elapsed time",
-            "db_cpu_sql_cpu_time" => "SQL CPU",
-            "db_cpu_instance_stats" => "CPU counters",
-            "db_time_instance_stats_counters" => "Activity counters",
-            "db_time_instance_stats_volumes" => "Work volumes",
-            "db_time_instance_stats_time" => "Time-model signals",
-            _ => family.as_str(),
-        };
-        atlas.panels.push(SignalPanel{id:format!("fit-{}",atlas.panels.len()+1),project_id:project.clone(),project_label:label(&project),window,family:family_label.into(),target:cell(group[0],"target_metric").into(),coverage:format!("{} recorded contributors in this project/family. Scope is the supplied top-selection and material-wait coverage, not every predictor in the database.",points.len()),points});
+        let family_label = family_label(&family, l);
+        atlas.panels.push(SignalPanel{id:format!("fit-{}",atlas.panels.len()+1),project_id:project.clone(),project_label:label(&project),window,family:family_label.into(),target:cell(group[0],"target_metric").into(),coverage:format!("{} {}",points.len(),l.choose("recorded contributors in this project/family. Scope is the supplied top-selection and material-wait coverage, not every predictor in the database.","sygnałów w zestawieniu tej instancji i rodziny. Zestawienie obejmuje wskazania modeli oraz oczekiwania uznane za istotne.")),points});
     }
     if atlas.panels.is_empty() {
         return None;
@@ -224,7 +243,7 @@ pub(super) fn build_signal_atlas(
                         top["avg_value_per_second"].as_f64(),
                         top["mad_score"].as_f64(),
                     ) {
-                        atlas.moments.push(SignalMoment{project_id:project.clone(),project_label:label(project),kind:"Returned anomaly".into(),window:top["anomaly_date"].as_str().unwrap_or("Unknown timestamp").into(),title:top["load_profile_stat_name"].as_str().unwrap_or("Unnamed metric").into(),measure:format!("{} /s · MAD {}",crate::report_signals::number(value),crate::report_signals::number(score)),context:format!("Largest MAD among {} returned anomalies. Source mean {} /s; not a matched-workload baseline. Check volume and latency in the same window.",data.len(),crate::report_signals::number(baseline)),evidence_refs:vec![source.evidence_id.clone()]});
+                        atlas.moments.push(SignalMoment{project_id:project.clone(),project_label:label(project),kind:l.choose("Returned anomaly","Zaobserwowana anomalia").into(),window:top["anomaly_date"].as_str().unwrap_or(l.choose("Unknown timestamp","Brak godziny")).into(),title:top["load_profile_stat_name"].as_str().unwrap_or(l.choose("Unnamed metric","Brak nazwy miary")).into(),measure:format!("{} /s · MAD {}",crate::report_signals::number(value),crate::report_signals::number(score)),context:format!("{} {}. {} {} /s. {}",l.choose("Largest MAD in an anomaly set of size","Największe odchylenie MAD wśród anomalii. Liczba anomalii"),data.len(),l.choose("Source mean","Średnia źródłowa"),crate::report_signals::number(baseline),l.choose("Check a matched workload, volume and latency in the same window.","Porównaj wolumen i opóźnienie w tym samym przedziale przy podobnym obciążeniu.")),evidence_refs:vec![source.evidence_id.clone()]});
                     }
                 }
             }
@@ -250,12 +269,24 @@ pub(super) fn build_signal_atlas(
             atlas.moments.push(SignalMoment {
                 project_id: project.clone(),
                 project_label: label(project),
-                kind: "Recorded cluster".into(),
+                kind: l.choose("Recorded cluster", "Skupienie sygnałów").into(),
                 window: cell(row, "time_scope").into(),
-                title: format!("{} co-occurring signals", count),
-                measure: format!("Snapshot {}", cell(row, "cluster_id")),
+                title: format!(
+                    "{} {}",
+                    count,
+                    l.choose("co-occurring signals", "sygnałów w tym samym czasie")
+                ),
+                measure: format!(
+                    "{} {}",
+                    l.choose("Snapshot", "Migawka"),
+                    cell(row, "cluster_id")
+                ),
                 context: format!(
-                    "Most populated of {selected} recorded clusters. {}",
+                    "{} {selected}. {}",
+                    l.choose(
+                        "Most populated cluster in a set of",
+                        "Najliczniejsze skupienie w zestawie. Liczba skupień"
+                    ),
                     cell(row, "common_context")
                 ),
                 evidence_refs: row.evidence_refs.clone(),

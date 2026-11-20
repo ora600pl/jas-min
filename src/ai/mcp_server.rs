@@ -52,6 +52,7 @@ const MCP_ANALYSIS_SCHEMA_VERSION: &str = "2026-11-11.1";
 const REPORT_HYPOTHESIS_WORKFLOW: &str = "After establishing the symptom, instance and period, inspect full_gradients, load_profile_anomalies and anomaly_clusters alongside the measured workload. Compare named contributors, anomaly timestamps and cluster snapshots with incident and baseline measurements; state missing coverage for each family. Use absolute time or rates and check for material costs with little variation. In section 2, open two or three distinct testable hypotheses per project, each with a stable ID, comparison window and distinguishing measurement. In relevant later chapters cite the ID and the observed test result. In section 9 revisit every ID as confirmed, rejected or unresolved and explain why using the follow-up measurements or the specific evidence gap. When the source cannot support the opening comparison, explain the gap.";
 const SEED_EVIDENCE_ID: &str = "SEED-E0001";
 const DEFAULT_GUIDANCE_LIMIT_CHARS: usize = 8 * 1024;
+const MAX_CHECKPOINT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MCP_MARKDOWN_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MCP_HTML_FILENAME_BYTES: usize = 200;
 const MAX_MCP_LOG_FIELD_CHARS: usize = 160;
@@ -448,6 +449,8 @@ struct AuditBriefReference {
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReaderBrief {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    supporting_card_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_audit_brief: Option<AuditBriefReference>,
     observed: String,
@@ -680,6 +683,7 @@ fn report_table_definition(
 /// The mutex is deliberately session-scoped: parsed projects remain immutable
 /// and concurrent clients only contend when they mutate the same investigation.
 struct AnalysisSession {
+    discussed_entities: discussed_entities::Inventory,
     project_ids: Vec<String>,
     config: ReportConfig,
     evidence: BTreeMap<String, EvidenceRecord>,
@@ -696,6 +700,7 @@ struct AnalysisSession {
     report_revision: u64,
     finalized_markdown: Option<String>,
     audit: Option<audit_workflow::AuditState>,
+    tx_pilot: Option<tx_pilot::SavedAudit>,
 }
 
 impl AnalysisSession {
@@ -710,6 +715,7 @@ impl AnalysisSession {
         Self {
             project_ids,
             config,
+            discussed_entities: BTreeMap::new(),
             evidence: BTreeMap::from([(SEED_EVIDENCE_ID.to_string(), seed_record)]),
             evidence_cache: HashMap::new(),
             guidance: BTreeMap::new(),
@@ -724,6 +730,7 @@ impl AnalysisSession {
             report_revision: 0,
             finalized_markdown: None,
             audit: None,
+            tx_pilot: None,
         }
     }
 }
@@ -768,6 +775,7 @@ impl AnalysisProject {
 /// Large parsed structures are reference counted so creating a new HTTP
 /// session does not clone an entire AWR corpus.
 struct ProjectData {
+    discussion_catalog: std::sync::OnceLock<discussed_entities::Catalog>,
     project_id: Arc<String>,
     collection: Arc<AWRSCollection>,
     report: Arc<ReportForAI>,
@@ -780,6 +788,7 @@ struct ProjectData {
 impl From<AnalysisProject> for ProjectData {
     fn from(project: AnalysisProject) -> Self {
         Self {
+            discussion_catalog: Default::default(),
             project_id: Arc::new(project.project_id),
             collection: Arc::new(project.collection),
             report: Arc::new(project.report),
@@ -946,6 +955,9 @@ pub struct AnalysisRuntime {
     guidance: Arc<GuidanceLibrary>,
     sessions: Arc<DashMap<String, Arc<Mutex<AnalysisSession>>>>,
     sequence: Arc<AtomicU64>,
+    audit_workspace: PathBuf,
+    #[cfg(test)]
+    _test_workspace: Arc<tempfile::TempDir>,
 }
 
 impl AnalysisRuntime {
@@ -1007,11 +1019,19 @@ impl AnalysisRuntime {
             project.project_id = project_id.clone();
             indexed.insert(project_id, Arc::new(ProjectData::from(project)));
         }
+        #[cfg(test)]
+        let test_workspace = Arc::new(tempfile::tempdir()?);
         let runtime = Self {
             projects: Arc::new(indexed),
             guidance: Arc::new(GuidanceLibrary::load()),
             sessions: Arc::new(DashMap::new()),
             sequence: Arc::new(AtomicU64::new(1)),
+            #[cfg(not(test))]
+            audit_workspace: tx_pilot::configured_workspace(),
+            #[cfg(test)]
+            audit_workspace: test_workspace.path().to_owned(),
+            #[cfg(test)]
+            _test_workspace: test_workspace,
         };
         debug_note!(
             "MCP analysis runtime ready: projects={}, guidance_available={}",
@@ -1310,6 +1330,8 @@ impl AnalysisRuntime {
         let mut clean_arguments = arguments.clone();
         clean_arguments.remove("analysis_id");
         clean_arguments.remove("project_id");
+        let preview = name == "get_precomputed_analysis"
+            && clean_arguments.remove("preview_only") == Some(Value::Bool(true));
         let clean_value = Value::Object(clean_arguments.clone());
         let result = if name == "get_precomputed_analysis" {
             dispatch_precomputed_analysis(&clean_value, &project.report)
@@ -1370,6 +1392,15 @@ impl AnalysisRuntime {
                     "result": record.result
                 }));
             }
+        }
+
+        // Browsing an audit chapter must preserve the finalized report and its editorial review.
+        if preview {
+            return Ok(json!({
+                "schema_version": MCP_ANALYSIS_SCHEMA_VERSION, "analysis_id": analysis_id,
+                "project_id": project.project_id.as_str(), "tool_name": name,
+                "preview_only": true, "result": result
+            }));
         }
 
         let evidence_id = format!("E-{:04}", state.next_evidence);
@@ -1792,6 +1823,16 @@ impl AnalysisRuntime {
     // The authoring calls below mutate only structured state. Markdown is
     // regenerated later, which keeps validation independent of model prose.
     fn record_finding(&self, arguments: &Map<String, Value>) -> std::result::Result<Value, Value> {
+        self.record_finding_with_source(arguments, None)
+    }
+
+    // Checkpoint replay validates every finding before installing the saved audit.
+    // A corrected brief may still have an older finding pending editorial review.
+    fn record_finding_with_source(
+        &self,
+        arguments: &Map<String, Value>,
+        archived: Option<&audit_workflow::AuditState>,
+    ) -> std::result::Result<Value, Value> {
         let analysis_id = Self::analysis_id(arguments)?.to_string();
         let session = self.session(&analysis_id)?;
         let category = required_string(arguments, "category", 64)?;
@@ -1841,6 +1882,39 @@ impl AnalysisRuntime {
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "analysis session lock is poisoned"))?;
         validate_references(&state, &evidence_refs, &guidance_refs)?;
+        if let Some(reader) = reader_brief
+            .as_ref()
+            .filter(|b| !b.supporting_card_ids.is_empty())
+        {
+            let reference = reader
+                .source_audit_brief
+                .as_ref()
+                .expect("validated card reference");
+            let exact_revision = |b: &&audit_workflow::AuditBrief| {
+                b.brief_id == reference.brief_id && b.revision == reference.revision
+            };
+            let source = if let Some(audit) = archived {
+                audit
+                    .briefs
+                    .get(&reference.brief_id)
+                    .filter(exact_revision)
+                    .or_else(|| audit.history.iter().find(exact_revision))
+            } else {
+                state
+                    .audit
+                    .as_ref()
+                    .and_then(|a| a.briefs.get(&reference.brief_id))
+                    .filter(exact_revision)
+            }
+            .filter(|b| category == "limitations" || b.chapter_id == category)
+            .ok_or_else(|| {
+                tool_error(
+                    "FINDING_CARD_SCOPE_MISMATCH",
+                    "Select the current source brief from this finding's chapter",
+                )
+            })?;
+            finding_presentation::selected_cards(reader, source)?;
+        }
         if category == "gradients_anomalies" {
             validate_gradient_anomaly_finding_synthesis(
                 &state,
@@ -2130,21 +2204,29 @@ impl AnalysisRuntime {
                 "status": status
             }));
         }
-        state.report_revision += 1;
         let mut report_document = audit_workflow::document_value(
             &analysis_id,
             &state,
             &self.projects,
-            state.report_revision,
+            state.report_revision + 1,
         );
-        let entity_links = ReportEntityLinks::build(&state.project_ids, &self.projects);
+        let lang = ReportLanguage::new(&state.config.language);
+        report_document["gradient_intro"] =
+            json!(self.gradient_openings(&state, &report_project_labels(&report_document), lang));
+        let entity_links = self.classic_discussion_links(&state, &report_document)?;
+        state.report_revision += 1;
         report_document["signal_atlas"] = json!(report_signal_adapter::build_signal_atlas(
             &report_document,
             &state,
             &entity_links
         ));
         let markdown = render_markdown(&report_document, &state, &entity_links);
-        state.finalized_markdown = Some(markdown.clone());
+        let previous = state.finalized_markdown.replace(markdown.clone());
+        if let Err(error) = self.save_general_report_state(&mut state) {
+            state.finalized_markdown = previous;
+            state.report_revision -= 1;
+            return Err(error);
+        }
         let mut output = json!({
             "schema_version": MCP_ANALYSIS_SCHEMA_VERSION,
             "analysis_id": analysis_id,
@@ -2372,6 +2454,7 @@ impl AnalysisRuntime {
             "start_performance_analysis" => self.new_analysis(&Value::Object(arguments)),
             "get_analysis_catalog" => self.catalog_for_session(&arguments),
             "get_precomputed_analysis" => self.execute_evidence_tool(name, &arguments),
+            "get_rac_cpu_scenario" => self.rac_cpu_scenario(&arguments),
             "compare_project_metric" => self.compare_project_metric(&arguments),
             "compare_project_sql" => self.compare_project_sql(&arguments),
             "get_diagnostic_guidance" => self.diagnostic_guidance(&arguments),
@@ -2384,9 +2467,30 @@ impl AnalysisRuntime {
             "get_report_status" => self.report_status(&arguments),
             "start_audit" => self.start_audit(&arguments),
             "get_audit_status" => self.audit_status(&arguments),
+            "record_discussed_entities" => self.record_discussed_entities(&arguments),
             "record_audit_brief" => self.record_audit_brief(&arguments),
+            "get_client_report_plan" => self.client_report_plan(&arguments),
+            "save_client_report_plan" => self.save_client_report_plan(&arguments),
             "advance_audit" => self.advance_audit(&arguments),
             "authorize_report" => self.authorize_report(&arguments),
+            "enable_combined_pilot" => self.enable_pilot(&arguments, tx_pilot::PilotKind::Combined),
+            "switch_audit_topic" => self.switch_audit_topic(&arguments),
+            "enable_tx_pilot" => self.enable_pilot(&arguments, tx_pilot::PilotKind::Tx),
+            "enable_cpu_pilot" => self.enable_pilot(&arguments, tx_pilot::PilotKind::Cpu),
+            "list_saved_audits" => tx_pilot::list_saved_audits(&self.audit_workspace),
+            "resume_saved_audit" => self.resume_saved_audit(&arguments),
+            "preview_tx_report"
+            | "publish_tx_report"
+            | "read_tx_report_asset"
+            | "preview_cpu_report"
+            | "publish_cpu_report"
+            | "read_cpu_report_asset"
+            | "preview_combined_report"
+            | "publish_combined_report"
+            | "preview_client_report"
+            | "read_client_report_asset"
+            | "publish_client_report"
+            | "read_combined_report_asset" => self.pilot_publication(name, &arguments),
             "export_audit" => self.export_audit(&arguments),
             "restore_audit" => self.restore_audit(&arguments),
             "preview_report" => self.preview_report(&arguments),
@@ -2779,7 +2883,7 @@ impl ServerHandler for JasminMcpServer {
                 ),
         )
         .with_instructions(format!(
-            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. {REPORT_HYPOTHESIS_WORKFLOW} Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Every finding must synthesize the measured symptom into a mechanism, temporal pattern, named affected workload and explicit evidence limitation; a conclusion plus a table dump is incomplete. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Every recommendation must name an owner and priority, explain why it follows from the finding, and define a measurable success criterion. Complete every stable category. Record gradients, anomalies and anomaly clusters as separate table kinds. When multiple analytic families are available, record analytic_signal_synthesis before the gradients_anomalies finding. The structured synthesis must name at least three exact top-five contributors from at least two target families, distinguish active from peak influence, reproduce concrete model names and classification, and localize anomaly and cluster windows. The finding can then state the decision and its boundary briefly without repeating the numeric fields. Generic statements that detectors merely converge on activity are rejected. For every foreground wait reaching 10% DB Time, call get_wait_event_sql_contributors and record the wait-to-SQL relationships; follow the strongest material contributor through SQL text, timeline and plan applicability. Correlation or ASH attribution is association evidence, not blocker/waiter proof. Inspect every supplied execution artifact. Review every unique SQL plan hash, but classify PL/SQL entry points as not_applicable_plsql because a top-level row-source plan is not expected; profile their inner SQL instead of requesting DBMS_XPLAN recapture. Choose an explicit recommendation type with artifact-specific rationale and action; generic 'validate actual rows' prose is rejected. Inspect every child-cursor diagnostic. Parse every non-empty alert attachment with include_parse_error_details=true, reproduce every error_summary code, and cite parse-error evidence in an SQL finding. Record every segment hotspot and a cross-statistic segment_synthesis. Review every collected performance parameter value; missing parameters require no row and only concern/critical ratings are reader-facing. get_report_status lists every missing item and blocks finalization until the deterministic lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage. Use each alert attachment's observed first/last timestamp rather than assuming AWR-period coverage. A zero-match literal proves only that exact filter. If guidance is applied, include a verified verbatim quotation. Complete mandatory assessments and finish through finalize_report. For HTML, finalize Markdown first and pass it unchanged to convert_markdown_to_html. Reader-facing material waits and SQL_IDs must link to every existing project-specific detail report with meaningful instance labels.\n\n{}",
+            "This server has {} loaded performance project(s). Call list_performance_projects first when more than one project is available, then call start_performance_analysis with the intended project_ids. Pass analysis_id to every later tool and project_id to project-specific evidence calls in comparative sessions. Use compare_project_metric and compare_project_sql for normalized cross-project evidence. {REPORT_HYPOTHESIS_WORKFLOW} Use narrow evidence calls and compare peaks with quiet baselines. Diagnostic guidance is methodology, never observed evidence. On AIX, obtain entitlement evidence before a CPU-pressure conclusion. Distinguish latency from workload volume, correlation from causation, and unknown from absent. Record every SQL_ID and wait event mentioned in the conversation using record_discussed_entities in the relevant project, including brief mentions outside a chapter. For a guided client edition use save_client_report_plan to arrange the reader's problems, pin current briefs, choose measured panels and SQL populations, then preview_client_report. A client preview requires only its selected chapters. Use publish_client_report solely on an explicit final-issue request for the reviewed edition. The following completeness and finalization instructions apply to the classic technical report. Every finding must synthesize the measured symptom into a mechanism, temporal pattern, named affected workload and explicit evidence limitation; a conclusion plus a table dump is incomplete. Store findings with evidence_refs plus a reader-facing evidence_summary containing exact values. Every recommendation must name an owner and priority, explain why it follows from the finding, and define a measurable success criterion. Complete every stable category. Record gradients, anomalies and anomaly clusters as separate table kinds. When multiple analytic families are available, record analytic_signal_synthesis before the gradients_anomalies finding. The structured synthesis must name at least three exact top-five contributors from at least two target families, distinguish active from peak influence, reproduce concrete model names and classification, and localize anomaly and cluster windows. The finding can then state the decision and its boundary briefly without repeating the numeric fields. Generic statements that detectors merely converge on activity are rejected. For every foreground wait reaching 10% DB Time, call get_wait_event_sql_contributors and record the wait-to-SQL relationships; follow the strongest material contributor through SQL text, timeline and plan applicability. Correlation or ASH attribution is association evidence, not blocker/waiter proof. Inspect every supplied execution artifact. Review every unique SQL plan hash, but classify PL/SQL entry points as not_applicable_plsql because a top-level row-source plan is not expected; profile their inner SQL instead of requesting DBMS_XPLAN recapture. Choose an explicit recommendation type with artifact-specific rationale and action; generic 'validate actual rows' prose is rejected. Inspect every child-cursor diagnostic. Parse every non-empty alert attachment with include_parse_error_details=true, reproduce every error_summary code, and cite parse-error evidence in an SQL finding. Record every segment hotspot and a cross-statistic segment_synthesis. Review every collected performance parameter value; missing parameters require no row and only concern/critical ratings are reader-facing. get_report_status lists every missing item and blocks finalization until the deterministic lists are empty. In comparative prose, label every project or instance value explicitly; never use an unlabeled X/Y shorthand. Treat a zero-byte attachment as missing coverage. Use each alert attachment's observed first/last timestamp rather than assuming AWR-period coverage. A zero-match literal proves only that exact filter. If guidance is applied, include a verified verbatim quotation. Complete mandatory assessments and finish through finalize_report. For HTML, finalize Markdown first and pass it unchanged to convert_markdown_to_html. Reader-facing material waits and SQL_IDs must link to every existing project-specific detail report with meaningful instance labels.\n\n{}",
             self.runtime.projects.len(),
             concat!(include_str!("../report/assets/report_writing.md"), "\n\n", include_str!("access_path_reasoning.md"))
         ))
@@ -2920,6 +3024,8 @@ pub async fn run_mcp_server(runtime: AnalysisRuntime, endpoint: McpEndpoint) -> 
             StreamableHttpServerConfig::default()
                 .with_allowed_hosts(allowed_hosts)
                 .with_allowed_origins(allowed_origins)
+                // Leave space for the JSON-RPC envelope around a compact checkpoint.
+                .with_max_request_body_bytes(MAX_CHECKPOINT_BYTES + 1024 * 1024)
                 .with_cancellation_token(cancellation.child_token()),
         );
     let router = axum::Router::new().nest_service(&endpoint.path, service);
@@ -2978,11 +3084,18 @@ fn build_mcp_tools(runtime: &AnalysisRuntime) -> Vec<Tool> {
         mcp_control_definitions()
             .into_iter()
             .chain(audit_workflow::tool_definitions())
+            .chain(rac_cpu::tools())
+            .chain(tx_pilot::tools())
+            .chain(tx_pilot_publication::tools())
             .filter_map(|definition| {
                 let name = definition.pointer("/function/name")?.as_str()?;
                 let requires_analysis = !matches!(
                     name,
-                    "list_performance_projects" | "start_performance_analysis" | "restore_audit"
+                    "list_performance_projects"
+                        | "start_performance_analysis"
+                        | "restore_audit"
+                        | "list_saved_audits"
+                        | "resume_saved_audit"
                 );
                 let supports_project_id = matches!(
                     name,
@@ -3000,6 +3113,13 @@ fn build_mcp_tools(runtime: &AnalysisRuntime) -> Vec<Tool> {
                         | "get_report_status"
                         | "get_audit_status"
                         | "export_audit"
+                        | "list_saved_audits"
+                        | "get_rac_cpu_scenario"
+                        | "get_client_report_plan"
+                        | "read_client_report_asset"
+                        | "read_combined_report_asset"
+                        | "read_cpu_report_asset"
+                        | "read_tx_report_asset"
                         | "preview_report"
                 );
                 openai_definition_to_mcp(
@@ -3122,6 +3242,7 @@ fn mcp_control_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "section": {"type": "string", "enum": ["foreground_waits", "background_waits", "top_sqls", "io_summary", "latches", "segment_hotspots", "instance_stat_correlations", "load_profile_anomalies", "anomaly_clusters", "initialization_parameters", "full_gradients", "db_time_degradation", "performance_peaks", "performance_hints"]},
+                    "preview_only": {"type":"boolean","description":"Return the measured result without adding evidence or changing the report. A matching previously collected result retains its evidence ID."},
                     "rule_id": {"type":"string","description":"performance_hints only: exact rule filter"},
                     "hint_id": {"type":"string","description":"performance_hints only: exact episode filter"},
                         "scope": {"type":"string","description":"performance_hints only: exact assessment scope, e.g. sql:gn3gtqxvucbj8 or instance"},
@@ -3226,6 +3347,7 @@ fn mcp_control_definitions() -> Vec<Value> {
                     "confidence": {"type": "string", "enum": ["high", "medium", "low", "unknown"]},
                     "conclusion": {"type": "string"},
                     "reader_brief": {"type":"object","additionalProperties":false,"description":"Reader-facing explanation, separate from complete evidence. Use connected sentences and explain technical meaning; keep operation IDs and capture recipes in supporting analysis. All facts must be supported by this finding.","properties":{
+                        "supporting_card_ids":{"type":"array","maxItems":32,"uniqueItems":true,"items":{"type":"string"},"description":"Ordered IDs from the exact source brief revision. Select only cards whose sources are in reader_brief.evidence_refs."},
                         "source_audit_brief":{"type":"object","additionalProperties":false,"properties":{"brief_id":{"type":"string","minLength":1,"maxLength":64},"revision":{"type":"integer","minimum":1}},"required":["brief_id","revision"]},
                         "observed":{"type":"string","minLength":1,"maxLength":4000,"description":"What happened, with the decisive measurement and its scope."},
                         "explanation":{"type":"string","minLength":1,"maxLength":4000,"description":"Why this matters and how the mechanism works; distinguish observation from hypothesis."},
@@ -3295,7 +3417,7 @@ fn mcp_control_definitions() -> Vec<Value> {
         ),
         function_definition(
             "finalize_report",
-            "Validates the report contract and renders stable Markdown and/or structured JSON. Use allow_incomplete only when the user explicitly requests a draft.",
+            "Validates the classic technical report and renders Markdown and/or structured JSON. For a problem-oriented general audit use preview_client_report and publish_client_report. For a final client ZIP from a combined TX and RAC CPU audit, use preview_combined_report and publish_combined_report. Use allow_incomplete only when the user explicitly requests a draft.",
             json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -3666,6 +3788,7 @@ fn report_contract(config: &ReportConfig) -> Value {
             "hypothesis_workflow": REPORT_HYPOTHESIS_WORKFLOW,
             "hypothesis_recording": "For a guided audit, record the opening hypotheses, intermediate checks and outcomes in their chapter briefs. In a direct report, record the initial performance_profile finding before investigating later chapters. Keep the original IDs and statements in that finding. Cite their IDs and test results in the relevant diagnostic findings, then record the reason for each verdict in gradients_anomalies.",
             "required_fields": ["mechanism", "temporal_pattern", "affected_workload", "evidence_limitations"],
+            "finding_evidence": "During Companion chapters record ordered evidence_cards with explicit IDs and exact references for individual claims. At handoff select supporting_card_ids and their decisive evidence references from the same source revision. The reader sees those cards and scoped visuals. All raw fields and supplementary sources stay in structured state. Before delivery run the offline report-package link and fragment validator at its destination.",
             "narrative_order": "Lead with the diagnosis. Connect symptom to mechanism, named workload and time pattern before the exhaustive structured evidence tables.",
             "causality_boundary": "Correlation, gradient selection and ASH attribution are association evidence. evidence_limitations must state the missing runtime proof and relevant counterevidence.",
             "executive_summary": "At most five action-ranked findings: next action and owner, conclusion and decision-changing boundary, with links to the canonical detail. Do not repeat the full mechanism and evidence narrative.",
@@ -4716,7 +4839,7 @@ fn report_status_value(
 /// Editorial feedback is separate from factual completeness: it can request
 /// clearer writing but must never encourage dropping measurements to finalize.
 fn report_readability_review(state: &AnalysisSession) -> Value {
-    let mut warnings = Vec::new();
+    let mut warnings = finding_presentation::card_coverage_warnings(state);
     for finding in state.findings.values() {
         if finding.title.split_whitespace().count() > 12 {
             warnings.push(json!({"finding_id": finding.finding_id, "code": "LONG_FINDING_TITLE",
@@ -4990,7 +5113,7 @@ fn render_markdown(
             l.choose("Baseline and candidate direction must be stated in each comparative finding and its cited evidence.\n\n", "Każde porównanie wskazuje okres odniesienia, okres porównywany i źródło pomiarów.\n\n"),
         );
     }
-    output.push_str(&render_source_report_links(document));
+    output.push_str(&render_source_report_links(document, l));
     output.push_str(l.choose("<div class=\"severity-legend\" role=\"note\" aria-label=\"Finding severity legend\"><strong>Finding severity</strong><span class=\"legend-chip legend-critical\">CRITICAL</span><span class=\"legend-chip legend-high\">HIGH</span><span class=\"legend-chip legend-medium\">MEDIUM</span><span class=\"legend-chip legend-info\">INFORMATIONAL</span><span>Confidence remains stated in every finding title.</span></div>\n\n", "<div class=\"severity-legend\" role=\"note\" aria-label=\"Znaczenie ustaleń\"><strong>Znaczenie ustaleń</strong><span class=\"legend-chip legend-critical\">KRYTYCZNE</span><span class=\"legend-chip legend-high\">WYSOKIE</span><span class=\"legend-chip legend-medium\">ŚREDNIE</span><span class=\"legend-chip legend-info\">INFORMACYJNE</span><span>Pewność wniosku podano w tytule każdego ustalenia.</span></div>\n\n"));
 
     output.push_str(&format!("## 1. {}\n\n", l.text("Executive Summary")));
@@ -5005,6 +5128,22 @@ fn render_markdown(
             &issues,
             &state.config.language,
         ));
+    }
+    if let Ok(openings) =
+        serde_json::from_value::<Vec<gradient_intro::Opening>>(document["gradient_intro"].clone())
+    {
+        output.push_str(&gradient_intro::render(
+            &openings,
+            state.config.language.eq_ignore_ascii_case("PL"),
+            |text, label| {
+                project_labels
+                    .iter()
+                    .find(|(_, v)| v.as_str() == label)
+                    .map(|(id, _)| entity_links.discussion_prose(id, text))
+                    .unwrap_or_else(|| encode_text(text).into_owned())
+            },
+        ));
+        output.push_str("\n\n");
     }
     let mut leading = state
         .findings
@@ -5093,6 +5232,7 @@ fn render_markdown(
                 output.push_str(&crate::report_signals::render(
                     atlas,
                     state.config.include_evidence_appendix,
+                    l,
                 ));
             }
         }
@@ -5141,6 +5281,7 @@ fn render_markdown(
                 l.severity(&finding.severity),
                 l.text(&finding.confidence)
             ));
+            let mut scoped_cards = None;
             if let Some(brief) = &finding.reader_brief {
                 output.push_str(&render_reader_brief(brief, l));
                 if let Some(source) = &brief.source_audit_brief {
@@ -5149,12 +5290,27 @@ fn render_markdown(
                         .as_ref()
                         .and_then(|audit| audit.briefs.get(&source.brief_id))
                     {
+                        if source.revision == audit_brief.revision
+                            && !audit_brief.evidence_cards.is_empty()
+                        {
+                            // A preview with an invalid selection must never substitute the whole chapter.
+                            scoped_cards = Some(
+                                finding_presentation::selected_cards(brief, audit_brief)
+                                    .unwrap_or_default(),
+                            );
+                        }
                         if let Some(visual) = &audit_brief.visual {
                             if source.revision == audit_brief.revision {
-                                output.push_str(&crate::report::audit_visuals::render_visual(
-                                    visual,
-                                    &state.config.language,
-                                ));
+                                if audit_brief
+                                    .evidence_refs
+                                    .iter()
+                                    .all(|id| brief.evidence_refs.contains(id))
+                                {
+                                    output.push_str(&crate::report::audit_visuals::render_visual(
+                                        visual,
+                                        &state.config.language,
+                                    ));
+                                }
                             } else {
                                 output.push_str(&format!("<p class=\"audit-visual-unavailable\">{}</p>", l.choose("The retained visual belongs to a newer discussion revision; refresh this report explanation before publication.", "Zapisana wizualizacja dotyczy nowszej wersji dyskusji; przed publikacją zaktualizuj wyjaśnienie w raporcie.")));
                             }
@@ -5179,58 +5335,39 @@ fn render_markdown(
                     finding.evidence_limitations
                 ));
             }
-            output.push_str(&format!(
-                "<details class=\"finding-evidence\"><summary>{}</summary>\n\n**{}:** {}\n\n",
-                l.text("Measurements, mechanism and supporting evidence"),
-                l.text("Diagnostic mechanism"),
-                finding.mechanism
-            ));
-            if finding.reader_brief.is_some() {
-                output.push_str(&format!(
-                    "**{}:** {}\n\n**{}:** {}\n\n",
-                    l.text("Original diagnostic conclusion"),
-                    finding.conclusion,
-                    l.text("Decision boundary"),
-                    finding.evidence_limitations
-                ));
-            }
+            let mut support = if let Some(cards) = &scoped_cards {
+                finding_presentation::render_cards(cards, l, state.config.include_evidence_appendix)
+            } else {
+                finding_presentation::technical_markdown(
+                    finding,
+                    has_synthesis_atlas || finding.reader_brief.is_some(),
+                    l,
+                    detail == "deep",
+                )
+            };
             if has_synthesis_atlas || finding.reader_brief.is_some() {
-                output.push_str(&format!(
-                    "**{}:** {}\n\n**{}:** {}\n\n**{}:** {}\n\n",
-                    l.text("Affected workload"),
-                    finding.affected_workload,
-                    l.text("Temporal pattern"),
-                    finding.temporal_pattern,
-                    l.text("Evidence basis"),
-                    finding.evidence_summary
-                ));
-                output.push_str(&render_finding_entity_shortcuts(
+                support.push_str(&render_finding_entity_shortcuts(
                     finding,
                     state,
                     &project_labels,
                     entity_links,
                 ));
             }
-            output.push_str(&render_guidance_quotes(&finding.guidance_quotes, state));
-            if state.config.include_evidence_appendix && !finding.evidence_refs.is_empty() {
-                output.push_str(&format!(
+            support.push_str(&render_guidance_quotes(&finding.guidance_quotes, state));
+            if scoped_cards.is_none()
+                && state.config.include_evidence_appendix
+                && !finding.evidence_refs.is_empty()
+            {
+                support.push_str(&format!(
                     "**{}:** {}\n\n",
                     l.text("Technical provenance"),
                     evidence_links(&finding.evidence_refs)
                 ));
             }
-            if !finding.details.is_empty() {
-                if detail == "deep" {
-                    output.push_str(&finding.details);
-                    output.push_str("\n\n");
-                } else {
-                    output.push_str(&format!(
-                        "<details class=\"finding-detail\"><summary>{}</summary><p>{}</p></details>\n\n",
-                        l.text("Additional diagnostic context"), encode_text(&finding.details).replace('\n', "<br>")
-                    ));
-                }
+            if !support.is_empty() {
+                output.push_str(&format!("<details class=\"finding-evidence\"><summary>{}</summary>\n\n{support}</details>\n\n",l.text("Measurements, mechanism and supporting evidence")));
             }
-            output.push_str("</details>\n\n</article>\n\n");
+            output.push_str("</article>\n\n");
         }
 
         let tables = state
@@ -5297,17 +5434,32 @@ fn render_markdown(
             if let Some(brief) = &finding.reader_brief {
                 output.push_str(&render_reader_brief(brief, l));
             }
-            for (label, value) in [
-                ("Original diagnostic conclusion", &finding.conclusion),
-                ("Diagnostic mechanism", &finding.mechanism),
-                ("Affected workload", &finding.affected_workload),
-                ("Temporal pattern", &finding.temporal_pattern),
-                ("Evidence basis", &finding.evidence_summary),
-                ("Decision boundary", &finding.evidence_limitations),
-            ] {
-                output.push_str(&format!("**{}:** {}\n\n", l.text(label), value));
+            if finding.reader_brief.is_none() {
+                output.push_str(&format!(
+                    "{}\n\n**{}:** {}\n\n",
+                    finding.conclusion,
+                    l.text("Decision boundary"),
+                    finding.evidence_limitations
+                ));
             }
-            output.push_str(&format!("{}\n\n", finding.details));
+            let selection = finding.reader_brief.as_ref().and_then(|reader| {
+                let reference = reader.source_audit_brief.as_ref()?;
+                let brief = state.audit.as_ref()?.briefs.get(&reference.brief_id)?;
+                (reference.revision == brief.revision && !brief.evidence_cards.is_empty()).then(
+                    || finding_presentation::selected_cards(reader, brief).unwrap_or_default(),
+                )
+            });
+            if let Some(cards) = selection {
+                output.push_str(&finding_presentation::render_cards(
+                    &cards,
+                    l,
+                    state.config.include_evidence_appendix,
+                ));
+            } else {
+                output.push_str(&finding_presentation::technical_markdown(
+                    finding, true, l, true,
+                ));
+            }
             output.push_str(&render_guidance_quotes(&finding.guidance_quotes, state));
         }
         output.push_str("</details>\n\n");
@@ -5489,6 +5641,7 @@ fn render_markdown(
         }
         output.push_str("\n</details>\n\n");
     }
+    discussed_entities::append_markdown(&mut output, document, entity_links, l);
     output.push_str("Generated by JAS-MIN · https://github.com/ora600pl/jas-min · expert performance tuning at ora-600.pl\n");
     output
 }
@@ -5524,7 +5677,15 @@ fn report_project_labels(document: &Value) -> BTreeMap<String, String> {
                 .pointer("/database/instance_num")
                 .and_then(Value::as_u64)
                 .filter(|instance| *instance > 0)
-                .map(|instance| format!(" · Oracle instance {instance}"))
+                .map(|instance| {
+                    format!(
+                        " · {} {instance}",
+                        ReportLanguage::new(
+                            document["config"]["language"].as_str().unwrap_or("EN")
+                        )
+                        .choose("Oracle instance", "instancja Oracle")
+                    )
+                })
                 .unwrap_or_default();
             Some((project_id, format!("{system}{instance}")))
         })
@@ -5616,20 +5777,43 @@ fn render_finding_entity_shortcuts(
     project_labels: &BTreeMap<String, String>,
     links: &ReportEntityLinks,
 ) -> String {
-    let searchable = format!(
-        "{} {} {} {} {} {} {} {}",
-        finding.title,
-        finding.conclusion,
-        finding.mechanism,
-        finding.temporal_pattern,
-        finding.affected_workload,
-        finding.evidence_limitations,
-        finding.evidence_summary,
-        finding.details
-    )
-    .to_ascii_lowercase();
+    let mut texts = vec![finding.title.as_str()];
+    let refs = if let Some(reader) = &finding.reader_brief {
+        texts.extend([reader.observed.as_str(), reader.explanation.as_str()]);
+        if let Some(source) = reader.source_audit_brief.as_ref().and_then(|id| {
+            state
+                .audit
+                .as_ref()?
+                .briefs
+                .get(&id.brief_id)
+                .filter(|b| b.revision == id.revision)
+        }) {
+            if let Ok(cards) = finding_presentation::selected_cards(reader, source) {
+                for card in cards {
+                    texts.push(&card.body);
+                }
+            }
+        }
+        &reader.evidence_refs
+    } else {
+        texts.extend([
+            finding.conclusion.as_str(),
+            finding.affected_workload.as_str(),
+            finding.evidence_summary.as_str(),
+        ]);
+        &finding.evidence_refs
+    };
+    let searchable = texts.join(" ").to_ascii_lowercase();
+    let projects: HashSet<_> = refs
+        .iter()
+        .filter_map(|id| state.evidence.get(id)?.project_id.as_ref())
+        .collect();
+    let l = ReportLanguage::new(&state.config.language);
     let mut shortcuts = Vec::new();
     for project_id in &state.project_ids {
+        if !projects.contains(project_id) && (!projects.is_empty() || state.project_ids.len() > 1) {
+            continue;
+        }
         let label = project_labels
             .get(project_id)
             .map(String::as_str)
@@ -5654,9 +5838,9 @@ fn render_finding_entity_shortcuts(
             }
             let kind_label = match kind.as_str() {
                 "sql" => "SQL",
-                "wait" => "foreground wait",
-                "background_wait" => "background wait",
-                _ => "detail",
+                "wait" => l.choose("foreground wait", "oczekiwanie sesji"),
+                "background_wait" => l.choose("background wait", "oczekiwanie procesu w tle"),
+                _ => l.choose("detail", "szczegóły"),
             };
             shortcuts.push((label, format!("{kind_label}: {entity}"), target.clone()));
         }
@@ -5667,7 +5851,11 @@ fn render_finding_entity_shortcuts(
     if shortcuts.is_empty() {
         String::new()
     } else {
-        let mut result = "<nav class=\"evidence-shortcuts\" aria-label=\"Interactive evidence shortcuts\"><span>OPEN SOURCE EVIDENCE</span>".to_string();
+        let mut result = format!(
+            "<nav class=\"evidence-shortcuts\" aria-label=\"{}\"><span>{}</span>",
+            l.choose("Interactive evidence shortcuts", "Odsyłacze do pomiarów"),
+            l.choose("OPEN SOURCE EVIDENCE", "Pomiary źródłowe")
+        );
         let mut previous = String::new();
         for (label, name, target) in shortcuts {
             if previous != label {
@@ -6271,7 +6459,7 @@ fn render_report_table(
     output
 }
 
-fn render_source_report_links(document: &Value) -> String {
+fn render_source_report_links(document: &Value, l: ReportLanguage) -> String {
     let Some(datasets) = document.get("datasets").and_then(Value::as_array) else {
         return String::new();
     };
@@ -6299,7 +6487,7 @@ fn render_source_report_links(document: &Value) -> String {
                 continue;
             }
             if let Some(path) = reports.get(field).and_then(Value::as_str) {
-                links.push(format!("[{label}](<{path}>)"));
+                links.push(format!("[{}](<{path}>)", l.text(label)));
             }
         }
         if !links.is_empty() {
@@ -6314,7 +6502,8 @@ fn render_source_report_links(document: &Value) -> String {
         String::new()
     } else {
         format!(
-            "**Interactive source reports:**\n\n{}\n\n",
+            "**{}:**\n\n{}\n\n",
+            l.text("Interactive source reports"),
             entries.join("\n")
         )
     }
@@ -6448,6 +6637,12 @@ fn validate_local_html_targets(
     html: &str,
     output_directory: &Path,
 ) -> std::result::Result<usize, Value> {
+    let base = reqwest::Url::from_directory_path(output_directory).map_err(|_| {
+        tool_error(
+            "INVALID_REPORT_DIRECTORY",
+            "Expected an absolute output directory",
+        )
+    })?;
     let href = Regex::new(r#"href=\"([^\"]+)\""#).expect("static href regex is valid");
     let mut checked = 0usize;
     let mut missing = BTreeSet::new();
@@ -6463,20 +6658,17 @@ fn validate_local_html_targets(
             continue;
         }
         let decoded = html_escape::decode_html_entities(raw);
-        let without_fragment = decoded.split('#').next().unwrap_or("");
-        let local = without_fragment
-            .strip_prefix("file://")
-            .unwrap_or(without_fragment);
-        if local.is_empty() {
-            continue;
-        }
+        let resolved = base
+            .join(&decoded)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .ok_or_else(|| {
+                tool_error(
+                    "INVALID_LOCAL_REPORT_LINK",
+                    format!("Invalid local report URL: {raw}"),
+                )
+            })?;
         checked += 1;
-        let configured = PathBuf::from(local);
-        let resolved = if configured.is_absolute() {
-            configured
-        } else {
-            output_directory.join(configured)
-        };
         if !resolved.is_file() {
             missing.insert(resolved.to_string_lossy().to_string());
         }
@@ -6642,6 +6834,21 @@ fn parse_reader_brief(
         if text.trim().is_empty() || text.chars().count() > 4_000 {
             return Err(tool_error("INVALID_READER_BRIEF", format!("reader_brief.{name} must contain 1..=4000 characters; preserve the full analysis in supporting fields")));
         }
+    }
+    if !brief.supporting_card_ids.is_empty()
+        && (brief.source_audit_brief.is_none()
+            || brief.supporting_card_ids.len() > 32
+            || brief
+                .supporting_card_ids
+                .iter()
+                .collect::<HashSet<_>>()
+                .len()
+                != brief.supporting_card_ids.len())
+    {
+        return Err(tool_error(
+            "INVALID_READER_BRIEF",
+            "Card IDs must be distinct and belong to a cited source audit brief",
+        ));
     }
     if brief.source_audit_brief.as_ref().is_some_and(|source| {
         source.brief_id.trim().is_empty() || source.brief_id.len() > 64 || source.revision == 0
@@ -8499,7 +8706,7 @@ mod tests {
         runtime
     }
 
-    fn comparison_project(
+    pub(super) fn comparison_project(
         project_id: &str,
         load_values: &[f64],
         sql_elapsed_per_exec: &[f64],
@@ -8899,13 +9106,25 @@ mod tests {
             .iter()
             .find(|t| t.name == "get_precomputed_analysis")
             .unwrap();
-        for key in ["family", "contributor", "ranking", "offset"] {
+        for key in ["family", "contributor", "ranking", "offset", "preview_only"] {
             assert!(tool.input_schema["properties"].get(key).is_some());
         }
         let bootstrap = runtime
             .call_tool("start_performance_analysis", Map::new())
             .unwrap();
         let query = json!({"analysis_id":bootstrap["analysis_id"],"section":"full_gradients","family":"db_time_sql_elapsed_time","contributor":"rare_sql","ranking":"peak","offset":0,"limit":1});
+        let mut preview_query = query.as_object().unwrap().clone();
+        preview_query.insert("preview_only".into(), json!(true));
+        let session = runtime
+            .session(bootstrap["analysis_id"].as_str().unwrap())
+            .unwrap();
+        let evidence_count = session.lock().unwrap().evidence.len();
+        let preview = runtime
+            .call_tool("get_precomputed_analysis", preview_query.clone())
+            .unwrap();
+        assert_eq!(preview["preview_only"], true);
+        assert!(preview.get("evidence_id").is_none());
+        assert_eq!(evidence_count, session.lock().unwrap().evidence.len());
         let response = runtime
             .call_tool(
                 "get_precomputed_analysis",
@@ -8913,6 +9132,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(response["schema_version"], MCP_ANALYSIS_SCHEMA_VERSION);
+        assert_eq!(response["result"], preview["result"]);
         assert!(response["evidence_id"].as_str().unwrap().starts_with("E-"));
         assert_eq!(
             response["result"]["data"]["db_time_sql_elapsed_time"]["model_rankings"]["ridge"][0]
@@ -8920,10 +9140,7 @@ mod tests {
             "rare_sql"
         );
         let cached = runtime
-            .call_tool(
-                "get_precomputed_analysis",
-                query.as_object().unwrap().clone(),
-            )
+            .call_tool("get_precomputed_analysis", preview_query)
             .unwrap();
         assert_eq!(cached["cached"], true);
         assert_eq!(cached["evidence_id"], response["evidence_id"]);
@@ -9790,6 +10007,7 @@ mod tests {
         let sql_id = "16zny8vayhh40";
         let event_name = "cursor: pin S wait on X";
         let project = ProjectData {
+            discussion_catalog: Default::default(),
             project_id: Arc::new("node-1".to_string()),
             collection: Arc::new(AWRSCollection {
                 db_instance_information: DBInstance::default(),
@@ -9996,7 +10214,7 @@ mod tests {
                 }
             }]
         });
-        let rendered = render_source_report_links(&document);
+        let rendered = render_source_report_links(&document, ReportLanguage::new("EN"));
         assert!(rendered.contains("Interactive source reports"));
         assert!(
             rendered.contains("[Main JAS-MIN dashboard](<node-1.html_reports/jasmin_main.html>)")
@@ -10038,6 +10256,7 @@ mod tests {
             projects.insert(
                 project_id.to_string(),
                 Arc::new(ProjectData {
+                    discussion_catalog: Default::default(),
                     project_id: Arc::new(project_id.to_string()),
                     collection: Arc::new(AWRSCollection {
                         db_instance_information: DBInstance::default(),
@@ -10075,6 +10294,14 @@ mod tests {
             first, second
         );
         assert_eq!(validate_local_html_targets(&html, &root).unwrap(), 2);
+        std::fs::write(root.join("wait time #1.html"), "chart").unwrap();
+        let escaped = r#"<a href="wait%20time%20%231.html?unit=ms&amp;x=1#observation">chart</a>"#;
+        assert_eq!(validate_local_html_targets(escaped, &root).unwrap(), 1);
+        let broken = r#"<a href="absent%20chart.html#observation">chart</a>"#;
+        assert_eq!(
+            validate_local_html_targets(broken, &root).unwrap_err()["error_code"],
+            "BROKEN_LOCAL_REPORT_LINK"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -10551,7 +10778,7 @@ mod tests {
         }
         assert!(markdown.contains("**Evidence basis:**"));
         assert!(markdown.contains("class=\"decision-card\""));
-        assert!(markdown.contains("**Diagnostic mechanism:**"));
+        assert!(markdown.contains("<h4>Diagnostic mechanism</h4>"));
         assert!(markdown.contains("**Affected workload:**"));
         assert!(markdown.contains("**Temporal pattern:**"));
         assert!(markdown.contains("**Decision boundary:**"));
@@ -10915,6 +11142,18 @@ mod report_issue_tests;
 
 #[path = "audit_workflow.rs"]
 mod audit_workflow;
+#[path = "discussed_entities.rs"]
+mod discussed_entities;
+#[path = "finding_presentation.rs"]
+mod finding_presentation;
+#[path = "client_gradient_intro.rs"]
+mod gradient_intro;
+#[path = "rac_cpu.rs"]
+mod rac_cpu;
+#[path = "tx_pilot.rs"]
+mod tx_pilot;
+#[path = "tx_pilot_publication.rs"]
+mod tx_pilot_publication;
 
 #[cfg(test)]
 #[path = "../report/readability_examples.rs"]

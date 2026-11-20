@@ -45,6 +45,8 @@ pub(super) struct AuditBrief {
     #[serde(default)]
     pub visual: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_cards: Vec<finding_presentation::EvidenceCard>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opening_hypotheses: Vec<OpeningHypothesis>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hypothesis_gap: Option<String>,
@@ -66,6 +68,8 @@ pub(super) struct AuditState {
     pub history: Vec<AuditBrief>,
     pub authorization: Option<ReportAuthorization>,
     pub review: Option<EditorialReview>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_report_plan: Option<tx_pilot_publication::client_report_v2::Plan>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,25 +95,37 @@ impl Default for AuditState {
             history: vec![],
             authorization: None,
             review: None,
+            client_report_plan: None,
         }
     }
 }
 impl AuditState {
-    fn changed(&mut self) {
+    pub(super) fn changed(&mut self) {
         self.revision += 1;
         self.authorization = None;
         self.review = None;
     }
-    fn discussed(&self, id: &str, projects: &[String]) -> bool {
+    fn discussed(
+        &self,
+        id: &str,
+        projects: &[String],
+        pilot: Option<&tx_pilot::SavedAudit>,
+    ) -> bool {
         projects
             .iter()
-            .all(|project| self.project_discussed(id, project))
+            .all(|project| self.project_discussed(id, project, pilot))
     }
-    fn project_discussed(&self, chapter: &str, project: &str) -> bool {
-        self.briefs
-            .values()
-            .any(|b| b.chapter_id == chapter && b.project_id == project)
-            && hypotheses::chapter_complete(self, chapter, project)
+    fn project_discussed(
+        &self,
+        chapter: &str,
+        project: &str,
+        pilot: Option<&tx_pilot::SavedAudit>,
+    ) -> bool {
+        self.briefs.values().any(|b| {
+            b.chapter_id == chapter
+                && b.project_id == project
+                && pilot.is_none_or(|saved| saved.includes_active_brief(&b.brief_id))
+        }) && hypotheses::chapter_complete(self, chapter, project)
     }
     pub(super) fn authorized(&self) -> bool {
         self.authorization
@@ -165,21 +181,48 @@ fn validate_brief(brief: &AuditBrief, state: &AnalysisSession) -> std::result::R
         ));
     }
     validate_references(state, &brief.evidence_refs, &[])?;
+    finding_presentation::validate_cards(brief)?;
     if let Some(visual) = &brief.visual {
         crate::report::audit_visuals::validate_visual(visual)
             .map_err(|message| tool_error("INVALID_AUDIT_VISUAL", message))?;
         for panel in visual["panels"].as_array().expect("validated panels") {
             if panel["classification"] == "measured" {
-                let source = panel["source"].as_str().expect("validated source");
-                let tokens = source
-                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
-                    .collect::<HashSet<_>>();
+                let refs: HashSet<&str> = if let Some(v) = panel.get("evidence_refs") {
+                    let items = v
+                        .as_array()
+                        .filter(|xs| !xs.is_empty() && xs.len() <= 128)
+                        .ok_or_else(|| {
+                            tool_error(
+                                "AUDIT_VISUAL_EVIDENCE_REQUIRED",
+                                "Supply a non-empty array of exact panel evidence references.",
+                            )
+                        })?;
+                    let refs: HashSet<_> = items.iter().filter_map(Value::as_str).collect();
+                    if refs.len() != items.len()
+                        || refs.iter().any(|id| !state.evidence.contains_key(*id))
+                    {
+                        return Err(tool_error(
+                            "AUDIT_VISUAL_EVIDENCE_REQUIRED",
+                            "Every panel evidence reference must be distinct and retained in this audit.",
+                        ));
+                    }
+                    refs
+                } else {
+                    panel["source"]
+                        .as_str()
+                        .expect("validated source")
+                        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+                        .collect()
+                };
                 if !brief
                     .evidence_refs
                     .iter()
-                    .any(|reference| tokens.contains(reference.as_str()))
+                    .any(|reference| refs.contains(reference.as_str()))
                 {
-                    return Err(tool_error("AUDIT_VISUAL_EVIDENCE_REQUIRED", "Each measured panel must name a retained evidence reference in its source caption"));
+                    return Err(tool_error(
+                        "AUDIT_VISUAL_EVIDENCE_REQUIRED",
+                        "Each measured panel must name a retained brief reference in evidence_refs or its source caption",
+                    ));
                 }
             }
         }
@@ -205,16 +248,18 @@ pub(super) fn status_value(analysis_id: &str, state: &AnalysisSession) -> Value 
     };
     let chapters: Vec<Value> = CHAPTERS.iter().map(|(id,title,pl,q,qpl)| json!({
         "chapter_id":id,"title":title,"title_pl":pl,"question":q,"question_pl":qpl,
-        "project_coverage":state.project_ids.iter().map(|project|json!({"project_id":project,"discussed":audit.project_discussed(id,project)})).collect::<Vec<_>>(),
-        "status": if audit.discussed(id, &state.project_ids) {"discussed"} else if audit.current_chapter_id == *id {"current"} else {"pending"}
+        "project_coverage":state.project_ids.iter().map(|project|json!({"project_id":project,"discussed":audit.project_discussed(id,project,state.tx_pilot.as_ref())})).collect::<Vec<_>>(),
+        "status": if audit.discussed(id, &state.project_ids,state.tx_pilot.as_ref()) {"discussed"} else if audit.current_chapter_id == *id {"current"} else {"pending"}
     })).collect();
     json!({"analysis_id":analysis_id,"audit_started":true,"project_ids":state.project_ids,
         "revision":audit.revision,"current_chapter_id":audit.current_chapter_id,"chapters":chapters,
         "hypotheses":state.project_ids.iter().map(|p| hypothesis_status(audit,p)).collect::<Vec<_>>(),
         "briefs":audit.briefs.values().collect::<Vec<_>>(),"history_count":audit.history.len(),
+        "client_report_plan":audit.client_report_plan,
+        "client_report_plan_stale":audit.client_report_plan.as_ref().is_some_and(|p| !p.source_issues(audit).is_empty()),
         "report_authorized":audit.authorized(),"authorized_revision":audit.authorization.as_ref().map(|a|a.revision),
         "phase":if audit.authorized(){"report_requested"}else{"discussion"},
-        "next_step":if audit.authorized(){"Build findings from reviewed briefs, retain all evidence, preview, review and finalize."}else{match audit.current_chapter_id.as_str() {
+        "next_step":if audit.client_report_plan.is_some(){"Review linked source revisions in get_client_report_plan. Use preview_client_report for a preview; publish_client_report requires an explicit request to issue the reviewed ZIP."}else if audit.authorized(){"For a client edition arrange the reviewed briefs with save_client_report_plan and preview_client_report. The classic technical report has a separate editorial workflow."}else{match audit.current_chapter_id.as_str() {
             "scope" => "Establish the workload, symptom, project and time window before opening hypotheses.",
             "performance_profile" => "Inspect full_gradients, load_profile_anomalies and anomaly_clusters first. Compare their contributors and timestamps with the measured workload and baseline. Record source measurements or specific coverage gaps. Save two or three opening_hypotheses, or explain a missing input in hypothesis_gap.",
             "gradients_anomalies" => "Revisit every opening ID in hypothesis_outcomes. Use confirmed, rejected or unresolved, and explain what the chapter checks established.",
@@ -225,7 +270,7 @@ pub(super) fn status_value(analysis_id: &str, state: &AnalysisSession) -> Value 
 }
 
 fn preview_id(state: &AnalysisSession) -> String {
-    let value = json!({"config":state.config,"evidence":state.evidence,"guidance":state.guidance,"findings":state.findings,
+    let value = json!({"presentation_version":3,"discussed_entities":state.discussed_entities,"config":state.config,"evidence":state.evidence,"guidance":state.guidance,"findings":state.findings,
         "tables":state.report_tables,"issues":state.issues,"assessments":state.assessments,
         "audit":state.audit.as_ref().map(|a|json!({"revision":a.revision,"briefs":a.briefs,"authorization":a.authorization}))});
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -285,6 +330,10 @@ pub(super) fn validate_narrative_source(
             "Retain all source brief evidence in the finding; additional evidence is allowed",
         ));
     }
+    finding_presentation::selected_cards(
+        finding.reader_brief.as_ref().expect("validated reader"),
+        brief,
+    )?;
     let projects = finding
         .evidence_refs
         .iter()
@@ -338,6 +387,7 @@ pub(super) fn document_value(
         "findings":state.findings.values().map(|f|{let mut v=serde_json::to_value(f).unwrap();v["issue_id"]=json!(issue_for_finding(state,&f.finding_id).map(|i|&i.issue_id));v}).collect::<Vec<_>>(),
         "structured_tables":state.report_tables.values().collect::<Vec<_>>(),"mandatory_assessments":state.assessments,
         "evidence":state.evidence,"guidance":state.guidance,"audit":state.audit,
+        "discussed_entities":discussed_entities::collect(state, projects),
         "coverage":report_status_value(analysis_id,state,projects)})
 }
 
@@ -346,18 +396,7 @@ impl AnalysisRuntime {
         &self,
         args: &Map<String, Value>,
     ) -> std::result::Result<Value, Value> {
-        let id = Self::analysis_id(args)?;
-        let session = self.session(id)?;
-        {
-            let mut s = session
-                .lock()
-                .map_err(|_| tool_error("SESSION_LOCK", "Session unavailable"))?;
-            if s.audit.is_none() {
-                s.audit = Some(AuditState::default());
-                s.finalized_markdown = None;
-            }
-        }
-        self.audit_status(args)
+        self.enable_pilot(args, tx_pilot::PilotKind::General)
     }
     pub(super) fn audit_status(
         &self,
@@ -368,22 +407,23 @@ impl AnalysisRuntime {
         let s = session
             .lock()
             .map_err(|_| tool_error("SESSION_LOCK", "Session unavailable"))?;
-        let mut value = status_value(id, &s);
-        value["completeness"] = report_status_value(id, &s, &self.projects);
-        Ok(value)
+        Ok(self.discussion_status(id, &s))
+    }
+    pub(super) fn discussion_status(&self, id: &str, s: &AnalysisSession) -> Value {
+        let mut value = status_value(id, s);
+        value["completeness"] = report_status_value(id, s, &self.projects);
+        if let Some(saved) = &s.tx_pilot {
+            saved.decorate_status(&mut value, &self.audit_workspace);
+        }
+        value
     }
     pub(super) fn record_audit_brief(
         &self,
         args: &Map<String, Value>,
     ) -> std::result::Result<Value, Value> {
-        let id = Self::analysis_id(args)?;
-        let session = self.session(id)?;
-        {
-            let mut s = session
-                .lock()
-                .map_err(|_| tool_error("SESSION_LOCK", "Session unavailable"))?;
+        self.edit_pilot_discussion("record_audit_brief", args, |s, _| {
             let mut fields = args.clone();
-            fields.remove("analysis_id");
+            for key in ["analysis_id","expected_revision","private_note","operation_id"] { fields.remove(key); }
             let mut brief: AuditBrief = serde_json::from_value(Value::Object(fields))
                 .map_err(|e| tool_error("INVALID_AUDIT_BRIEF", e.to_string()))?;
             validate_brief(&brief, &s)?;
@@ -433,43 +473,43 @@ impl AnalysisRuntime {
                 brief.revision = 1;
             }
             brief.updated_at_revision = audit.revision + 1;
-            audit.briefs.insert(brief.brief_id.clone(), brief);
+            let brief_id = brief.brief_id.clone();
+            audit.briefs.insert(brief_id.clone(), brief);
             audit.changed();
             s.finalized_markdown = None;
-        }
-        self.audit_status(args)
+            Ok(Some(brief_id))
+        })
     }
     pub(super) fn advance_audit(
         &self,
         args: &Map<String, Value>,
     ) -> std::result::Result<Value, Value> {
-        let id = Self::analysis_id(args)?;
         let chapter = required_string(args, "chapter_id", 64)?;
         if !chapter_exists(&chapter) {
             return Err(tool_error("UNKNOWN_AUDIT_CHAPTER", "Use a listed chapter"));
         }
-        let session = self.session(id)?;
-        {
-            let mut s = session
-                .lock()
-                .map_err(|_| tool_error("SESSION_LOCK", "Session unavailable"))?;
+        self.edit_pilot_discussion("advance_audit", args, |s, saved| {
+            let durable = s.tx_pilot.is_some();
             let projects = s.project_ids.clone();
             let audit = s
                 .audit
                 .as_mut()
                 .ok_or_else(|| tool_error("AUDIT_NOT_STARTED", "Call start_audit first"))?;
             if args.get("complete_current") == Some(&Value::Bool(true))
-                && !audit.discussed(&audit.current_chapter_id, &projects)
+                && !audit.discussed(&audit.current_chapter_id, &projects, saved.as_deref())
             {
                 return Err(tool_error("AUDIT_BRIEF_REQUIRED","Save the current explanation or explicit coverage gap before completing the chapter"));
             }
             if audit.current_chapter_id != chapter {
                 audit.current_chapter_id = chapter;
-                audit.changed();
-                s.finalized_markdown = None;
+                // The workspace snapshot records navigation. Reader-facing content did not change.
+                if !durable {
+                    audit.changed();
+                    s.finalized_markdown = None;
+                }
             }
-        }
-        self.audit_status(args)
+            Ok(None)
+        })
     }
     pub(super) fn authorize_report(
         &self,
@@ -490,7 +530,7 @@ impl AnalysisRuntime {
             let mut pending = Vec::new();
             for project in &projects {
                 for c in CHAPTERS {
-                    if !audit.project_discussed(c.0, project) {
+                    if !audit.project_discussed(c.0, project, None) {
                         pending.push(format!("{project}:{}", c.0));
                     }
                 }
@@ -500,12 +540,19 @@ impl AnalysisRuntime {
                     json!({"error_code":"AUDIT_DISCUSSION_INCOMPLETE","message":"Save the discussed conclusions or explicit coverage gaps before requesting the report.","pending_chapters":pending}),
                 );
             }
-            audit.authorization = Some(ReportAuthorization {
+            let previous = audit.authorization.replace(ReportAuthorization {
                 revision: audit.revision,
                 user_request: request,
             });
-            audit.review = None;
-            s.finalized_markdown = None;
+            let previous_review = audit.review.take();
+            let previous_markdown = s.finalized_markdown.take();
+            if let Err(error) = self.save_general_report_state(&mut s) {
+                let audit = s.audit.as_mut().expect("validated audit");
+                audit.authorization = previous;
+                audit.review = previous_review;
+                s.finalized_markdown = previous_markdown;
+                return Err(error);
+            }
         }
         self.audit_status(args)
     }
@@ -529,8 +576,11 @@ impl AnalysisRuntime {
             .and_then(Value::as_str)
             .unwrap_or("markdown");
         validate_enum("format", format, &["markdown", "html", "both"])?;
-        let links = ReportEntityLinks::build(&s.project_ids, &self.projects);
         let mut doc = document_value(id, &s, &self.projects, s.report_revision + 1);
+        let lang = ReportLanguage::new(&s.config.language);
+        doc["gradient_intro"] =
+            json!(self.gradient_openings(&s, &report_project_labels(&doc), lang));
+        let links = self.classic_discussion_links(&s, &doc)?;
         doc["preview_notice"] = json!(if s.config.language.eq_ignore_ascii_case("PL") {
             "Podgląd redakcyjny — raport nie został jeszcze opublikowany."
         } else {
@@ -590,6 +640,9 @@ impl AnalysisRuntime {
                 "Read the actual preview and record all five checks plus specific review notes",
             ));
         }
+        for finding in s.findings.values() {
+            validate_narrative_source(finding, &s)?;
+        }
         let audit = s.audit.as_mut().ok_or_else(|| {
             tool_error(
                 "AUDIT_NOT_STARTED",
@@ -602,26 +655,32 @@ impl AnalysisRuntime {
                 "Await the explicit final report request",
             ));
         }
-        audit.review = Some(review);
+        let previous = audit.review.replace(review);
+        if let Err(error) = self.save_general_report_state(&mut s) {
+            s.audit.as_mut().expect("validated audit").review = previous;
+            return Err(error);
+        }
         Ok(json!({"analysis_id":id,"review_recorded":true,"preview_id":preview_id(&s)}))
     }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AuditCheckpoint {
+pub(super) struct AuditCheckpoint {
     version: u32,
     schema_version: String,
     project_ids: Vec<String>,
     datasets: Vec<Value>,
     config: ReportConfig,
-    evidence: BTreeMap<String, EvidenceRecord>,
+    pub(super) evidence: BTreeMap<String, EvidenceRecord>,
     guidance: BTreeMap<String, GuidanceRecord>,
     findings: BTreeMap<String, ReportFinding>,
     issues: BTreeMap<String, ReportIssue>,
     issue_finding_snapshots: BTreeMap<String, BTreeMap<String, Value>>,
     assessments: BTreeMap<String, ReportAssessment>,
     report_tables: BTreeMap<String, ReportTable>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    discussed_entities: discussed_entities::Inventory,
     audit: AuditState,
 }
 // JavaScript transports normalize 3600.0 to 3600. Compare exact decimal values,
@@ -664,6 +723,12 @@ fn same_json_measurements(left: &Value, right: &Value) -> bool {
     }
 }
 
+fn checkpoint_row_input(row: &ReportTableRow) -> Value {
+    let mut input = json!(row.cells);
+    input["evidence_refs"] = json!(row.evidence_refs);
+    input
+}
+
 fn max_counter<'a>(ids: impl Iterator<Item = &'a String>, prefix: &str) -> u64 {
     ids.filter_map(|id| id.strip_prefix(prefix)?.parse::<u64>().ok())
         .max()
@@ -671,20 +736,15 @@ fn max_counter<'a>(ids: impl Iterator<Item = &'a String>, prefix: &str) -> u64 {
         + 1
 }
 impl AnalysisRuntime {
-    pub(super) fn export_audit(
+    pub(super) fn discussion_checkpoint(
         &self,
-        args: &Map<String, Value>,
-    ) -> std::result::Result<Value, Value> {
-        let id = Self::analysis_id(args)?;
-        let session = self.session(id)?;
-        let s = session
-            .lock()
-            .map_err(|_| tool_error("SESSION_LOCK", "Session unavailable"))?;
+        s: &AnalysisSession,
+    ) -> std::result::Result<AuditCheckpoint, Value> {
         let audit = s
             .audit
             .clone()
             .ok_or_else(|| tool_error("AUDIT_NOT_STARTED", "Call start_audit first"))?;
-        let checkpoint = AuditCheckpoint {
+        Ok(AuditCheckpoint {
             version: 1,
             schema_version: MCP_ANALYSIS_SCHEMA_VERSION.into(),
             project_ids: s.project_ids.clone(),
@@ -695,17 +755,33 @@ impl AnalysisRuntime {
                 .map(|p| p.dataset_manifest())
                 .collect(),
             config: s.config.clone(),
-            evidence: s.evidence.clone(),
+            evidence: BTreeMap::new(),
             guidance: s.guidance.clone(),
             findings: s.findings.clone(),
             issues: s.issues.clone(),
             issue_finding_snapshots: s.issue_finding_snapshots.clone(),
             assessments: s.assessments.clone(),
             report_tables: s.report_tables.clone(),
+            discussed_entities: s.discussed_entities.clone(),
             audit,
-        };
-        if serialized_json_size(&checkpoint) > 64 * 1024 * 1024 {
-            return Err(tool_error("CHECKPOINT_TOO_LARGE","Complete checkpoint exceeds the current 64 MiB transport limit; session evidence remains intact"));
+        })
+    }
+    pub(super) fn export_audit(
+        &self,
+        args: &Map<String, Value>,
+    ) -> std::result::Result<Value, Value> {
+        let id = Self::analysis_id(args)?;
+        let session = self.session(id)?;
+        let s = session
+            .lock()
+            .map_err(|_| tool_error("SESSION_LOCK", "Session unavailable"))?;
+        let mut checkpoint = self.discussion_checkpoint(&s)?;
+        checkpoint.evidence = s.evidence.clone();
+        if serialized_json_size(&checkpoint) > MAX_CHECKPOINT_BYTES {
+            return Err(tool_error(
+                "CHECKPOINT_TOO_LARGE",
+                "Complete checkpoint exceeds the current 64 MiB transport limit; session evidence remains intact",
+            ));
         }
         Ok(
             json!({"analysis_id":id,"checkpoint":checkpoint,"persisted":false,
@@ -719,7 +795,7 @@ impl AnalysisRuntime {
         let value = args
             .get("checkpoint")
             .ok_or_else(|| tool_error("INVALID_CHECKPOINT", "checkpoint is required"))?;
-        if serialized_json_size(value) > 64 * 1024 * 1024 {
+        if serialized_json_size(value) > MAX_CHECKPOINT_BYTES {
             return Err(tool_error(
                 "CHECKPOINT_TOO_LARGE",
                 "Maximum checkpoint size is 64 MiB",
@@ -727,6 +803,23 @@ impl AnalysisRuntime {
         }
         let saved: AuditCheckpoint = serde_json::from_value(value.clone())
             .map_err(|e| tool_error("INVALID_CHECKPOINT", e.to_string()))?;
+        let restored = self.restore_checkpoint(saved, false)?;
+        let id = restored["analysis_id"].as_str().expect("restored analysis");
+        let mut start = Map::from_iter([("analysis_id".into(), json!(id))]);
+        if let Some(project) = args.get("focus_project_id") {
+            start.insert("focus_project_id".into(), project.clone());
+        }
+        let result = self.start_audit(&start);
+        if result.is_err() {
+            self.sessions.remove(id);
+        }
+        result
+    }
+    pub(super) fn restore_checkpoint(
+        &self,
+        saved: AuditCheckpoint,
+        retain_review: bool,
+    ) -> std::result::Result<Value, Value> {
         if saved.version != 1 || saved.schema_version != MCP_ANALYSIS_SCHEMA_VERSION {
             return Err(tool_error(
                 "CHECKPOINT_VERSION",
@@ -745,7 +838,7 @@ impl AnalysisRuntime {
             self.new_analysis(&json!({"project_ids":projects,"language":saved.config.language}))?;
         let id = created["analysis_id"].as_str().unwrap().to_string();
         // Rehydrate only into a fresh, isolated session. A failed restore leaves no partial analysis.
-        let result = self.restore_audit_into(&id, saved);
+        let result = self.restore_audit_into(&id, saved, retain_review);
         if result.is_err() {
             self.sessions.remove(&id);
         }
@@ -755,6 +848,7 @@ impl AnalysisRuntime {
         &self,
         id: &str,
         saved: AuditCheckpoint,
+        retain_review: bool,
     ) -> std::result::Result<Value, Value> {
         let session = self.session(id)?;
         let mut verified = BTreeMap::new();
@@ -796,6 +890,18 @@ impl AnalysisRuntime {
                     record.tool_name.as_str(),
                     "get_audit_status"
                         | "export_audit"
+                        | "list_saved_audits"
+                        | "preview_tx_report"
+                        | "preview_cpu_report"
+                        | "get_client_report_plan"
+                        | "save_client_report_plan"
+                        | "preview_client_report"
+                        | "read_client_report_asset"
+                        | "publish_client_report"
+                        | "read_combined_report_asset"
+                        | "preview_combined_report"
+                        | "read_cpu_report_asset"
+                        | "read_tx_report_asset"
                         | "preview_report"
                         | "get_report_status"
                         | "get_analysis_catalog"
@@ -887,7 +993,7 @@ impl AnalysisRuntime {
                 }
             }
             s.evidence = verified;
-            s.next_evidence = max_counter(s.evidence.keys(), "E-");
+            s.next_evidence = max_counter(s.evidence.keys(), "E-").max(2);
             s.guidance = saved.guidance;
             s.findings = saved.findings.clone();
             s.report_tables = saved.report_tables.clone();
@@ -912,6 +1018,11 @@ impl AnalysisRuntime {
                 .unwrap()
                 .clone();
             args.insert("analysis_id".into(), json!(id));
+            // The command accepts flat cells; the archive nests them under "cells".
+            args.insert(
+                "rows".into(),
+                Value::Array(table.rows.iter().map(checkpoint_row_input).collect()),
+            );
             self.record_report_table(&args)?;
         }
         for (key, finding) in &saved.findings {
@@ -927,7 +1038,7 @@ impl AnalysisRuntime {
                 .unwrap()
                 .clone();
             args.insert("analysis_id".into(), json!(id));
-            self.record_finding(&args)?;
+            self.record_finding_with_source(&args, Some(&saved.audit))?;
         }
         for (key, assessment) in &saved.assessments {
             if key != &assessment.assessment {
@@ -999,9 +1110,13 @@ impl AnalysisRuntime {
                 }
                 replay.briefs.insert(brief.brief_id.clone(), brief.clone());
             }
+            discussed_entities::validate_inventory(&saved.discussed_entities, &s.project_ids)?;
+            s.discussed_entities = saved.discussed_entities;
             let mut audit = saved.audit;
-            audit.authorization = None;
-            audit.review = None;
+            if !retain_review {
+                audit.authorization = None;
+                audit.review = None;
+            }
             s.audit = Some(audit);
             s.issue_finding_snapshots = saved.issue_finding_snapshots;
             s.finalized_markdown = None;
@@ -1015,18 +1130,61 @@ pub(super) fn tool_definitions() -> Vec<Value> {
     let mut brief_props = json!({"brief_id":{"type":"string"},"project_id":{"type":"string"},"chapter_id":{"type":"string"},
         "question":{"type":"string"},"explanation":{"type":"string"},"conclusion":{"type":"string"},"evidence_boundary":{"type":"string"},"next_step":{"type":"string"},
         "open_questions":{"type":"array","items":{"type":"string"}},"evidence_refs":{"type":"array","items":{"type":"string"}},"visual":{"type":"object"}});
+    tx_pilot::add_mutation_fields(&mut brief_props);
     hypotheses::add_tool_fields(&mut brief_props);
-    brief_props["evidence_refs"]["description"]=json!("Exact evidence IDs from this analysis and project. Empty means discussion/coverage gap, never measured proof.");
+    brief_props["evidence_cards"] = finding_presentation::card_schema();
+    brief_props["evidence_refs"]["description"] = json!(
+        "Exact evidence IDs from this analysis and project. Empty means discussion/coverage gap, never measured proof."
+    );
+    let mut advance = json!({"chapter_id":{"type":"string"},"complete_current":{"type":"boolean"},"focus_brief_id":{"type":"string"},"focus_project_id":{"type":"string"}});
+    tx_pilot::add_mutation_fields(&mut advance);
     vec![
-        function_definition("start_audit","Start or resume a guided chapter discussion. This does not collect measurements or authorize a report.",simple.clone()),
-        function_definition("get_audit_status","Read current chapter, durable session briefs, open questions and independent evidence completeness. Chapters discussed never imply causal proof or permission to publish.",simple.clone()),
-        function_definition("record_audit_brief","Save the chapter discussion. In performance_profile submit opening_hypotheses or hypothesis_gap after scope. Use hypothesis_checks in relevant subsequent chapters and hypothesis_outcomes in gradients_anomalies. Reuse the same brief_id for corrections and retain its structured fields. This marks the chapter discussed, not user-approved. Changes revoke report authorization.",json!({"type":"object","additionalProperties":false,"properties":brief_props,"required":["project_id","chapter_id","question","explanation","conclusion","evidence_boundary","next_step","evidence_refs"]})),
-        function_definition("advance_audit","Move to the chapter the auditor wants to discuss; allow revisits. Do not advance automatically through the entire audit.",json!({"type":"object","additionalProperties":false,"properties":{"chapter_id":{"type":"string"},"complete_current":{"type":"boolean"}},"required":["chapter_id"]})),
-        function_definition("authorize_report","Record the auditor's explicit final request to turn the completed discussion into a report. Quote the actual user request; never infer it from chapter completion. Does not bypass evidence or editorial gates.",json!({"type":"object","additionalProperties":false,"properties":{"user_request":{"type":"string","minLength":1}},"required":["user_request"]})),
-        function_definition("export_audit","Export every discussion revision, evidence payload and report state as a portable checkpoint. Save the returned checkpoint in a private configured file; the tool itself does not persist it.",simple.clone()),
-        function_definition("restore_audit","Restore an exported checkpoint in a new analysis after verifying the datasets and replaying every evidence source. Changed evidence rejects the restore. Report authorization and editorial review are cleared.",json!({"type":"object","additionalProperties":false,"properties":{"checkpoint":{"type":"object"}},"required":["checkpoint"]})),
-        function_definition("preview_report","Render the current report for editorial review without publishing, finalizing or incrementing its revision. Guided audits require the user's final report request first. Completeness gaps remain visible.",json!({"type":"object","additionalProperties":false,"properties":{"format":{"type":"string","enum":["markdown","html","both"],"default":"markdown"}}})),
-        function_definition("record_report_review","After reading the actual preview, record semantic checks and specific review notes. Checks cover clarity, executable actions, preserved uncertainty/evidence and consistent language. Any later content change requires a fresh review.",json!({"type":"object","additionalProperties":false,"properties":{"preview_id":{"type":"string"},"checks":{"type":"object","additionalProperties":false,"properties":{"explanation_clear":{"type":"boolean"},"actions_executable":{"type":"boolean"},"uncertainty_preserved":{"type":"boolean"},"evidence_preserved":{"type":"boolean"},"language_consistent":{"type":"boolean"}},"required":["explanation_clear","actions_executable","uncertainty_preserved","evidence_preserved","language_consistent"]},"notes":{"type":"string"}},"required":["preview_id","checks","notes"]})),
+        function_definition(
+            "start_audit",
+            "Start a workspace-backed guided discussion or attach an existing in-memory audit to durable storage. Brief edits and chapter transitions automatically save a new checkpoint. Repeating this call preserves the current audit.",
+            json!({"type":"object","additionalProperties":false,"properties":{"focus_project_id":{"type":"string"}}}),
+        ),
+        function_definition(
+            "get_audit_status",
+            "Read current chapter, durable session briefs, open questions and independent evidence completeness. Chapters discussed never imply causal proof or permission to publish.",
+            simple.clone(),
+        ),
+        discussed_entities::tool_definition(),
+        function_definition(
+            "record_audit_brief",
+            "Save the chapter discussion. In performance_profile submit opening_hypotheses or hypothesis_gap after scope. Use hypothesis_checks in relevant subsequent chapters and hypothesis_outcomes in gradients_anomalies. Reuse the same brief_id for corrections and retain its structured fields. This marks the chapter discussed, not user-approved. Changes revoke report authorization.",
+            json!({"type":"object","additionalProperties":false,"properties":brief_props,"required":["project_id","chapter_id","question","explanation","conclusion","evidence_boundary","next_step","evidence_refs"]}),
+        ),
+        function_definition(
+            "advance_audit",
+            "Move to the chapter the auditor wants to discuss; allow revisits. Do not advance automatically through the entire audit.",
+            json!({"type":"object","additionalProperties":false,"properties":advance,"required":["chapter_id"]}),
+        ),
+        function_definition(
+            "authorize_report",
+            "Record the auditor's explicit final request to turn the completed discussion into a report. Quote the actual user request; never infer it from chapter completion. Does not bypass evidence or editorial gates.",
+            json!({"type":"object","additionalProperties":false,"properties":{"user_request":{"type":"string","minLength":1}},"required":["user_request"]}),
+        ),
+        function_definition(
+            "export_audit",
+            "Export every discussion revision, evidence payload and report state as a portable checkpoint. Save the returned checkpoint in a private configured file; the tool itself does not persist it.",
+            simple.clone(),
+        ),
+        function_definition(
+            "restore_audit",
+            "Restore an exported checkpoint in a new durable guided audit after verifying the datasets and replaying every evidence source. Changed evidence rejects the restore. Report authorization and editorial review are cleared.",
+            json!({"type":"object","additionalProperties":false,"properties":{"checkpoint":{"type":"object"},"focus_project_id":{"type":"string"}},"required":["checkpoint"]}),
+        ),
+        function_definition(
+            "preview_report",
+            "Render the classic technical report for editorial review. For the client problem chapters use preview_client_report. Guided audits require the user's final report request first. Completeness gaps remain visible.",
+            json!({"type":"object","additionalProperties":false,"properties":{"format":{"type":"string","enum":["markdown","html","both"],"default":"markdown"}}}),
+        ),
+        function_definition(
+            "record_report_review",
+            "After reading the actual preview, record semantic checks and specific review notes. Checks cover clarity, executable actions, preserved uncertainty/evidence and consistent language. Any later content change requires a fresh review.",
+            json!({"type":"object","additionalProperties":false,"properties":{"preview_id":{"type":"string"},"checks":{"type":"object","additionalProperties":false,"properties":{"explanation_clear":{"type":"boolean"},"actions_executable":{"type":"boolean"},"uncertainty_preserved":{"type":"boolean"},"evidence_preserved":{"type":"boolean"},"language_consistent":{"type":"boolean"}},"required":["explanation_clear","actions_executable","uncertainty_preserved","evidence_preserved","language_consistent"]},"notes":{"type":"string"}},"required":["preview_id","checks","notes"]}),
+        ),
     ]
 }
 
@@ -1186,6 +1344,132 @@ mod tests {
         );
     }
     #[test]
+    fn general_chapter_commits_survive_restarts_and_can_be_specialized() {
+        let work = tempfile::tempdir().unwrap();
+        let mut writer = super::super::tests::runtime();
+        writer.audit_workspace = work.path().to_owned();
+        let (id, project) = start(&writer);
+        let initial = call(&writer, "start_audit", json!({"analysis_id":id})).unwrap();
+        assert_eq!(initial["pilot_kind"], "general");
+        assert_eq!(initial["snapshot"]["revision"], 1);
+        let path = Path::new(initial["snapshot"]["path"].as_str().unwrap());
+        assert!(path.is_file() && path.starts_with(work.path()));
+        let status = call(&writer, "record_audit_brief", brief(&id, &project, "scope")).unwrap();
+        assert_eq!(status["snapshot"]["revision"], 2);
+        let args = json!({"analysis_id":id,"chapter_id":"sql","expected_revision":2,
+            "operation_id":"transition-sql","private_note":"Compare the next captured plan."});
+        let moved = call(&writer, "advance_audit", args.clone()).unwrap();
+        assert_eq!(moved["snapshot"]["revision"], 3);
+        assert!(moved["resume_context"]["focus_brief_id"].is_null());
+        let retry = call(&writer, "advance_audit", args).unwrap();
+        assert_eq!(retry["snapshot"], moved["snapshot"]);
+        assert_eq!(
+            call(&writer, "get_audit_status", json!({"analysis_id":id})).unwrap()["snapshot"],
+            moved["snapshot"]
+        );
+        drop(writer);
+
+        let mut reader = super::super::tests::runtime();
+        reader.audit_workspace = work.path().to_owned();
+        let audit_id = &moved["audit_id"];
+        let resumed = call(&reader, "resume_saved_audit", json!({"audit_id":audit_id})).unwrap();
+        for key in [
+            "snapshot",
+            "briefs",
+            "open_questions",
+            "resume_context",
+            "current_chapter_id",
+            "revision",
+        ] {
+            assert_eq!(resumed[key], moved[key], "{key}");
+        }
+        let promoted = call(
+            &reader,
+            "enable_tx_pilot",
+            json!({"analysis_id":resumed["analysis_id"]}),
+        )
+        .unwrap();
+        assert_eq!(promoted["audit_id"], *audit_id);
+        assert_eq!(promoted["pilot_kind"], "tx");
+        assert_eq!(promoted["snapshot"]["revision"], 4);
+        assert_eq!(promoted["briefs"], moved["briefs"]);
+        assert_eq!(
+            call(
+                &reader,
+                "start_audit",
+                json!({"analysis_id":resumed["analysis_id"]})
+            )
+            .unwrap()["snapshot"],
+            promoted["snapshot"]
+        );
+        let resumed = call(
+            &reader,
+            "resume_saved_audit",
+            json!({"audit_id":audit_id,"as_general":true}),
+        )
+        .unwrap();
+        assert_eq!(resumed["pilot_kind"], "general");
+        assert_eq!(resumed["audit_id"], *audit_id);
+        assert_eq!(resumed["snapshot"]["revision"], 5);
+        assert!(path.is_file());
+        assert_eq!(
+            call(&reader, "list_saved_audits", json!({})).unwrap()["audits"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn trusted_general_restart_preserves_review_and_finalized_report() {
+        let work = tempfile::tempdir().unwrap();
+        let mut first = super::super::tests::runtime();
+        first.audit_workspace = work.path().to_owned();
+        let (id, project) = start(&first);
+        discuss_all(&first, &id, &project);
+        authorize(&first, &id);
+        review(&first, &id);
+        call(
+            &first,
+            "finalize_report",
+            json!({"analysis_id":id,"allow_incomplete":true}),
+        )
+        .unwrap();
+        let state = first.session(&id).unwrap();
+        let state = state.lock().unwrap();
+        let markdown = state.finalized_markdown.clone().unwrap();
+        let before = first.discussion_status(&id, &state);
+        drop(state);
+        drop(first);
+        let mut second = super::super::tests::runtime();
+        second.audit_workspace = work.path().to_owned();
+        let resumed = call(
+            &second,
+            "resume_saved_audit",
+            json!({"audit_id":before["audit_id"]}),
+        )
+        .unwrap();
+        for key in [
+            "snapshot",
+            "report_authorized",
+            "editorial_review_current",
+            "briefs",
+            "open_questions",
+            "revision",
+        ] {
+            assert_eq!(resumed[key], before[key], "{key}");
+        }
+        assert_eq!(resumed["editorial_review_current"], true);
+        let state = second
+            .session(resumed["analysis_id"].as_str().unwrap())
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.finalized_markdown.as_deref(), Some(markdown.as_str()));
+        assert_eq!(state.report_revision, 1);
+    }
+
+    #[test]
     fn checkpoint_replays_all_evidence_retains_revisions_and_clears_permission() {
         let runtime = super::super::tests::runtime();
         let (id, project) = start(&runtime);
@@ -1219,6 +1503,8 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let restored = call(&runtime, "restore_audit", json!({"checkpoint":checkpoint})).unwrap();
         assert_ne!(restored["analysis_id"], id);
+        assert_eq!(restored["pilot_kind"], "general");
+        assert_eq!(restored["snapshot"]["persisted"], true);
         assert_eq!(restored["report_authorized"], false);
         assert_eq!(restored["history_count"], 1);
         assert_eq!(restored["briefs"].as_array().unwrap().len(), CHAPTERS.len());
@@ -1244,6 +1530,29 @@ mod tests {
             "CHECKPOINT_EVIDENCE_CHANGED"
         );
         assert_eq!(runtime.sessions.len(), count);
+    }
+    #[test]
+    fn checkpoint_row_restores_flat_command_input_and_seed_keeps_sequence() {
+        let row = ReportTableRow {
+            cells: BTreeMap::from([("project_id".into(), "project-1".into())]),
+            evidence_refs: vec!["E-0002".into()],
+        };
+        assert_eq!(
+            checkpoint_row_input(&row),
+            json!({"project_id":"project-1","evidence_refs":["E-0002"]})
+        );
+        let runtime = super::super::tests::runtime();
+        let (id, _) = start(&runtime);
+        let checkpoint = call(&runtime, "export_audit", json!({"analysis_id":id})).unwrap();
+        let restored = call(
+            &runtime,
+            "restore_audit",
+            json!({"checkpoint":checkpoint["checkpoint"]}),
+        )
+        .unwrap();
+        let args = json!({"analysis_id":restored["analysis_id"]});
+        let evidence = call(&runtime, "get_database_load_summary", args).unwrap();
+        assert_eq!(evidence["evidence_id"], "E-0002");
     }
     #[test]
     fn legacy_checkpoint_can_resume_the_opening_without_losing_existing_chapters() {
@@ -1512,7 +1821,25 @@ mod review_tests;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Node and permission to bind a loopback HTTP port"]
 async fn companion_core_transport_integration() {
-    let runtime = super::tests::runtime();
+    let mut runtime = super::tests::runtime();
+    if std::env::var("JASMIN_AUDIT_BROWSER_QA").as_deref() == Ok("1") {
+        let (collection, report) = crate::measurements::replay_tests::standard_report(
+            include_str!("../../test_support/fixtures/empty_calories/scan_degradation.json"),
+        );
+        let project = AnalysisProject::new(
+            "gradient-fixture".into(),
+            collection,
+            report,
+            "gradient-fixture".into(),
+            0,
+            HashMap::new(),
+            "gradient-fixture.html_reports".into(),
+        );
+        Arc::make_mut(&mut runtime.projects).insert(
+            project.project_id.clone(),
+            Arc::new(ProjectData::from(project)),
+        );
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let endpoint = format!("http://{address}/mcp");

@@ -21,7 +21,9 @@ test('Portable launcher from a different project: stdio lifecycle, evidence, sel
   const call = async (name, args = {}) => (await rpc('tools/call', { name, arguments: args })).result;
   assert.equal((await rpc('initialize', { protocolVersion: '2025-06-18' })).result.serverInfo.name, 'jasmin-companion');
   child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
-  assert.equal((await rpc('tools/list')).result.tools.length, 18);
+  const toolNames = (await rpc('tools/list')).result.tools.map(tool => tool.name);
+  for (const name of ['companion_enable_tx_pilot', 'companion_list_saved_audits', 'companion_resume_saved_audit',
+    'companion_preview_tx_report', 'companion_publish_tx_report']) assert.ok(toolNames.includes(name));
   const open = (await call('companion_open', { mode: 'demo' })).structuredContent;
   const url = open.panel_url;
   assert.equal((await fetch(url)).status, 200);

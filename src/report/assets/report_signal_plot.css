@@ -1,0 +1,16 @@
+.signal-chart { display:block; width:100%; max-height:450px; margin:1.1rem 0 .2rem; overflow:visible; }
+.signal-mobile-axis { display:none; }
+.signal-plot-bg { fill:#f5f8fa; }
+.signal-gridline { fill:none; stroke:#dce5e9; stroke-width:1; }
+.signal-tick { fill:#5a707d; font-size:10px; font-family:inherit; font-variant-numeric:tabular-nums; }
+.signal-axis { fill:#405a6a; font-size:11px; font-weight:650; font-family:inherit; }
+.tone-agreement { --signal:#087f79; color:var(--signal); }
+.tone-steady { --signal:#3266aa; color:var(--signal); }
+.tone-tail { --signal:#bc365a; color:var(--signal); }
+.tone-sparse { --signal:#876529; color:var(--signal); }
+.tone-unknown { --signal:#71808c; color:var(--signal); }
+.signal-bubble circle { fill:var(--signal); fill-opacity:.85; stroke:white; stroke-width:2; transition:stroke-width .12s; }
+.signal-bubble.selection-incomplete circle { fill:white; stroke:var(--signal); stroke-dasharray:3 2; }
+.signal-bubble.selection-incomplete .signal-bubble-label { fill:var(--signal); }
+.signal-bubble:hover circle, .signal-bubble:focus circle { stroke:#102e3d; stroke-width:3; fill-opacity:1; }
+.signal-bubble-label { fill:#fff; font-size:10px; font-weight:800; font-family:inherit; pointer-events:none; }

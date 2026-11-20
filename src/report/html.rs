@@ -65,7 +65,11 @@ pub fn table_to_html_string(table: &Table, title: &str, headers: &[&str]) -> Str
 /// - CSS styling
 /// - Table of Contents (TOC)
 /// - Anchored headings
-fn classic_source_navigation(html_dir: &str, html_absolute_dir: &str) -> String {
+fn classic_source_navigation(
+    html_dir: &str,
+    html_absolute_dir: &str,
+    l: crate::report::i18n::ReportLanguage,
+) -> String {
     if html_dir.trim().is_empty() || html_absolute_dir.trim().is_empty() {
         return String::new();
     }
@@ -85,7 +89,7 @@ fn classic_source_navigation(html_dir: &str, html_absolute_dir: &str) -> String 
         links.push(format!(
             r#"<li><a href="{}" target="_blank" rel="noopener">{}</a></li>"#,
             encode_double_quoted_attribute(&target.to_string_lossy()),
-            encode_text(label)
+            encode_text(l.text(label))
         ));
     }
 
@@ -93,7 +97,7 @@ fn classic_source_navigation(html_dir: &str, html_absolute_dir: &str) -> String 
         String::new()
     } else {
         format!(
-            "<nav class=\"source-navigation\" aria-label=\"Interactive JAS-MIN source reports\"><strong>Interactive source reports:</strong><ul>{}</ul></nav>",
+            "<nav class=\"source-navigation\" aria-label=\"{}\"><strong>{}:</strong><ul>{}</ul></nav>", l.text("Interactive source reports"),l.text("Interactive source reports"),
             links.join("")
         )
     }
@@ -284,7 +288,7 @@ fn markdown_to_html_with_toc(
     // Render HTML from modified parser stream
     html::push_html(&mut html_output, parser_with_ids.into_iter());
 
-    let classic_navigation = classic_source_navigation(html_dir, html_absolute_dir);
+    let classic_navigation = classic_source_navigation(html_dir, html_absolute_dir, l);
     let ora600_logo_data = general_purpose::STANDARD.encode(ORA600_LOGO_PNG);
 
     // Wrap the result in a complete HTML template
@@ -901,7 +905,11 @@ document.addEventListener("input", function (event) {{
         reader_css = concat!(
             include_str!("../report/assets/report_reader.css"),
             "\n",
-            include_str!("../report/assets/report_signals.css")
+            include_str!("../report/assets/report_signal_plot.css"),
+            "\n",
+            include_str!("../report/assets/report_signals.css"),
+            "\n",
+            include_str!("../report/assets/report_gradient_intro.css")
         ),
         signals_js = include_str!("../report/assets/report_signals.js"),
         reader_js = include_str!("../report/assets/report_reader.js"),

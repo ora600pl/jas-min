@@ -345,6 +345,7 @@ fn localized_compact_report_preserves_complete_original_analysis_and_contract() 
     state.config.detail_level = "compact".into();
     let mut record = finding("F-reader", "sql", "high");
     record.reader_brief = Some(ReaderBrief {
+        supporting_card_ids: vec![],
         source_audit_brief: None,
         observed: "Dwie sesje czekały w obserwowanym przedziale.".into(),
         explanation: "Ten pomiar wskazuje miejsce dalszego badania.".into(),
@@ -492,6 +493,7 @@ fn sourced_reader_brief_projects_only_the_matching_retained_visual_revision() {
         AnalysisSession::new(json!({}), ReportConfig::default(), vec!["project-1".into()]);
     let mut record = finding("F-visual", "sql", "high");
     record.reader_brief = Some(ReaderBrief {
+        supporting_card_ids: vec![],
         source_audit_brief: Some(AuditBriefReference {
             brief_id: "B-visual".into(),
             revision: 1,
@@ -680,4 +682,120 @@ fn guided_hypotheses_connect_openings_checks_and_outcomes_in_each_report_languag
             assert_eq!(count("#evidence-e-project-2-io"), usize::from(appendix));
         }
     }
+}
+
+#[test]
+fn legacy_support_deduplicates_prose_and_preserves_markdown_and_sql() {
+    let mut record = finding("F-test", "sql", "medium");
+    let paragraph = "The sampled operation took 8 ms per read in this hour.";
+    record.evidence_summary = paragraph.into();
+    record.details = format!("{paragraph}\n\n#### Result rows\n\n| time | reads |\n|---|---|\n| 10 | 28 |\n\n```sql\nselect 1;\n\nselect 1;\n```");
+    let mut state = AnalysisSession::new(json!({}), ReportConfig::default(), vec![]);
+    state.findings.insert(record.finding_id.clone(), record);
+    let md = render_markdown(&json!({}), &state, &ReportEntityLinks::default());
+    let html =
+        scraper::Html::parse_document(&render_markdown_html_document(&md, "", "", HashMap::new()));
+    let article = html
+        .select(&scraper::Selector::parse("article.report-finding").unwrap())
+        .next()
+        .unwrap();
+    assert_eq!(
+        article
+            .text()
+            .collect::<String>()
+            .matches(paragraph)
+            .count(),
+        1
+    );
+    for tag in [
+        ".finding-detail table",
+        ".finding-detail pre code",
+        ".finding-detail h4",
+    ] {
+        assert!(
+            article
+                .select(&scraper::Selector::parse(tag).unwrap())
+                .next()
+                .is_some(),
+            "{tag}"
+        );
+    }
+    assert!(md.contains("select 1;\n\nselect 1;"));
+}
+
+#[test]
+fn cards_select_only_this_claim_and_reject_foreign_sources() {
+    use super::finding_presentation::{selected_cards, validate_cards};
+    let mut source = audit_workflow::AuditBrief::default();
+    source.evidence_refs = vec!["E-1".into(), "E-2".into()];
+    source.evidence_cards = serde_json::from_value(json!([
+        {"id":"remote","kind":"comparison","title":"Remote calls","body":"Response took 15 ms.","evidence_refs":["E-1"]},
+        {"id":"locking","kind":"measurement","title":"Row locks","body":"A transaction waited for 5 s.","evidence_refs":["E-2"]}
+    ])).unwrap();
+    source.brief_id = "B-example".into();
+    source.chapter_id = "wait_events".into();
+    source.revision = 1;
+    assert!(validate_cards(&source).is_ok());
+    let mut record = finding("F-sample", "wait_events", "low");
+    let mut reader: ReaderBrief = serde_json::from_value(json!({"supporting_card_ids":["remote"],"source_audit_brief":{"brief_id":"B-example","revision":1},
+        "observed":"The remote call slowed.","explanation":"Check the remote execution.","next_step":"Align both clocks.",
+        "boundary":"The remote runtime is unknown.","evidence_refs":["E-1"]})).unwrap();
+    reader.supporting_card_ids = vec!["locking".into()];
+    assert_eq!(
+        selected_cards(&reader, &source).unwrap_err()["error_code"],
+        "FINDING_CARD_SCOPE_MISMATCH"
+    );
+    reader.supporting_card_ids.clear();
+    assert_eq!(
+        selected_cards(&reader, &source).unwrap_err()["error_code"],
+        "FINDING_CARDS_REQUIRED"
+    );
+    reader.supporting_card_ids = vec!["remote".into()];
+    let mut repeated = source.clone();
+    repeated.evidence_cards[0].body = reader.observed.clone();
+    assert_eq!(
+        selected_cards(&reader, &repeated).unwrap_err()["error_code"],
+        "DUPLICATED_FINDING_PARAGRAPH"
+    );
+    record.reader_brief = Some(reader);
+    record.details = "Unscoped locking text from the chapter.".into();
+    source.visual = Some(json!({"title":"Full chapter board","panels":[]}));
+    let mut state = AnalysisSession::new(json!({}), ReportConfig::default(), vec![]);
+    let mut audit = audit_workflow::AuditState::default();
+    audit.briefs.insert(source.brief_id.clone(), source.clone());
+    state.audit = Some(audit);
+    state.findings.insert(record.finding_id.clone(), record);
+    let md = render_markdown(&json!({}), &state, &ReportEntityLinks::default());
+    assert!(md.contains("Response took 15 ms."));
+    let warnings = finding_presentation::card_coverage_warnings(&state);
+    assert!(warnings
+        .iter()
+        .any(|w| w["code"] == "UNSELECTED_DISCUSSION_CARD" && w["card_id"] == "locking"));
+    let copy = state.findings.get("F-sample").unwrap().clone();
+    state.findings.insert(
+        "F-second".into(),
+        ReportFinding {
+            finding_id: "F-second".into(),
+            ..copy
+        },
+    );
+    assert!(finding_presentation::card_coverage_warnings(&state)
+        .iter()
+        .any(|w| w["code"] == "SHARED_DISCUSSION_CARD" && w["card_id"] == "remote"));
+    assert!(
+        !md.contains("A transaction waited")
+            && !md.contains("Unscoped locking")
+            && !md.contains("Full chapter board")
+    );
+    source.evidence_cards[0].evidence_refs = vec!["E-9".into()];
+    assert_eq!(
+        validate_cards(&source).unwrap_err()["error_code"],
+        "EVIDENCE_CARD_SCOPE_MISMATCH"
+    );
+    source.evidence_cards[0].evidence_refs = vec!["E-1".into()];
+    source.evidence_cards[0].body = "See [local capture](file:///tmp/example.html)".into();
+    assert_eq!(
+        validate_cards(&source).unwrap_err()["error_code"],
+        "NONPORTABLE_REPORT_LINK"
+    );
 }

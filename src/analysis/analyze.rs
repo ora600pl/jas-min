@@ -2866,13 +2866,15 @@ pub fn main_report_builder(
             args.security_level
         );
         if args.security_level >= 2 && !collection.sql_text.is_empty() {
+            let statement = collection
+                .sql_text
+                .get(&sql_id)
+                .map(String::as_str)
+                .unwrap_or("SQL NOT FOUND");
             sql_text = format!(
-                "<code><details><summary>FULL SQL TEXT</summary>{}</details></code>\n</body>",
-                collection
-                    .sql_text
-                    .get(&sql_id)
-                    .unwrap_or(&"SQL NOT FOUND".to_string())
-            )
+                "<details><summary>FULL SQL TEXT</summary><pre><code>{}</code></pre></details>",
+                html_escape::encode_text(statement)
+            );
         }
 
         // Format the content as HTML
@@ -2894,7 +2896,7 @@ pub fn main_report_builder(
                 <div class="content">
                     <p><h2 style="width:100%;text-align:center;">{sql_id}</h2></p>
                     <p><span style="color:blue;font-weight:bold;">Module:<br></span>{module}</p>
-                    <p><span style="color:blue;font-weight:bold;">SQL Text:<br></span>{sql_txt}</p>
+                    <div><span style="color:blue;font-weight:bold;">SQL Text:<br></span>{sql_txt}</div>
                     <p><span style="color:blue;font-weight:bold;">Other Top Sections:<br></span> {top_section}</p>
                     <p><span style="color:blue;font-weight:bold;">Correlations:<br></span>{sql_corr_txt}</p>
                     {ash_table}

@@ -1,0 +1,25 @@
+.cpu-observed,.cpu-scenario{fill:none;stroke-width:2.3;vector-effect:non-scaling-stroke}
+.cpu-observed{stroke:#165e50}
+.cpu-scenario{stroke:#884018;stroke-dasharray:6 4}
+.sql-ids code{display:inline-block;padding:.1rem .35rem}
+.table-wrap + .table-wrap{margin-top:1rem}
+.table-wrap td{font-variant-numeric:tabular-nums}
+@media print{.cpu-observed{stroke:#222}.cpu-scenario{stroke:#666}.table-wrap table{font-size:8pt}thead{display:table-header-group}}
+
+/* Let each source table keep its readable columns in its own scroll region. */
+@media screen {
+    .table-wrap { max-width: 100%; overflow-x: auto; }
+    .table-wrap th, .table-wrap td { overflow-wrap: normal; word-break: normal; }
+    .table-wrap td { white-space: nowrap; }
+    :is(#timeline,#cpu-timeline) table { min-width: 38rem; }
+    :is(section[id^="node-"],section[id^="cpu-node-"]) table { min-width: 64rem; }
+    :is(#cluster,#cpu-cluster) table { min-width: 31rem; }
+    :is(#cluster,#cpu-cluster) td .scope { white-space: nowrap; }
+}
+@media print {
+    :is(#action,#cpu-action) { break-inside: avoid; }
+    :is(#action,#cpu-action) dl { display: block; }
+    :is(#action,#cpu-action) dt { break-after: avoid; }
+    :is(#action,#cpu-action) dd { margin-bottom: .4rem; }
+    :is(#action,#cpu-action) .lead { break-after: avoid; }
+}

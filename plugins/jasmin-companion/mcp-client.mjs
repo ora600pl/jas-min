@@ -9,14 +9,14 @@ export class McpClient {
   }
   async rpc(method, params = {}, notification = false) {
     // Checkpoints include retained evidence and are returned in both MCP content forms.
-    const auditPayload = method === 'tools/call' && ['export_audit', 'get_audit_status', 'start_audit', 'record_audit_brief', 'advance_audit', 'authorize_report', 'restore_audit'].includes(params.name);
+    const auditPayload = method === 'tools/call' && ['export_audit', 'get_audit_status', 'start_audit', 'record_audit_brief', 'advance_audit', 'authorize_report', 'restore_audit', 'enable_tx_pilot', 'enable_cpu_pilot', 'enable_combined_pilot', 'switch_audit_topic', 'resume_saved_audit', 'get_rac_cpu_scenario', 'save_client_report_plan'].includes(params.name);
     const maxResponseBytes = (auditPayload ? 192 : 8) * 1024 * 1024;
     const id = notification ? undefined : ++this.sequence;
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
     if (this.session) headers['Mcp-Session-Id'] = this.session;
     if (method !== 'initialize') headers['MCP-Protocol-Version'] = this.protocol;
     const response = await fetch(this.url, {
-      method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(method === 'tools/call' && params.name === 'restore_audit' ? 120000 : 45000),
+      method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(method === 'tools/call' && ['restore_audit', 'resume_saved_audit', 'save_client_report_plan', 'preview_client_report'].includes(params.name) ? 120000 : 45000),
       body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }),
     });
     if (!response.ok) throw new Error(`MCP HTTP ${response.status}. Check the server and session.`);

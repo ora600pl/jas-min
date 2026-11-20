@@ -1,0 +1,56 @@
+.gradient-intro { margin-block-start: 2.25rem; color: #242e30; }
+.gradient-intro h2 { margin: 0; }
+.gradient-guide { margin: .75rem 0 1.35rem; max-width: 76ch; line-height: 1.55; }
+.gradient-picker { display: flex; flex-wrap: wrap; gap: .42rem; align-items: center; min-width: 0; }
+.gradient-prompt { font-size: .82rem; font-weight: 700; margin-inline-end: .35rem; color: #46585c; }
+.gradient-switch { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); }
+.gradient-picker > label { cursor: pointer; padding: .24rem .68rem; border: 1px solid #c7d3d1; border-radius: .32rem; color: #385257; font-family: inherit; font-weight: 600; font-size: .84rem; line-height: 1.5; }
+.gradient-picker > label:hover { border-color: #527775; }
+.gradient-switch:checked + label { color: white; background: #245756; border-color: #245756; }
+.gradient-switch:focus-visible + label { outline: 3px solid #185883; outline-offset: 3px; }
+.gradient-choice { display: none; order: 1; flex: 0 0 100%; min-width: 0; }
+.gradient-switch:checked + label + .gradient-choice { display: block; }
+.gradient-choice > .gradient-picker { margin-block-start: .4rem; }
+.gradient-window { margin: .2rem 0 .9rem; color: #546260; font-size: .85rem; font-variant-numeric: tabular-nums; }
+.gradient-fit { border: 1px solid #cbd9d6; border-radius: .6rem; margin: .65rem 0 0; padding: clamp(.65rem, 2vw, 1.2rem); background: #fff; }
+.gradient-fit figcaption { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .25rem 1rem; align-items: baseline; }
+.gradient-fit figcaption strong { font-size: 1.04rem; color: #244c4b; }
+.gradient-fit figcaption > span { color: #4c6264; font-weight: 650; font-size: .84rem; }
+.gradient-fit .signal-chart { margin: .5rem 0 0; max-height: 22rem; }
+.gradient-fit .signal-plot-bg { fill: #f4f8f7; }
+.gradient-fit .signal-axis { font-size: 13px; }
+.gradient-fit .signal-tick { font-size: 12px; }
+.gradient-fit .signal-bubble:focus { outline: none; }
+.gradient-key, .gradient-legend ul { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin: .3rem 0; padding: 0; list-style: none; }
+.gradient-key li { display: inline-flex; align-items: baseline; gap: .33rem; font-size: .83rem; color: #263d41; overflow-wrap: anywhere; }
+.gradient-chip { display: inline-grid; place-items: center; min-width: 1.23rem; min-height: 1.23rem; padding: 0 .15rem; background: var(--signal); color: white; font: 700 .66rem/1.1 system-ui, sans-serif; border-radius: 1rem; }
+.gradient-data { margin-top: .9rem; }
+.gradient-data > summary { cursor: pointer; padding: .55rem 0; border-top: 1px solid #dbe3e1; color: #2c5757; font-size: .87rem; font-weight: 650; }
+.gradient-data .table-scroll { overflow-x: auto; }
+.gradient-data table { width: 100%; min-width: 27rem; border-collapse: collapse; font-size: .84rem; }
+.gradient-data caption { margin: .55rem 0; text-align: left; color: #475a59; }
+.gradient-data th, .gradient-data td { padding: .35rem .5rem; text-align: left; vertical-align: top; border-bottom: 1px solid #dde4e2; }
+.gradient-data td:nth-child(2), .gradient-data td:nth-child(3) { font-variant-numeric: tabular-nums; }
+.gradient-data tr:target { background: #fff2ce; }
+.gradient-index { font-size: .71rem; font-weight: 600; color: #607071; }
+.gradient-legend { margin: .6rem 0 0; font-size: .84rem; line-height: 1.5; color: #485956; }
+.gradient-legend p { margin: 0; }
+.gradient-legend li { color: #314341; }
+.gradient-legend li::before { content: ""; display: inline-block; width: .58rem; height: .58rem; background: var(--signal); border-radius: 100%; margin-inline-end: .3rem; }
+.gradient-empty { font-size: .9rem; color: #5d5a4d; }
+@media (max-width: 37.5rem) {
+    .gradient-fit { padding: .55rem; }
+    .gradient-fit .signal-chart { width: 100%; min-width: 0; margin: .15rem 0; }
+    .gradient-fit .signal-axis[transform] { display: none; }
+    .gradient-fit .signal-axis { font-size: 19px; }
+    .gradient-fit .signal-tick { font-size: 18px; }
+    .gradient-fit .signal-bubble-label { font-size: 14px; }
+    .gradient-fit .signal-mobile-axis { display: block; font-size: .73rem; color: #405a6a; margin: .65rem 0 0; }
+}
+@media print {
+    .gradient-intro .gradient-picker { display: block; }
+    .gradient-intro .gradient-switch, .gradient-intro .gradient-picker > label, .gradient-intro .gradient-prompt { display: none; }
+    .gradient-intro .gradient-choice { display: block; }
+    .gradient-fit { break-inside: avoid; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    .gradient-intro .gradient-data:not([open]) { display: none; }
+}

@@ -1,6 +1,6 @@
 {
   "name": "jasmin-companion",
-  "version": "0.2.0",
+  "version": "0.7.3",
   "description": "Investigate Oracle performance with JAS-MIN evidence, interactive charts and a local companion panel.",
   "author": { "name": "JAS-MIN maintainers" },
   "mcpServers": {

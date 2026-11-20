@@ -68,7 +68,7 @@ pub(crate) fn fixture() -> SignalAtlas {
 fn atlas_keeps_unknowns_exact_numbers_and_model_selection_distinct() {
     let atlas = fixture();
     validate(&atlas).unwrap();
-    let html = render(&atlas, true);
+    let html = render(&atlas, true, ReportLanguage::new("EN"));
     let parsed = scraper::Html::parse_fragment(&html);
     let sel = |s| scraper::Selector::parse(s).unwrap();
     assert_eq!(parsed.select(&sel(".signal-bubble")).count(), 2);
@@ -93,7 +93,7 @@ fn atlas_keeps_unknowns_exact_numbers_and_model_selection_distinct() {
         .text()
         .collect::<String>()
         .starts_with("Confidence: medium"));
-    assert!(!render(&atlas, false).contains("href=\"#evidence-"));
+    assert!(!render(&atlas, false, ReportLanguage::new("EN")).contains("href=\"#evidence-"));
 }
 
 #[test]
@@ -126,8 +126,8 @@ fn atlas_rejects_invented_scopes_nonfinite_magnitudes_and_active_content() {
     }
     let mut escaped = original;
     escaped.panels[0].points[0].interpretation = "<script>alert(1)</script>".into();
-    assert!(!render(&escaped, true).contains("<script>"));
-    assert!(render(&escaped, true).contains("&lt;script&gt;"));
+    assert!(!render(&escaped, true, ReportLanguage::new("EN")).contains("<script>"));
+    assert!(render(&escaped, true, ReportLanguage::new("EN")).contains("&lt;script&gt;"));
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn named_signal_keeps_distinct_cpu_and_time_fits_in_the_brief() {
     other.points[0].peak = Some(3.0);
     atlas.panels.push(other);
     validate(&atlas).unwrap();
-    let html = render(&atlas, true);
+    let html = render(&atlas, true, ReportLanguage::new("EN"));
     let parsed = scraper::Html::parse_fragment(&html);
     let chips = parsed
         .select(&scraper::Selector::parse(".signal-chip a").unwrap())
@@ -160,10 +160,61 @@ fn named_signal_keeps_distinct_cpu_and_time_fits_in_the_brief() {
 fn zero_active_has_no_infinite_ratio_or_fake_bubble_coordinates() {
     let mut atlas = fixture();
     atlas.panels[0].points[0].active = Some(0.0);
-    let html = render(&atlas, true);
+    let html = render(&atlas, true, ReportLanguage::new("EN"));
     assert!(!html.contains("NaN"));
     assert!(!html.contains("inf×"));
     assert!(html.contains("cx=\"65.00\""));
     assert_eq!(number(0.000000012345), "1.23e-8");
     assert_eq!(number(71.41438138101672), "71.41");
+}
+
+#[test]
+fn polish_atlas_localizes_generated_copy_and_preserves_source_names() {
+    let mut atlas = fixture();
+    atlas.panels[0].points[0].name = "Load profile".into();
+    atlas.moments.push(SignalMoment {
+        project_id: "p1".into(),
+        project_label: "Instance 1".into(),
+        kind: "anomaly".into(),
+        window: "10:00–11:00".into(),
+        title: "Long read".into(),
+        measure: "8 ms".into(),
+        context: "One hourly capture".into(),
+        evidence_refs: vec!["E-1".into()],
+    });
+
+    let output = render(&atlas, true, ReportLanguage::new("PL"));
+    for expected in [
+        "Godziny wybrane do dalszego sprawdzenia",
+        "Co obciążało bazę",
+        "Wskazania modeli",
+        "Load profile",
+    ] {
+        assert!(output.contains(expected), "{expected}");
+    }
+    for english in [
+        "Observed windows to investigate",
+        "Find the work.",
+        "How to read this analysis",
+        "Peak impact · P99",
+    ] {
+        assert!(!output.contains(english), "{english}");
+    }
+}
+
+#[test]
+fn signal_notes_are_shared_only_within_one_fit() {
+    let mut atlas = fixture();
+    for point in &mut atlas.panels[0].points {
+        point.action = "Check the captured baseline.".into();
+    }
+    let mut second = atlas.panels[0].clone();
+    second.id = "second-fit".into();
+    atlas.panels.push(second);
+    let html = render(&atlas, true, ReportLanguage::new("EN"));
+    assert_eq!(html.matches("Check the captured baseline.").count(), 2);
+    for id in ["p1-waits", "second-fit"] {
+        assert!(html.contains(&format!("href=\"#atlas-guidance-{id}-1\"")));
+        assert!(html.contains(&format!("id=\"atlas-guidance-{id}-1\"")));
+    }
 }

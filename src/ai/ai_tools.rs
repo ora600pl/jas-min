@@ -376,7 +376,9 @@ pub fn tools_schema(stem: &str, include_nmon: bool) -> Value {
                     "type": "object",
                     "properties": {
                         "event_name": { "type": "string" },
-                        "kind": { "type": "string", "enum": ["foreground", "background"] }
+                        "kind": { "type": "string", "enum": ["foreground", "background"] },
+                        "first_snap_id": { "type": "integer", "minimum": 0, "description": "Inclusive lower bound on begin SNAP_ID." },
+                        "last_snap_id": { "type": "integer", "minimum": 0, "description": "Inclusive upper bound on begin SNAP_ID." }
                     },
                     "required": ["event_name", "kind"]
                 }
@@ -4393,9 +4395,19 @@ fn tool_get_wait_event_timeline(args: &Value, c: &AWRSCollection) -> Value {
     };
     let kind = arg_str(args, "kind").unwrap_or("foreground");
 
+    let first = arg_u64(args, "first_snap_id");
+    let last = arg_u64(args, "last_snap_id");
+    if args.get("first_snap_id").is_some() && first.is_none()
+        || args.get("last_snap_id").is_some() && last.is_none()
+        || first.zip(last).is_some_and(|(a, b)| a > b)
+    {
+        return json!({"schema_version":JASMIN_TOOLS_SCHEMA_VERSION,"error":"Expected nonnegative snapshot bounds in ascending order"});
+    }
+    let range = first.unwrap_or(0)..=last.unwrap_or(u64::MAX);
     let rows: Vec<Value> = c
         .awrs
         .iter()
+        .filter(|a| range.contains(&a.snap_info.begin_snap_id))
         .filter_map(|a| {
             let events = if kind == "background" {
                 &a.background_wait_events
@@ -5460,6 +5472,46 @@ mod summary_order_regression_tests {
                     .collect::<Vec<_>>();
                 assert_eq!(ids, vec!["a", "b"], "{metric}");
             }
+        }
+    }
+
+    #[test]
+    fn wait_timeline_respects_inclusive_begin_ids_and_rejects_invalid_bounds() {
+        let snaps = [10, 11, 12].map(|id| {
+            let mut awr = crate::awr::AWR::default();
+            awr.snap_info.begin_snap_id = id;
+            awr.foreground_wait_events.push(crate::awr::WaitEvents {
+                event: "sample wait".into(),
+                ..Default::default()
+            });
+            awr
+        });
+        let collection = AWRSCollection {
+            db_instance_information: Default::default(),
+            initialization_parameters: Default::default(),
+            awrs: snaps.to_vec(),
+            sql_text: Default::default(),
+            nmon: None,
+        };
+        let mut args = json!({"event_name":"sample wait","kind":"foreground"});
+        assert_eq!(
+            tool_get_wait_event_timeline(&args, &collection)["points"],
+            3
+        );
+        args["first_snap_id"] = json!(11);
+        assert_eq!(
+            tool_get_wait_event_timeline(&args, &collection)["points"],
+            2
+        );
+        args["last_snap_id"] = json!(11);
+        let one = tool_get_wait_event_timeline(&args, &collection);
+        assert_eq!(one["points"], 1);
+        assert_eq!(one["timeline"][0]["snap_id"], 11);
+        for bound in [json!(10), json!(-1), json!("invalid")] {
+            args["last_snap_id"] = bound;
+            assert!(tool_get_wait_event_timeline(&args, &collection)
+                .get("error")
+                .is_some());
         }
     }
 
